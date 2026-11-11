@@ -115,6 +115,30 @@ describe('the desktop', () => {
     expect(page()).toContain('23')
   })
 
+  it('lists Virtual machines once the plugin is set up, and never its console', async () => {
+    const plugin = {
+      hardware: { kvm: true, cpu_virtualization: 'vmx', iommu: false },
+      installed: true,
+      storage: null,
+      pools: [],
+      cores: 4,
+      memory_bytes: 8e9,
+      bridges: [],
+    }
+    on('GET', '/api/v1/vms/plugin', plugin)
+    await shell()
+    expect(page()).not.toContain(t('apps.vms'))
+    reset()
+    on('GET', '/api/v1/vms/plugin', { ...plugin, storage: { pool: 'tank', volume: 1 } })
+    await shell()
+    expect(page()).toContain(t('apps.vms'))
+    expect(page()).not.toContain(t('apps.vm-console'))
+    // Without the permission it is not asked about at all.
+    reset()
+    await shell(['account.self', 'files.read'])
+    expect(called('GET', '/api/v1/vms/plugin')).toHaveLength(0)
+  })
+
   it('opens apps from the launcher and the icons, and manages their windows', async () => {
     await shell()
     await press(t('desktop.launcher'))

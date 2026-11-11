@@ -12161,6 +12161,599 @@
           }
         ]
       }
+    },
+    "/api/v1/vms": {
+      "get": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Every VM with what libvirt says it does. Needs `vms.manage`.",
+        "operationId": "list_vms",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VirtualMachine"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Makes a VM, as a job: the ISO copied from its share (which the\nadministrator must be able to read), a sparse disk, the domain defined.\nNeeds `vms.manage`.",
+        "operationId": "create_vm",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateVmRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedVm"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`vms_not_installed`, `vms_not_set_up`, `name_taken`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`: more than the machine has, an unknown bridge, no .iso; `iso_denied`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/plugin": {
+      "get": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "The plugin: hardware, installation and storage. Needs `vms.manage`.",
+        "operationId": "vm_plugin",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VmPlugin"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/plugin/install": {
+      "post": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Installs libvirt and QEMU from Debian (without libvirt's own network),\nas a job. Needs `vms.manage`.",
+        "operationId": "install_vm_plugin",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`kvm_missing`: the machine cannot run VMs; `vms_installed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/plugin/storage": {
+      "post": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Puts the VMs' storage on a pool: `<pool>/zendiloos.vms`, mounted at\n`/volume<N>/@vms`. Needs `vms.manage`.",
+        "operationId": "set_up_vm_storage",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VmStorageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VmPlugin"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such pool",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`vms_not_installed`; `refused`: the storage is on another pool",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/{id}": {
+      "get": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "One VM. Needs `vms.manage`.",
+        "operationId": "get_vm",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VirtualMachine"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/{id}/autostart": {
+      "put": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Whether the VM starts with the machine. Needs `vms.manage`.",
+        "operationId": "set_vm_autostart",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VmAutostartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VirtualMachine"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`vm_creating`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/{id}/delete": {
+      "post": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Removes the VM: powered off, undefined, its disk and its ISO's copy\ndestroyed. Needs `vms.manage`.",
+        "operationId": "delete_vm",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteVmRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`vm_creating`; `refused`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`confirmation_mismatch`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/{id}/force-off": {
+      "post": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Powers the VM off at once. Needs `vms.manage`.",
+        "operationId": "force_off_vm",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VirtualMachine"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`vm_creating`; `refused`: libvirt's reason",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/{id}/restart": {
+      "post": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Asks the guest to restart (ACPI). Needs `vms.manage`.",
+        "operationId": "restart_vm",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VirtualMachine"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`vm_creating`; `refused`: libvirt's reason",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/{id}/shutdown": {
+      "post": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Asks the guest to shut down (ACPI). Needs `vms.manage`.",
+        "operationId": "shut_down_vm",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VirtualMachine"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`vm_creating`; `refused`: libvirt's reason",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/{id}/start": {
+      "post": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Starts the VM. Needs `vms.manage`.",
+        "operationId": "start_vm",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VirtualMachine"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`vm_creating`; `refused`: libvirt's reason, such as it runs already",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -14289,6 +14882,78 @@
         },
         "additionalProperties": false
       },
+      "CreateVmRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "os",
+          "cpus",
+          "memory_mib",
+          "firmware",
+          "disk_gib",
+          "network"
+        ],
+        "properties": {
+          "autostart": {
+            "type": "boolean"
+          },
+          "cpus": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "disk_gib": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "firmware": {
+            "$ref": "#/components/schemas/VmFirmware"
+          },
+          "iso": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/VmIsoChoice",
+                "description": "Copied to the VMs' storage and attached read-only; none: it boots\nfrom its disk, or into the firmware."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "memory_mib": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "network": {
+            "$ref": "#/components/schemas/VmNetwork"
+          },
+          "os": {
+            "$ref": "#/components/schemas/VmOs"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreatedVm": {
+        "type": "object",
+        "description": "A VM recorded, and the job that makes it.",
+        "required": [
+          "vm",
+          "job"
+        ],
+        "properties": {
+          "job": {
+            "$ref": "#/components/schemas/Job"
+          },
+          "vm": {
+            "$ref": "#/components/schemas/VirtualMachine"
+          }
+        }
+      },
       "CurrentAccount": {
         "type": "object",
         "required": [
@@ -14397,6 +15062,19 @@
           "confirm": {
             "type": "string",
             "description": "The share's name, typed again."
+          }
+        },
+        "additionalProperties": false
+      },
+      "DeleteVmRequest": {
+        "type": "object",
+        "required": [
+          "confirm"
+        ],
+        "properties": {
+          "confirm": {
+            "type": "string",
+            "description": "The VM's name, typed again."
           }
         },
         "additionalProperties": false
@@ -21969,6 +22647,311 @@
           "unknown"
         ]
       },
+      "VirtualMachine": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "os",
+          "cpus",
+          "memory_mib",
+          "firmware",
+          "disk_gib",
+          "network",
+          "autostart",
+          "pool",
+          "volume",
+          "created_at",
+          "state"
+        ],
+        "properties": {
+          "autostart": {
+            "type": "boolean"
+          },
+          "cpus": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "disk_gib": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "firmware": {
+            "$ref": "#/components/schemas/VmFirmware"
+          },
+          "id": {
+            "type": "string",
+            "description": "Twelve hexadecimal digits."
+          },
+          "iso": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/VmIsoOrigin"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "memory_mib": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "network": {
+            "$ref": "#/components/schemas/VmNetwork"
+          },
+          "os": {
+            "$ref": "#/components/schemas/VmOs"
+          },
+          "pool": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/VmPowerState"
+          },
+          "volume": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "VmAutostartRequest": {
+        "type": "object",
+        "required": [
+          "autostart"
+        ],
+        "properties": {
+          "autostart": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VmFirmware": {
+        "type": "string",
+        "enum": [
+          "uefi",
+          "bios"
+        ]
+      },
+      "VmHardware": {
+        "type": "object",
+        "description": "What the machine's CPU and firmware offer.",
+        "required": [
+          "kvm",
+          "iommu"
+        ],
+        "properties": {
+          "cpu_virtualization": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`vmx` (Intel VT-x) or `svm` (AMD-V); none if the CPU has neither,\nor it is off in the firmware."
+          },
+          "iommu": {
+            "type": "boolean",
+            "description": "An IOMMU is on (VT-d, AMD-Vi): devices could be handed to a VM\nlater."
+          },
+          "kvm": {
+            "type": "boolean",
+            "description": "`/dev/kvm` is there: the kernel can run VMs with the CPU's help."
+          }
+        }
+      },
+      "VmIsoChoice": {
+        "type": "object",
+        "description": "An ISO in a share, picked as the VM's installation medium.",
+        "required": [
+          "share_id",
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "In the share: `isos/debian-13.1.0-amd64-netinst.iso`."
+          },
+          "share_id": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VmIsoOrigin": {
+        "type": "object",
+        "description": "Where a VM's ISO was copied from.",
+        "required": [
+          "share",
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "share": {
+            "type": "string"
+          }
+        }
+      },
+      "VmNetwork": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "passt: out to the LAN and the internet from the NAS's address;\nnothing reaches the VM.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "user"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A bridge of the machine's: the VM is on the LAN as a machine of its own.",
+            "required": [
+              "bridge",
+              "kind"
+            ],
+            "properties": {
+              "bridge": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "bridge"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "How a VM reaches the network."
+      },
+      "VmOs": {
+        "type": "string",
+        "enum": [
+          "linux",
+          "windows",
+          "other"
+        ]
+      },
+      "VmPlugin": {
+        "type": "object",
+        "description": "The plugin: the hardware check, whether libvirt and QEMU are installed,\nwhere the VMs' storage is, and what a VM may have.",
+        "required": [
+          "hardware",
+          "installed",
+          "pools",
+          "cores",
+          "memory_bytes",
+          "bridges"
+        ],
+        "properties": {
+          "bridges": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Linux bridges of the machine's own, for VMs on the LAN."
+          },
+          "cores": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Threads and memory of the machine.",
+            "minimum": 0
+          },
+          "hardware": {
+            "$ref": "#/components/schemas/VmHardware"
+          },
+          "installed": {
+            "type": "boolean"
+          },
+          "memory_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "pools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmStoragePlace"
+            },
+            "description": "Where the storage can go."
+          },
+          "storage": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/VmStoragePlace"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "VmPowerState": {
+        "type": "string",
+        "description": "What libvirt says a VM does.",
+        "enum": [
+          "running",
+          "paused",
+          "shutting_down",
+          "shut_off",
+          "crashed",
+          "suspended",
+          "creating",
+          "unknown"
+        ]
+      },
+      "VmStoragePlace": {
+        "type": "object",
+        "description": "A pool zendiloOS made, by its name and volume.",
+        "required": [
+          "pool",
+          "volume"
+        ],
+        "properties": {
+          "pool": {
+            "type": "string"
+          },
+          "volume": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "VmStorageRequest": {
+        "type": "object",
+        "required": [
+          "pool"
+        ],
+        "properties": {
+          "pool": {
+            "type": "string",
+            "description": "A pool zendiloOS made."
+          }
+        },
+        "additionalProperties": false
+      },
       "Volume": {
         "type": "object",
         "description": "A data filesystem.",
@@ -22328,6 +23311,10 @@
     {
       "name": "certificates",
       "description": "The ACME client plugin: accounts, challenges and certificates"
+    },
+    {
+      "name": "vms",
+      "description": "Virtual machines: the plugin, VMs through libvirt and their state"
     }
   ]
 }

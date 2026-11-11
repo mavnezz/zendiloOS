@@ -30,12 +30,14 @@ pub enum Permission {
     /// Own shares in the file manager, changing.
     FilesWrite,
     ContainersManage,
+    /// Virtual machines: the plugin, VMs and their consoles.
+    VmsManage,
     /// Own password, sessions and preferences.
     AccountSelf,
 }
 
 impl Permission {
-    pub const ALL: [Permission; 11] = [
+    pub const ALL: [Permission; 12] = [
         Permission::SystemView,
         Permission::SystemManage,
         Permission::LogsView,
@@ -46,6 +48,7 @@ impl Permission {
         Permission::FilesRead,
         Permission::FilesWrite,
         Permission::ContainersManage,
+        Permission::VmsManage,
         Permission::AccountSelf,
     ];
 
@@ -62,6 +65,7 @@ impl Permission {
             Permission::FilesRead => "files.read",
             Permission::FilesWrite => "files.write",
             Permission::ContainersManage => "containers.manage",
+            Permission::VmsManage => "vms.manage",
             Permission::AccountSelf => "account.self",
         }
     }

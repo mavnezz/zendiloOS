@@ -19,6 +19,7 @@
 mod compose;
 mod docker;
 mod host;
+mod vms;
 mod volumes;
 
 use std::collections::HashSet;
@@ -81,6 +82,8 @@ pub struct SimulatedAgent {
     /// The firewall's rules in force (none: no table), and a change
     /// waiting to be confirmed with the rules that return without.
     firewall: Mutex<SimFirewall>,
+    /// libvirt's domains and the VMs' storage; nothing runs.
+    vms: Mutex<vms::SimVms>,
 }
 
 #[derive(Debug, Default)]
@@ -162,7 +165,9 @@ impl SimPackages {
     fn as_now(&self, (run, started): &(PackageRun, std::time::Instant)) -> PackageRun {
         let mut run = run.clone();
         let steps: &[(u64, &str)] = match run.task {
-            PackageTask::InstallDocker | PackageTask::InstallAcme => &[(0, "lists"), (1, "install"), (3, "")],
+            PackageTask::InstallDocker | PackageTask::InstallAcme | PackageTask::InstallVms => {
+                &[(0, "lists"), (1, "install"), (3, "")]
+            }
             PackageTask::Check => &[(0, "lists"), (2, "")],
             PackageTask::Update if run.release.is_some() => {
                 &[(0, "lists"), (1, "debian"), (3, "zendiloos"), (4, "modules"), (5, "")]
@@ -178,7 +183,10 @@ impl SimPackages {
             if step.is_empty() {
                 run.state = PackageRunState::Succeeded;
                 run.finished_at = Some(run.started_at + i64::try_from(*at).unwrap_or(0));
-                if !matches!(run.task, PackageTask::InstallDocker | PackageTask::InstallAcme) {
+                if !matches!(
+                    run.task,
+                    PackageTask::InstallDocker | PackageTask::InstallAcme | PackageTask::InstallVms
+                ) {
                     let done = run.task == PackageTask::Update;
                     run.report = Some(self.report(!done && self.pending, done || self.updated));
                 }
@@ -348,6 +356,7 @@ impl SimulatedAgent {
             )),
             acme: Mutex::default(),
             firewall: Mutex::default(),
+            vms: Mutex::default(),
         }
     }
 
@@ -684,6 +693,11 @@ impl AgentTransport for SimulatedAgent {
                 }) {
                     packages.acme = true;
                 }
+                if run.as_ref().is_some_and(|run| {
+                    run.state == PackageRunState::Succeeded && run.task == PackageTask::InstallVms
+                }) {
+                    self.vms.lock().unwrap_or_else(PoisonError::into_inner).installed = true;
+                }
                 let update = packages.last_update().map(Box::new);
                 Response::Packages { run, update }
             }
@@ -770,6 +784,19 @@ impl AgentTransport for SimulatedAgent {
             // Its terminal comes with [`AgentTransport::call_with_file`].
             Request::OpenTerminal { .. } => {
                 error(ErrorCode::InvalidRequest, "a terminal is opened with its descriptor")
+            }
+            Request::VmHost {}
+            | Request::EnableVms { .. }
+            | Request::CopyVmIso { .. }
+            | Request::DefineVm { .. }
+            | Request::SetVmAutostart { .. }
+            | Request::ControlVm { .. }
+            | Request::DeleteVm { .. }
+            | Request::VmStates {}
+            | Request::OpenVmConsole { .. } => {
+                self.vms.lock().unwrap_or_else(PoisonError::into_inner).handle(&request).unwrap_or_else(
+                    || error(ErrorCode::InvalidRequest, "not a request about virtual machines"),
+                )
             }
             Request::AppLogs { app, .. } => Response::AppLogs {
                 text: format!(
@@ -1116,6 +1143,11 @@ impl AgentTransport for SimulatedAgent {
                 let answer = self.file_operation(&request);
                 self.received.lock().unwrap_or_else(PoisonError::into_inner).push(request);
                 Ok(answer)
+            }
+            Request::OpenVmConsole { ref id } => {
+                let opened = self.vms.lock().unwrap_or_else(PoisonError::into_inner).console(id);
+                self.received.lock().unwrap_or_else(PoisonError::into_inner).push(request);
+                Ok(opened)
             }
             Request::OpenTerminal { ref container, ref command, size } => {
                 let answer = match echo_terminal(container.as_str(), &command.line(), size) {

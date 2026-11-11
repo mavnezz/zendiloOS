@@ -1,0 +1,194 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", name, os, cpus, memory_mib, firmware, disk_gib, bridge,\n                      autostart AS \"autostart: bool\", iso_share, iso_path, pool, volume, created_at,\n                      ready AS \"ready: bool\"\n               FROM vms ORDER BY created_at, id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vms",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vms",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "os",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vms",
+            "name": "os"
+          }
+        }
+      },
+      {
+        "name": "cpus",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "vms",
+            "name": "cpus"
+          }
+        }
+      },
+      {
+        "name": "memory_mib",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "vms",
+            "name": "memory_mib"
+          }
+        }
+      },
+      {
+        "name": "firmware",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vms",
+            "name": "firmware"
+          }
+        }
+      },
+      {
+        "name": "disk_gib",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "vms",
+            "name": "disk_gib"
+          }
+        }
+      },
+      {
+        "name": "bridge",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vms",
+            "name": "bridge"
+          }
+        }
+      },
+      {
+        "name": "autostart: bool",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "vms",
+            "name": "autostart"
+          }
+        }
+      },
+      {
+        "name": "iso_share",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vms",
+            "name": "iso_share"
+          }
+        }
+      },
+      {
+        "name": "iso_path",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vms",
+            "name": "iso_path"
+          }
+        }
+      },
+      {
+        "name": "pool",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vms",
+            "name": "pool"
+          }
+        }
+      },
+      {
+        "name": "volume",
+        "ordinal": 12,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "vms",
+            "name": "volume"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 13,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "vms",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "ready: bool",
+        "ordinal": 14,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "vms",
+            "name": "ready"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "d2c6a04fb538a658d5a6361e464d7cee250725332cbd4f4f4d1b67d5cef90b2a"
+}

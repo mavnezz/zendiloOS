@@ -14,6 +14,7 @@ export const ADMIN = [
   'shares.manage',
   'users.manage',
   'containers.manage',
+  'vms.manage',
   'apps.manage',
   'files.read',
   'files.write',

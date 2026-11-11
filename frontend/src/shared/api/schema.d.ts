@@ -3688,6 +3688,207 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/vms": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every VM with what libvirt says it does. Needs `vms.manage`. */
+        get: operations["list_vms"];
+        put?: never;
+        /**
+         * Makes a VM, as a job: the ISO copied from its share (which the
+         *     administrator must be able to read), a sparse disk, the domain defined.
+         *     Needs `vms.manage`.
+         */
+        post: operations["create_vm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/plugin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The plugin: hardware, installation and storage. Needs `vms.manage`. */
+        get: operations["vm_plugin"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/plugin/install": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Installs libvirt and QEMU from Debian (without libvirt's own network),
+         *     as a job. Needs `vms.manage`.
+         */
+        post: operations["install_vm_plugin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/plugin/storage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Puts the VMs' storage on a pool: `<pool>/zendiloos.vms`, mounted at
+         *     `/volume<N>/@vms`. Needs `vms.manage`.
+         */
+        post: operations["set_up_vm_storage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One VM. Needs `vms.manage`. */
+        get: operations["get_vm"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/{id}/autostart": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Whether the VM starts with the machine. Needs `vms.manage`. */
+        put: operations["set_vm_autostart"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/{id}/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Removes the VM: powered off, undefined, its disk and its ISO's copy
+         *     destroyed. Needs `vms.manage`.
+         */
+        post: operations["delete_vm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/{id}/force-off": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Powers the VM off at once. Needs `vms.manage`. */
+        post: operations["force_off_vm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/{id}/restart": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Asks the guest to restart (ACPI). Needs `vms.manage`. */
+        post: operations["restart_vm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/{id}/shutdown": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Asks the guest to shut down (ACPI). Needs `vms.manage`. */
+        post: operations["shut_down_vm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/{id}/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Starts the VM. Needs `vms.manage`. */
+        post: operations["start_vm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -4468,6 +4669,25 @@ export interface components {
              */
             shared?: boolean;
         };
+        CreateVmRequest: {
+            autostart?: boolean;
+            /** Format: int32 */
+            cpus: number;
+            /** Format: int32 */
+            disk_gib: number;
+            firmware: components["schemas"]["VmFirmware"];
+            iso?: components["schemas"]["VmIsoChoice"] | null;
+            /** Format: int32 */
+            memory_mib: number;
+            name: string;
+            network: components["schemas"]["VmNetwork"];
+            os: components["schemas"]["VmOs"];
+        };
+        /** @description A VM recorded, and the job that makes it. */
+        CreatedVm: {
+            job: components["schemas"]["Job"];
+            vm: components["schemas"]["VirtualMachine"];
+        };
         CurrentAccount: {
             /**
              * Format: int64
@@ -4504,6 +4724,10 @@ export interface components {
         };
         DeleteShareRequest: {
             /** @description The share's name, typed again. */
+            confirm: string;
+        };
+        DeleteVmRequest: {
+            /** @description The VM's name, typed again. */
             confirm: string;
         };
         DestroyPoolRequest: {
@@ -7129,6 +7353,106 @@ export interface components {
          * @enum {string}
          */
         VdevState: "online" | "degraded" | "faulted" | "offline" | "removed" | "unavailable" | "suspended" | "unknown";
+        VirtualMachine: {
+            autostart: boolean;
+            /** Format: int32 */
+            cpus: number;
+            /** Format: int64 */
+            created_at: number;
+            /** Format: int32 */
+            disk_gib: number;
+            firmware: components["schemas"]["VmFirmware"];
+            /** @description Twelve hexadecimal digits. */
+            id: string;
+            iso?: components["schemas"]["VmIsoOrigin"] | null;
+            /** Format: int32 */
+            memory_mib: number;
+            name: string;
+            network: components["schemas"]["VmNetwork"];
+            os: components["schemas"]["VmOs"];
+            pool: string;
+            state: components["schemas"]["VmPowerState"];
+            /** Format: int32 */
+            volume: number;
+        };
+        VmAutostartRequest: {
+            autostart: boolean;
+        };
+        /** @enum {string} */
+        VmFirmware: "uefi" | "bios";
+        /** @description What the machine's CPU and firmware offer. */
+        VmHardware: {
+            /**
+             * @description `vmx` (Intel VT-x) or `svm` (AMD-V); none if the CPU has neither,
+             *     or it is off in the firmware.
+             */
+            cpu_virtualization?: string | null;
+            /**
+             * @description An IOMMU is on (VT-d, AMD-Vi): devices could be handed to a VM
+             *     later.
+             */
+            iommu: boolean;
+            /** @description `/dev/kvm` is there: the kernel can run VMs with the CPU's help. */
+            kvm: boolean;
+        };
+        /** @description An ISO in a share, picked as the VM's installation medium. */
+        VmIsoChoice: {
+            /** @description In the share: `isos/debian-13.1.0-amd64-netinst.iso`. */
+            path: string;
+            /** Format: int64 */
+            share_id: number;
+        };
+        /** @description Where a VM's ISO was copied from. */
+        VmIsoOrigin: {
+            path: string;
+            share: string;
+        };
+        /** @description How a VM reaches the network. */
+        VmNetwork: {
+            /** @enum {string} */
+            kind: "user";
+        } | {
+            bridge: string;
+            /** @enum {string} */
+            kind: "bridge";
+        };
+        /** @enum {string} */
+        VmOs: "linux" | "windows" | "other";
+        /**
+         * @description The plugin: the hardware check, whether libvirt and QEMU are installed,
+         *     where the VMs' storage is, and what a VM may have.
+         */
+        VmPlugin: {
+            /** @description Linux bridges of the machine's own, for VMs on the LAN. */
+            bridges: string[];
+            /**
+             * Format: int32
+             * @description Threads and memory of the machine.
+             */
+            cores: number;
+            hardware: components["schemas"]["VmHardware"];
+            installed: boolean;
+            /** Format: int64 */
+            memory_bytes: number;
+            /** @description Where the storage can go. */
+            pools: components["schemas"]["VmStoragePlace"][];
+            storage?: components["schemas"]["VmStoragePlace"] | null;
+        };
+        /**
+         * @description What libvirt says a VM does.
+         * @enum {string}
+         */
+        VmPowerState: "running" | "paused" | "shutting_down" | "shut_off" | "crashed" | "suspended" | "creating" | "unknown";
+        /** @description A pool zendiloOS made, by its name and volume. */
+        VmStoragePlace: {
+            pool: string;
+            /** Format: int32 */
+            volume: number;
+        };
+        VmStorageRequest: {
+            /** @description A pool zendiloOS made. */
+            pool: string;
+        };
         /** @description A data filesystem. */
         Volume: {
             /** @description The RAID array it lives on, if any. */
@@ -15995,6 +16319,433 @@ export interface operations {
                 content?: never;
             };
             /** @description `refused`: nothing waits */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_vms: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VirtualMachine"][];
+                };
+            };
+        };
+    };
+    create_vm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateVmRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatedVm"];
+                };
+            };
+            /** @description `vms_not_installed`, `vms_not_set_up`, `name_taken` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`: more than the machine has, an unknown bridge, no .iso; `iso_denied` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    vm_plugin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VmPlugin"];
+                };
+            };
+        };
+    };
+    install_vm_plugin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `kvm_missing`: the machine cannot run VMs; `vms_installed` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_up_vm_storage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VmStorageRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VmPlugin"];
+                };
+            };
+            /** @description `not_found`: no such pool */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `vms_not_installed`; `refused`: the storage is on another pool */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_vm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VirtualMachine"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_vm_autostart: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VmAutostartRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VirtualMachine"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `vm_creating` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_vm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteVmRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `vm_creating`; `refused` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `confirmation_mismatch` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    force_off_vm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VirtualMachine"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `vm_creating`; `refused`: libvirt's reason */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    restart_vm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VirtualMachine"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `vm_creating`; `refused`: libvirt's reason */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    shut_down_vm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VirtualMachine"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `vm_creating`; `refused`: libvirt's reason */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    start_vm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VirtualMachine"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `vm_creating`; `refused`: libvirt's reason, such as it runs already */
             409: {
                 headers: {
                     [name: string]: unknown;

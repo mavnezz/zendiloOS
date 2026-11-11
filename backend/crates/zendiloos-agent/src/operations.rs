@@ -27,6 +27,7 @@ use crate::removable::Removable;
 use crate::sharing::Sharing;
 use crate::ssh::{Ssh, SshPaths};
 use crate::time::{Time, TimePaths};
+use crate::vms::{VmPaths, VmTools, Vms};
 use crate::volumes::Volumes;
 use crate::web::{Web, WebPaths};
 use crate::web_server::{WebServer, WebServerPaths};
@@ -44,6 +45,7 @@ pub struct Paths {
     pub acme: AcmePaths,
     pub web_server: WebServerPaths,
     pub firewall: FirewallPaths,
+    pub vms: VmPaths,
 }
 
 const MDSTAT: &str = "/proc/mdstat";
@@ -83,6 +85,7 @@ pub struct Operations {
     projects: Projects,
     removable: Removable,
     enclosure: Enclosure,
+    vms: Vms,
     console_issue: std::path::PathBuf,
     role: Role,
 }
@@ -132,6 +135,20 @@ impl Operations {
             ),
             removable: Removable::new(tools, paths.host.clone(), &paths.accounts)?,
             enclosure: Enclosure::new(&paths.host),
+            vms: Vms::new(
+                VmTools {
+                    virsh: Program::new(&tools.virsh)?,
+                    zfs: Program::new(&tools.zfs)?,
+                    systemctl: Program::new(&tools.systemctl)?,
+                    systemd_run: Program::new(&tools.systemd_run)?,
+                    libvirtd: tools.libvirtd.clone(),
+                    qemu: tools.qemu.clone(),
+                    tmpfiles: tools.systemd_tmpfiles.clone(),
+                    rm: tools.rm.clone(),
+                },
+                paths.vms.clone(),
+                paths.host.clone(),
+            ),
             console_issue: paths.host.console_issue.clone(),
             sharing: Sharing::new(tools, paths.host.clone(), paths.accounts.clone())?,
             apps: Apps::new(
@@ -223,6 +240,21 @@ impl Operations {
             Request::MoveDocker { from_pool, from_volume, to_pool, to_volume } => {
                 self.pools.move_docker(from_pool, *from_volume, to_pool, *to_volume).await
             }
+            Request::VmHost {} => self.vms.host_facts(),
+            // Nothing is made for VMs before libvirt can run them.
+            Request::EnableVms { pool, volume } => match self.vms.require_installed() {
+                Ok(()) => match self.pools.enable_vms(pool, *volume).await {
+                    Ok(()) => self.vms.prepare_libvirt().await,
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
+            },
+            Request::CopyVmIso { id, volume, source } => self.vms.copy_iso(id, *volume, source).await,
+            Request::DefineVm { spec } => self.vms.define(spec).await,
+            Request::SetVmAutostart { id, autostart } => self.vms.set_autostart(id, *autostart).await,
+            Request::ControlVm { id, action } => self.vms.control(id, *action).await,
+            Request::DeleteVm { id, pool, volume } => self.vms.delete(id, pool, *volume).await,
+            Request::VmStates {} => self.vms.states().await,
             Request::StartApp { app } => self.apps.start(app).await,
             Request::StopApp { app } => self.apps.stop(app).await,
             Request::RemoveApp { app, pool, volume } => match self.apps.remove(app).await {
@@ -259,6 +291,12 @@ impl Operations {
             Request::OpenTerminal { container, command, size } => {
                 return match self.docker.open_terminal(container, command, *size).await {
                     Ok((response, master)) => (response, Some(master)),
+                    Err(error) => (failure(&error), None),
+                };
+            }
+            Request::OpenVmConsole { id } => {
+                return match self.vms.open_console(id).await {
+                    Ok((response, socket)) => (response, Some(socket)),
                     Err(error) => (failure(&error), None),
                 };
             }

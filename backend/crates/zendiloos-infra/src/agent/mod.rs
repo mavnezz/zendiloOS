@@ -16,6 +16,7 @@ mod ssh;
 mod storage;
 mod time;
 mod updates;
+mod vms;
 mod volume_backups;
 mod web;
 
@@ -42,6 +43,7 @@ pub use ssh::AgentSsh;
 pub use storage::{AgentStorage, RandomPlanTokens};
 pub use time::AgentTime;
 pub use updates::AgentUpdates;
+pub use vms::{AgentVms, RandomVmIds};
 pub use volume_backups::AgentVolumeArchiver;
 pub use web::AgentWebTls;
 

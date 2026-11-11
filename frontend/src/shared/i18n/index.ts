@@ -142,6 +142,14 @@ const KNOWN_PROBLEMS = [
   'containers_held',
   'plan_paused',
   'network',
+  'kvm_missing',
+  'vms_not_installed',
+  'vms_installed',
+  'vms_not_set_up',
+  'vm_creating',
+  'vm_not_running',
+  'iso_denied',
+  'agent_failed',
 ] as const
 
 function isKnown(code: string): code is (typeof KNOWN_PROBLEMS)[number] {
@@ -187,6 +195,8 @@ export function problemMessage(error: unknown): string {
     'volume_in_use',
     // The containers a backup or restore keeps stopped.
     'containers_held',
+    // libvirt's or apt's words.
+    'agent_failed',
   ]
   if (isKnown(error.code)) {
     const message = t(`errors.${error.code}`)

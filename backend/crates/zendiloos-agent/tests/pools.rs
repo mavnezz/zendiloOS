@@ -173,6 +173,7 @@ fn host(erasable: Erasable) -> Host {
         acme: Default::default(),
         web_server: Default::default(),
         firewall: Default::default(),
+        vms: Default::default(),
         accounts: AccountFiles {
             passwd: root.join("passwd"),
             group: root.join("group"),

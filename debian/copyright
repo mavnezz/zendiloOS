@@ -6,6 +6,41 @@ Files: *
 Copyright: 2026 The zendiloOS authors
 License: Apache-2.0
 
+Files: frontend/node_modules/@novnc/novnc/core/*
+Copyright: 2022 The noVNC authors
+License: MPL-2.0
+Comment: noVNC 1.7.0, the console of virtual machines in the web interface,
+ bundled unmodified into /usr/share/zendiloos/webui. Its source is
+ https://github.com/novnc/noVNC/tree/v1.7.0.
+
+Files: frontend/node_modules/@novnc/novnc/vendor/pako/*
+Copyright: 2014-2016 Vitaly Puzrin
+License: Expat
+Comment: pako, which noVNC vendors for its zlib decoding.
+
 License: Apache-2.0
  On Debian systems, the full text of the Apache License, Version 2.0 can be
  found in /usr/share/common-licenses/Apache-2.0.
+
+License: MPL-2.0
+ On Debian systems, the full text of the Mozilla Public License, Version 2.0
+ can be found in /usr/share/common-licenses/MPL-2.0.
+
+License: Expat
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to deal
+ in the Software without restriction, including without limitation the rights
+ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following conditions:
+ .
+ The above copyright notice and this permission notice shall be included in
+ all copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.

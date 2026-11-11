@@ -81,6 +81,10 @@ impl Host {
             nginx: "/bin/false".into(),
             rm: "/bin/false".into(),
             nft: "/bin/false".into(),
+            virsh: "/bin/false".into(),
+            libvirtd: "/bin/false".into(),
+            qemu: "/bin/false".into(),
+            systemd_tmpfiles: "/bin/false".into(),
             dockerd: p("dockerd"),
         };
         let at = |name: &str| self.path(name);
@@ -131,6 +135,7 @@ impl Host {
                 webroot: at("acme-state/webroot"),
             },
             firewall: FirewallPaths { directory: at("firewall") },
+            vms: Default::default(),
         };
         Operations::with_paths(role, &tools, Erasable::Policy(ErasePolicy::None), paths).unwrap()
     }

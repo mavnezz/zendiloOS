@@ -39,6 +39,33 @@ export async function listFolders(
   return { names, writable: folder.writable }
 }
 
+/**
+ * The folders in one folder of a share and its files whose name ends in
+ * `extension` (`.iso`, in any case), as the signed-in administrator sees them.
+ */
+export async function listEntries(
+  share: number,
+  path: string,
+  extension: string,
+): Promise<{ names: string[]; files: string[]; writable: boolean }> {
+  const folder = await unwrap(
+    api.GET('/api/v1/files/shares/{id}/folder', {
+      params: { path: { id: share }, query: { path } },
+    }),
+  )
+  const sorted = (names: string[]) => names.sort((a, b) => a.localeCompare(b))
+  const ending = extension.toLowerCase()
+  return {
+    names: sorted(folder.entries.filter((e) => e.kind === 'directory').map((e) => e.name)),
+    files: sorted(
+      folder.entries
+        .filter((e) => e.kind === 'file' && e.name.toLowerCase().endsWith(ending))
+        .map((e) => e.name),
+    ),
+    writable: folder.writable,
+  }
+}
+
 /** Makes the folder `path` in a share. */
 export async function makeFolder(share: number, path: string): Promise<void> {
   await unwrap(

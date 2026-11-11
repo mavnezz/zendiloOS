@@ -47,6 +47,7 @@ pub const API_V1: &str = "/api/v1";
         (name = "shares", description = "Shares over SMB and NFS and their permissions"),
         (name = "files", description = "The file manager: share contents as the signed-in user"),
         (name = "certificates", description = "The ACME client plugin: accounts, challenges and certificates"),
+        (name = "vms", description = "Virtual machines: the plugin, VMs through libvirt and their state"),
     ),
     components(schemas(
         routes::live::LiveRequest,
@@ -98,6 +99,7 @@ pub fn router(state: ApiState) -> Router {
         )
         .merge(routes::live::router())
         .merge(routes::terminal::router())
+        .merge(routes::vm_console::router())
         .fallback(|| async { ApiError::NotFound })
         .method_not_allowed_fallback(|| async { ApiError::MethodNotAllowed })
         .layer(from_fn(run_to_the_end))

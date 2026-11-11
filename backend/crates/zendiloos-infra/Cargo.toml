@@ -24,6 +24,7 @@ zendiloos-kernel.workspace = true
 zendiloos-network.workspace = true
 zendiloos-storage.workspace = true
 zendiloos-system.workspace = true
+zendiloos-vms.workspace = true
 argon2.workspace = true
 async-trait.workspace = true
 base64.workspace = true

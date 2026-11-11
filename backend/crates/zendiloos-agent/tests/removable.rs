@@ -43,6 +43,10 @@ impl Host {
             nginx: "/bin/false".into(),
             rm: "/bin/false".into(),
             nft: "/bin/false".into(),
+            virsh: "/bin/false".into(),
+            libvirtd: "/bin/false".into(),
+            qemu: "/bin/false".into(),
+            systemd_tmpfiles: "/bin/false".into(),
             lsblk: script("lsblk", &format!("cat {}", root.join("lsblk.json").display())),
             // Refuses to write a drive while `read-only` exists, as for a
             // write-protected stick.

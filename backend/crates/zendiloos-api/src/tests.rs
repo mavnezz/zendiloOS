@@ -286,6 +286,8 @@ pub(crate) struct Harness {
     pub(crate) firewall_host: Arc<zendiloos_firewall::testing::FakeFirewallHost>,
     pub(crate) firewall_facts: Arc<zendiloos_firewall::testing::FixedFacts>,
     pub(crate) firewall: zendiloos_firewall::application::Firewall,
+    /// libvirt pretended: KVM there, nothing installed at first.
+    pub(crate) vm_host: Arc<zendiloos_vms::testing::FakeVmHost>,
 }
 
 /// The App Center's projects, from the Docker fakes, as zendiloosd's
@@ -528,7 +530,18 @@ impl Harness {
                 audit: identity.audit.clone(),
                 clock: identity.clock.clone(),
             });
+        let vm_host = Arc::new(zendiloos_vms::testing::FakeVmHost::default());
+        let vms = zendiloos_vms::application::Vms::new(zendiloos_vms::application::VmsPorts {
+            repository: Arc::new(zendiloos_vms::testing::MemoryVms::default()),
+            host: vm_host.clone(),
+            isos: Arc::new(zendiloos_vms::testing::FakeIsos),
+            ids: Arc::new(zendiloos_vms::testing::CountingIds::default()),
+            jobs: jobs.clone(),
+            audit: identity.audit.clone(),
+            clock: identity.clock.clone(),
+        });
         let use_cases = UseCases {
+            vms,
             certificates,
             firewall: firewall.clone(),
             containers: docker_test.containers,
@@ -603,6 +616,7 @@ impl Harness {
             firewall_host,
             firewall_facts,
             firewall,
+            vm_host,
         }
     }
 
@@ -1850,6 +1864,17 @@ fn openapi_documents_every_route() {
             "/api/v1/system/updates/settings",
             "/api/v1/system/web-server",
             "/api/v1/system/web-server/confirm",
+            "/api/v1/vms",
+            "/api/v1/vms/plugin",
+            "/api/v1/vms/plugin/install",
+            "/api/v1/vms/plugin/storage",
+            "/api/v1/vms/{id}",
+            "/api/v1/vms/{id}/autostart",
+            "/api/v1/vms/{id}/delete",
+            "/api/v1/vms/{id}/force-off",
+            "/api/v1/vms/{id}/restart",
+            "/api/v1/vms/{id}/shutdown",
+            "/api/v1/vms/{id}/start",
         ]
     );
 }

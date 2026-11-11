@@ -23,6 +23,7 @@ zendiloos-kernel.workspace = true
 zendiloos-network.workspace = true
 zendiloos-storage.workspace = true
 zendiloos-system.workspace = true
+zendiloos-vms.workspace = true
 axum.workspace = true
 axum-extra.workspace = true
 futures-util = "0.3"
@@ -48,6 +49,7 @@ zendiloos-sharing = { workspace = true, features = ["testing"] }
 zendiloos-jobs = { workspace = true, features = ["testing"] }
 zendiloos-notify = { workspace = true, features = ["testing"] }
 zendiloos-network = { workspace = true, features = ["testing"] }
+zendiloos-vms = { workspace = true, features = ["testing"] }
 async-trait.workspace = true
 http-body-util.workspace = true
 tokio.workspace = true

@@ -30,7 +30,13 @@ Recommends: avahi-daemon,
             nfs-kernel-server,
             wsdd2
 Suggests: docker-compose,
-          docker.io
+          docker.io,
+          libvirt-clients,
+          libvirt-daemon-driver-qemu,
+          ovmf,
+          passt,
+          qemu-system-x86,
+          qemu-utils
 Description: web-managed NAS operating system
  zendiloOS turns a Debian system into a NAS that is managed through a
  desktop in the web browser.
