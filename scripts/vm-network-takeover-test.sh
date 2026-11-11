@@ -229,8 +229,8 @@ expect_ifupdown_back() {
     vm "test ! -e /etc/systemd/network/05-zendiloos-$card.network \
         && test ! -e /etc/network/interfaces.zendiloos-previous" || fail "the takeover's files are still there"
     check "/etc/network/interfaces and /etc/resolv.conf are back, zendiloOS's files gone"
-    vm '! systemctl is-active --quiet systemd-networkd.service && ! systemctl is-active --quiet systemd-resolved.service
-        && ! systemctl is-enabled --quiet systemd-networkd.service && ! systemctl is-enabled --quiet systemd-resolved.service' \
+    vm '! systemctl is-active --quiet systemd-networkd.service && ! systemctl is-active --quiet systemd-resolved.service &&
+        ! systemctl is-enabled --quiet systemd-networkd.service && ! systemctl is-enabled --quiet systemd-resolved.service' \
         || fail "systemd-networkd or systemd-resolved still runs or is enabled"
     vm 'systemctl is-active --quiet networking.service' || fail "networking.service does not run"
     check "systemd-networkd and systemd-resolved off and disabled, networking.service runs"
