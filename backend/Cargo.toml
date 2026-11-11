@@ -34,6 +34,7 @@ zendiloos-sharing = { path = "crates/zendiloos-sharing" }
 zendiloos-sim = { path = "crates/zendiloos-sim" }
 zendiloos-storage = { path = "crates/zendiloos-storage" }
 zendiloos-system = { path = "crates/zendiloos-system" }
+zendiloos-vms = { path = "crates/zendiloos-vms" }
 
 # The app format and its policy, from the community catalog, pinned: a
 # change to the checks reaches zendiloOS only when this commit is moved.

@@ -27,7 +27,7 @@ use zendiloos_infra::SystemClock;
 use zendiloos_infra::agent::{
     AgentAcme, AgentApps, AgentDockerData, AgentDockerEngine, AgentFiles, AgentFirewall, AgentNetwork,
     AgentPowerControl, AgentSharing, AgentSsh, AgentStorage, AgentSystemAccounts, AgentTime, AgentUpdates,
-    AgentVolumeArchiver, AgentWebTls, RandomPlanTokens, agent_version,
+    AgentVms, AgentVolumeArchiver, AgentWebTls, RandomPlanTokens, RandomVmIds, agent_version,
 };
 use zendiloos_infra::apps::{
     CatalogPolicy, ContainersForApps, FilesForApps, HttpsCatalogs, RandomSecrets, SharingForApps, YamlFiller,
@@ -47,7 +47,7 @@ use zendiloos_infra::sqlite::{
     SqliteCertificates, SqliteChannels, SqliteDiskInventory, SqliteEjectedDrives, SqliteEnclosure,
     SqliteFirewall, SqliteGroups, SqliteInstalledApps, SqliteJobs, SqliteNotifications, SqlitePreferences,
     SqliteProjects, SqliteSecurity, SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares,
-    SqliteSystemUpdates, SqliteTwoFactor, SqliteUpdateSettings, SqliteVolumeBackups,
+    SqliteSystemUpdates, SqliteTwoFactor, SqliteUpdateSettings, SqliteVms, SqliteVolumeBackups,
 };
 use zendiloos_infra::updates::{GitHubReleases, installed_notes};
 use zendiloos_jobs::Jobs;
@@ -64,6 +64,7 @@ use zendiloos_storage::application::self_tests::SelfTestSchedule;
 use zendiloos_storage::application::{StoragePorts, StorageUseCases};
 use zendiloos_system::application::{SystemPorts, SystemUseCases};
 use zendiloos_updates::application::{Updates, UpdatesPorts};
+use zendiloos_vms::application::{Vms, VmsPorts};
 
 use crate::config::{AgentTransportKind, Config, Source};
 
@@ -361,6 +362,18 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     });
     let firewall_upkeep = spawn_firewall_upkeep(firewall.clone(), jobs.clone());
 
+    // Virtual machines: the agent's patience for the long requests (an
+    // ISO copied, a VM's disks destroyed) is the system transport's own.
+    let vms = Vms::new(VmsPorts {
+        repository: Arc::new(SqliteVms::new(database.clone())),
+        host: Arc::new(AgentVms::new(agent.clone())),
+        isos: Arc::new(zendiloos_infra::vms::SharesForVms::new(files.clone())),
+        ids: Arc::new(RandomVmIds),
+        jobs: jobs.clone(),
+        audit: audit.clone(),
+        clock: Arc::new(SystemClock),
+    });
+
     let snapshots = spawn_snapshot_schedules(sharing.clone());
     let migrations = spawn_permission_migrations(sharing.clone());
     let self_tests = spawn_self_test_schedule(storage.self_test_schedule.clone());
@@ -382,6 +395,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         updates,
         certificates,
         firewall,
+        vms,
     };
     let state = ApiState::new(use_cases, config.secure_cookies);
     let app = zendiloos_api::router(state);

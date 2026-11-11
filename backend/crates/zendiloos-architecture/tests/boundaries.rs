@@ -28,6 +28,7 @@ const CONTEXTS: &[&str] = &[
     "zendiloos-network",
     "zendiloos-certificates",
     "zendiloos-firewall",
+    "zendiloos-vms",
 ];
 
 /// What the contexts share: the kernel, jobs and notifications.
@@ -113,6 +114,7 @@ fn allowed(name: &str, members: &BTreeSet<String>) -> Option<BTreeSet<String>> {
         "zendiloos-updates" => set(&["zendiloos-kernel", "zendiloos-notify"]),
         "zendiloos-certificates" => set(&["zendiloos-kernel", "zendiloos-jobs", "zendiloos-notify"]),
         "zendiloos-firewall" => set(&["zendiloos-kernel", "zendiloos-notify"]),
+        "zendiloos-vms" => set(&["zendiloos-kernel", "zendiloos-jobs"]),
         "zendiloos-api" => core(),
         "zendiloos-infra" => {
             let mut infra = core();

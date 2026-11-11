@@ -20,6 +20,8 @@ mod system;
 pub(crate) mod terminal;
 mod two_factor;
 mod updates;
+pub(crate) mod vm_console;
+mod vms;
 
 use utoipa_axum::router::OpenApiRouter;
 
@@ -48,4 +50,5 @@ pub(crate) fn v1() -> OpenApiRouter<ApiState> {
         .merge(updates::routes())
         .merge(certificates::routes())
         .merge(firewall::routes())
+        .merge(vms::routes())
 }

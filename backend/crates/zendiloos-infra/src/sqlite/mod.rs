@@ -29,6 +29,7 @@ mod shares;
 mod system_updates;
 mod two_factor;
 mod update_settings;
+mod vms;
 mod volume_backups;
 
 #[cfg(test)]
@@ -68,6 +69,7 @@ pub use shares::SqliteShares;
 pub use system_updates::SqliteSystemUpdates;
 pub use two_factor::SqliteTwoFactor;
 pub use update_settings::SqliteUpdateSettings;
+pub use vms::SqliteVms;
 pub use volume_backups::SqliteVolumeBackups;
 
 static MIGRATOR: Migrator = sqlx::migrate!();

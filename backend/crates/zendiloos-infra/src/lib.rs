@@ -24,5 +24,6 @@ mod storage;
 #[cfg(test)]
 mod test_https;
 pub mod updates;
+pub mod vms;
 
 pub use clock::SystemClock;

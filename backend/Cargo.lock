@@ -3076,6 +3076,7 @@ dependencies = [
  "zendiloos-storage",
  "zendiloos-system",
  "zendiloos-updates",
+ "zendiloos-vms",
 ]
 
 [[package]]
@@ -3225,6 +3226,7 @@ dependencies = [
  "zendiloos-storage",
  "zendiloos-system",
  "zendiloos-updates",
+ "zendiloos-vms",
 ]
 
 [[package]]
@@ -3342,6 +3344,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "zendiloos-vms"
+version = "0.4.0"
+dependencies = [
+ "async-trait",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "zendiloos-jobs",
+ "zendiloos-kernel",
+]
+
+[[package]]
 name = "zendiloosd"
 version = "0.4.0"
 dependencies = [
@@ -3373,6 +3387,7 @@ dependencies = [
  "zendiloos-storage",
  "zendiloos-system",
  "zendiloos-updates",
+ "zendiloos-vms",
 ]
 
 [[package]]

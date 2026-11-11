@@ -71,8 +71,8 @@ async fn creates_a_private_database_and_applies_all_migrations() {
         OpenReport {
             created: true,
             schema_before: None,
-            schema_after: 48,
-            applied: (1..=48).collect(),
+            schema_after: 49,
+            applied: (1..=49).collect(),
             backup: None
         }
     );
@@ -144,6 +144,7 @@ async fn creates_a_private_database_and_applies_all_migrations() {
             "shares",
             "system_update_settings",
             "system_update_state",
+            "vms",
             "web_server"
         ]
     );
@@ -161,8 +162,8 @@ async fn reopening_an_up_to_date_database_changes_nothing() {
         report,
         OpenReport {
             created: false,
-            schema_before: Some(48),
-            schema_after: 48,
+            schema_before: Some(49),
+            schema_after: 49,
             applied: vec![],
             backup: None
         }

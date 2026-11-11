@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE vms SET ready = 1 WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "6146ad6d78d182b0f76ff185b8e9198dc94a510db6d182e3ce8d4f40af5f6e06"
+}
