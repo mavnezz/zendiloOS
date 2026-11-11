@@ -8,8 +8,9 @@ use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 use zendiloos_agent::config::Config;
 use zendiloos_agent::{
-    HostPaths, Operations, Server, VolumeJob, lower_file_overrides, passwd, pin_project, pin_shares,
-    power_off_drive, run_iso_job, run_packages, run_volume_job, serve, unpin_project, unpin_shares,
+    HostPaths, Operations, Server, VolumeJob, docker_bridges, lower_file_overrides, passwd, pin_project,
+    pin_shares, power_off_drive, run_iso_job, run_packages, run_volume_job, serve, unpin_project,
+    unpin_shares,
 };
 use zendiloos_agent_proto::{AppName, DiskName, ProjectName, Role};
 
@@ -60,6 +61,9 @@ enum Command {
     ScanVolumeBackups { job: String },
     /// Copy an ISO from a share for a virtual machine (likewise)
     CopyVmIso { job: String },
+    /// Let frames within the bridges zendiloOS made pass Docker's FORWARD
+    /// chain, and nothing more (zendiloos-docker-bridges.service)
+    DockerBridges,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -121,6 +125,16 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         return Ok(());
     }
+    if let Some(Command::DockerBridges) = &cli.command {
+        let directory = zendiloos_agent::NetworkPaths::default().directory;
+        let report = docker_bridges::sync(&directory, &docker_bridges::Family::debian())
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        for line in report {
+            println!("{line}");
+        }
+        return Ok(());
+    }
     if let Some(Command::PowerOffDrive { disk }) = &cli.command {
         let name = DiskName::parse(disk).map_err(|_| anyhow::anyhow!("{disk:?} is no disk"))?;
         power_off_drive(&HostPaths::default(), &name).map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -147,7 +161,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             | Command::RemoveVolumeBackup { .. }
             | Command::SweepVolumes { .. }
             | Command::ScanVolumeBackups { .. }
-            | Command::CopyVmIso { .. } => unreachable!("handled above"),
+            | Command::CopyVmIso { .. }
+            | Command::DockerBridges => unreachable!("handled above"),
         };
         outcome.map_err(|error| anyhow::anyhow!("{name}: {error}"))?;
         println!("{name}: folders of shares {done}");

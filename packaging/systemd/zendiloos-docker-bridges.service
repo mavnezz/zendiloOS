@@ -1,0 +1,37 @@
+[Unit]
+Description=zendiloOS: frames within its bridges pass Docker's FORWARD chain
+Documentation=https://github.com/mavnezz/zendiloOS
+# Docker loads br_netfilter, which sends frames a bridge forwards between
+# its ports (a VM's tap and the card) through iptables, and sets the
+# FORWARD policy to DROP; so a VM on a bridge zendiloOS made would not
+# reach the LAN. This keeps one jump in DOCKER-USER, the chain Docker keeps
+# for others' rules and never changes, to a chain of zendiloOS's that
+# accepts what comes in on one of its bridges and leaves on the same
+# (docs/architecture.md, 4.12). Run after every start of Docker (wanted by
+# it and part of it, so a restart runs it again), and by the agent after
+# every change of the bridges and as it starts; without Docker it does
+# nothing.
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/zendiloos/zendiloos-agent docker-bridges
+# iptables, as Docker runs it: netlink (iptables-nft) or a raw socket
+# (iptables-legacy), and its lock in /run.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/run
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=docker.service
