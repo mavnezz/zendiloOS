@@ -670,7 +670,9 @@ moved=$(jq '{name, cpus, memory_mib, firmware, disks: (.disks | map(.pool = "'"$
 # Kept as they are, sent back as GET shows them: no change of the hardware, the addresses kept.
 same=$(jq '{name, cpus, memory_mib, firmware, disks, nics: [.nics[] | {slot, model, network}], drives, boot, autostart}' <<<"$vmjson")
 [[ $(status PUT "/vms/$places_id" "$same") == 200 ]] || fail "the same settings: $(cat "$work/last")"
-[[ $(jq -c '[.nics[].mac]' "$work/last") == $(jq -c '[.nics[].mac]' <<<"$vmjson") ]] || fail "the cards' addresses changed"
+macs_after=$(jq -c '[.nics[] | [.slot, .mac]]' "$work/last")
+macs_before=$(jq -c '[.nics[] | [.slot, .mac]]' <<<"$vmjson")
+[[ $macs_after == "$macs_before" ]] || fail "the cards' addresses changed: $macs_before, then $macs_after"
 # The location holds its disk: it stays.
 code=$(status POST "/vms/locations/$second/delete" "$(jq -n --arg p "$second" '{confirm: $p}')")
 [[ $code == 409 ]] && jq -e --arg n "$places" '.code == "location_in_use" and (.detail | contains($n))' "$work/last" >/dev/null \
