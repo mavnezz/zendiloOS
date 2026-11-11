@@ -53,11 +53,15 @@ impl AuditReader for SqliteAuditLog {
             r#"SELECT id AS "id!", at, actor, client_ip, action, target, outcome, request_id, details
                FROM audit_log WHERE (?1 IS NULL OR id < ?1) AND (?3 IS NULL OR action = ?3)
                    AND (?4 IS NULL OR substr(action, 1, length(?4)) = ?4)
+                   AND (?5 IS NULL OR instr(lower(coalesce(actor, '') || ' ' || action || ' '
+                        || coalesce(target, '') || ' ' || coalesce(client_ip, '') || ' '
+                        || coalesce(details, '')), lower(?5)) > 0)
                ORDER BY id DESC LIMIT ?2"#,
             query.before,
             limit,
             query.action,
-            query.prefix
+            query.prefix,
+            query.search
         )
         .fetch_all(self.db.pool())
         .await
@@ -142,27 +146,67 @@ mod tests {
             audit.record(entry).await.unwrap();
         }
 
-        let first =
-            audit.read(&AuditQuery { limit: 2, before: None, action: None, prefix: None }).await.unwrap();
+        let first = audit
+            .read(&AuditQuery { limit: 2, before: None, action: None, prefix: None, search: None })
+            .await
+            .unwrap();
         let targets: Vec<_> = first.iter().map(|r| r.target.clone().unwrap()).collect();
         assert_eq!(targets, ["user5", "user4"]);
         let next = audit
-            .read(&AuditQuery { limit: 10, before: Some(first[1].id), action: None, prefix: None })
+            .read(&AuditQuery {
+                limit: 10,
+                before: Some(first[1].id),
+                action: None,
+                prefix: None,
+                search: None,
+            })
             .await
             .unwrap();
         let targets: Vec<_> = next.iter().map(|r| r.target.clone().unwrap()).collect();
         assert_eq!(targets, ["user3", "user2", "user1"]);
         assert_eq!(next[0].actor.as_deref(), Some("alice"));
         assert_eq!(next[0].reason, None);
-        let logins =
-            AuditQuery { limit: 10, before: None, action: Some("identity.login".to_owned()), prefix: None };
+        let logins = AuditQuery {
+            limit: 10,
+            before: None,
+            action: Some("identity.login".to_owned()),
+            prefix: None,
+            search: None,
+        };
         assert!(audit.read(&logins).await.unwrap().is_empty(), "only that action");
-        let identity =
-            AuditQuery { limit: 10, before: None, action: None, prefix: Some("identity.".to_owned()) };
+        let identity = AuditQuery {
+            limit: 10,
+            before: None,
+            action: None,
+            prefix: Some("identity.".to_owned()),
+            search: None,
+        };
         assert_eq!(audit.read(&identity).await.unwrap().len(), 5, "every action that starts so");
-        let other =
-            AuditQuery { limit: 10, before: None, action: None, prefix: Some("identity_".to_owned()) };
+        let other = AuditQuery {
+            limit: 10,
+            before: None,
+            action: None,
+            prefix: Some("identity_".to_owned()),
+            search: None,
+        };
         assert!(audit.read(&other).await.unwrap().is_empty(), "no wildcards");
+        let search = |text: &str| AuditQuery {
+            limit: 10,
+            before: None,
+            action: None,
+            prefix: Some("identity.".to_owned()),
+            search: Some(text.to_owned()),
+        };
+        let found = audit.read(&search("USER3")).await.unwrap();
+        assert_eq!(
+            found.iter().map(|r| r.target.clone().unwrap()).collect::<Vec<_>>(),
+            ["user3"],
+            "any case"
+        );
+        assert_eq!(audit.read(&search("Alice")).await.unwrap().len(), 5, "by who");
+        assert_eq!(audit.read(&search("account_create")).await.unwrap().len(), 5, "by what");
+        assert!(audit.read(&search("%")).await.unwrap().is_empty(), "no wildcards");
+        assert!(audit.read(&search("user9")).await.unwrap().is_empty());
         db.close().await;
     }
 }

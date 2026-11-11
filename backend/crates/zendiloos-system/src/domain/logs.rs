@@ -135,15 +135,45 @@ pub struct AuditQuery {
     pub action: Option<String>,
     /// Only records whose action starts so, such as `containers.`.
     pub prefix: Option<String>,
+    /// Only records whose actor, action, target, address or reason holds
+    /// this, whatever the case of ASCII letters.
+    pub search: Option<String>,
 }
 
 impl AuditQuery {
     pub const MAX_LIMIT: u16 = 500;
+    /// The longest search.
+    pub const MAX_SEARCH: usize = 100;
 }
+
+/// A search of the audit log as typed: trimmed, at most
+/// [`AuditQuery::MAX_SEARCH`] characters, no control characters; none if
+/// empty.
+pub fn audit_search(text: Option<&str>) -> Result<Option<String>, InvalidSearch> {
+    let Some(text) = text.map(str::trim).filter(|text| !text.is_empty()) else { return Ok(None) };
+    if text.chars().count() > AuditQuery::MAX_SEARCH || text.chars().any(char::is_control) {
+        return Err(InvalidSearch);
+    }
+    Ok(Some(text.to_owned()))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("a search has at most 100 characters and no control characters")]
+pub struct InvalidSearch;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_search_is_trimmed_and_bounded() {
+        assert_eq!(audit_search(None), Ok(None));
+        assert_eq!(audit_search(Some("  ")), Ok(None));
+        assert_eq!(audit_search(Some(" vms.create ")), Ok(Some("vms.create".into())));
+        assert_eq!(audit_search(Some(&"ä".repeat(100))).unwrap().unwrap().chars().count(), 100);
+        assert_eq!(audit_search(Some(&"x".repeat(101))), Err(InvalidSearch));
+        assert_eq!(audit_search(Some("a\nb")), Err(InvalidSearch));
+    }
 
     #[test]
     fn cursors_are_plain_ascii() {

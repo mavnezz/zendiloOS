@@ -7,8 +7,8 @@ mod time;
 mod web;
 
 pub use logs::{
-    AuditQuery, AuditRecord, InvalidCursor, JournalCursor, JournalEntry, JournalPage, JournalQuery,
-    LogPriority, LogSource,
+    AuditQuery, AuditRecord, InvalidCursor, InvalidSearch, JournalCursor, JournalEntry, JournalPage,
+    JournalQuery, LogPriority, LogSource, audit_search,
 };
 pub use metrics::{
     DiskRate, HISTORY_SAMPLES, InterfaceRate, MemoryUsage, MetricsHistory, MetricsSample, Temperature,
