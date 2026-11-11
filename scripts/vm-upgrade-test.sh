@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Upgrade test (docs/roadmap.md, M5): a machine set up with an older
+# Upgrade test (docs/testing.md): a machine set up with an older
 # package keeps its accounts, pool, share, files and passwords when a newer
 # package is installed over it, and works afterwards.
 #

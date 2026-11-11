@@ -13,7 +13,8 @@ _A NAS operating system on Debian, run from a desktop in the browser._
 [Download](https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-amd64-netinst.iso) ·
 [Releases](https://github.com/mavnezz/zendiloOS/releases) ·
 [Architecture](docs/architecture.md) ·
-[Roadmap](docs/roadmap.md)
+[Testing](docs/testing.md) ·
+[Issues](https://github.com/mavnezz/zendiloOS/issues)
 
 <img src="docs/images/desktop.jpg" alt="The zendiloOS desktop: the file explorer in a shared folder, widgets with the system's state">
 
@@ -21,6 +22,16 @@ _A NAS operating system on Debian, run from a desktop in the browser._
 
 > [!WARNING]
 > zendiloOS is young. Try it on hardware whose disks hold nothing you would miss.
+
+## Status
+
+zendiloOS is a preview. Every function is tested end to end in QEMU test
+machines with the real tools (ZFS, Samba, NFS, Docker, libvirt), but it has
+not yet run on real NAS hardware, and no Windows or macOS client has used
+its shares yet. Releases come often and may change how things behave; read
+the notes before you update. What is tested and how:
+[docs/testing.md](docs/testing.md). What is still to be done: the
+[issues](https://github.com/mavnezz/zendiloOS/issues).
 
 ## Why zendiloOS
 
@@ -40,6 +51,8 @@ hardened service that checks every request.
 - **App Center**: apps from the [community catalog](https://github.com/mavnezz/zendiloOS.community.applications) and others you add, installed as Docker projects of your own that you can edit; plugins for Docker and for certificates from Let's Encrypt
 - **Docker**: containers, images, networks and your own Compose projects, a page per container with its log and a terminal, image updates, with consent for whatever reaches beyond the container
 - **Docker volumes**: listed with the containers that use them; backed up into a shared folder daily, weekly or monthly, as many kept as you like, the containers stopped meanwhile; restored under their own name or into another volume, also once a volume was deleted; backups found in a folder taken over again
+- **Virtual machines** (preview): a plugin of the App Center; VMs with several disks and network cards, an image library, a console in the browser and their load live
+- **Network**: addresses per card with confirmation, bridges, bonds and VLANs; an installation of Debian with ifupdown taken over on request
 - **Updates**: Debian and zendiloOS in one place, signed releases from three channels (stable, test, development)
 - **Security**: two-factor sign-in, a firewall that covers Docker's published ports too, limits on failed logins, blocked addresses, sessions to end, SSH that switches itself off
 - **Notifications**: in the browser, by e-mail through one mail server and by webhook, chosen per kind
@@ -150,7 +163,7 @@ frontend/   Vue 3 interface; openapi.json and the TypeScript types are generated
 debian/     Debian packaging
 packaging/  systemd units, nginx, default configuration, build image, ISO answers
 scripts/    test VM, VM tests, release and ISO tools
-docs/       architecture, roadmap, releases
+docs/       architecture, testing, releases
 ```
 
 ## License
