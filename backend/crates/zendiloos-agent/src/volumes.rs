@@ -78,7 +78,7 @@ const MAX_COUNTED: u64 = 1_000_000;
 /// arguments seccomp cannot inspect, and `openat2()` is what keeps every
 /// unit's paths beneath their folders (a restore must give set-ID bits
 /// back anyway).
-const SANDBOX: [&str; 23] = [
+pub(crate) const SANDBOX: [&str; 23] = [
     "--property=NoNewPrivileges=yes",
     "--property=ProtectSystem=strict",
     "--property=ProtectHome=yes",

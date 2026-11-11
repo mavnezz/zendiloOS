@@ -46,6 +46,16 @@ const STATE_FILE: &str = "run.json";
 /// The last update's record, also once other runs came after it.
 const UPDATE_FILE: &str = "update.json";
 const LIMITS: Limits = Limits { timeout: Duration::from_secs(30), max_stdout: 64 * 1024 };
+/// What virtual machines need, and nothing more (see the task).
+const VMS_PACKAGES: [&str; 7] = [
+    "libvirt-daemon",
+    "libvirt-daemon-driver-qemu",
+    "libvirt-clients",
+    "qemu-system-x86",
+    "qemu-utils",
+    "ovmf",
+    "passt",
+];
 /// Lines of apt's output kept for a failure.
 const TAIL: usize = 15;
 /// The files of a release beside its package.
@@ -301,6 +311,20 @@ impl Debian {
                 lists(&mut step)?;
                 step("install")?;
                 self.apt(&["install", "--yes", "acme.sh"])
+            }
+            PackageTask::InstallVms => {
+                lists(&mut step)?;
+                step("install")?;
+                // Not libvirt-daemon-system: it depends on the packages
+                // that bring libvirt's default network (a bridge with
+                // dnsmasq and firewall rules of its own) and its network
+                // filters. zendiloOS has a firewall of its own (4.12); VMs
+                // reach the network through passt or a bridge of the
+                // machine's. Without recommended packages for the same
+                // reason: the daemon recommends every driver.
+                let mut args = vec!["install", "--yes", "--no-install-recommends"];
+                args.extend(VMS_PACKAGES);
+                self.apt(&args)
             }
             PackageTask::Check => {
                 lists(&mut step)?;
@@ -1023,10 +1047,22 @@ mod tests {
         let (paths, debian) = host(root.path());
         run_with(&paths, &debian, "ab01", "install-docker", None, None).unwrap();
         run_with(&paths, &debian, "ab02", "install-acme", None, None).unwrap();
+        run_with(&paths, &debian, "ab04", "install-vms", None, None).unwrap();
         let installs: Vec<String> =
             called(root.path()).into_iter().filter(|call| call.contains(" install ")).collect();
         assert!(installs[0].ends_with("install --yes docker.io docker-compose"), "{installs:?}");
         assert!(installs[1].ends_with("install --yes acme.sh"), "{installs:?}");
+        assert!(
+            installs[2].ends_with(
+                "install --yes --no-install-recommends libvirt-daemon libvirt-daemon-driver-qemu \
+                 libvirt-clients qemu-system-x86 qemu-utils ovmf passt"
+            ),
+            "{installs:?}"
+        );
+        // Never what brings libvirt's own network and filters along.
+        for unwanted in ["libvirt-daemon-system", "config-network", "driver-network", "nwfilter", "dnsmasq"] {
+            assert!(!installs[2].contains(unwanted), "{unwanted}: {installs:?}");
+        }
         assert!(!paths.packages.join(UPDATE_FILE).exists(), "no update");
 
         fs::write(root.path().join("apt-fails"), "").unwrap();

@@ -94,6 +94,14 @@ pub struct Tools {
     /// Checks the firewall's rules (`nft -c`), in a transient unit; the
     /// unit zendiloos-firewall.service puts them in force.
     pub nft: PathBuf,
+    /// libvirt's client, for virtual machines; may be missing until the
+    /// plugin is installed, as the two below.
+    pub virsh: PathBuf,
+    /// Only looked for: libvirt's daemon and the QEMU it runs.
+    pub libvirtd: PathBuf,
+    pub qemu: PathBuf,
+    /// Run in a transient unit: makes the folder of the VMs' consoles.
+    pub systemd_tmpfiles: PathBuf,
 }
 
 impl Default for Tools {
@@ -130,6 +138,10 @@ impl Default for Tools {
             nginx: PathBuf::from("/usr/sbin/nginx"),
             rm: PathBuf::from("/usr/bin/rm"),
             nft: PathBuf::from("/usr/sbin/nft"),
+            virsh: PathBuf::from("/usr/bin/virsh"),
+            libvirtd: PathBuf::from("/usr/sbin/libvirtd"),
+            qemu: PathBuf::from("/usr/bin/qemu-system-x86_64"),
+            systemd_tmpfiles: PathBuf::from("/usr/bin/systemd-tmpfiles"),
         }
     }
 }

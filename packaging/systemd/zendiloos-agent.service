@@ -77,6 +77,17 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 #   backup-volume, restore-volume or remove-volume-backup), outside this
 #   sandbox, each in a sandbox of its own that may write only the share or
 #   the volume's folder;
+# - virtual machines (a proof of concept): libvirt's daemon, outside this
+#   sandbox, runs QEMU and passt; the agent talks to it with virsh over
+#   its socket (AF_UNIX) and keeps each domain's XML in
+#   /etc/zendiloos/vms; a VM's disk is a zvol (/dev/zfs, as for pools);
+#   /dev/kvm, /proc/cpuinfo and /sys are only looked at. ISOs are copied
+#   from a share and removed again by transient units (systemd-run, this
+#   binary as copy-vm-iso, and rm) that may write only the VMs' folder; the
+#   consoles' folder is made by systemd-tmpfiles in one. A console is
+#   QEMU's VNC socket in /run/zendiloos-vms, opened without following a
+#   link and connected to (connecting needs no write access to /run), and
+#   handed to zendiloosd like a terminal's master;
 # The contents of volumes are the files agent's (zendiloos-files.service).
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_CHOWN CAP_DAC_READ_SEARCH

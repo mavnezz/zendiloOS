@@ -23,6 +23,7 @@ mod removable;
 mod services;
 mod ssh;
 mod time;
+mod vms;
 mod web;
 
 use std::fmt;
@@ -76,6 +77,11 @@ pub use ssh::{InvalidOffAfter, InvalidSshPort, OffAfter, RootLogin, SshConfig, S
 pub use time::{
     ClockTime, InvalidClockTime, InvalidTimeServer, InvalidTimeServers, InvalidTimeZone, MAX_TIME_SERVERS,
     TimeServer, TimeServers, TimeZone,
+};
+pub use vms::{
+    InvalidVmCpus, InvalidVmDiskSize, InvalidVmId, InvalidVmMemory, VM_CONSOLES, VM_DOMAIN_PREFIX,
+    VMS_DATASET, VMS_DIRECTORY, VmAction, VmCpus, VmDiskSize, VmFirmware, VmId, VmIsoSource, VmMemory,
+    VmNetwork, VmOs, VmSpec, VmStorage,
 };
 pub use web::TlsMinimum;
 
@@ -518,6 +524,55 @@ pub enum Request {
     SetWebTls {
         minimum: TlsMinimum,
     },
+    /// What the machine offers virtual machines: KVM, the CPU's
+    /// virtualisation, the IOMMU, whether libvirt and QEMU are installed,
+    /// cores, memory, bridges, and where the VMs' dataset is. Answers
+    /// [`Response::VmHost`].
+    VmHost {},
+    /// Puts the VMs' storage on a pool zendiloos created: the dataset
+    /// `<pool>/zendiloos.vms`, mounted at `/volume<N>/@vms`; libvirt starts
+    /// only with it mounted, and is enabled.
+    EnableVms {
+        pool: PoolName,
+        volume: VolumeNumber,
+    },
+    /// Copies an ISO from a share to `/volume<N>/@vms/isos/<id>.iso` in a
+    /// unit of its own (blocks cloned where the pool can), reporting how far
+    /// it is; QEMU only ever sees the copy.
+    CopyVmIso {
+        id: VmId,
+        volume: VolumeNumber,
+        source: VmIsoSource,
+    },
+    /// Makes the VM's disk (a sparse zvol) where missing and defines the
+    /// domain `zendiloos-<id>` from XML the agent builds from `spec`.
+    DefineVm {
+        spec: VmSpec,
+    },
+    /// libvirt starts the VM with the machine, or not.
+    SetVmAutostart {
+        id: VmId,
+        autostart: bool,
+    },
+    ControlVm {
+        id: VmId,
+        action: VmAction,
+    },
+    /// Powers the VM off if it runs, undefines it, and destroys its disks
+    /// and the copy of its ISO.
+    DeleteVm {
+        id: VmId,
+        pool: PoolName,
+        volume: VolumeNumber,
+    },
+    /// `virsh list --all`: every domain and its state. Answers
+    /// [`Response::VmStates`].
+    VmStates {},
+    /// Connects to a running VM's console, VNC on a Unix socket, and
+    /// answers [`Response::VmConsole`] with the connected socket.
+    OpenVmConsole {
+        id: VmId,
+    },
     /// Whether acme.sh is installed. Answers [`Response::AcmeState`].
     AcmeState {},
     /// Issues a certificate (again) with acme.sh, which runs in a unit of
@@ -867,6 +922,15 @@ impl Request {
             Request::DestroySnapshot { .. } => "destroy_snapshot",
             Request::RollbackSnapshot { .. } => "rollback_snapshot",
             Request::DockerState {} => "docker_state",
+            Request::VmHost {} => "vm_host",
+            Request::EnableVms { .. } => "enable_vms",
+            Request::CopyVmIso { .. } => "copy_vm_iso",
+            Request::DefineVm { .. } => "define_vm",
+            Request::SetVmAutostart { .. } => "set_vm_autostart",
+            Request::ControlVm { .. } => "control_vm",
+            Request::DeleteVm { .. } => "delete_vm",
+            Request::VmStates {} => "vm_states",
+            Request::OpenVmConsole { .. } => "open_vm_console",
             Request::EnableDocker { .. } => "enable_docker",
             Request::MoveDocker { .. } => "move_docker",
             Request::StartApp { .. } => "start_app",
@@ -1107,6 +1171,31 @@ pub enum Response {
         /// The settings file zendiloOS wrote; empty if none.
         config: String,
     },
+    VmHost {
+        /// `/dev/kvm` is there: the kernel's KVM module is loaded.
+        kvm: bool,
+        /// The CPU's virtualisation as `/proc/cpuinfo` names it: `vmx`
+        /// (Intel VT-x) or `svm` (AMD-V); none if it has neither.
+        cpu_virtualization: Option<String>,
+        /// An IOMMU is on (`/sys/class/iommu` lists one).
+        iommu: bool,
+        /// libvirt's daemon, `virsh` and QEMU are installed.
+        installed: bool,
+        /// The machine's CPUs (threads) and memory.
+        cores: u32,
+        memory_bytes: u64,
+        /// Linux bridges of the machine's own, not Docker's nor libvirt's.
+        bridges: Vec<InterfaceName>,
+        /// Where the VMs' dataset is, once set up.
+        storage: Option<VmStorage>,
+    },
+    VmStates {
+        /// What `virsh list --all` printed.
+        virsh_list: String,
+    },
+    /// A VM's console was opened; the connected socket comes along
+    /// ([`Request::OpenVmConsole`]).
+    VmConsole {},
     AcmeState {
         /// acme.sh is installed.
         installed: bool,
@@ -1417,6 +1506,9 @@ impl Request {
             | Request::ArchiveFolder { .. }
             // Restarts Docker.
             | Request::EnableDocker { .. }
+            // An ISO of gigabytes copied; a VM's disks destroyed.
+            | Request::CopyVmIso { .. }
+            | Request::DeleteVm { .. }
             | Request::MoveDocker { .. }
             // Fetch images, start or stop containers.
             | Request::StartApp { .. }

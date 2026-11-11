@@ -9,7 +9,7 @@ use tokio::signal::unix::{SignalKind, signal};
 use zendiloos_agent::config::Config;
 use zendiloos_agent::{
     HostPaths, Operations, Server, VolumeJob, lower_file_overrides, passwd, pin_project, pin_shares,
-    power_off_drive, run_packages, run_volume_job, serve, unpin_project, unpin_shares,
+    power_off_drive, run_iso_job, run_packages, run_volume_job, serve, unpin_project, unpin_shares,
 };
 use zendiloos_agent_proto::{AppName, DiskName, ProjectName, Role};
 
@@ -58,6 +58,8 @@ enum Command {
     SweepVolumes { job: String },
     /// Look for backups of Docker volumes in a folder of a share, to record them again (likewise)
     ScanVolumeBackups { job: String },
+    /// Copy an ISO from a share for a virtual machine (likewise)
+    CopyVmIso { job: String },
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -111,6 +113,14 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         return Ok(());
     }
+    if let Some(Command::CopyVmIso { job }) = &cli.command {
+        let job = job.clone();
+        let done = tokio::task::spawn_blocking(move || run_iso_job(&job, &mut std::io::stdout())).await?;
+        if !done {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if let Some(Command::PowerOffDrive { disk }) = &cli.command {
         let name = DiskName::parse(disk).map_err(|_| anyhow::anyhow!("{disk:?} is no disk"))?;
         power_off_drive(&HostPaths::default(), &name).map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -136,7 +146,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             | Command::SwapVolume { .. }
             | Command::RemoveVolumeBackup { .. }
             | Command::SweepVolumes { .. }
-            | Command::ScanVolumeBackups { .. } => unreachable!("handled above"),
+            | Command::ScanVolumeBackups { .. }
+            | Command::CopyVmIso { .. } => unreachable!("handled above"),
         };
         outcome.map_err(|error| anyhow::anyhow!("{name}: {error}"))?;
         println!("{name}: folders of shares {done}");

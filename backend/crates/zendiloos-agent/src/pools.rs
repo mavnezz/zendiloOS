@@ -302,6 +302,11 @@ impl Pools {
         if docker_root.is_some_and(|root| root.starts_with(&mount_point)) {
             return Err(refused("Docker's data lies on this pool: move it to another pool first".to_owned()));
         }
+        // libvirt would wait for the mount for ever, and the VMs' disks go
+        // with the pool.
+        if self.paths.units.join(crate::vms::vms_unit_name(volume)).exists() {
+            return Err(refused("the virtual machines' storage lies on this pool".to_owned()));
+        }
 
         // The shares' mounts first, then the volume's: all are stopped
         // before anything is removed, so one that is busy leaves everything
@@ -704,6 +709,74 @@ impl Pools {
         write_file(&self.paths.docker_config, &format!("{text}\n"))?;
         run(&self.systemctl, &["daemon-reload"]).await?;
         Ok(())
+    }
+
+    /// Puts the virtual machines' storage on the pool: the dataset
+    /// `<pool>/zendiloos.vms` (its zvols are the VMs' disks, its folder
+    /// holds the copies of their ISOs), its mount unit, and a drop-in so
+    /// libvirt starts only with it mounted. Refused while it is on another
+    /// pool.
+    pub(crate) async fn enable_vms(
+        &self,
+        pool: &PoolName,
+        volume: VolumeNumber,
+    ) -> Result<(), OperationError> {
+        use zendiloos_agent_proto::{VMS_DATASET, VMS_DIRECTORY};
+
+        let _serial = crate::waiting::lock(&self.serial).await?;
+        self.require_managed(pool, Some(volume)).await?;
+        let unit = crate::vms::vms_unit_name(volume);
+        let elsewhere = fs::read_dir(&self.paths.units)
+            .map_err(|e| OperationError::Read(self.paths.units.clone(), e))?
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .any(|name| name.ends_with("-\\x40vms.mount") && name != unit);
+        if elsewhere {
+            return Err(refused("the virtual machines' storage is on another pool already".into()));
+        }
+        let dataset = format!("{}/{VMS_DATASET}", pool.as_str());
+        let existing = output(&self.zfs, &["list", "-H", "-o", "name", "-d", "1", pool.as_str()]).await?;
+        if !existing.lines().any(|line| line == dataset) {
+            let options = [
+                "create",
+                "-o",
+                "mountpoint=legacy",
+                "-o",
+                "setuid=off",
+                "-o",
+                "devices=off",
+                "-o",
+                "exec=off",
+            ];
+            run(&self.zfs, &[&options[..], &[dataset.as_str()]].concat()).await?;
+        }
+        let root = format!("/volume{}/{VMS_DIRECTORY}", volume.get());
+        let content = format!(
+            "# Created by zendiloOS: the virtual machines' disks and ISOs on pool {pool}.\n\
+             [Unit]\n\
+             Description=zendiloOS: the virtual machines' storage (ZFS dataset {dataset})\n\
+             Requires=zfs-import.target\n\
+             After=zfs-import.target\n\
+             Before=libvirtd.service\n\
+             \n\
+             [Mount]\n\
+             What={dataset}\n\
+             Where={root}\n\
+             Type=zfs\n\
+             \n\
+             [Install]\n\
+             WantedBy=multi-user.target\n",
+            pool = pool.as_str(),
+        );
+        self.install_unit(&unit, &content).await?;
+        let drop_in = self.paths.units.join("libvirtd.service.d");
+        fs::create_dir_all(&drop_in).map_err(|e| OperationError::Write(drop_in.clone(), e))?;
+        let requires = format!(
+            "# Written by zendiloOS: the virtual machines' storage is on a pool; without it, libvirt waits.\n\
+             [Unit]\nRequiresMountsFor={root}\n"
+        );
+        write_file(&drop_in.join("zendiloos.conf"), &requires)?;
+        run(&self.systemctl, &["daemon-reload"]).await
     }
 
     /// Moves Docker's data from one pool to another: stopped, copied with

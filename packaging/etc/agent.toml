@@ -28,6 +28,11 @@
 #timedatectl = "/usr/bin/timedatectl"
 #sshd = "/usr/sbin/sshd"
 #systemd_run = "/usr/bin/systemd-run"
+# Virtual machines, once the App Center's plugin installed them:
+#virsh = "/usr/bin/virsh"
+#libvirtd = "/usr/sbin/libvirtd"
+#qemu = "/usr/bin/qemu-system-x86_64"
+#systemd_tmpfiles = "/usr/bin/systemd-tmpfiles"
 
 #[storage]
 # Which disks may be erased to create a pool or replace a disk: "unused"
