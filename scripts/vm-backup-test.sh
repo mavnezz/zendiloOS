@@ -2,8 +2,8 @@
 # Backup tasks end to end in the second test VM, through the HTTPS API,
 # with rsync, sshd and the files themselves looked at inside the VM:
 #
-#   1. the plugin installs (rsync and the SSH client, as a job); a second
-#      install is refused
+#   1. the plugin installs (rsync, the SSH client and rclone, as a job); a
+#      second install is refused
 #   2. a share on one pool (apps) is backed up to a share on the other
 #      (tank) as a mirror: the same bytes, *.tmp left out, links out of the
 #      source (to /etc, to a file of root's) neither followed nor copied,
@@ -26,6 +26,15 @@
 #      absolute link left out, nothing written outside the target
 #   7. the first version restored into another folder: the same bytes as
 #      then; restoring again keeps (skip) or replaces what is there
+#   8. an encrypted backup with rclone (its crypt over a share's folder):
+#      the password never in ps nor sent back, neither a name nor a file's
+#      contents in plain text in the target (versions' names included);
+#      two versions listed and browsed decrypted; the older one restored
+#      with the same bytes as the source then, into the share's group; the
+#      password cannot be changed afterwards
+#
+# Google Drive and OneDrive themselves are not reached here: their
+# sign-in and rclone's backends are tested against fakes only.
 #
 # Needs the VM running (with the monitor, for the drive: restart it once if
 # removable-attach says so), the package installed and set up with the
@@ -184,8 +193,8 @@ done
 say "Cleaning up an earlier run"
 clean
 
-say "1. The plugin installs rsync and the SSH client as a job"
-if [[ $(call GET /backup/plugin | jq -r .installed) != true ]]; then
+say "1. The plugin installs rsync, the SSH client and rclone as a job"
+if [[ $(call GET /backup/plugin | jq -r '.installed and .rclone') != true ]]; then
     [[ $(status POST /backup/plugin/install) == 202 ]] || fail "install: $(cat "$work/last")"
     job_succeeded "$(jq -r .id "$work/last")" 1800
     ok "installed"
@@ -195,10 +204,10 @@ fi
 [[ $(status POST /backup/plugin/install) == 409 ]] && jq -e '.code == "backup_installed"' "$work/last" >/dev/null \
     || fail "a second install was not refused: $(cat "$work/last")"
 ok "a second install is refused"
-for package in rsync openssh-client; do
+for package in rsync openssh-client rclone; do
     vm "dpkg-query -W -f='\${Status}' $package 2>/dev/null | grep -q 'install ok installed'" || fail "$package is not installed"
 done
-ok "rsync and openssh-client are installed"
+ok "rsync, openssh-client and rclone are installed"
 
 say "2. A share on $src_pool backed up to a share on $dst_pool as a mirror"
 for pair in "$src_share:$src_pool" "$dst_share:$dst_pool"; do
@@ -451,5 +460,76 @@ replace=$(jq '.existing = "replace" | .paths = ["docs/notes.txt"]' <<<"$restore"
 job_succeeded "$(call POST "/backup/tasks/$versioned/restore" "$replace" | jq -r .id)"
 [[ $(sums "$dst/restored/docs") == "$(sums "$folder/$older_name/docs")" ]] || fail "replace did not replace"
 ok "a restore again keeps (skip) or replaces what is there, as asked"
+
+say "8. An encrypted backup with rclone, restored and decrypted"
+crypt_password="ztest-crypt-$(head -c 9 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+crypt_salt="ztest-salt-$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+plain="ZTEST-PLAIN-$RANDOM$RANDOM"
+vm "echo $plain | sudo tee \"$src/docs/plain.txt\" >/dev/null"
+before=$(sums "$src" '\.tmp$')
+encrypted=$(make_task "$(jq -n --argjson s "$src_id" --argjson d "$dst_id" --arg pw "$crypt_password" --arg salt "$crypt_salt" '{
+    name: "ztest encrypted", source: {kind: "share", share_id: $s, path: ""},
+    target: {kind: "share", share_id: $d, path: ""},
+    mode: {kind: "versioned", keep_last: 3, keep_days: null}, excludes: ["*.tmp"], hidden: true,
+    encrypted: true, crypt_password: $pw, crypt_salt: $salt}')")
+shown=$(call GET "/backup/tasks/$encrypted")
+grep -qF -e "$crypt_password" -e "$crypt_salt" <<<"$shown" && fail "the API sent the crypt's password back"
+[[ $(jq -r .encrypted <<<"$shown") == true ]] || fail "the task is not encrypted: $shown"
+ok "the crypt's password and salt are stored, never sent back"
+[[ $(status POST "/backup/tasks/$encrypted/run") == 202 ]] || fail "the encrypted run: $(cat "$work/last")"
+crypt_job=$(jq -r .id "$work/last")
+seen=0
+for _ in $(seq 1 60); do
+    [[ $(call GET "/jobs/$crypt_job" | jq -r .state) == running ]] || break
+    vm "ps -eo args" >>"$work/ps-crypt"
+    vm "sudo systemctl show 'zendiloos-backup-run-$encrypted.service' 2>/dev/null" >>"$work/ps-crypt"
+    seen=$((seen + 1))
+    sleep 0.3
+done
+state=$(job_end "$crypt_job")
+[[ $state == succeeded* ]] || fail "the encrypted run: $state"
+grep -qF -e "$crypt_password" -e "$crypt_salt" "$work/ps-crypt" && fail "the crypt's password showed in ps or the unit's properties"
+grep -q 'rclone' "$work/ps-crypt" || note "rclone itself was not seen in ps ($seen looks)"
+ok "the crypt's password never showed in ps or the unit's properties ($seen looks)"
+enc="$dst/ztest encrypted"
+stored=$(vm "sudo find \"$enc\" -mindepth 1 -printf '%P\n'")
+[[ -n $stored ]] || fail "the encrypted target is empty"
+for name in albums docs notes.txt beach.raw "2024 summer" plain.txt current .zendiloos-backup; do
+    grep -qF -- "$name" <<<"$stored" && fail "the name $name shows in the encrypted target"
+done
+grep -qE '[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}Z' <<<"$stored" && fail "a version's name shows in the encrypted target"
+vm "sudo grep -rqsF '$plain' \"$enc\"" && fail "a file's contents show in the encrypted target"
+vm "sudo grep -rqsF 'v2, longer now' \"$enc\"" && fail "a file's contents show in the encrypted target"
+ok "the target holds no name and no contents in plain text, versions' names included"
+vm "echo 'v3, encrypted' | sudo tee \"$src/docs/notes.txt\" >/dev/null"
+sleep 2
+run_succeeds "$encrypted"
+versions=$(call GET "/backup/tasks/$encrypted/versions")
+[[ $(jq '.versions | length' <<<"$versions") == 2 ]] || fail "through the crypt the API lists: $versions"
+newest=$(jq -r '.versions[0]' <<<"$versions")
+oldest=$(jq -r '.versions | last' <<<"$versions")
+browsed=$(call GET "/backup/tasks/$encrypted/browse?version=$newest&path=docs")
+jq -e 'map(.name) | index("notes.txt")' <<<"$browsed" >/dev/null || fail "browsing the newest version: $browsed"
+ok "two versions, listed and browsed decrypted"
+restore=$(jq -n --argjson v "$oldest" --argjson d "$dst_id" '{version: $v, paths: [], existing: "replace",
+    to: {kind: "share", share_id: $d, path: "decrypted"}}')
+[[ $(status POST "/backup/tasks/$encrypted/restore" "$restore") == 202 ]] || fail "restore: $(cat "$work/last")"
+job_succeeded "$(jq -r .id "$work/last")"
+[[ $(sums "$dst/decrypted") == "$before" ]] || fail "the decrypted files differ from the source as it was"
+ok "the older version restored and decrypted: the same bytes as the source then"
+group=$(vm "stat -c %G \"$dst/decrypted/docs/notes.txt\"")
+[[ $group == zendiloos-files ]] || fail "a decrypted file's group is $group"
+ok "decrypted files take the share's group"
+some=$(jq -n --argjson v "$newest" --argjson d "$dst_id" '{version: $v, paths: ["docs"], existing: "replace",
+    to: {kind: "share", share_id: $d, path: "decrypted-docs"}}')
+job_succeeded "$(call POST "/backup/tasks/$encrypted/restore" "$some" | jq -r .id)"
+[[ $(sums "$dst/decrypted-docs") == "$(sums "$src" '\.tmp$' | grep ' ./docs/')" ]] \
+    || fail "the restored folder differs from the source's"
+vm "sudo test ! -e \"$dst/decrypted-docs/albums\"" || fail "more than the folder asked for was restored"
+ok "one folder of the newest version restored alone"
+again=$(jq --arg pw "another-password" '{name, source, target, server, mode, schedule, on_plug, excludes, hidden,
+    bwlimit_kib, notify_success, encrypted, crypt_password: $pw}' <<<"$shown")
+[[ $(status PUT "/backup/tasks/$encrypted" "$again") == 422 ]] || fail "the crypt's password changed: $(cat "$work/last")"
+ok "the crypt's password cannot be changed afterwards"
 
 say "All backup checks passed"
