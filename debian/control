@@ -1,7 +1,7 @@
 Source: zendiloos
 Section: admin
 Priority: optional
-Maintainer: zendiloOS <julian@stuch.info>
+Maintainer: zendiloOS <github.com@stuch.me>
 Build-Depends: debhelper-compat (= 13), dh-sequence-installsysusers
 Standards-Version: 4.7.2
 Rules-Requires-Root: no

@@ -51,13 +51,13 @@ zendiloos (0.2.0) unstable; urgency=medium
     - an ACME client for Let's Encrypt
   * Two-factor sign-in.
 
- -- zendiloOS <julian@stuch.info>  Sun, 08 Nov 2026 11:13:07 +0000
+ -- zendiloOS <github.com@stuch.me>  Sun, 08 Nov 2026 11:13:07 +0000
 
 zendiloos (0.1.0) unstable; urgency=medium
 
   * Initial package.
 
- -- zendiloOS <julian@stuch.info>  Thu, 05 Nov 2026 12:00:00 +0100
+ -- zendiloOS <github.com@stuch.me>  Thu, 05 Nov 2026 12:00:00 +0100
 EOF
 entry='- A file explorer replaces the Shares app: folders on a volume with their own permissions, shared over SMB and NFS when asked.
 - Plugins, installed from the App Center:
