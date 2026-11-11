@@ -359,6 +359,16 @@ describe('the network', () => {
     await type('#net-ipv6', 'off')
     expect(page()).toContain(t('network.change.switchedOff'))
     expect(document.querySelector('#net-dns')).toBeNull()
+    // No button switches a card off at once: applying asks first.
+    expect(document.body.textContent).not.toContain(t('network.change.switchOff'))
+    await submit('[role="dialog"] form')
+    expect(page()).toContain(t('network.change.offQuestion', { name: 'eth1' }))
+    expect(called('PUT', '/api/v1/network/interfaces/eth1')).toHaveLength(0)
+    // Going back asks again next time.
+    await click(t('desktop.back'))
+    expect(page()).not.toContain(t('network.change.offQuestion', { name: 'eth1' }))
+    await submit('[role="dialog"] form')
+    expect(called('PUT', '/api/v1/network/interfaces/eth1')).toHaveLength(0)
     await click(t('network.change.switchOff'))
     expect(called('PUT', '/api/v1/network/interfaces/eth1')[0]?.body).toEqual({
       ipv4: { mode: 'off' },

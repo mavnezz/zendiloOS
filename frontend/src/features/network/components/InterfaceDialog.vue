@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { TriangleAlert } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -45,6 +46,12 @@ const saving = ref(false)
 const switchingOn = computed(() => !!props.item && props.item.addresses.length === 0)
 /** Neither IPv4 nor IPv6: the interface is switched off. */
 const off = computed(() => form.value.mode === 'off' && form.value.ipv6 === 'off')
+/**
+ * Switching a card off is asked again: if the NAS is reached through it, it
+ * is not any more until the old settings return.
+ */
+const confirmingOff = ref(false)
+watch(form, () => (confirmingOff.value = false), { deep: true })
 
 // Starts from how the interface is set up now; one without any address
 // starts with DHCP and IPv6, to be switched on.
@@ -108,8 +115,13 @@ async function send(settings: InterfaceSettingsInput): Promise<void> {
   }
 }
 
-const apply = () => send(body())
-const switchOff = () => send({ ipv4: { mode: 'off' }, ipv6: 'off', dns: [] })
+function apply(): void {
+  if (off.value && !confirmingOff.value) {
+    confirmingOff.value = true
+    return
+  }
+  void send(body())
+}
 
 const select = 'h-9 w-full rounded-md border bg-background px-3 text-sm'
 </script>
@@ -164,20 +176,28 @@ const select = 'h-9 w-full rounded-md border bg-background px-3 text-sm'
           <option value="off">{{ t('network.change.ipv6Off') }}</option>
         </select>
       </div>
-      <p v-if="off" class="text-sm text-muted-foreground" role="status">
+      <p v-if="off && !confirmingOff" class="text-sm text-muted-foreground" role="status">
         {{ t('network.change.switchedOff') }}
       </p>
+      <Alert v-if="confirmingOff" variant="destructive" role="alert">
+        <TriangleAlert />
+        <div class="grid gap-1">
+          <p class="font-medium">
+            {{ t('network.change.offQuestion', { name: item?.name ?? '' }) }}
+          </p>
+          <p>{{ t('network.change.offWarning') }}</p>
+        </div>
+      </Alert>
       <div class="flex justify-end gap-2">
-        <Button
-          v-if="!switchingOn"
-          type="button"
-          variant="outline"
-          :disabled="saving"
-          @click="switchOff"
-        >
-          {{ t('network.change.switchOff') }}
-        </Button>
-        <Button type="submit" :disabled="saving">{{ t('network.change.apply') }}</Button>
+        <template v-if="confirmingOff">
+          <Button type="button" variant="outline" :disabled="saving" @click="confirmingOff = false">
+            {{ t('desktop.back') }}
+          </Button>
+          <Button type="submit" variant="destructive" :disabled="saving">
+            {{ t('network.change.switchOff') }}
+          </Button>
+        </template>
+        <Button v-else type="submit" :disabled="saving">{{ t('network.change.apply') }}</Button>
       </div>
     </form>
   </ModalDialog>

@@ -1687,6 +1687,9 @@ const de: Messages = {
       ipv6Automatic: 'Automatisch',
       ipv6Off: 'Aus',
       switchedOff: 'Ohne IPv4 und IPv6 ist die Schnittstelle ausgeschaltet.',
+      offQuestion: '{name} wirklich ausschalten?',
+      offWarning:
+        'Sie hat danach keine Adresse. Erreichen Sie den NAS über sie, antwortet diese Seite nicht mehr; unbestätigt kehren die alten Einstellungen nach zwei Minuten zurück.',
       switchOff: 'Ausschalten',
       apply: 'Anwenden',
     },
