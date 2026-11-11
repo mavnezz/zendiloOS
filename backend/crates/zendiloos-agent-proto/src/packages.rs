@@ -18,6 +18,9 @@ pub enum PackageTask {
     /// packages, so libvirt's own network (a bridge, dnsmasq and firewall
     /// rules) and its network filters never come along.
     InstallVms,
+    /// rsync and the SSH client from Debian, for backup tasks; without
+    /// recommended packages.
+    InstallBackup,
     /// `systemd-resolved` from Debian, for taking the network over from
     /// ifupdown (systemd-networkd comes with `systemd`). The network stays
     /// as it was: installing it switches `/etc/resolv.conf` to it, which
@@ -35,10 +38,11 @@ pub enum PackageTask {
 }
 
 impl PackageTask {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::InstallDocker,
         Self::InstallAcme,
         Self::InstallVms,
+        Self::InstallBackup,
         Self::InstallNetworkd,
         Self::Check,
         Self::Update,
@@ -51,6 +55,7 @@ impl PackageTask {
             Self::InstallDocker => "install-docker",
             Self::InstallAcme => "install-acme",
             Self::InstallVms => "install-vms",
+            Self::InstallBackup => "install-backup",
             Self::InstallNetworkd => "install-networkd",
             Self::Check => "check",
             Self::Update => "update",

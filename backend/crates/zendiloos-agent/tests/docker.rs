@@ -102,6 +102,10 @@ esac
             libvirtd: "/bin/false".into(),
             qemu: "/bin/false".into(),
             systemd_tmpfiles: "/bin/false".into(),
+            rsync: "/bin/false".into(),
+            ssh: "/bin/false".into(),
+            ssh_keygen: "/bin/false".into(),
+            ssh_keyscan: "/bin/false".into(),
             dockerd: any,
         };
         let host = HostPaths {

@@ -11,6 +11,7 @@
 
 mod acme;
 mod apps;
+mod backup;
 mod client;
 mod descriptor;
 mod docker;
@@ -38,6 +39,15 @@ pub use acme::{
 };
 pub use apps::{
     AppFolder, AppName, DevicePath, InvalidAppFolder, InvalidAppName, InvalidDevicePath, MAX_LOG_LINES,
+};
+pub use backup::{
+    BACKUP_EXCLUDES_MAX, BACKUP_HOST_KEY_CHANGED, BACKUP_KEY, BACKUP_PRUNE_MAX, BACKUP_RESTORE_PATHS_MAX,
+    BACKUP_STATE, BackupEnd, BackupExisting, BackupFolder, BackupHostKey, BackupHostName, BackupMode,
+    BackupPassword, BackupPattern, BackupPruned, BackupRemotePath, BackupRestore, BackupRoot, BackupRun,
+    BackupServer, BackupStamp, BackupTaskId, BackupTransport, BackupWord, InvalidBackupFolder,
+    InvalidBackupHostKey, InvalidBackupHostName, InvalidBackupPassword, InvalidBackupPattern,
+    InvalidBackupPruned, InvalidBackupRemotePath, InvalidBackupStamp, InvalidBackupTaskId, InvalidBackupWord,
+    is_stamp,
 };
 pub use client::{AgentTransport, Report, TransportError, UnixTransport};
 pub use descriptor::{MessageReader, read_message_with_file, write_message_with_file};
@@ -658,6 +668,54 @@ pub enum Request {
     OpenVmConsole {
         id: VmId,
     },
+    /// Whether rsync and the SSH client are installed, and the NAS's
+    /// public key for SSH servers once made. Answers
+    /// [`Response::BackupFacts`].
+    BackupFacts {},
+    /// Makes the NAS's key pair for SSH servers (ed25519) in
+    /// [`BACKUP_STATE`], root's alone, if it has none; in a unit of its own.
+    /// Answers [`Response::BackupKey`].
+    MakeBackupKey {},
+    /// The host keys an SSH server offers (`ssh-keyscan`, in a unit with
+    /// the network and nothing else). Answers [`Response::BackupHostKeys`].
+    ScanBackupHostKeys {
+        host: BackupHostName,
+        port: u16,
+    },
+    /// What a folder holds, one level (`rsync --list-only`, in a unit of
+    /// its own that may only read it). Answers [`Response::BackupListing`].
+    ListBackup {
+        at: BackupEnd,
+        #[serde(default)]
+        password: Option<BackupPassword>,
+    },
+    /// Runs a task's backup with rsync in a unit of its own that reads only
+    /// the source and writes only the target, with the network only for a
+    /// server; reporting how far. Answers [`Response::BackupRan`].
+    RunBackup {
+        run: BackupRun,
+        #[serde(default)]
+        password: Option<BackupPassword>,
+    },
+    /// Stops a task's run (its unit); none running is no failure.
+    StopBackup {
+        task: BackupTaskId,
+    },
+    /// Removes versions (and kept changes) from a task's folder `at`.
+    PruneBackup {
+        task: BackupTaskId,
+        at: BackupEnd,
+        names: Vec<BackupPruned>,
+        #[serde(default)]
+        password: Option<BackupPassword>,
+    },
+    /// Restores from a task's backup into a folder of the NAS, in a unit of
+    /// its own. Answers [`Response::BackupRestored`].
+    RestoreBackup {
+        restore: BackupRestore,
+        #[serde(default)]
+        password: Option<BackupPassword>,
+    },
     /// Whether acme.sh is installed. Answers [`Response::AcmeState`].
     AcmeState {},
     /// Issues a certificate (again) with acme.sh, which runs in a unit of
@@ -1026,6 +1084,14 @@ impl Request {
             Request::VmStates {} => "vm_states",
             Request::VmStats {} => "vm_stats",
             Request::OpenVmConsole { .. } => "open_vm_console",
+            Request::BackupFacts {} => "backup_facts",
+            Request::MakeBackupKey {} => "make_backup_key",
+            Request::ScanBackupHostKeys { .. } => "scan_backup_host_keys",
+            Request::ListBackup { .. } => "list_backup",
+            Request::RunBackup { .. } => "run_backup",
+            Request::StopBackup { .. } => "stop_backup",
+            Request::PruneBackup { .. } => "prune_backup",
+            Request::RestoreBackup { .. } => "restore_backup",
             Request::EnableDocker { .. } => "enable_docker",
             Request::MoveDocker { .. } => "move_docker",
             Request::StartApp { .. } => "start_app",
@@ -1336,6 +1402,43 @@ pub enum Response {
     /// A VM's console was opened; the connected socket comes along
     /// ([`Request::OpenVmConsole`]).
     VmConsole {},
+    BackupFacts {
+        rsync: bool,
+        /// The SSH client and `ssh-keygen`.
+        ssh: bool,
+        /// `id_ed25519.pub`, once made.
+        public_key: Option<String>,
+    },
+    BackupKey {
+        public_key: String,
+    },
+    BackupHostKeys {
+        /// What `ssh-keyscan` printed.
+        keyscan: String,
+    },
+    BackupListing {
+        /// What `rsync --list-only` printed.
+        listing: String,
+        /// The folder is not there.
+        missing: bool,
+    },
+    BackupRan {
+        files: u64,
+        bytes: u64,
+        /// What rsync could not read or found gone (its exit 23 or 24): the
+        /// backup is complete but for it.
+        partial: Option<String>,
+        /// rsync's itemized changes, the first of them.
+        transfers: Vec<String>,
+        transfers_total: u64,
+        /// The task's folder after the run, as `rsync --list-only` prints it.
+        listing: String,
+    },
+    BackupRestored {
+        files: u64,
+        bytes: u64,
+        partial: Option<String>,
+    },
     AcmeState {
         /// acme.sh is installed.
         installed: bool,
@@ -1674,6 +1777,10 @@ impl Request {
             | Request::RestoreVolume { .. }
             | Request::EndVolumeWork { .. }
             | Request::ScanVolumeBackups { .. }
+            // A backup, a restore or retention: up to a day.
+            | Request::RunBackup { .. }
+            | Request::RestoreBackup { .. }
+            | Request::PruneBackup { .. }
             | Request::ControlProject { .. }
             // The ACME server checks the names: up to minutes with DNS.
             | Request::IssueCertificate { .. }
@@ -1779,6 +1886,17 @@ impl Request {
                 | Request::ListDirectory { .. }
                 | Request::SearchFiles { .. }
                 | Request::EntryFacts { .. }
+        )
+    }
+
+    /// A backup task's run, restore or retention: up to a day in units of
+    /// their own, in places of their own, so tasks never keep the long
+    /// places (deploys, pulls, drives, pools) or the volumes' backups
+    /// waiting.
+    pub fn is_backup_work(&self) -> bool {
+        matches!(
+            self,
+            Request::RunBackup { .. } | Request::RestoreBackup { .. } | Request::PruneBackup { .. }
         )
     }
 

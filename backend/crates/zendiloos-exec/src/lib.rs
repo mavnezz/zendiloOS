@@ -238,6 +238,38 @@ where
     I: IntoIterator<Item = A>,
     A: AsRef<OsStr>,
 {
+    lines_inner(program, args, None, surroundings, limits, line).await
+}
+
+/// Like [`run_lines`], but writes `input` to the program's stdin and closes
+/// it: secrets a program reads there never show on a command line.
+pub async fn run_lines_with_input<I, A>(
+    program: &Program,
+    args: I,
+    input: &[u8],
+    surroundings: &Surroundings<'_>,
+    limits: Limits,
+    line: &mut (dyn FnMut(&str) + Send),
+) -> Result<Output, ExecError>
+where
+    I: IntoIterator<Item = A>,
+    A: AsRef<OsStr>,
+{
+    lines_inner(program, args, Some(input), surroundings, limits, line).await
+}
+
+async fn lines_inner<I, A>(
+    program: &Program,
+    args: I,
+    input: Option<&[u8]>,
+    surroundings: &Surroundings<'_>,
+    limits: Limits,
+    line: &mut (dyn FnMut(&str) + Send),
+) -> Result<Output, ExecError>
+where
+    I: IntoIterator<Item = A>,
+    A: AsRef<OsStr>,
+{
     let name = program.name();
     let io_error = |source| ExecError::Io { program: name.clone(), source };
     let (reader, writer) = io::pipe().map_err(io_error)?;
@@ -247,7 +279,7 @@ where
         .env_clear()
         .envs(surroundings.variables.iter().map(|(name, value)| (name, value)))
         .current_dir(surroundings.directory.unwrap_or(Path::new("/")))
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::from(writer.try_clone().map_err(io_error)?))
         .stderr(Stdio::from(writer))
         .process_group(0)
@@ -260,7 +292,14 @@ where
     let mut reader = tokio::net::unix::pipe::Receiver::from_owned_fd(std::os::fd::OwnedFd::from(reader))
         .map_err(io_error)?;
 
+    let stdin = child.stdin.take();
     let finished = async {
+        if let (Some(mut stdin), Some(input)) = (stdin, input) {
+            // Small: what the pipe holds at once. A program that ends
+            // without reading it is no failure of writing.
+            let _ = stdin.write_all(input).await;
+            let _ = stdin.shutdown().await;
+        }
         let mut lines = Lines::default();
         let mut chunk = [0u8; 8192];
         loop {
@@ -759,6 +798,36 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(output.stderr.len(), MAX_STDERR, "only the last bytes are kept");
+    }
+
+    #[tokio::test]
+    async fn a_streaming_program_reads_its_input_on_stdin() {
+        let mut seen = Vec::new();
+        let script = r#"read secret; echo "got ${#secret} bytes"; cat"#;
+        let output = run_lines_with_input(
+            &sh(),
+            ["-c", script],
+            b"hunter2\nmore\n",
+            &Surroundings::default(),
+            Limits::default(),
+            &mut |line| seen.push(line.to_owned()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(seen, ["got 7 bytes", "more"]);
+        assert!(output.status.success());
+        // A program that reads nothing ends all the same.
+        let ignored = run_lines_with_input(
+            &sh(),
+            ["-c", "exit 0"],
+            &[b'x'; 100],
+            &Surroundings::default(),
+            Limits::default(),
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
+        assert!(ignored.status.success());
     }
 
     #[tokio::test]
