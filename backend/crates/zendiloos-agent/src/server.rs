@@ -119,6 +119,7 @@ impl Server {
 
         let request_id = envelope.request_id.as_ref().map(|id| id.as_str()).unwrap_or("-");
         let op = envelope.request.name();
+        let reads = envelope.request.only_reads();
         if envelope.version != PROTOCOL_VERSION {
             tracing::warn!(
                 request_id,
@@ -205,6 +206,8 @@ impl Server {
             Response::Error { code, message } => {
                 tracing::warn!(request_id, op, uid, pid, ?code, message, "operation failed");
             }
+            // Looking, asked for many times a minute, would fill the journal.
+            _ if reads => tracing::debug!(request_id, op, uid, pid, "read"),
             _ => tracing::info!(request_id, op, uid, pid, "operation done"),
         }
         (response, file)

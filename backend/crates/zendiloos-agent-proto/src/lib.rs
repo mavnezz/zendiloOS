@@ -1726,6 +1726,62 @@ impl Request {
         )
     }
 
+    /// Whether the request only reads the state of the NAS. zendiloosd asks
+    /// for that again and again: every minute for the disks and pools, every
+    /// 30 seconds for what the firewall needs to know, every 20 seconds for
+    /// what containers use, every few seconds for a page that is open. The
+    /// agent logs those that went well at debug, so that the journal, on
+    /// the system disk, keeps what changed the NAS rather than some 30 000
+    /// lines a day of looking. A file opened or packed for a person's
+    /// download is not among them.
+    pub fn only_reads(&self) -> bool {
+        matches!(
+            self,
+            Request::Hello {}
+                | Request::ListBlockDevices {}
+                | Request::Machine {}
+                | Request::SmartData { .. }
+                | Request::EmmcHealth { .. }
+                | Request::ArrayStatus {}
+                | Request::ZfsStatus {}
+                | Request::DockerState {}
+                | Request::VmHost {}
+                | Request::VmImages { .. }
+                | Request::VmStates { .. }
+                | Request::VmStats { .. }
+                | Request::AppsStatus { .. }
+                | Request::AppLogs { .. }
+                | Request::HostFacts { .. }
+                | Request::DockerContainers { .. }
+                | Request::DockerStats { .. }
+                | Request::DockerImages { .. }
+                | Request::DockerNetworks { .. }
+                | Request::DockerDiskUsage { .. }
+                | Request::ContainerLogs { .. }
+                | Request::InspectContainer { .. }
+                | Request::ContainerProcesses { .. }
+                | Request::DockerVolumes { .. }
+                | Request::DockerVolumeSizes { .. }
+                | Request::ScanVolumeBackups { .. }
+                | Request::CheckCompose { .. }
+                | Request::ProjectLogs { .. }
+                | Request::ProjectFiles { .. }
+                | Request::NetworkState { .. }
+                | Request::SshState { .. }
+                | Request::PackagesState { .. }
+                | Request::WebTlsState { .. }
+                | Request::AcmeState { .. }
+                | Request::WebServerState { .. }
+                | Request::FirewallState { .. }
+                | Request::TimeState { .. }
+                | Request::ListSnapshots { .. }
+                | Request::ShareUsage { .. }
+                | Request::ListDirectory { .. }
+                | Request::SearchFiles { .. }
+                | Request::EntryFacts { .. }
+        )
+    }
+
     /// Counting what the volumes' data takes up: bounded, but seconds of
     /// walking each time; one at a time, in a place of its own.
     pub fn is_count(&self) -> bool {
@@ -2726,6 +2782,31 @@ mod tests {
         }
         assert_eq!(BurstMillis::new(BurstMillis::MAX).map(BurstMillis::get), Ok(2000));
         assert_eq!(u16::from(BurstMillis::new(1).unwrap()), 1);
+    }
+
+    #[test]
+    fn what_only_reads_is_told_apart_from_what_changes_the_nas() {
+        let request = |value: serde_json::Value| serde_json::from_value::<Request>(value).unwrap();
+        for looking in [
+            json!({ "op": "list_block_devices" }),
+            json!({ "op": "zfs_status" }),
+            json!({ "op": "smart_data", "device": "sda" }),
+            json!({ "op": "emmc_health", "device": "mmcblk0" }),
+            json!({ "op": "docker_stats" }),
+            json!({ "op": "ssh_state" }),
+            json!({ "op": "web_server_state" }),
+            json!({ "op": "firewall_state" }),
+        ] {
+            assert!(request(looking.clone()).only_reads(), "{looking}");
+        }
+        for changing in [
+            json!({ "op": "reboot" }),
+            json!({ "op": "scrub_pool", "pool": "tank" }),
+            json!({ "op": "start_self_test", "device": "sda", "kind": "short" }),
+            json!({ "op": "read_burst", "device": "sda", "millis": 700 }),
+        ] {
+            assert!(!request(changing.clone()).only_reads(), "{changing}");
+        }
     }
 
     #[test]
