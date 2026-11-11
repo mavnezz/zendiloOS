@@ -307,6 +307,8 @@ const de: Messages = {
           'acme.sh legt über die API des Anbieters einen TXT-Eintrag an und entfernt ihn danach. Das geht auch für Namen, die aus dem Internet nicht erreichbar sind, und für Wildcards.',
         httpHint:
           "Let's Encrypt holt eine Datei vom Namen auf Port 80: Der Name muss auf das NAS zeigen, Port 80 muss es aus dem Internet erreichen, und HTTP muss auf Port 80 laufen (Systemsteuerung → Weboberfläche). Wildcards sind nicht möglich.",
+        search: 'Anbieter suchen',
+        noProvider: 'Kein Anbieter dieses Namens. acme.sh kennt weitere, auf Wunsch.',
         secretSet: 'Gespeichert; leer lassen, um es zu behalten',
         optional: 'optional',
       },

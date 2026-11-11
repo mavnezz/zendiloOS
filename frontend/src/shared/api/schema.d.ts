@@ -5064,6 +5064,11 @@ export interface components {
         };
         /** @description A variable a DNS provider's API script reads. */
         DnsVariable: {
+            /**
+             * @description What a value looks like, or what the provider's script takes without
+             *     one, e.g. `https://secure.hosting.de`.
+             */
+            hint?: string | null;
             /** @description As acme.sh names it, e.g. `IONOS_PREFIX`. */
             name: string;
             required: boolean;

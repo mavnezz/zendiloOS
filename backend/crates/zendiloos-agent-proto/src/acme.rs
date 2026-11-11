@@ -241,16 +241,25 @@ pub struct InvalidDnsVariableName;
 const REFUSED_VARIABLES: &[&str] = &[
     "PATH", "HOME", "IFS", "ENV", "BASH_ENV", "SHELL", "USER", "LOGNAME", "TMPDIR", "LANG", "PS4", "CDPATH",
 ];
-const REFUSED_PREFIXES: &[&str] =
-    &["LD_", "LC_", "LE_", "ACME_", "CA_", "CERT_", "SAVED_", "DEBUG", "SYSTEMD_"];
+/// Also what curl and OpenSSL read (`SSL_CERT_FILE`, `CURL_CA_BUNDLE`), as
+/// acme.sh talks to the authority and the providers through them.
+const REFUSED_PREFIXES: &[&str] = &[
+    "LD_", "LC_", "LE_", "ACME_", "CA_", "CERT_", "SAVED_", "DEBUG", "SYSTEMD_", "SSL_", "CURL_", "OPENSSL_",
+];
 
 impl DnsVariableName {
+    /// A few providers' scripts read names that begin in lowercase
+    /// (`cPanel_Username`, `pleskxml_uri`), so the lists above are compared
+    /// whatever the case, and no proxy setting (`https_proxy`, `ALL_PROXY`)
+    /// is taken: curl reads both spellings.
     pub fn parse(name: &str) -> Result<Self, InvalidDnsVariableName> {
+        let upper = name.to_ascii_uppercase();
         let valid = (1..=64).contains(&name.len())
-            && name.starts_with(|c: char| c.is_ascii_uppercase())
+            && name.starts_with(|c: char| c.is_ascii_alphabetic())
             && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-            && !REFUSED_VARIABLES.contains(&name)
-            && !REFUSED_PREFIXES.iter().any(|prefix| name.starts_with(prefix));
+            && !REFUSED_VARIABLES.contains(&upper.as_str())
+            && !REFUSED_PREFIXES.iter().any(|prefix| upper.starts_with(prefix))
+            && !upper.ends_with("_PROXY");
         if valid { Ok(Self(name.to_owned())) } else { Err(InvalidDnsVariableName) }
     }
 
@@ -466,10 +475,28 @@ mod tests {
         for bad in ["ionos", "dns_", "dns_../x", "dns_IONOS", "dns_a b"] {
             assert!(DnsApi::parse(bad).is_err(), "{bad:?}");
         }
-        for good in ["IONOS_PREFIX", "CF_Token", "DuckDNS_Token"] {
+        for good in ["IONOS_PREFIX", "CF_Token", "DuckDNS_Token", "cPanel_Username", "pleskxml_uri"] {
             assert!(DnsVariableName::parse(good).is_ok(), "{good}");
         }
-        for bad in ["PATH", "LD_PRELOAD", "LE_WORKING_DIR", "ACME_DIRECTORY", "lower", "A-B", "", "SAVED_X"] {
+        for bad in [
+            "PATH",
+            "path",
+            "LD_PRELOAD",
+            "ld_preload",
+            "LE_WORKING_DIR",
+            "ACME_DIRECTORY",
+            "A-B",
+            "",
+            "SAVED_X",
+            "_X",
+            "1X",
+            "https_proxy",
+            "HTTPS_PROXY",
+            "all_proxy",
+            "SSL_CERT_FILE",
+            "CURL_CA_BUNDLE",
+            "OPENSSL_CONF",
+        ] {
             assert!(DnsVariableName::parse(bad).is_err(), "{bad:?}");
         }
         assert!(DnsValue::new("line\nbreak").is_err());

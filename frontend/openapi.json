@@ -16251,6 +16251,13 @@
           "required"
         ],
         "properties": {
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What a value looks like, or what the provider's script takes without\none, e.g. `https://secure.hosting.de`."
+          },
           "name": {
             "type": "string",
             "description": "As acme.sh names it, e.g. `IONOS_PREFIX`."

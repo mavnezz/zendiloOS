@@ -28,6 +28,19 @@ const busy = ref(false)
 const failure = ref<string | null>(null)
 
 const provider = computed(() => props.providers.find((p) => p.api === api.value))
+/** Typed to narrow the providers down: there are many. */
+const query = ref('')
+/** The providers by name, those the query's words all match. */
+const shown = computed(() => {
+  const words = query.value.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  return props.providers
+    .filter((p) => words.every((word) => `${p.label} ${p.api}`.toLowerCase().includes(word)))
+    .sort((a, b) => a.label.localeCompare(b.label))
+})
+// A search that leaves out the provider chosen picks the first it finds.
+watch(shown, (list) => {
+  if (list[0] && !list.some((p) => p.api === api.value)) api.value = list[0].api
+})
 /** Saved already, for this provider: a secret left empty keeps it. */
 const saved = (variable: string) =>
   props.challenge?.provider === api.value &&
@@ -39,6 +52,7 @@ watch(open, (isOpen) => {
   name.value = challenge?.name ?? ''
   method.value = challenge?.method ?? 'dns'
   api.value = challenge?.provider ?? 'dns_ionos'
+  query.value = ''
   values.value = Object.fromEntries(
     (challenge?.values ?? []).filter((v) => !v.secret).map((v) => [v.name, v.value ?? '']),
   )
@@ -117,9 +131,19 @@ async function save(): Promise<void> {
       <template v-if="method === 'dns'">
         <div class="grid gap-1.5">
           <Label for="acme-challenge-provider">{{ t('appStore.acme.challenge.provider') }}</Label>
-          <NativeSelect id="acme-challenge-provider" v-model="api">
-            <option v-for="p in providers" :key="p.api" :value="p.api">{{ p.label }}</option>
+          <Input
+            v-model="query"
+            type="search"
+            autocomplete="off"
+            :placeholder="t('appStore.acme.challenge.search')"
+            :aria-label="t('appStore.acme.challenge.search')"
+          />
+          <NativeSelect v-if="shown.length" id="acme-challenge-provider" v-model="api">
+            <option v-for="p in shown" :key="p.api" :value="p.api">{{ p.label }}</option>
           </NativeSelect>
+          <p v-else class="text-sm text-muted-foreground">
+            {{ t('appStore.acme.challenge.noProvider') }}
+          </p>
         </div>
         <div
           v-for="variable in provider?.variables ?? []"
@@ -138,7 +162,9 @@ async function save(): Promise<void> {
             :type="variable.secret ? 'password' : 'text'"
             autocomplete="off"
             :placeholder="
-              variable.secret && saved(variable.name) ? t('appStore.acme.challenge.secretSet') : ''
+              variable.secret && saved(variable.name)
+                ? t('appStore.acme.challenge.secretSet')
+                : (variable.hint ?? '')
             "
           />
         </div>

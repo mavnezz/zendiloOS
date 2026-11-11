@@ -31,6 +31,19 @@ const plugin = (installed: boolean): AcmePlugin => ({
       label: 'Cloudflare',
       variables: [{ name: 'CF_Token', secret: true, required: true }],
     },
+    {
+      api: 'dns_hostingde',
+      label: 'Hosting.de',
+      variables: [
+        {
+          name: 'HOSTINGDE_ENDPOINT',
+          secret: false,
+          required: true,
+          hint: 'https://secure.hosting.de',
+        },
+        { name: 'HOSTINGDE_APIKEY', secret: true, required: true },
+      ],
+    },
   ],
 })
 
@@ -150,6 +163,33 @@ describe('the ACME client plugin', () => {
       provider: 'dns_ionos',
       values: { IONOS_PREFIX: 'other', IONOS_SECRET: '' },
     })
+  })
+
+  it('finds a DNS provider by a word of its name, and shows what its values look like', async () => {
+    await mountApp(AcmeSection)
+    const add = [...document.querySelectorAll<HTMLButtonElement>('button')].filter(
+      (b) => b.textContent?.trim() === t('appStore.acme.add'),
+    )
+    add[2]!.click()
+    await settle()
+    const select = () => document.querySelector<HTMLSelectElement>('#acme-challenge-provider')
+    // By name, whatever the order they came in.
+    expect([...select()!.options].map((o) => o.text)).toEqual(['Cloudflare', 'Hosting.de', 'IONOS'])
+    const search = document.querySelector<HTMLInputElement>(
+      `input[aria-label="${t('appStore.acme.challenge.search')}"]`,
+    )!
+    search.value = 'hosting'
+    search.dispatchEvent(new Event('input'))
+    await settle()
+    expect(select()!.value).toBe('dns_hostingde')
+    expect(document.querySelector<HTMLInputElement>('#acme-HOSTINGDE_ENDPOINT')!.placeholder).toBe(
+      'https://secure.hosting.de',
+    )
+    search.value = 'nothing like it'
+    search.dispatchEvent(new Event('input'))
+    await settle()
+    expect(select()).toBeNull()
+    expect(page()).toContain(t('appStore.acme.challenge.noProvider'))
   })
 
   it('issues a certificate and follows what acme.sh writes', async () => {
