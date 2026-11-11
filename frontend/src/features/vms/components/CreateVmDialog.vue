@@ -1,31 +1,27 @@
 <script setup lang="ts">
-import { Check, Disc3, Monitor, Network, Server } from 'lucide-vue-next'
+import { Check, Disc3, Monitor, Server } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import type { VmFirmware, VmOs, VmPlugin } from '@/shared/api/types'
+import type { VmFirmware, VmImage, VmOs, VmPlugin } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
 import { useJobsStore } from '@/shared/jobs/store'
 import { cn } from '@/shared/lib/utils'
-import { useOpenApp } from '@/shared/lib/window-section'
 import { formatBytes } from '@/shared/lib/format'
 import { Alert } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
 import { StepDialog } from '@/shared/ui/dialog'
-import { FolderPicker, useShareList } from '@/shared/ui/folder-picker'
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
 import { Switch } from '@/shared/ui/switch'
 
 import { useVmActions } from '../api'
 import {
-  DISK_MAX_GIB,
   MEMORY_MIN_MIB,
   MEMORY_STEP_MIB,
   OS_PRESETS,
   STEP_PROBLEMS,
   formatMemory,
-  isoPick,
   limits,
   presetForm,
   problems,
@@ -34,13 +30,19 @@ import {
   type VmForm,
   withPreset,
 } from '../lib/vms'
+import DisksEditor from './DisksEditor.vue'
+import MediaEditor from './MediaEditor.vue'
+import NicsEditor from './NicsEditor.vue'
 
-/** Makes a VM in four steps; `taken`: the names of the VMs there are. */
-const props = defineProps<{ plugin: VmPlugin; taken: string[] }>()
+/**
+ * Makes a VM in four steps; `taken`: the names of the VMs there are,
+ * `images`: the library.
+ */
+const props = defineProps<{ plugin: VmPlugin; taken: string[]; images: VmImage[] }>()
 const open = defineModel<boolean>('open', { default: false })
-const emit = defineEmits<{ created: [] }>()
+const emit = defineEmits<{ created: []; library: [] }>()
 
-const STEPS = ['system', 'resources', 'disk', 'review'] as const
+const STEPS = ['system', 'resources', 'storage', 'review'] as const
 const FIRMWARE: VmFirmware[] = ['uefi', 'bios']
 const OS_ICONS: Record<VmOs, typeof Server> = { linux: Server, windows: Monitor, other: Disc3 }
 /** A card that can be chosen: framed in the primary colour once it is. */
@@ -51,18 +53,9 @@ const CHOSEN = 'border-primary bg-primary/5 dark:bg-primary/10'
 const { t } = useI18n()
 const actions = useVmActions()
 const jobs = useJobsStore()
-const openApp = useOpenApp()
-
-/** Bridges are made on the control panel's Network page. */
-function toNetwork(): void {
-  open.value = false
-  openApp?.('settings', 'network')
-}
-const { data: shares } = useShareList()
 
 const step = ref(0)
 const form = ref<VmForm>(presetForm('linux', props.plugin))
-const picking = ref(false)
 const pending = ref(false)
 const error = ref<string | null>(null)
 
@@ -74,7 +67,7 @@ watch(open, (isOpen) => {
 })
 
 const most = computed(() => limits(props.plugin))
-const found = computed(() => problems(form.value, props.plugin, props.taken))
+const found = computed(() => problems(form.value, props.plugin, props.taken, props.images))
 const has = (problem: FormProblem) => found.value.includes(problem)
 const stepDone = computed(() => !STEP_PROBLEMS[step.value]!.some(has))
 
@@ -82,12 +75,13 @@ function choosePreset(os: VmOs): void {
   form.value = withPreset(form.value, os, props.plugin)
 }
 
-function pickIso(path: string): void {
-  form.value = { ...form.value, iso: isoPick(path, shares.value) }
-}
-
 function next(): void {
   if (stepDone.value && step.value < STEPS.length - 1) step.value++
+}
+
+function toLibrary(): void {
+  open.value = false
+  emit('library')
 }
 
 async function create(): Promise<void> {
@@ -111,14 +105,23 @@ function number(value: string | number): number {
   return typeof value === 'number' ? value : Number(value.trim() === '' ? NaN : value)
 }
 
+const imageName = (id: string | null) =>
+  id ? (props.images.find((image) => image.id === id)?.name ?? id) : t('vms.devices.noImage')
+
 const reviewRows = computed(() => [
   [t('vms.wizard.name'), form.value.name.trim()],
   [t('vms.wizard.os'), t(`vms.os.${form.value.os}`)],
   ['CPU', t('vms.cpus', form.value.cpus)],
   [t('vms.memory'), formatMemory(form.value.memoryMib)],
   [t('vms.wizard.firmware'), t(`vms.wizard.${form.value.firmware}`)],
-  [t('vms.disk'), `${form.value.diskGib} GiB`],
-  [t('vms.wizard.iso'), form.value.iso?.shown ?? '–'],
+  [
+    t('vms.disks', form.value.disks.length),
+    form.value.disks.map((disk) => `${disk.sizeGib} GiB`).join(', '),
+  ],
+  [
+    t('vms.wizard.media'),
+    form.value.drives.map((drive) => imageName(drive.image)).join(', ') || '–',
+  ],
 ])
 </script>
 
@@ -260,93 +263,20 @@ const reviewRows = computed(() => [
       </template>
 
       <template v-else-if="step === 2">
-        <div class="grid max-w-xs gap-2">
-          <Label for="vm-disk">{{ t('vms.wizard.disk') }}</Label>
-          <Input
-            id="vm-disk"
-            :model-value="form.diskGib"
-            type="number"
-            min="1"
-            :max="DISK_MAX_GIB"
-            :aria-invalid="has('disk')"
-            @update:model-value="(value) => (form.diskGib = number(value))"
-          />
-          <p v-if="has('disk')" class="text-xs text-destructive">
-            {{ t('vms.wizard.invalid.disk') }}
-          </p>
-          <p v-else class="text-xs text-muted-foreground">
-            {{ t('vms.wizard.diskHint', { pool: plugin.storage?.pool ?? '–' }) }}
-          </p>
-        </div>
-        <section class="grid gap-2" aria-labelledby="vm-iso-heading">
-          <h4 id="vm-iso-heading" class="text-sm font-medium">{{ t('vms.wizard.iso') }}</h4>
-          <div class="flex flex-wrap items-center gap-2 rounded-lg border p-3 text-sm">
-            <Disc3 class="size-4 shrink-0 text-muted-foreground" />
-            <span
-              v-if="form.iso"
-              class="min-w-0 flex-1 truncate font-mono text-xs"
-              data-testid="vm-iso"
-            >
-              {{ form.iso.shown }}
-            </span>
-            <span v-else class="min-w-0 flex-1 text-muted-foreground">{{
-              t('vms.wizard.noIso')
-            }}</span>
-            <Button type="button" size="sm" variant="outline" @click="picking = true">
-              {{ form.iso ? t('vms.wizard.changeIso') : t('vms.wizard.pickIso') }}
-            </Button>
-            <Button
-              v-if="form.iso"
-              type="button"
-              size="sm"
-              variant="ghost"
-              @click="form = { ...form, iso: null }"
-            >
-              {{ t('vms.wizard.removeIso') }}
-            </Button>
-          </div>
-          <p class="text-xs text-muted-foreground">{{ t('vms.wizard.isoHint') }}</p>
-        </section>
+        <DisksEditor v-model:form="form" :pool="plugin.storage?.pool" />
+        <p v-if="has('disk')" class="text-xs text-destructive">
+          {{ t('vms.wizard.invalid.disk') }}
+        </p>
+        <MediaEditor v-model:form="form" :images="images" @library="toLibrary" />
+        <p v-if="has('boot')" class="text-xs text-destructive">
+          {{ t('vms.wizard.invalid.boot') }}
+        </p>
       </template>
 
       <template v-else>
         <fieldset class="grid gap-2">
           <legend class="mb-2 text-sm font-medium">{{ t('vms.wizard.network') }}</legend>
-          <div role="radiogroup" class="grid gap-2 sm:grid-cols-2">
-            <label
-              v-for="choice in [null, ...plugin.bridges]"
-              :key="choice ?? 'user'"
-              :data-network="choice ?? 'user'"
-              :class="
-                cn(
-                  CARD,
-                  'grid cursor-pointer gap-1 p-3 text-sm',
-                  form.bridge === choice ? CHOSEN : 'hover:bg-accent/60',
-                )
-              "
-            >
-              <input
-                v-model="form.bridge"
-                type="radio"
-                name="vm-network"
-                class="sr-only"
-                :value="choice"
-              />
-              <span class="flex items-center gap-2 font-semibold">
-                <Network class="size-4 text-muted-foreground" />
-                {{ choice ? t('vms.wizard.bridge', { bridge: choice }) : t('vms.wizard.user') }}
-              </span>
-              <span class="text-xs text-muted-foreground">{{
-                choice ? t('vms.wizard.bridgeHint') : t('vms.wizard.userHint')
-              }}</span>
-            </label>
-          </div>
-          <div v-if="!plugin.bridges.length" class="grid justify-items-start gap-2">
-            <p class="text-xs text-muted-foreground">{{ t('vms.wizard.noBridge') }}</p>
-            <Button v-if="openApp" type="button" size="sm" variant="outline" @click="toNetwork">
-              {{ t('vms.wizard.toNetwork') }}
-            </Button>
-          </div>
+          <NicsEditor v-model:form="form" :bridges="plugin.bridges" @leave="open = false" />
         </fieldset>
         <div class="flex items-center gap-3">
           <Switch id="vm-autostart" v-model="form.autostart" />
@@ -364,13 +294,6 @@ const reviewRows = computed(() => [
         <Alert v-if="error" variant="destructive">{{ error }}</Alert>
       </template>
     </form>
-
-    <FolderPicker
-      v-model:open="picking"
-      :value="form.iso?.shown ?? ''"
-      files=".iso"
-      @pick="pickIso"
-    />
 
     <template #footer>
       <Button v-if="step > 0" type="button" variant="outline" class="mr-auto" @click="step--">

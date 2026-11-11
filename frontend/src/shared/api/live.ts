@@ -1,10 +1,19 @@
-import type { Job, LiveMessage, LiveRequest, LiveTopic, Metrics, ServerNotification } from './types'
+import type {
+  Job,
+  LiveMessage,
+  LiveRequest,
+  LiveTopic,
+  Metrics,
+  ServerNotification,
+  VmStats,
+} from './types'
 
 /** What a topic delivers. */
 interface TopicData {
   metrics: Metrics
   jobs: Job
   notifications: ServerNotification
+  vm_stats: VmStats
 }
 
 type Listener<T extends LiveTopic> = (data: TopicData[T]) => void
@@ -128,6 +137,8 @@ export class LiveClient {
       for (const listener of this.listeners.get('jobs') ?? []) listener(message.data)
     } else if (message.type === 'notification') {
       for (const listener of this.listeners.get('notifications') ?? []) listener(message.data)
+    } else if (message.type === 'vm_stats') {
+      for (const listener of this.listeners.get('vm_stats') ?? []) listener(message.data)
     }
   }
 }
