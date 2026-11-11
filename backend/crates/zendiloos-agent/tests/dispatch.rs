@@ -122,6 +122,7 @@ impl Host {
                 directory: at("network"),
                 ifupdown: at("etc-network"),
                 resolv_conf: at("resolv.conf"),
+                internal: at("internal-networks.nft"),
             },
             time: TimePaths { servers: at("timesyncd.conf") },
             ssh: SshPaths { config: at("sshd_config.d/00-zendiloos.conf") },

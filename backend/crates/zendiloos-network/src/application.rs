@@ -95,6 +95,9 @@ pub struct NetworkSetup {
     pub takeover: Option<Takeover>,
     /// The bridges, bonds and VLANs zendiloOS made, by name.
     pub devices: Vec<Device>,
+    /// Of its bridges, the internal networks for VMs: without members or
+    /// an address of the NAS's, which the NAS keeps itself off.
+    pub internal: Vec<String>,
 }
 
 /// Taking the network over from ifupdown, as it would go now.
@@ -167,8 +170,9 @@ pub trait NetworkConfigurator: Send + Sync {
     async fn confirm(&self, context: &RequestContext) -> Result<(), ConfigureError>;
 }
 
-/// What uses a device and would lose its network were it removed, asked of
-/// the contexts that put things on bridges (the VMs).
+/// What uses a device and would lose its network were it removed or taken
+/// into a bridge or bond, asked of the contexts that put things on the
+/// host's links (the VMs: on a bridge, or directly on a card or bond).
 #[async_trait]
 pub trait DeviceUsers: Send + Sync {
     /// The names of what uses `device`; none: it may go.
@@ -276,8 +280,16 @@ impl ConfigureNetwork {
             }
             _ => None,
         };
-        let devices = Configuration::read(&host.files).devices;
-        Ok(NetworkSetup { managed: host.managed, manager, pending: host.pending, takeover, devices })
+        let configuration = Configuration::read(&host.files);
+        let internal = configuration.internal_networks();
+        Ok(NetworkSetup {
+            managed: host.managed,
+            manager,
+            pending: host.pending,
+            takeover,
+            devices: configuration.devices,
+            internal,
+        })
     }
 
     pub async fn apply(
@@ -321,6 +333,22 @@ impl ConfigureNetwork {
         let configuration = Configuration::read(&host.files);
         let network = self.ports.source.network().await?;
         let planning = Planning { network: &network, configuration: &configuration };
+        // A member taken into a bridge or bond carries nothing of its own
+        // any more: a VM directly on it would lose its network.
+        let joining: Vec<String> = match &device {
+            DeviceRequest::Make(new) => new.members.clone(),
+            DeviceRequest::Change(update) => {
+                let had = configuration.device(&update.name).map(|d| d.members.clone()).unwrap_or_default();
+                update.members.iter().filter(|member| !had.contains(member)).cloned().collect()
+            }
+            DeviceRequest::Remove(_) => Vec::new(),
+        };
+        for member in &joining {
+            let users = self.ports.users.users(member).await?;
+            if !users.is_empty() {
+                return Err(ConfigureError::InUse(users));
+            }
+        }
         Ok(match device {
             DeviceRequest::Make(new) => planning.make(new)?,
             DeviceRequest::Change(update) => planning.change(update)?,

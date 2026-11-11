@@ -86,6 +86,9 @@ pub struct NetworkSetup {
     /// The bridges, bonds and VLANs zendiloOS made: these can be changed
     /// and removed.
     pub devices: Vec<NetworkDevice>,
+    /// Of its bridges, the internal networks for VMs: without members or
+    /// an address of the NAS's, which the NAS keeps itself off.
+    pub internal: Vec<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -290,6 +293,7 @@ fn setup_dto(setup: app::NetworkSetup) -> NetworkSetup {
             PendingNetworkChange { interface, takeover, device, revert_at: p.revert_at.unix_seconds() }
         }),
         devices: setup.devices.into_iter().map(device_dto).collect(),
+        internal: setup.internal,
         takeover: setup.takeover.map(|takeover| NetworkTakeover {
             interfaces: takeover
                 .plan

@@ -13,4 +13,5 @@ packaging/samba/smb.conf usr/share/zendiloos/
 packaging/systemd/zendiloos-certificate.service usr/lib/systemd/system/
 packaging/systemd/zendiloos-firewall.service usr/lib/systemd/system/
 packaging/systemd/zendiloos-docker-bridges.service usr/lib/systemd/system/
+packaging/systemd/zendiloos-internal-networks.service usr/lib/systemd/system/
 packaging/nfs/zendiloos.conf etc/nfs.conf.d/

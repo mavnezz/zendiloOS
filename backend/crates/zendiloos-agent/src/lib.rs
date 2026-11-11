@@ -27,6 +27,7 @@ mod durable;
 mod enclosure;
 mod files;
 mod firewall;
+mod internal_networks;
 mod network;
 mod operations;
 mod packages;

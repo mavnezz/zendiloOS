@@ -283,3 +283,45 @@ async fn devices_are_checked_before_anything_is_written() {
     ));
     assert!(s.host.changes.lock().unwrap().is_empty());
 }
+
+/// A bridge made without members is an internal network for VMs; one with
+/// a card is not. A card a VM is on directly is not taken into a bridge
+/// or bond: it would carry nothing of its own any more.
+#[tokio::test]
+async fn a_bridge_without_members_is_an_internal_network_and_a_cards_vms_keep_it() {
+    let s = setup(FakeConfigurator::default());
+    s.source.set(three_cards());
+    let request = RequestContext::default();
+    let internal = DeviceRequest::Make(NewDevice {
+        name: "vmnet0".into(),
+        kind: crate::domain::DeviceKind::Bridge { stp: false },
+        members: vec![],
+        settings: None,
+    });
+    let setup = s.network.configure.device(internal, &alice(), &request).await.unwrap();
+    assert_eq!(setup.internal, ["vmnet0"]);
+    s.network.configure.confirm(&alice(), &request).await.unwrap();
+
+    s.users.0.lock().unwrap().push(("enp2s0".into(), "lab".into()));
+    let refused =
+        s.network.configure.device(bridge(&["enp1s0", "enp2s0"]), &alice(), &request).await.unwrap_err();
+    assert!(matches!(&refused, ConfigureError::InUse(users) if users == &["lab"]), "{refused}");
+    assert!(s.network.configure.plan(bridge(&["enp2s0"]), &request).await.is_err());
+    let into = DeviceRequest::Change(DeviceUpdate {
+        name: "vmnet0".into(),
+        members: vec!["enp2s0".into()],
+        mode: None,
+        stp: None,
+    });
+    assert!(matches!(s.network.configure.plan(into, &request).await, Err(ConfigureError::InUse(_))));
+
+    // A card nobody is on goes in; the bridge is the LAN's then, no internal network.
+    let into = DeviceRequest::Change(DeviceUpdate {
+        name: "vmnet0".into(),
+        members: vec!["enp3s0".into()],
+        mode: None,
+        stp: None,
+    });
+    let setup = s.network.configure.device(into, &alice(), &request).await.unwrap();
+    assert!(setup.internal.is_empty(), "{:?}", setup.internal);
+}

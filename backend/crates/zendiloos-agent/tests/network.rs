@@ -160,6 +160,7 @@ impl Host {
             directory: self.root.join("network"),
             ifupdown: self.root.join("etc-network"),
             resolv_conf: self.root.join("resolv.conf"),
+            internal: self.root.join("internal-networks.nft"),
         };
         let paths = Paths { network, ..Paths::default() };
         let operations =
@@ -983,4 +984,53 @@ async fn a_change_that_fails_goes_back_at_once() {
     assert_eq!(host.file("05-zendiloos-bond0.netdev").as_deref(), Some(before.as_str()));
     assert!(!exists(&host.root.join("network/zendiloos-change.json")));
     assert_eq!(state(&agent).await.1, None);
+}
+
+/// A bridge without members or an address, made for VMs only, is an
+/// internal network: the NAS keeps itself off it once it is made, and no
+/// longer once the change went back.
+#[tokio::test]
+async fn the_nas_keeps_itself_off_a_bridge_without_members_or_an_address() {
+    let host = Host::new();
+    let agent = host.agent().await;
+    host.forget_calls();
+    let off = NetworkConfig {
+        keep_up: true,
+        ..NetworkConfig::addresses(
+            name("vmnet0"),
+            Ipv4Config::Off {},
+            Ipv6Config::Off,
+            NameServers::default(),
+        )
+    };
+    let edit = NetworkEdit {
+        change: NetworkChange::Device { device: name("vmnet0"), action: DeviceAction::Made },
+        netdevs: vec![Netdev { name: name("vmnet0"), mac: None, ..bridge_netdev(&[]) }],
+        removed: vec![],
+        links: vec![off],
+    };
+    assert_eq!(agent.execute(&change(edit, 30)).await, Response::Done);
+    let rules = fs::read_to_string(host.root.join("internal-networks.nft")).unwrap();
+    assert!(
+        rules.contains("meta ibrname { \"vmnet0\" } drop")
+            && rules.contains("meta obrname { \"vmnet0\" } drop"),
+        "{rules}"
+    );
+    let systemd = host.systemd();
+    let loaded =
+        systemd.iter().position(|call| call == "reload-or-restart zendiloos-internal-networks.service");
+    let docker = systemd.iter().position(|call| call == "start zendiloos-docker-bridges.service");
+    assert!(loaded.is_some() && docker.is_some(), "{systemd:?}");
+
+    // Not confirmed: the bridge goes, and so do the rules for it.
+    drop(agent);
+    let _restarted = host.agent().await;
+    let rules = fs::read_to_string(host.root.join("internal-networks.nft")).unwrap();
+    assert!(!rules.contains("vmnet0") && rules.contains("delete table bridge zendiloos_internal"), "{rules}");
+
+    // A bridge with a card is the LAN's: none of them.
+    let agent = host.agent().await;
+    assert_eq!(agent.execute(&make_bridge()).await, Response::Done);
+    let rules = fs::read_to_string(host.root.join("internal-networks.nft")).unwrap();
+    assert!(!rules.contains("br0"), "{rules}");
 }
