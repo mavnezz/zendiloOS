@@ -20,13 +20,14 @@ export function serverName(server: BackupServer): string {
   return `${server.user}@${host}${port}${module}`
 }
 
-/** Where a task reads or writes, for a person: the share, drive or server and the folder. */
+/** Where a task reads or writes, for a person: the share, drive, server or cloud and the folder. */
 export function placeText(
   t: Translate,
   place: BackupPlace,
   server: BackupServer | null | undefined,
   shareNames: Map<number, string>,
   driveLabels: Map<string, string> = new Map(),
+  accountNames: Map<number, string> = new Map(),
 ): string {
   switch (place.kind) {
     case 'share': {
@@ -46,6 +47,12 @@ export function placeText(
       return place.path
         ? t('backup.place.server', { server: name, path: place.path })
         : t('backup.place.serverRoot', { server: name })
+    }
+    case 'cloud': {
+      const account = accountNames.get(place.account_id) ?? `#${place.account_id}`
+      return place.path
+        ? t('backup.place.cloud', { account, path: place.path })
+        : t('backup.place.cloudRoot', { account })
     }
   }
 }

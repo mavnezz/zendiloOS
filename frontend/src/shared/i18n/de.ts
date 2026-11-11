@@ -2735,6 +2735,7 @@ const de: Messages = {
       local: 'Auf diesem NAS',
       push: 'Auf einen rsync-Server',
       pull: 'Von einem rsync-Server',
+      cloud: 'In eine Cloud',
     },
     kindHints: {
       local:
@@ -2761,6 +2762,8 @@ const de: Messages = {
       driveRoot: 'Laufwerk {drive}',
       server: '{server} › {path}',
       serverRoot: '{server}',
+      cloud: '{account} › {path}',
+      cloudRoot: '{account}',
     },
     frequencies: {
       hourly: 'Stündlich',

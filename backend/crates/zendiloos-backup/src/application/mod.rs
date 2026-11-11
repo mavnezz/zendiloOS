@@ -12,17 +12,20 @@ use zendiloos_kernel::{
 };
 use zendiloos_notify::Notifier;
 
-use crate::domain::{Invalid, NasPlace};
+use crate::domain::{Invalid, NasPlace, Place, Task};
 
+mod cloud;
 mod ports;
 mod restore;
 mod runs;
 mod tasks;
 
+pub use cloud::SignIn;
 pub use ports::{
-    BackupHost, Drive, Drives, HostError, HostFacts, HostKey, Location, NewRun, NewTask, PasswordChange,
-    Readers, RestorePlan, RestoreReport, RunEnd, RunMode, RunPlan, RunReport, RunRepository,
-    SettingsRepository, ShareSpot, Shares, Steps, TaskRepository,
+    BackupHost, CloudAccountRepository, CloudCredentials, CloudSignIn, Crypt, Drive, Drives, HostError,
+    HostFacts, HostKey, Listing, Location, NewAccount, NewRun, NewTask, PasswordChange, Readers, RestorePlan,
+    RestoreReport, RunEnd, RunMode, RunPlan, RunReport, RunRepository, Secrets, SettingsRepository,
+    ShareSpot, Shares, Steps, TaskRepository,
 };
 pub use restore::{RestoreRequest, Versions};
 pub use tasks::{Plugin, TaskView};
@@ -34,6 +37,8 @@ pub struct BackupPorts {
     pub host: Arc<dyn BackupHost>,
     pub shares: Arc<dyn Shares>,
     pub drives: Arc<dyn Drives>,
+    pub accounts: Arc<dyn CloudAccountRepository>,
+    pub sign_in: Arc<dyn CloudSignIn>,
     pub jobs: Jobs,
     pub notifier: Notifier,
     pub audit: Arc<dyn AuditLog>,
@@ -70,6 +75,12 @@ pub enum BackupError {
     DriveReadOnly,
     #[error("the server's host key changed: {0}")]
     HostKeyChanged(String),
+    /// Tasks back up into the cloud account.
+    #[error("the cloud account is in use by {}", .0.join(", "))]
+    AccountInUse(Vec<String>),
+    /// No sign-in of that state is under way (it ended, or took too long).
+    #[error("the sign-in is over: begin again")]
+    SignInExpired,
     #[error("{0}")]
     Refused(String),
     #[error("{0}")]
@@ -141,11 +152,72 @@ impl Drop for Claim {
 pub struct Backups {
     ports: Arc<BackupPorts>,
     busy: Arc<Mutex<Busy>>,
+    /// Sign-ins to clouds under way, by their state.
+    flows: Arc<Mutex<BTreeMap<String, cloud::Flow>>>,
 }
 
 impl Backups {
     pub fn new(ports: BackupPorts) -> Self {
-        Self { ports: Arc::new(ports), busy: Arc::default() }
+        Self { ports: Arc::new(ports), busy: Arc::default(), flows: Arc::default() }
+    }
+
+    /// A place as the host reaches it now: a share's volume, a drive
+    /// mounted, a server as given, a cloud account's provider.
+    async fn reach(
+        &self,
+        place: &Place,
+        context: &RequestContext,
+    ) -> Result<(Location, Option<Drive>), BackupError> {
+        match place {
+            Place::Nas(nas) => self.locate(nas, context).await,
+            Place::Remote(remote) => {
+                Ok((Location::Remote { server: remote.server.clone(), path: remote.path.clone() }, None))
+            }
+            Place::Cloud(cloud) => {
+                let account = self.ports.accounts.find(cloud.account).await?.ok_or(BackupError::NotFound)?;
+                Ok((
+                    Location::Cloud {
+                        provider: account.provider,
+                        account: account.id,
+                        path: cloud.path.clone(),
+                    },
+                    None,
+                ))
+            }
+        }
+    }
+
+    /// What a task's runs need: a daemon's password, the crypt's, a cloud's sign-in.
+    async fn secrets(&self, task: &Task) -> Result<Secrets, BackupError> {
+        let mut secrets =
+            Secrets { password: self.ports.tasks.password(task.id).await?, ..Secrets::default() };
+        if task.settings.encrypted {
+            secrets.crypt = Some(self.ports.tasks.crypt(task.id).await?.ok_or_else(|| {
+                BackupError::Refused("the task is encrypted but its password is not stored".into())
+            })?);
+        }
+        if let Place::Cloud(cloud) = &task.settings.target {
+            let account = self.ports.accounts.find(cloud.account).await?.ok_or(BackupError::NotFound)?;
+            let (token, client_secret) =
+                self.ports.accounts.secrets(account.id).await?.ok_or(BackupError::NotFound)?;
+            secrets.cloud = Some(CloudCredentials {
+                provider: account.provider,
+                token,
+                client_id: account.client_id,
+                client_secret,
+                drive_id: account.drive_id,
+                drive_type: account.drive_type,
+            });
+        }
+        Ok(secrets)
+    }
+
+    /// Keeps a token rclone refreshed for the task's cloud account.
+    async fn keep_token(&self, task: &Task, token: Option<&zendiloos_kernel::Secret>) {
+        let (Some(token), Place::Cloud(cloud)) = (token, &task.settings.target) else { return };
+        if let Err(error) = self.ports.accounts.set_token(cloud.account, token).await {
+            tracing::warn!(%error, task = task.id, "backup: cannot keep the cloud's refreshed token");
+        }
     }
 
     fn now(&self) -> Timestamp {

@@ -1,14 +1,14 @@
 //! A small https client over hyper and rustls with the system's
 //! certificate authorities (`ca-certificates`), for what zendiloosd fetches
-//! itself: app catalogs and their icons, image digests from registries, and
-//! zendiloOS's releases.
+//! itself: app catalogs and their icons, image digests from registries,
+//! zendiloOS's releases, and a cloud's OAuth token for backups.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use http_body_util::{BodyExt, Empty, LengthLimitError, Limited};
+use http_body_util::{BodyExt, Either, Empty, Full, LengthLimitError, Limited};
 use hyper::body::Bytes;
-use hyper::header::{AUTHORIZATION, HOST, HeaderMap, HeaderName, LOCATION, USER_AGENT};
+use hyper::header::{AUTHORIZATION, CONTENT_TYPE, HOST, HeaderMap, HeaderName, LOCATION, USER_AGENT};
 use hyper::{Method, Request, StatusCode, Uri};
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::ServerName;
@@ -153,9 +153,51 @@ pub async fn attempt(
     max_bytes: usize,
     within: Duration,
 ) -> Result<Answer, Failure> {
-    tokio::time::timeout(within, follow(tls, method, address, headers, max_bytes))
+    tokio::time::timeout(within, follow(tls, method, address, headers, None, max_bytes))
         .await
         .unwrap_or_else(|_| Err(Failure::transient(format!("no answer within {} seconds", within.as_secs()))))
+}
+
+/// POSTs `form` (`application/x-www-form-urlencoded`) to `address` (https
+/// only) with `headers`; a redirect is not followed: what is sent goes to
+/// that address alone. At most `max_bytes` of the body.
+pub async fn post_form(
+    tls: &Arc<rustls::ClientConfig>,
+    address: &str,
+    headers: &[(HeaderName, String)],
+    form: &[(&str, &str)],
+    max_bytes: usize,
+) -> Result<Answer, String> {
+    let body = (CONTENT_TYPE_FORM, form_encoded(form).into_bytes());
+    tokio::time::timeout(TIMEOUT, follow(tls, Method::POST, address, headers, Some(body), max_bytes))
+        .await
+        .unwrap_or_else(|_| {
+            Err(Failure::transient(format!("no answer within {} seconds", TIMEOUT.as_secs())))
+        })
+        .map_err(String::from)
+}
+
+const CONTENT_TYPE_FORM: &str = "application/x-www-form-urlencoded";
+
+/// `pairs` as a form encodes them: unreserved characters as they are,
+/// every other byte as `%XX`.
+pub fn form_encoded(pairs: &[(&str, &str)]) -> String {
+    let encode = |text: &str| {
+        let mut out = String::with_capacity(text.len());
+        for byte in text.bytes() {
+            if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+                out.push(char::from(byte));
+            } else {
+                out.push_str(&format!("%{byte:02X}"));
+            }
+        }
+        out
+    };
+    pairs
+        .iter()
+        .map(|(name, value)| format!("{}={}", encode(name), encode(value)))
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 async fn follow(
@@ -163,6 +205,7 @@ async fn follow(
     method: Method,
     address: &str,
     headers: &[(HeaderName, String)],
+    body: Option<(&str, Vec<u8>)>,
     max_bytes: usize,
 ) -> Result<Answer, Failure> {
     let mut address = address.to_owned();
@@ -211,9 +254,20 @@ async fn follow(
             }
             request = request.header(name, value);
         }
-        let request = request.body(Empty::<Bytes>::new()).map_err(|e| Failure::permanent(e.to_string()))?;
+        let request = match &body {
+            Some((content_type, bytes)) => request
+                .header(CONTENT_TYPE, *content_type)
+                .body(Either::Right(Full::new(Bytes::from(bytes.clone())))),
+            None => request.body(Either::Left(Empty::<Bytes>::new())),
+        }
+        .map_err(|e| Failure::permanent(e.to_string()))?;
         let response = sender.send_request(request).await.map_err(|e| Failure::of_exchange(&e))?;
         let status = response.status();
+        if status.is_redirection() && body.is_some() {
+            return Err(Failure::permanent(format!(
+                "the server answered {status}: a redirect is not followed with a form"
+            )));
+        }
         if status.is_redirection() {
             let location = response
                 .headers()

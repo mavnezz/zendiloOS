@@ -594,6 +594,80 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/backup/accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The cloud accounts, by name. Needs `backup.manage`. */
+        get: operations["list_backup_accounts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/accounts/sign-in": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Begins signing in to a cloud account (for 30 minutes). Needs
+         *     `backup.manage`.
+         */
+        post: operations["start_backup_sign_in"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/accounts/sign-in/{flow}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Finishes a sign-in: the code in the address exchanged for a token, kept
+         *     with a new account. Needs `backup.manage`.
+         */
+        post: operations["finish_backup_sign_in"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backup/accounts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Forgets a cloud account and its token. Needs `backup.manage`. */
+        delete: operations["delete_backup_account"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/backup/key": {
         parameters: {
             query?: never;
@@ -747,10 +821,6 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * Who may read share `id`: whoever may, reads what is backed up into it.
-         *     Needs `backup.manage`.
-         */
         get: operations["backup_share_readers"];
         put?: never;
         post?: never;
@@ -4724,6 +4794,20 @@ export interface components {
             tag: string;
             version: string;
         };
+        /**
+         * @description A cloud account signed in to. Its token, and its own client's secret if
+         *     given, are never shown.
+         */
+        BackupCloudAccount: {
+            /** @description The administrator's own OAuth client; none: rclone's. */
+            client_id?: string | null;
+            /** Format: int64 */
+            created_at: number;
+            /** Format: int64 */
+            id: number;
+            name: string;
+            provider: components["schemas"]["BackupProvider"];
+        };
         /** @description An entry of a folder in a backup or on a server. */
         BackupEntry: {
             /** Format: int64 */
@@ -4771,7 +4855,8 @@ export interface components {
         BackupOutcome: "running" | "succeeded" | "partial" | "failed" | "stopped" | "interrupted";
         /**
          * @description Where a task reads or writes: a folder of a share, of a removable drive
-         *     (by its file system's UUID), or of the task's server.
+         *     (by its file system's UUID), of the task's server, or of a cloud
+         *     account (a target only).
          */
         BackupPlace: {
             /** @enum {string} */
@@ -4787,6 +4872,12 @@ export interface components {
         } | {
             /** @enum {string} */
             kind: "server";
+            path: string;
+        } | {
+            /** Format: int64 */
+            account_id: number;
+            /** @enum {string} */
+            kind: "cloud";
             path: string;
         };
         /** @description A volume's backup plan as set. */
@@ -4869,14 +4960,21 @@ export interface components {
             weekday?: number | null;
         };
         /**
-         * @description The plugin: rsync and the SSH client installed, and the NAS's public
-         *     key for SSH servers once made.
+         * @description The plugin: rsync and the SSH client installed, rclone (for clouds and
+         *     encryption), and the NAS's public key for SSH servers once made.
          */
         BackupPlugin: {
             installed: boolean;
             public_key?: string | null;
+            rclone: boolean;
             ssh: boolean;
         };
+        /**
+         * @description Who may read share `id`: whoever may, reads what is backed up into it.
+         *     Needs `backup.manage`.
+         * @enum {string}
+         */
+        BackupProvider: "google_drive" | "onedrive";
         /**
          * @description Who may read a share backups may go to: they read all of a backed-up
          *     volume's contents.
@@ -4991,6 +5089,33 @@ export interface components {
             /** @description Computers it is exported to over NFS. */
             nfs: string[];
         };
+        /**
+         * @description A sign-in under way: the provider's consent page to open, and the
+         *     sign-in's number to finish it with.
+         */
+        BackupSignIn: {
+            flow: string;
+            /**
+             * @description The browser lands on `http://127.0.0.1:53682/` (or `localhost`)
+             *     after consenting, where nothing answers: that address is pasted
+             *     back.
+             */
+            url: string;
+        };
+        /** @description The address the browser landed on after consenting. */
+        BackupSignInFinish: {
+            address: string;
+        };
+        /**
+         * @description A sign-in to begin: the account's name, and the administrator's own
+         *     OAuth client if wished.
+         */
+        BackupSignInRequest: {
+            client_id?: string | null;
+            client_secret?: string | null;
+            name: string;
+            provider: components["schemas"]["BackupProvider"];
+        };
         /** @enum {string} */
         BackupState: "running" | "succeeded" | "failed";
         /**
@@ -5002,6 +5127,8 @@ export interface components {
             bwlimit_kib?: number | null;
             /** Format: int64 */
             created_at: number;
+            /** @description Encrypted with rclone's crypt (its password is never shown). */
+            encrypted: boolean;
             excludes: string[];
             /** @description The folder in the target holding its backup. */
             folder: string;
@@ -5029,7 +5156,7 @@ export interface components {
             target: components["schemas"]["BackupPlace"];
         };
         /** @enum {string} */
-        BackupTaskKind: "local" | "push" | "pull";
+        BackupTaskKind: "local" | "push" | "pull" | "cloud";
         /** @description A task as made or changed. */
         BackupTaskRequest: {
             /**
@@ -5037,6 +5164,18 @@ export interface components {
              * @description KiB/s; none follows the settings, 0 is no limit.
              */
             bwlimit_kib?: number | null;
+            /**
+             * @description The crypt's password: needed to make an encrypted task, kept when
+             *     left out on a change. Without it the backup cannot be restored.
+             */
+            crypt_password?: string | null;
+            /** @description The crypt's salt (rclone's `password2`), optional. */
+            crypt_salt?: string | null;
+            /**
+             * @description Names and contents encrypted in the target (rclone's crypt): not to
+             *     an rsync daemon, nor pulled.
+             */
+            encrypted?: boolean;
             excludes: string[];
             /** @description Whether names starting with `.` are backed up. */
             hidden: boolean;
@@ -10245,6 +10384,126 @@ export interface operations {
             };
             /** @description `too_many_attempts` */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_backup_accounts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupCloudAccount"][];
+                };
+            };
+        };
+    };
+    start_backup_sign_in: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackupSignInRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupSignIn"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    finish_backup_sign_in: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                flow: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackupSignInFinish"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupCloudAccount"];
+                };
+            };
+            /** @description `cloud_sign_in_expired`, `refused` (in the provider's words), `name_taken` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_backup_account: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `account_in_use`, with the tasks */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

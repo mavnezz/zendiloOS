@@ -25,6 +25,7 @@ fn ssh_push() -> TaskSettings {
         filters: Filters { excludes: vec!["*.tmp".into(), "@eaDir".into()], hidden: false },
         bwlimit_kib: Some(2048),
         notify_success: true,
+        encrypted: false,
     }
 }
 
@@ -71,6 +72,7 @@ async fn tasks_round_trip_and_names_are_unique_without_case() {
         filters: Filters::default(),
         bwlimit_kib: None,
         notify_success: false,
+        encrypted: false,
     };
     let pulled = tasks.create(&new(pull.clone()), Some(&Secret::new("s3cret"))).await.unwrap().unwrap();
     assert_eq!(tasks.find(pulled).await.unwrap().unwrap().settings, pull);
@@ -161,4 +163,53 @@ async fn settings_are_the_defaults_until_saved() {
     settings.set(Settings { log_days: 30, bwlimit_kib: 1024 }).await.unwrap();
     settings.set(Settings { log_days: 31, bwlimit_kib: 0 }).await.unwrap();
     assert_eq!(settings.get().await.unwrap(), Settings { log_days: 31, bwlimit_kib: 0 });
+}
+
+#[tokio::test]
+async fn cloud_accounts_keep_their_secrets_apart_and_stay_while_a_task_backs_up_into_them() {
+    let (_dir, db) = temporary_database().await;
+    let accounts = SqliteBackupAccounts::new(db.clone());
+    let tasks = SqliteBackupTasks::new(db);
+    let account = NewAccount {
+        name: "Family OneDrive".into(),
+        provider: Provider::OneDrive,
+        client_id: Some("own-client".into()),
+        drive_id: Some("b!drive".into()),
+        drive_type: Some("personal".into()),
+        created_at: Timestamp::from_unix_seconds(100),
+    };
+    let token = Secret::new(r#"{"access_token":"a","refresh_token":"r"}"#);
+    let id = accounts.create(&account, &token, Some(&Secret::new("shh"))).await.unwrap().unwrap();
+    let mut same = account.clone();
+    same.name = "FAMILY onedrive".into();
+    assert_eq!(accounts.create(&same, &token, None).await.unwrap(), None, "name taken");
+    let found = accounts.find(id).await.unwrap().unwrap();
+    assert_eq!(
+        (found.name.as_str(), found.provider, found.client_id.as_deref(), found.drive_type.as_deref()),
+        ("Family OneDrive", Provider::OneDrive, Some("own-client"), Some("personal"))
+    );
+    let (kept, secret) = accounts.secrets(id).await.unwrap().unwrap();
+    assert_eq!((kept.expose(), secret.unwrap().expose()), (token.expose(), "shh"));
+    accounts.set_token(id, &Secret::new("{\"access_token\":\"fresh\"}")).await.unwrap();
+    assert!(accounts.secrets(id).await.unwrap().unwrap().0.expose().contains("fresh"));
+    assert_eq!(accounts.list().await.unwrap().len(), 1);
+
+    // An encrypted task into it, its crypt kept apart.
+    let mut settings = ssh_push();
+    settings.target = Place::Cloud(CloudPlace { account: id, path: "nas".into() });
+    settings.encrypted = true;
+    let task = tasks.create(&new(settings.clone()), None).await.unwrap().unwrap();
+    assert_eq!(tasks.find(task).await.unwrap().unwrap().settings, settings);
+    assert!(tasks.crypt(task).await.unwrap().is_none());
+    let crypt = Crypt { password: Secret::new("correct horse"), salt: Some(Secret::new("pepper")) };
+    tasks.set_crypt(task, Some(&crypt)).await.unwrap();
+    let stored = tasks.crypt(task).await.unwrap().unwrap();
+    assert_eq!((stored.password.expose(), stored.salt.unwrap().expose()), ("correct horse", "pepper"));
+    assert!(accounts.delete(id).await.is_err(), "the database keeps it too while a task uses it");
+    tasks.set_crypt(task, None).await.unwrap();
+    assert!(tasks.crypt(task).await.unwrap().is_none());
+    assert!(tasks.delete(task).await.unwrap());
+    assert!(accounts.delete(id).await.unwrap());
+    assert!(accounts.find(id).await.unwrap().is_none());
+    assert!(accounts.secrets(id).await.unwrap().is_none());
 }

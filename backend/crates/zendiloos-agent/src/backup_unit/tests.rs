@@ -23,6 +23,7 @@ fn job(work: Work, rsync: PathBuf) -> UnitJob {
     UnitJob {
         work,
         rsync,
+        rclone: PathBuf::from("/usr/bin/rclone"),
         ssh: PathBuf::from("/usr/bin/ssh"),
         key: PathBuf::from("/run/credentials/u/backup-key"),
     }
@@ -307,6 +308,7 @@ async fn restores_skip_or_replace_and_make_the_folder() {
         job(
             Work::Restore(Box::new(RestoreJob {
                 from: local(&target, "photos/2026-11-10_030000Z"),
+                within: SharePath::default(),
                 paths: paths.into_iter().map(|p| SharePath::parse(p).unwrap()).collect(),
                 to,
                 existing,
@@ -458,20 +460,22 @@ async fn host_keys_that_changed_and_servers_that_fail_are_told_apart() {
     )
     .unwrap();
     fs::set_permissions(&rsync, fs::Permissions::from_mode(0o755)).unwrap();
-    let list = job(Work::List { at: ssh("") }, rsync.clone());
+    let list = job(Work::List { at: ssh(""), inside: SharePath::default() }, rsync.clone());
     let (said, _) = unit(&list, "").await;
     let (message, kind) = failure(&said);
     assert_eq!(kind, FailKind::HostKey);
     assert!(message.contains("Host key verification failed"), "{message}");
 
     fs::write(&rsync, "#!/bin/sh\necho 'rsync: failed to connect to nas2.lan (192.0.2.1): Connection refused (111)' >&2\nexit 10\n").unwrap();
-    let (said, _) = unit(&job(Work::List { at: daemon("") }, rsync.clone()), "").await;
+    let (said, _) =
+        unit(&job(Work::List { at: daemon(""), inside: SharePath::default() }, rsync.clone()), "").await;
     let (message, kind) = failure(&said);
     assert_eq!(kind, FailKind::Failed);
     assert!(message.contains("rsync ended with 10") && message.contains("Connection refused"), "{message}");
 
     fs::write(&rsync, "#!/bin/sh\necho 'rsync: change_dir \"/nas/missing\" (in nas) failed: No such file or directory (2)' >&2\nexit 23\n").unwrap();
-    let (said, report) = unit(&job(Work::List { at: daemon("missing") }, rsync), "").await;
+    let (said, report) =
+        unit(&job(Work::List { at: daemon("missing"), inside: SharePath::default() }, rsync), "").await;
     assert!(report.unwrap_or_else(|| panic!("{said:?}")).missing);
 }
 
@@ -525,7 +529,10 @@ async fn jobs_and_secrets_that_cannot_be_read_are_refused() {
     let mut out = Vec::new();
     assert!(!run_backup_unit("zz", &mut std::io::Cursor::new(Vec::new()), &mut out).await);
     let dir = tempfile::tempdir().unwrap();
-    let list = job(Work::List { at: local(dir.path(), "") }, PathBuf::from("/bin/true"));
+    let list = job(
+        Work::List { at: local(dir.path(), ""), inside: SharePath::default() },
+        PathBuf::from("/bin/true"),
+    );
     let mut out = Vec::new();
     assert!(
         !run_backup_unit(&encode(&list), &mut std::io::Cursor::new(b"not json\n".to_vec()), &mut out).await

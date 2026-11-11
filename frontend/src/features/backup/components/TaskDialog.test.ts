@@ -40,7 +40,7 @@ const t = (key: string, values: Record<string, unknown> | number = {}) =>
   typeof values === 'number' ? i18n.global.t(key, values) : i18n.global.t(key, values)
 
 const KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl'
-const PLUGIN = { installed: true, ssh: true, public_key: null }
+const PLUGIN = { installed: true, ssh: true, rclone: true, public_key: null }
 
 async function wizard() {
   const open = ref(true)

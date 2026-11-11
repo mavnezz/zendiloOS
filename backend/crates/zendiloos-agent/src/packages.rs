@@ -58,7 +58,7 @@ const VMS_PACKAGES: [&str; 7] = [
 ];
 /// What backup tasks need: rsync, and the SSH client with ssh-keygen and
 /// ssh-keyscan (most systems have it already).
-const BACKUP_PACKAGES: [&str; 2] = ["rsync", "openssh-client"];
+const BACKUP_PACKAGES: [&str; 3] = ["rsync", "openssh-client", "rclone"];
 /// Lines of apt's output kept for a failure.
 const TAIL: usize = 15;
 /// The files of a release beside its package.
@@ -1113,7 +1113,7 @@ mod tests {
             "{installs:?}"
         );
         assert!(
-            installs[3].ends_with("install --yes --no-install-recommends rsync openssh-client"),
+            installs[3].ends_with("install --yes --no-install-recommends rsync openssh-client rclone"),
             "{installs:?}"
         );
         // Never what brings libvirt's own network and filters along.

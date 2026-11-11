@@ -108,25 +108,61 @@ impl RemotePlace {
     }
 }
 
+/// A cloud storage zendiloOS signs in to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provider {
+    GoogleDrive,
+    OneDrive,
+}
+
+impl Provider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::GoogleDrive => "google_drive",
+            Self::OneDrive => "onedrive",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        [Self::GoogleDrive, Self::OneDrive].into_iter().find(|p| p.as_str() == value)
+    }
+}
+
+/// A folder in a cloud account (from its top, never starting with `/`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudPlace {
+    pub account: i64,
+    pub path: String,
+}
+
 /// One end of a task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Place {
     Nas(NasPlace),
     Remote(RemotePlace),
+    /// Only as a target.
+    Cloud(CloudPlace),
 }
 
 impl Place {
     pub fn remote(&self) -> Option<&RemotePlace> {
         match self {
             Self::Remote(remote) => Some(remote),
-            Self::Nas(_) => None,
+            _ => None,
         }
     }
 
     pub fn nas(&self) -> Option<&NasPlace> {
         match self {
             Self::Nas(nas) => Some(nas),
-            Self::Remote(_) => None,
+            _ => None,
+        }
+    }
+
+    pub fn cloud(&self) -> Option<&CloudPlace> {
+        match self {
+            Self::Cloud(cloud) => Some(cloud),
+            _ => None,
         }
     }
 }
@@ -140,6 +176,8 @@ pub enum TaskKind {
     Push,
     /// From an rsync server into the NAS.
     Pull,
+    /// From a share to a cloud account (rclone).
+    Cloud,
 }
 
 impl TaskKind {
@@ -148,6 +186,7 @@ impl TaskKind {
             Self::Local => "local",
             Self::Push => "push",
             Self::Pull => "pull",
+            Self::Cloud => "cloud",
         }
     }
 }
@@ -206,6 +245,9 @@ pub struct TaskSettings {
     pub bwlimit_kib: Option<u32>,
     /// Tell when a run succeeded too, not only when it failed.
     pub notify_success: bool,
+    /// Encrypted with rclone's crypt over the target: names and contents;
+    /// its password and salt are the task's secrets.
+    pub encrypted: bool,
 }
 
 /// A task as kept.
@@ -347,8 +389,14 @@ impl TaskSettings {
         match (&self.source, &self.target) {
             (Place::Remote(_), _) => TaskKind::Pull,
             (_, Place::Remote(_)) => TaskKind::Push,
+            (_, Place::Cloud(_)) => TaskKind::Cloud,
             _ => TaskKind::Local,
         }
+    }
+
+    /// Whether rclone carries it out (a cloud, or encryption), not rsync.
+    pub fn rclone(&self) -> bool {
+        self.encrypted || matches!(self.target, Place::Cloud(_))
     }
 
     /// The settings with the name trimmed, or why not: every value, and
@@ -372,8 +420,11 @@ impl TaskSettings {
             (Place::Remote(_), Place::Remote(_)) => {
                 return Err(invalid("a task goes from or to the NAS, not from one server to another"));
             }
-            (Place::Nas(NasPlace::Drive { .. }), _) => {
-                return Err(invalid("the source is a folder of a share"));
+            (Place::Nas(NasPlace::Drive { .. }), _) | (Place::Cloud(_), _) => {
+                return Err(invalid("the source is a folder of a share or of a server"));
+            }
+            (Place::Remote(_), Place::Cloud(_)) => {
+                return Err(invalid("a cloud is backed up into from the NAS only"));
             }
             (
                 Place::Nas(NasPlace::Share { share_id: a, path: from }),
@@ -402,6 +453,14 @@ impl TaskSettings {
         if let Some(schedule) = &self.schedule {
             schedule.check().map_err(|e| invalid(e.to_string()))?;
         }
+        if self.encrypted
+            && (matches!(self.source, Place::Remote(_))
+                || matches!(&self.target, Place::Remote(remote) if remote.server.is_daemon()))
+        {
+            return Err(invalid(
+                "encryption is for a target on the NAS, over SSH or in a cloud; not for an rsync daemon or a pull",
+            ));
+        }
         if self.on_plug && self.target.nas().and_then(NasPlace::drive).is_none() {
             return Err(invalid(
                 "only a task whose target is a removable drive backs up when it is plugged in",
@@ -429,6 +488,10 @@ fn check_place(place: &Place, which: &str) -> Result<(), Invalid> {
             Err(invalid(format!("the {which} is no folder of a removable drive")))
         }
         Place::Nas(_) => Ok(()),
+        Place::Cloud(cloud) if cloud.path.starts_with('/') || !is_folder_path(&cloud.path) => {
+            Err(invalid(format!("the {which} is no folder of the cloud")))
+        }
+        Place::Cloud(_) => Ok(()),
         Place::Remote(remote) => {
             let server = &remote.server;
             if !is_host(&server.host) {
@@ -486,7 +549,33 @@ mod tests {
             filters: Filters::default(),
             bwlimit_kib: None,
             notify_success: false,
+            encrypted: false,
         }
+    }
+
+    #[test]
+    fn clouds_and_encryption_have_their_places() {
+        let mut cloud = settings();
+        cloud.target = Place::Cloud(CloudPlace { account: 1, path: "nas/photos".into() });
+        cloud.encrypted = true;
+        let checked = cloud.clone().check(&[]).unwrap();
+        assert!(checked.rclone() && checked.kind() == TaskKind::Cloud);
+        let mut rooted = cloud.clone();
+        rooted.target = Place::Cloud(CloudPlace { account: 1, path: "/x".into() });
+        assert!(rooted.check(&[]).is_err());
+        let mut from_cloud = cloud.clone();
+        from_cloud.source = Place::Cloud(CloudPlace { account: 1, path: String::new() });
+        assert!(from_cloud.check(&[]).is_err());
+        let mut daemon_crypt = settings();
+        daemon_crypt.target = Place::Remote(RemotePlace { server: daemon(), path: String::new() });
+        daemon_crypt.encrypted = true;
+        assert!(daemon_crypt.check(&[]).is_err(), "rclone has no rsync daemon");
+        let mut local_crypt = settings();
+        local_crypt.encrypted = true;
+        assert!(local_crypt.check(&[]).unwrap().rclone());
+        assert_eq!(Provider::parse("onedrive"), Some(Provider::OneDrive));
+        assert_eq!(Provider::GoogleDrive.as_str(), "google_drive");
+        assert_eq!(Provider::parse("dropbox"), None);
     }
 
     #[test]

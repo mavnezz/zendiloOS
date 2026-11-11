@@ -86,7 +86,7 @@ async fn the_plugin_installs_and_hands_out_the_nas_key() {
     let h = Harness::new();
     let admin = h.sign_in("alice", Role::Admin).await;
     let plugin = read(&h, &admin, "/api/v1/backup/plugin").await;
-    assert_eq!(plugin.body, json!({ "installed": false, "ssh": false, "public_key": null }));
+    assert_eq!(plugin.body, json!({ "installed": false, "ssh": false, "rclone": false, "public_key": null }));
     let refused = send(&h, &admin, Method::POST, "/api/v1/backup/tasks", local("Albums")).await;
     assert_problem(&refused, StatusCode::CONFLICT, "backup_not_installed");
     installed(&h, &admin).await;
@@ -259,4 +259,60 @@ async fn a_task_to_a_drive_needs_it_plugged_in_and_settings_have_bounds() {
         send(&h, &admin, Method::POST, "/api/v1/backup/servers/check", check).await.status,
         StatusCode::OK
     );
+}
+
+#[tokio::test]
+async fn a_cloud_account_is_signed_in_to_and_an_encrypted_task_never_shows_its_password() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    installed(&h, &admin).await;
+    let plugin = read(&h, &admin, "/api/v1/backup/plugin").await;
+    assert_eq!(plugin.body["rclone"], true);
+    let begun = send(
+        &h,
+        &admin,
+        Method::POST,
+        "/api/v1/backup/accounts/sign-in",
+        json!({ "provider": "onedrive", "name": "Family OneDrive" }),
+    )
+    .await;
+    assert_eq!(begun.status, StatusCode::OK, "{:?}", begun.body);
+    let flow = begun.body["flow"].as_str().unwrap().to_owned();
+    assert!(begun.body["url"].as_str().unwrap().contains(&format!("state={flow}")));
+    let finish = format!("/api/v1/backup/accounts/sign-in/{flow}");
+    let address = format!("http://localhost:53682/?code=good&state={flow}");
+    let account = send(&h, &admin, Method::POST, &finish, json!({ "address": address })).await;
+    assert_eq!(account.status, StatusCode::CREATED, "{:?}", account.body);
+    assert_eq!(account.body["provider"], "onedrive");
+    assert!(account.body.get("token").is_none());
+    let again = send(&h, &admin, Method::POST, &finish, json!({ "address": address })).await;
+    assert_problem(&again, StatusCode::CONFLICT, "cloud_sign_in_expired");
+    let accounts = read(&h, &admin, "/api/v1/backup/accounts").await;
+    assert_eq!(accounts.body.as_array().unwrap().len(), 1);
+
+    let id = account.body["id"].as_i64().unwrap();
+    let mut task = local("To the cloud");
+    task["target"] = json!({ "kind": "cloud", "account_id": id, "path": "nas" });
+    task["encrypted"] = json!(true);
+    let refused = send(&h, &admin, Method::POST, "/api/v1/backup/tasks", task.clone()).await;
+    assert_problem(&refused, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    task["crypt_password"] = json!("correct horse battery staple");
+    task["crypt_salt"] = json!("pepper");
+    let made = send(&h, &admin, Method::POST, "/api/v1/backup/tasks", task).await;
+    assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
+    assert_eq!((made.body["kind"].as_str(), made.body["encrypted"].as_bool()), (Some("cloud"), Some(true)));
+    let shown = made.body.to_string();
+    assert!(!shown.contains("correct horse") && !shown.contains("pepper"), "{shown}");
+
+    let gone = send(&h, &admin, Method::DELETE, &format!("/api/v1/backup/accounts/{id}"), Value::Null).await;
+    assert_problem(&gone, StatusCode::CONFLICT, "account_in_use");
+    assert_eq!(gone.body["detail"], "To the cloud");
+    let task_id = made.body["id"].as_i64().unwrap();
+    let removed =
+        send(&h, &admin, Method::DELETE, &format!("/api/v1/backup/tasks/{task_id}"), Value::Null).await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    let gone = send(&h, &admin, Method::DELETE, &format!("/api/v1/backup/accounts/{id}"), Value::Null).await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT);
+    let user = h.sign_in("bob", Role::User).await;
+    assert_eq!(read(&h, &user, "/api/v1/backup/accounts").await.status, StatusCode::FORBIDDEN);
 }

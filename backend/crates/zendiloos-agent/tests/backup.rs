@@ -11,10 +11,11 @@ use tempfile::TempDir;
 use zendiloos_agent::config::Tools;
 use zendiloos_agent::{BackupPaths, Erasable, ErasePolicy, HostPaths, Operations, Paths};
 use zendiloos_agent_proto::{
-    BackupEnd, BackupExisting, BackupFolder, BackupHostKey, BackupHostName, BackupMode, BackupPassword,
-    BackupPattern, BackupPruned, BackupRemotePath, BackupRestore, BackupRoot, BackupRun, BackupServer,
-    BackupStamp, BackupTaskId, BackupTransport, BackupWord, ErrorCode, RemovableId, Request, Response, Role,
-    ShareLocation, ShareName, SharePath, VolumeNumber,
+    BackupCloud, BackupCloudAccess, BackupCrypt, BackupEnd, BackupExisting, BackupFolder, BackupHostKey,
+    BackupHostName, BackupMode, BackupPassword, BackupPattern, BackupPruned, BackupRemotePath, BackupRestore,
+    BackupRoot, BackupRun, BackupSecret, BackupSecrets, BackupServer, BackupStamp, BackupTaskId,
+    BackupTransport, BackupWord, ErrorCode, RemovableId, Request, Response, Role, ShareLocation, ShareName,
+    SharePath, VolumeNumber,
 };
 
 const DRIVE: &str = "1A2B-3C4D";
@@ -79,6 +80,7 @@ fn host(installed: bool) -> Host {
         systemd_run,
         systemctl: script(&root, "systemctl", ""),
         rsync: if installed { script(&root, "rsync", "") } else { root.join("no-rsync") },
+        rclone: if installed { script(&root, "rclone", "") } else { root.join("no-rclone") },
         ssh: script(&root, "ssh", ""),
         ssh_keygen: script(&root, "ssh-keygen", ""),
         ssh_keyscan: script(&root, "ssh-keyscan", ""),
@@ -165,10 +167,11 @@ fn unit_call(host: &Host) -> String {
 #[tokio::test]
 async fn the_plugin_says_what_is_installed_and_makes_its_key_once() {
     let host = host(true);
-    let Response::BackupFacts { rsync, ssh, public_key } = host.run(Request::BackupFacts {}).await else {
+    let Response::BackupFacts { rsync, ssh, rclone, public_key } = host.run(Request::BackupFacts {}).await
+    else {
         panic!()
     };
-    assert!(rsync && ssh && public_key.is_none());
+    assert!(rsync && ssh && rclone && public_key.is_none());
     let Response::BackupKey { public_key } = host.run(Request::MakeBackupKey {}).await else { panic!() };
     assert!(public_key.starts_with("ssh-ed25519 "));
     let keygen = host.calls().into_iter().find(|call| call.contains("ssh-keygen")).unwrap();
@@ -189,7 +192,12 @@ async fn host_without_rsync() -> Response {
     let host = host(false);
     let Response::BackupFacts { rsync, .. } = host.run(Request::BackupFacts {}).await else { panic!() };
     assert!(!rsync);
-    host.run(Request::ListBackup { at: share(1, "photos", ""), password: None }).await
+    host.run(Request::ListBackup {
+        at: share(1, "photos", ""),
+        inside: SharePath::default(),
+        secrets: BackupSecrets::default(),
+    })
+    .await
 }
 
 #[tokio::test]
@@ -215,7 +223,7 @@ async fn a_local_run_sees_only_its_roots_and_writes_only_its_target() {
     answer(&host, &report(&json).iter().map(String::as_str).collect::<Vec<_>>());
     let request = Request::RunBackup {
         run: run(share(1, "photos", "albums"), share(2, "backups", "")),
-        password: None,
+        secrets: BackupSecrets::default(),
     };
     let Response::BackupRan { files, transfers, listing, .. } = host.run(request).await else { panic!() };
     assert_eq!((files, transfers.len()), (3, 1));
@@ -249,12 +257,16 @@ async fn a_password_comes_on_stdin_and_never_on_a_command_line() {
     let daemon = BackupTransport::Daemon { module: BackupWord::parse("nas").unwrap() };
     let request = Request::ListBackup {
         at: server(daemon.clone(), "photos"),
-        password: Some(BackupPassword::new("s3cret").unwrap()),
+        inside: SharePath::default(),
+        secrets: BackupSecrets {
+            password: Some(BackupPassword::new("s3cret").unwrap()),
+            ..BackupSecrets::default()
+        },
     };
     let Response::BackupListing { missing, .. } = host.run(request).await else { panic!() };
     assert!(missing);
     assert!(host.calls().iter().all(|call| !call.contains("s3cret")));
-    assert_eq!(host.input().trim(), r#"{"password":"s3cret"}"#);
+    assert_eq!(host.input().trim(), r#"{"password":"s3cret","crypt":null,"cloud":null}"#);
     let call = unit_call(&host);
     for expected in ["--property=PrivateNetwork=no", "AF_INET AF_INET6", "--property=CapabilityBoundingSet= "]
     {
@@ -263,7 +275,10 @@ async fn a_password_comes_on_stdin_and_never_on_a_command_line() {
 
     // A push reads the share and needs nothing else.
     answer(&host, &report(r#"{"files":0,"bytes":0,"partial":null,"transfers":[],"transfers_total":0,"listing":"","missing":false}"#).iter().map(String::as_str).collect::<Vec<_>>());
-    let push = Request::RunBackup { run: run(share(1, "photos", ""), server(daemon, "")), password: None };
+    let push = Request::RunBackup {
+        run: run(share(1, "photos", ""), server(daemon, "")),
+        secrets: BackupSecrets::default(),
+    };
     assert!(matches!(host.run(push).await, Response::BackupRan { .. }));
     let call = unit_call(&host);
     assert!(call.contains("--property=CapabilityBoundingSet=CAP_DAC_READ_SEARCH "), "{call}");
@@ -282,7 +297,11 @@ async fn ssh_needs_the_key_and_a_changed_host_key_is_refused_as_such() {
         )
         .unwrap(),
     };
-    let request = Request::ListBackup { at: server(ssh.clone(), "/srv"), password: None };
+    let request = Request::ListBackup {
+        at: server(ssh.clone(), "/srv"),
+        inside: SharePath::default(),
+        secrets: BackupSecrets::default(),
+    };
     let Response::Error { message, .. } = host.run(request.clone()).await else { panic!() };
     assert!(message.contains("no SSH key"), "{message}");
     host.run(Request::MakeBackupKey {}).await;
@@ -306,11 +325,12 @@ async fn drives_restores_retention_and_stops() {
         restore: BackupRestore {
             task: BackupTaskId::new(7).unwrap(),
             from: drive.clone(),
+            within: SharePath::parse("current").unwrap(),
             paths: vec![SharePath::parse("2024").unwrap()],
             to: share(1, "photos", "restored"),
             existing: BackupExisting::Skip,
         },
-        password: None,
+        secrets: BackupSecrets::default(),
     };
     let Response::BackupRestored { files, .. } = host.run(restore).await else { panic!() };
     assert_eq!(files, 2);
@@ -325,13 +345,14 @@ async fn drives_restores_retention_and_stops() {
         task: BackupTaskId::new(7).unwrap(),
         at: drive.clone(),
         names: vec![BackupPruned::parse("2026-11-01_030000Z").unwrap()],
-        password: None,
+        secrets: BackupSecrets::default(),
     };
-    assert_eq!(host.run(prune).await, Response::Done);
+    assert_eq!(host.run(prune).await, Response::BackupPruned { token: None });
     assert!(unit_call(&host).contains("--unit=zendiloos-backup-prune-7.service"));
 
     // Into a drive from a server: refused where a backup cannot go.
-    let from_drive = Request::RunBackup { run: run(drive, share(2, "backups", "")), password: None };
+    let from_drive =
+        Request::RunBackup { run: run(drive, share(2, "backups", "")), secrets: BackupSecrets::default() };
     let Response::Error { code, .. } = host.run(from_drive).await else { panic!() };
     assert_eq!(code, ErrorCode::Forbidden);
 
@@ -366,11 +387,72 @@ async fn units_left_running_are_stopped_as_the_agent_starts() {
 async fn a_unit_that_ends_without_an_answer_fails() {
     let host = host(true);
     answer(&host, &[]);
-    let Response::Error { code, message } =
-        host.run(Request::ListBackup { at: share(1, "photos", ""), password: None }).await
+    let Response::Error { code, message } = host
+        .run(Request::ListBackup {
+            at: share(1, "photos", ""),
+            inside: SharePath::default(),
+            secrets: BackupSecrets::default(),
+        })
+        .await
     else {
         panic!()
     };
     assert_eq!(code, ErrorCode::Failed);
     assert!(message.contains("ended unexpectedly"), "{message}");
+}
+
+#[tokio::test]
+async fn a_cloud_is_backed_up_with_rclone_its_secrets_on_stdin_and_a_refreshed_token_answered() {
+    let host = host(true);
+    let answered = r#"{"files":1,"bytes":5,"partial":null,"transfers":[],"transfers_total":0,"listing":"","missing":false,"token":"{\"access_token\":\"fresh\"}"}"#;
+    answer(&host, &report(answered).iter().map(String::as_str).collect::<Vec<_>>());
+    let cloud = BackupEnd::Cloud { cloud: BackupCloud::GoogleDrive, path: SharePath::parse("nas").unwrap() };
+    let secrets = BackupSecrets {
+        password: None,
+        crypt: Some(BackupCrypt { password: BackupSecret::new("correct horse").unwrap(), salt: None }),
+        cloud: Some(BackupCloudAccess {
+            token: BackupSecret::new(r#"{"access_token":"old"}"#).unwrap(),
+            client_id: None,
+            client_secret: Some(BackupSecret::new("own client secret").unwrap()),
+            drive_id: None,
+            drive_type: None,
+        }),
+    };
+    let request =
+        Request::RunBackup { run: run(share(1, "photos", ""), cloud.clone()), secrets: secrets.clone() };
+    let Response::BackupRan { token, .. } = host.run(request).await else { panic!() };
+    assert_eq!(token.map(|t| t.expose().to_owned()).as_deref(), Some(r#"{"access_token":"fresh"}"#));
+    for secret in ["correct horse", "own client secret", "access_token"] {
+        assert!(host.calls().iter().all(|call| !call.contains(secret)), "{secret} on a command line");
+        assert!(host.input().contains(secret), "{secret} on stdin");
+    }
+    let call = unit_call(&host);
+    for expected in [
+        "--property=PrivateNetwork=no",
+        "--property=CapabilityBoundingSet=CAP_DAC_READ_SEARCH ",
+        "--property=BindReadOnlyPaths=/volume1/photos",
+    ] {
+        assert!(call.contains(expected), "{expected}: {call}");
+    }
+    assert!(!call.contains("BindPaths=") && !call.contains("LoadCredential"), "{call}");
+
+    // Not from a cloud, nor encrypted to an rsync daemon.
+    let from_cloud =
+        Request::RunBackup { run: run(cloud, share(2, "backups", "")), secrets: secrets.clone() };
+    let Response::Error { code, .. } = host.run(from_cloud).await else { panic!() };
+    assert_eq!(code, ErrorCode::Forbidden);
+    let daemon = BackupTransport::Daemon { module: BackupWord::parse("nas").unwrap() };
+    let to_daemon = Request::RunBackup { run: run(share(1, "photos", ""), server(daemon, "")), secrets };
+    let Response::Error { code, message } = host.run(to_daemon).await else { panic!() };
+    assert_eq!(code, ErrorCode::Forbidden, "{message}");
+}
+
+#[tokio::test]
+async fn without_rclone_a_cloud_cannot_be_reached() {
+    let host = host(false);
+    let cloud = BackupEnd::Cloud { cloud: BackupCloud::OneDrive, path: SharePath::default() };
+    let request =
+        Request::ListBackup { at: cloud, inside: SharePath::default(), secrets: BackupSecrets::default() };
+    let Response::Error { message, .. } = host.run(request).await else { panic!() };
+    assert!(message.contains("rclone is not installed"), "{message}");
 }

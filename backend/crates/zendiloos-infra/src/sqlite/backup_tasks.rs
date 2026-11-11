@@ -1,14 +1,18 @@
-//! Backup tasks, their runs with their transfer lists, and the plugin's
-//! settings. A daemon's password is a column of its task's row, which only
-//! zendiloosd reads; nothing returns it but [`TaskRepository::password`].
+//! Backup tasks, their runs with their transfer lists, the cloud accounts
+//! they back up to, and the plugin's settings. A daemon's password, the
+//! crypt's password and salt, a cloud's token and its own client's secret
+//! are columns of their rows, which only zendiloosd reads; nothing returns
+//! them but [`TaskRepository::password`], [`TaskRepository::crypt`] and
+//! [`CloudAccountRepository::secrets`].
 
 use async_trait::async_trait;
 use zendiloos_backup::application::{
-    NewRun, NewTask, PasswordChange, RunEnd, RunRepository, SettingsRepository, TaskRepository,
+    CloudAccountRepository, Crypt, NewAccount, NewRun, NewTask, PasswordChange, RunEnd, RunRepository,
+    SettingsRepository, TaskRepository,
 };
 use zendiloos_backup::domain::{
-    Filters, Frequency, Mode, NasPlace, Outcome, Place, RemotePlace, Run, Schedule, Server, Settings, Task,
-    TaskSettings, Transfer, Transport, Trigger,
+    CloudAccount, CloudPlace, Filters, Frequency, Mode, NasPlace, Outcome, Place, Provider, RemotePlace, Run,
+    Schedule, Server, Settings, Task, TaskSettings, Transfer, Transport, Trigger,
 };
 use zendiloos_kernel::{PortError, Secret, Timestamp};
 
@@ -46,6 +50,7 @@ struct Row {
     target_kind: String,
     target_share: Option<i64>,
     target_drive: Option<String>,
+    target_account: Option<i64>,
     target_path: String,
     server_transport: Option<String>,
     server_host: Option<String>,
@@ -67,6 +72,7 @@ struct Row {
     hidden: bool,
     bwlimit_kib: Option<i64>,
     notify_success: bool,
+    encrypted: bool,
     created_at: i64,
     since: i64,
     last_plug: Option<String>,
@@ -120,6 +126,10 @@ impl Row {
                 path: self.target_path.clone(),
             }),
             "server" => Place::Remote(RemotePlace { server: self.server()?, path: self.target_path.clone() }),
+            "cloud" => Place::Cloud(CloudPlace {
+                account: self.target_account.ok_or_else(|| stored("no target account".into()))?,
+                path: self.target_path.clone(),
+            }),
             other => return Err(stored(format!("a target of the kind {other:?}"))),
         };
         let mode = match self.mode.as_str() {
@@ -167,6 +177,7 @@ impl Row {
                 },
                 bwlimit_kib: optional(self.bwlimit_kib, "bandwidth")?,
                 notify_success: self.notify_success,
+                encrypted: self.encrypted,
             },
             folder: self.folder,
             created_at: Timestamp::from_unix_seconds(self.created_at),
@@ -184,6 +195,7 @@ struct Columns<'a> {
     target_kind: &'static str,
     target_share: Option<i64>,
     target_drive: Option<&'a str>,
+    target_account: Option<i64>,
     target_path: &'a str,
     server_transport: Option<&'static str>,
     server_host: Option<&'a str>,
@@ -212,6 +224,7 @@ fn columns(settings: &TaskSettings) -> Columns<'_> {
         target_kind: "share",
         target_share: None,
         target_drive: None,
+        target_account: None,
         target_path: "",
         server_transport: None,
         server_host: None,
@@ -242,6 +255,8 @@ fn columns(settings: &TaskSettings) -> Columns<'_> {
             columns.source_kind = "server";
             columns.source_path = &place.path;
         }
+        // Not a source: the domain refuses it.
+        Place::Cloud(place) => columns.source_path = &place.path,
     }
     match &settings.target {
         Place::Nas(NasPlace::Share { share_id, path }) => {
@@ -255,6 +270,11 @@ fn columns(settings: &TaskSettings) -> Columns<'_> {
         }
         Place::Remote(place) => {
             columns.target_kind = "server";
+            columns.target_path = &place.path;
+        }
+        Place::Cloud(place) => {
+            columns.target_kind = "cloud";
+            columns.target_account = Some(place.account);
             columns.target_path = &place.path;
         }
     }
@@ -306,11 +326,13 @@ macro_rules! select_tasks {
         sqlx::query_as!(
             Row,
             r#"SELECT id AS "id!", name, folder, source_kind, source_share, source_path, target_kind,
-                      target_share, target_drive, target_path, server_transport, server_host, server_port,
+                      target_share, target_drive, target_account, target_path, server_transport, server_host,
+                      server_port,
                       server_user, server_module, server_host_key, server_fingerprint, mode, keep_changed_days,
                       keep_last, keep_days, schedule, schedule_weekday, schedule_hour, schedule_minute,
                       on_plug AS "on_plug: bool", excludes, hidden AS "hidden: bool", bwlimit_kib,
-                      notify_success AS "notify_success: bool", created_at, since, last_plug
+                      notify_success AS "notify_success: bool", encrypted AS "encrypted: bool", created_at,
+                      since, last_plug
                FROM backup_tasks "# + $tail
             $(, $arg)*
         )
@@ -336,11 +358,12 @@ impl TaskRepository for SqliteBackupTasks {
         let created_at = task.created_at.unix_seconds();
         let done = sqlx::query!(
             "INSERT INTO backup_tasks (name, folder, source_kind, source_share, source_path, target_kind,
-                 target_share, target_drive, target_path, server_transport, server_host, server_port, server_user,
-                 server_module, server_host_key, server_fingerprint, server_password, mode, keep_changed_days,
-                 keep_last, keep_days, schedule, schedule_weekday, schedule_hour, schedule_minute, on_plug,
-                 excludes, hidden, bwlimit_kib, notify_success, created_at, since, last_plug)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 target_share, target_drive, target_account, target_path, server_transport, server_host, server_port,
+                 server_user, server_module, server_host_key, server_fingerprint, server_password, mode,
+                 keep_changed_days, keep_last, keep_days, schedule, schedule_weekday, schedule_hour, schedule_minute,
+                 on_plug, excludes, hidden, bwlimit_kib, notify_success, encrypted, created_at, since, last_plug)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                     ?, ?)",
             settings.name,
             task.folder,
             c.source_kind,
@@ -349,6 +372,7 @@ impl TaskRepository for SqliteBackupTasks {
             c.target_kind,
             c.target_share,
             c.target_drive,
+            c.target_account,
             c.target_path,
             c.server_transport,
             c.server_host,
@@ -371,6 +395,7 @@ impl TaskRepository for SqliteBackupTasks {
             settings.filters.hidden,
             c.bwlimit_kib,
             settings.notify_success,
+            settings.encrypted,
             created_at,
             created_at,
             task.last_plug
@@ -391,11 +416,11 @@ impl TaskRepository for SqliteBackupTasks {
         let mut transaction = self.db.pool().begin().await.map_err(db_error)?;
         let done = sqlx::query!(
             "UPDATE backup_tasks SET name = ?, source_kind = ?, source_share = ?, source_path = ?, target_kind = ?,
-                 target_share = ?, target_drive = ?, target_path = ?, server_transport = ?, server_host = ?,
-                 server_port = ?, server_user = ?, server_module = ?, server_host_key = ?, server_fingerprint = ?,
-                 mode = ?, keep_changed_days = ?, keep_last = ?, keep_days = ?, schedule = ?, schedule_weekday = ?,
-                 schedule_hour = ?, schedule_minute = ?, on_plug = ?, excludes = ?, hidden = ?, bwlimit_kib = ?,
-                 notify_success = ?, since = ?, last_plug = ?
+                 target_share = ?, target_drive = ?, target_account = ?, target_path = ?, server_transport = ?,
+                 server_host = ?, server_port = ?, server_user = ?, server_module = ?, server_host_key = ?,
+                 server_fingerprint = ?, mode = ?, keep_changed_days = ?, keep_last = ?, keep_days = ?, schedule = ?,
+                 schedule_weekday = ?, schedule_hour = ?, schedule_minute = ?, on_plug = ?, excludes = ?, hidden = ?,
+                 bwlimit_kib = ?, notify_success = ?, encrypted = ?, since = ?, last_plug = ?
              WHERE id = ?",
             settings.name,
             c.source_kind,
@@ -404,6 +429,7 @@ impl TaskRepository for SqliteBackupTasks {
             c.target_kind,
             c.target_share,
             c.target_drive,
+            c.target_account,
             c.target_path,
             c.server_transport,
             c.server_host,
@@ -425,6 +451,7 @@ impl TaskRepository for SqliteBackupTasks {
             settings.filters.hidden,
             c.bwlimit_kib,
             settings.notify_success,
+            settings.encrypted,
             since,
             task.last_plug,
             task.id
@@ -490,6 +517,159 @@ impl TaskRepository for SqliteBackupTasks {
             .await
             .map_err(db_error)?;
         Ok(())
+    }
+
+    async fn crypt(&self, id: i64) -> Result<Option<Crypt>, PortError> {
+        let row = sqlx::query!("SELECT crypt_password, crypt_salt FROM backup_tasks WHERE id = ?", id)
+            .fetch_optional(self.db.pool())
+            .await
+            .map_err(db_error)?;
+        Ok(row.and_then(|row| {
+            let password = row.crypt_password.filter(|p| !p.is_empty())?;
+            Some(Crypt {
+                password: Secret::new(password),
+                salt: row.crypt_salt.filter(|s| !s.is_empty()).map(Secret::new),
+            })
+        }))
+    }
+
+    async fn set_crypt(&self, id: i64, crypt: Option<&Crypt>) -> Result<(), PortError> {
+        let password = crypt.map(|c| c.password.expose());
+        let salt = crypt.and_then(|c| c.salt.as_ref()).map(Secret::expose);
+        sqlx::query!(
+            "UPDATE backup_tasks SET crypt_password = ?, crypt_salt = ? WHERE id = ?",
+            password,
+            salt,
+            id
+        )
+        .execute(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+}
+
+/// [`CloudAccountRepository`] on `backup_cloud_accounts`.
+#[derive(Debug, Clone)]
+pub struct SqliteBackupAccounts {
+    db: Database,
+}
+
+impl SqliteBackupAccounts {
+    pub fn new(db: Database) -> Self {
+        Self { db }
+    }
+}
+
+struct AccountRow {
+    id: i64,
+    name: String,
+    provider: String,
+    client_id: Option<String>,
+    drive_id: Option<String>,
+    drive_type: Option<String>,
+    created_at: i64,
+}
+
+impl AccountRow {
+    fn account(self) -> Result<CloudAccount, PortError> {
+        Ok(CloudAccount {
+            id: self.id,
+            name: self.name,
+            provider: Provider::parse(&self.provider)
+                .ok_or_else(|| stored(format!("the cloud {:?}", self.provider)))?,
+            client_id: self.client_id,
+            drive_id: self.drive_id,
+            drive_type: self.drive_type,
+            created_at: Timestamp::from_unix_seconds(self.created_at),
+        })
+    }
+}
+
+#[async_trait]
+impl CloudAccountRepository for SqliteBackupAccounts {
+    async fn list(&self) -> Result<Vec<CloudAccount>, PortError> {
+        let rows = sqlx::query_as!(
+            AccountRow,
+            r#"SELECT id AS "id!", name, provider, client_id, drive_id, drive_type, created_at
+               FROM backup_cloud_accounts ORDER BY name"#
+        )
+        .fetch_all(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        rows.into_iter().map(AccountRow::account).collect()
+    }
+
+    async fn find(&self, id: i64) -> Result<Option<CloudAccount>, PortError> {
+        let row = sqlx::query_as!(
+            AccountRow,
+            r#"SELECT id AS "id!", name, provider, client_id, drive_id, drive_type, created_at
+               FROM backup_cloud_accounts WHERE id = ?"#,
+            id
+        )
+        .fetch_optional(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        row.map(AccountRow::account).transpose()
+    }
+
+    async fn create(
+        &self,
+        account: &NewAccount,
+        token: &Secret,
+        client_secret: Option<&Secret>,
+    ) -> Result<Option<i64>, PortError> {
+        let provider = account.provider.as_str();
+        let token = token.expose();
+        let client_secret = client_secret.map(Secret::expose);
+        let created_at = account.created_at.unix_seconds();
+        let done = sqlx::query!(
+            "INSERT INTO backup_cloud_accounts (name, provider, client_id, client_secret, token, drive_id,
+                 drive_type, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            account.name,
+            provider,
+            account.client_id,
+            client_secret,
+            token,
+            account.drive_id,
+            account.drive_type,
+            created_at
+        )
+        .execute(self.db.pool())
+        .await;
+        match done {
+            Ok(done) => Ok(Some(done.last_insert_rowid())),
+            Err(error) if name_taken(&error) => Ok(None),
+            Err(error) => Err(db_error(error)),
+        }
+    }
+
+    async fn secrets(&self, id: i64) -> Result<Option<(Secret, Option<Secret>)>, PortError> {
+        let row = sqlx::query!("SELECT token, client_secret FROM backup_cloud_accounts WHERE id = ?", id)
+            .fetch_optional(self.db.pool())
+            .await
+            .map_err(db_error)?;
+        Ok(row.map(|row| {
+            (Secret::new(row.token), row.client_secret.filter(|s| !s.is_empty()).map(Secret::new))
+        }))
+    }
+
+    async fn set_token(&self, id: i64, token: &Secret) -> Result<(), PortError> {
+        let token = token.expose();
+        sqlx::query!("UPDATE backup_cloud_accounts SET token = ? WHERE id = ?", token, id)
+            .execute(self.db.pool())
+            .await
+            .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn delete(&self, id: i64) -> Result<bool, PortError> {
+        let done = sqlx::query!("DELETE FROM backup_cloud_accounts WHERE id = ?", id)
+            .execute(self.db.pool())
+            .await
+            .map_err(db_error)?;
+        Ok(done.rows_affected() == 1)
     }
 }
 

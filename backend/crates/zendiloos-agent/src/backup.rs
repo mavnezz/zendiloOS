@@ -14,14 +14,17 @@
 //! only the capabilities its work needs: reading whatever the source holds,
 //! and on the NAS writing owners, modes, ACLs and attributes as copied.
 //! The NAS's SSH key reaches a unit as its credential (`LoadCredential=`),
-//! a password on its standard input, neither on a command line.
+//! the other secrets (a daemon's password, the crypt's, a cloud's token) on
+//! its standard input; none on a command line. rclone, for clouds and
+//! encrypted tasks, runs in the same units as rsync.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use zendiloos_agent_proto::{
-    BACKUP_HOST_KEY_CHANGED, BACKUP_KEY, BACKUP_STATE, BackupEnd, BackupHostName, BackupMode, BackupPassword,
-    BackupPruned, BackupRestore, BackupRoot, BackupRun, BackupTaskId, BackupTransport, Response,
+    BACKUP_HOST_KEY_CHANGED, BACKUP_KEY, BACKUP_STATE, BackupEnd, BackupHostName, BackupMode, BackupPruned,
+    BackupRestore, BackupRoot, BackupRun, BackupSecret, BackupSecrets, BackupTaskId, BackupTransport,
+    Response, SharePath,
 };
 use zendiloos_exec::{ExecError, Limits, Program, Surroundings};
 
@@ -112,8 +115,10 @@ impl Default for BackupPaths {
 pub(crate) struct BackupTools {
     pub systemd_run: Program,
     pub systemctl: Program,
-    /// May be missing until the plugin is installed, as the SSH tools.
+    /// May be missing until the plugin is installed, as the SSH tools and
+    /// rclone.
     pub rsync: PathBuf,
+    pub rclone: PathBuf,
     pub ssh: PathBuf,
     pub ssh_keygen: PathBuf,
     pub ssh_keyscan: PathBuf,
@@ -145,6 +150,7 @@ impl Places {
                 self.network = true;
                 self.ssh = true;
             }
+            End::Cloud { .. } => self.network = true,
         }
     }
 
@@ -164,6 +170,11 @@ fn refused(message: impl Into<String>) -> OperationError {
     OperationError::Refused(message.into())
 }
 
+/// A token a unit passed on, as the protocol carries it.
+fn token(report: &Report) -> Option<BackupSecret> {
+    report.token.as_deref().and_then(|token| BackupSecret::new(token).ok())
+}
+
 impl Backups {
     pub(crate) fn new(tools: BackupTools, paths: BackupPaths, host: HostPaths) -> Self {
         Self { tools, paths, host }
@@ -181,6 +192,7 @@ impl Backups {
         Response::BackupFacts {
             rsync: self.tools.rsync.is_file(),
             ssh: self.tools.ssh.is_file() && self.tools.ssh_keygen.is_file(),
+            rclone: self.tools.rclone.is_file(),
             public_key,
         }
     }
@@ -328,30 +340,48 @@ impl Backups {
                     }
                 }
             }),
+            BackupEnd::Cloud { cloud, path } => Ok(End::Cloud { cloud: *cloud, path: path.clone() }),
         }
     }
 
     pub(crate) async fn list(
         &self,
         at: &BackupEnd,
-        password: Option<&BackupPassword>,
+        inside: &SharePath,
+        secrets: &BackupSecrets,
     ) -> Result<Response, OperationError> {
         let at = self.end(at)?;
         let mut places = Places::default();
         places.of(&at, false);
         let unit = format!("zendiloos-backup-look-{}.service", nonce());
-        let report =
-            self.unit(&unit, "look into a backup", Work::List { at }, &places, password, LOOK_FOR).await?;
-        Ok(Response::BackupListing { listing: report.listing, missing: report.missing })
+        let work = Work::List { at, inside: inside.clone() };
+        let report = self.unit(&unit, "look into a backup", work, &places, secrets, LOOK_FOR).await?;
+        Ok(Response::BackupListing {
+            token: token(&report),
+            listing: report.listing,
+            missing: report.missing,
+        })
     }
 
     pub(crate) async fn run(
         &self,
         run: &BackupRun,
-        password: Option<&BackupPassword>,
+        secrets: &BackupSecrets,
     ) -> Result<Response, OperationError> {
         if run.source.is_remote() && run.target.is_remote() {
             return Err(refused("a backup goes from or to the NAS"));
+        }
+        if matches!(run.source, BackupEnd::Cloud { .. }) {
+            return Err(refused("a cloud is a backup's target"));
+        }
+        if secrets.crypt.is_some()
+            && (run.source.is_remote()
+                || matches!(&run.target, BackupEnd::Remote { server, .. }
+                    if matches!(server.transport, BackupTransport::Daemon { .. })))
+        {
+            return Err(refused(
+                "only a backup from a share to the NAS, a cloud or an SSH server is encrypted",
+            ));
         }
         if matches!(run.source, BackupEnd::Nas { root: BackupRoot::Drive { .. }, .. }) {
             return Err(refused("a backup reads a folder of a share"));
@@ -378,8 +408,9 @@ impl Backups {
             BackupMode::Versioned => "version",
         };
         let what = format!("back up task {} ({mode})", run.task.get());
-        let report = self.unit(&unit, &what, Work::Run(Box::new(job)), &places, password, RUN_FOR).await?;
+        let report = self.unit(&unit, &what, Work::Run(Box::new(job)), &places, secrets, RUN_FOR).await?;
         Ok(Response::BackupRan {
+            token: token(&report),
             files: report.files,
             bytes: report.bytes,
             partial: report.partial,
@@ -407,28 +438,29 @@ impl Backups {
         task: BackupTaskId,
         at: &BackupEnd,
         names: &[BackupPruned],
-        password: Option<&BackupPassword>,
+        secrets: &BackupSecrets,
     ) -> Result<Response, OperationError> {
         if names.len() > zendiloos_agent_proto::BACKUP_PRUNE_MAX {
             return Err(refused("too many versions at once"));
         }
         if names.is_empty() {
-            return Ok(Response::Done);
+            return Ok(Response::BackupPruned { token: None });
         }
         let at = self.end(at)?;
         let mut places = Places::default();
         places.of(&at, true);
         let unit = format!("zendiloos-backup-prune-{}.service", task.get());
         let work = Work::Prune { at, names: names.to_vec() };
-        self.unit(&unit, &format!("retention of task {}", task.get()), work, &places, password, PRUNE_FOR)
+        let report = self
+            .unit(&unit, &format!("retention of task {}", task.get()), work, &places, secrets, PRUNE_FOR)
             .await?;
-        Ok(Response::Done)
+        Ok(Response::BackupPruned { token: token(&report) })
     }
 
     pub(crate) async fn restore(
         &self,
         restore: &BackupRestore,
-        password: Option<&BackupPassword>,
+        secrets: &BackupSecrets,
     ) -> Result<Response, OperationError> {
         let BackupEnd::Nas { root, .. } = &restore.to else {
             return Err(refused("a restore goes into a folder of the NAS"));
@@ -438,6 +470,7 @@ impl Backups {
         }
         let job = RestoreJob {
             from: self.end(&restore.from)?,
+            within: restore.within.clone(),
             paths: restore.paths.clone(),
             to: self.end(&restore.to)?,
             existing: restore.existing,
@@ -448,9 +481,13 @@ impl Backups {
         places.of(&job.to, true);
         let unit = format!("zendiloos-backup-restore-{}.service", restore.task.get());
         let what = format!("restore task {}'s backup", restore.task.get());
-        let report =
-            self.unit(&unit, &what, Work::Restore(Box::new(job)), &places, password, RUN_FOR).await?;
-        Ok(Response::BackupRestored { files: report.files, bytes: report.bytes, partial: report.partial })
+        let report = self.unit(&unit, &what, Work::Restore(Box::new(job)), &places, secrets, RUN_FOR).await?;
+        Ok(Response::BackupRestored {
+            token: token(&report),
+            files: report.files,
+            bytes: report.bytes,
+            partial: report.partial,
+        })
     }
 
     /// Stops what units of backups still run as the agent starts: their
@@ -560,16 +597,21 @@ impl Backups {
         description: &str,
         work: Work,
         places: &Places,
-        password: Option<&BackupPassword>,
+        secrets: &BackupSecrets,
         runtime: Duration,
     ) -> Result<Report, OperationError> {
-        let rsync = self.require(&self.tools.rsync, "rsync")?;
+        let (rsync, rclone) = if work.rclone(secrets.crypt.is_some()) {
+            (self.tools.rsync.clone(), self.require(&self.tools.rclone, "rclone")?.path().to_owned())
+        } else {
+            (self.require(&self.tools.rsync, "rsync")?.path().to_owned(), self.tools.rclone.clone())
+        };
         let key = self.paths.credentials.join(unit).join("backup-key");
-        let job = UnitJob { work, rsync: rsync.path().to_owned(), ssh: self.tools.ssh.clone(), key };
+        let job = UnitJob { work, rsync, rclone, ssh: self.tools.ssh.clone(), key };
         let args = self.unit_args(unit, description, places, runtime, &encode(&job));
-        let secrets = match password {
-            Some(password) => serde_json::json!({ "password": password.expose() }).to_string(),
-            None => String::new(),
+        let secrets = if *secrets == BackupSecrets::default() {
+            String::new()
+        } else {
+            serde_json::to_string(secrets).map_err(|e| OperationError::Failed(e.to_string()))?
         };
         let until = Instant::now() + runtime + Duration::from_secs(120);
         let mut said: Option<UnitSays> = None;

@@ -46,8 +46,8 @@ use zendiloos_infra::notify::NetworkChannels;
 use zendiloos_infra::sharing::DrivesForFiles;
 use zendiloos_infra::sqlite::{
     Database, Occupants, SqliteAccountAddresses, SqliteAccounts, SqliteAppSources, SqliteAuditLog,
-    SqliteBackupRuns, SqliteBackupSettings, SqliteBackupTasks, SqliteCertificates, SqliteChannels,
-    SqliteDiskInventory, SqliteEjectedDrives, SqliteEnclosure, SqliteFirewall, SqliteGroups,
+    SqliteBackupAccounts, SqliteBackupRuns, SqliteBackupSettings, SqliteBackupTasks, SqliteCertificates,
+    SqliteChannels, SqliteDiskInventory, SqliteEjectedDrives, SqliteEnclosure, SqliteFirewall, SqliteGroups,
     SqliteInstalledApps, SqliteJobs, SqliteNotifications, SqlitePreferences, SqliteProjects, SqliteSecurity,
     SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares, SqliteSystemUpdates,
     SqliteTwoFactor, SqliteUpdateSettings, SqliteVmImages, SqliteVmLocations, SqliteVms, SqliteVolumeBackups,
@@ -407,6 +407,8 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         host: Arc::new(AgentBackup::new(backup_agent)),
         shares: Arc::new(SharesForBackupTasks::new(sharing.clone())),
         drives: Arc::new(DrivesForBackup::new(Arc::clone(&storage.removable))),
+        accounts: Arc::new(SqliteBackupAccounts::new(database.clone())),
+        sign_in: Arc::new(zendiloos_infra::backup_sign_in::OAuthSignIn::new(Arc::new(SystemClock))),
         jobs: jobs.clone(),
         notifier: notifier.clone(),
         audit: audit.clone(),

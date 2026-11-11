@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE backup_cloud_accounts SET token = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "aeffeafc250582c06741a2c0a73cca6178e18f4e9c7659f8e1d36b4e5525ac0c"
+}

@@ -7,8 +7,8 @@ import type {
   BackupTaskRequest,
 } from '@/shared/api/types'
 
-/** From a share to the NAS, to a server, or from a server into the NAS. */
-export type TaskKind = 'local' | 'push' | 'pull'
+/** From a share to the NAS, to a server or a cloud, or from a server into the NAS. */
+export type TaskKind = 'local' | 'push' | 'pull' | 'cloud'
 export type Transport = 'daemon' | 'ssh'
 export type Frequency = 'hourly' | 'daily' | 'weekly'
 export type Bandwidth = 'default' | 'none' | 'custom'

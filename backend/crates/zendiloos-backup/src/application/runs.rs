@@ -6,10 +6,10 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use zendiloos_jobs::{Job, Progress};
-use zendiloos_kernel::{Actor, RequestContext, Secret};
+use zendiloos_kernel::{Actor, RequestContext};
 use zendiloos_notify::{Level, NewNotification};
 
-use super::ports::{Location, NewRun, RunEnd, RunMode, RunPlan, RunReport, Steps};
+use super::ports::{Location, NewRun, RunEnd, RunMode, RunPlan, RunReport, Secrets, Steps};
 use super::{BackupError, Backups, Claim, audited, job_error};
 use crate::domain::{
     Mode, Outcome, REMOVED, Run, TargetState, Task, Trigger, beyond_retention, removed_beyond, version_name,
@@ -227,7 +227,10 @@ impl Backups {
             if drive.read_only {
                 return Err(BackupError::DriveReadOnly);
             }
-            if matches!(task.settings.mode, Mode::Versioned { .. }) && !drive.links() {
+            if matches!(task.settings.mode, Mode::Versioned { .. })
+                && !task.settings.rclone()
+                && !drive.links()
+            {
                 return Err(BackupError::Refused(format!(
                     "versions need hard links, which {} has not: back up as a mirror, or format the drive as ext4",
                     drive.filesystem
@@ -251,6 +254,7 @@ impl Backups {
             stamp: version_name(self.now()),
             filters: task.settings.filters.clone(),
             bwlimit_kib,
+            encrypted: task.settings.encrypted,
         })
     }
 
@@ -259,12 +263,7 @@ impl Backups {
         place: &crate::domain::Place,
         context: &RequestContext,
     ) -> Result<(Location, Option<super::Drive>), BackupError> {
-        match place {
-            crate::domain::Place::Nas(nas) => self.locate(nas, context).await,
-            crate::domain::Place::Remote(remote) => {
-                Ok((Location::Remote { server: remote.server.clone(), path: remote.path.clone() }, None))
-            }
-        }
+        self.reach(place, context).await
     }
 
     /// Claims the task, plans its run and starts it as a job.
@@ -277,7 +276,7 @@ impl Backups {
     ) -> Result<Job, BackupError> {
         let claim = self.claim(task.id, false)?;
         let plan = self.plan(&task, context).await?;
-        let password = self.ports.tasks.password(task.id).await?;
+        let secrets = self.secrets(&task).await?;
         let this = self.clone();
         let (who, context) = (actor.cloned(), context.clone());
         let name = task.settings.name.clone();
@@ -287,7 +286,7 @@ impl Backups {
             .start("backup.run", Some(name), actor, move |progress| async move {
                 let job_id = progress.id().get();
                 let steps = JobSteps::new(progress);
-                this.carry_out(&task, &plan, password, trigger, who.as_ref(), job_id, &steps, &context, claim)
+                this.carry_out(&task, &plan, secrets, trigger, who.as_ref(), job_id, &steps, &context, claim)
                     .await
             })
             .await?;
@@ -301,7 +300,7 @@ impl Backups {
         &self,
         task: &Task,
         plan: &RunPlan,
-        password: Option<Secret>,
+        secrets: Secrets,
         trigger: Trigger,
         actor: Option<&Actor>,
         job_id: i64,
@@ -318,8 +317,10 @@ impl Backups {
         };
         let run = self.ports.runs.start(&started).await.map_err(|e| job_error(&e.into()))?;
         steps.step("transferring", Some(0));
-        let done =
-            self.ports.host.run(plan, password.as_ref(), steps, context).await.map_err(BackupError::from);
+        let done = self.ports.host.run(plan, &secrets, steps, context).await.map_err(BackupError::from);
+        if let Ok(report) = &done {
+            self.keep_token(task, report.token.as_ref()).await;
+        }
         let stopping = self.lock().runs.get(&task.id).is_some_and(|slot| slot.stopping);
         let versioned = matches!(plan.mode, RunMode::Versioned);
         let end = match &done {
@@ -346,7 +347,7 @@ impl Backups {
         };
         if let Ok(report) = &done {
             steps.step("pruning", None);
-            self.retain(task, plan, report, password.as_ref(), context).await;
+            self.retain(task, plan, report, &secrets, context).await;
         }
         if let Err(error) = self.ports.runs.finish(run, &end).await {
             tracing::error!(%error, task = task.id, "backup: cannot log how the run ended");
@@ -379,7 +380,7 @@ impl Backups {
         task: &Task,
         plan: &RunPlan,
         report: &RunReport,
-        password: Option<&Secret>,
+        secrets: &Secrets,
         context: &RequestContext,
     ) {
         let state = TargetState::of(&report.entries);
@@ -395,7 +396,7 @@ impl Backups {
                 names.extend(state.incomplete.iter().cloned());
             }
             Mode::Mirror { keep_changed_days: Some(days) } => {
-                let removed = self.kept_changes(&plan.target, password, context).await;
+                let removed = self.kept_changes(task, &plan.target, secrets, context).await;
                 names.extend(
                     removed_beyond(&removed, days, now)
                         .into_iter()
@@ -407,13 +408,16 @@ impl Backups {
         if names.is_empty() {
             return;
         }
-        let pruned = self.ports.host.prune(task.id, &plan.target, &names, password, context).await;
+        let pruned = self.ports.host.prune(task.id, &plan.target, &names, secrets, context).await;
         match pruned {
-            Ok(()) => tracing::info!(
-                task = task.id,
-                removed = names.len(),
-                "backup: retention removed old versions"
-            ),
+            Ok(token) => {
+                self.keep_token(task, token.as_ref()).await;
+                tracing::info!(
+                    task = task.id,
+                    removed = names.len(),
+                    "backup: retention removed old versions"
+                )
+            }
             Err(error) => {
                 tracing::warn!(%error, task = task.id, "backup: retention could not remove old versions")
             }
@@ -423,12 +427,15 @@ impl Backups {
     /// When a mirror's kept changes were made, from the folders' names.
     async fn kept_changes(
         &self,
+        task: &Task,
         target: &Location,
-        password: Option<&Secret>,
+        secrets: &Secrets,
         context: &RequestContext,
     ) -> Vec<zendiloos_kernel::Timestamp> {
-        match self.ports.host.list(&target.join(REMOVED), password, context).await {
-            Ok(entries) => {
+        match self.ports.host.list(target, REMOVED, secrets, context).await {
+            Ok(listing) => {
+                self.keep_token(task, listing.token.as_ref()).await;
+                let entries = listing.entries;
                 let mut times: Vec<_> = entries
                     .iter()
                     .filter(|e| e.kind == crate::domain::EntryKind::Folder)

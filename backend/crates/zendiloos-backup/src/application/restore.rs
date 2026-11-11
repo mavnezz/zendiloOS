@@ -39,20 +39,17 @@ pub struct RestoreRequest {
 impl Backups {
     /// The task's folder in its target, as the host reaches it now.
     async fn folder(&self, task: &Task, context: &RequestContext) -> Result<Location, BackupError> {
-        let target = match &task.settings.target {
-            Place::Nas(nas) => self.locate(nas, context).await?.0,
-            Place::Remote(remote) => {
-                Location::Remote { server: remote.server.clone(), path: remote.path.clone() }
-            }
-        };
+        let target = self.reach(&task.settings.target, context).await?.0;
         Ok(target.join(&task.folder))
     }
 
     pub async fn versions(&self, id: i64, context: &RequestContext) -> Result<Versions, BackupError> {
         let task = self.find(id).await?;
         let folder = self.folder(&task, context).await?;
-        let password = self.ports.tasks.password(id).await?;
-        let entries = self.ports.host.list(&folder, password.as_ref(), context).await?;
+        let secrets = self.secrets(&task).await?;
+        let listing = self.ports.host.list(&folder, "", &secrets, context).await?;
+        self.keep_token(&task, listing.token.as_ref()).await;
+        let entries = listing.entries;
         let state = TargetState::of(&entries);
         let mut versions = state.versions;
         versions.reverse();
@@ -72,13 +69,18 @@ impl Backups {
         }
         let task = self.find(id).await?;
         let folder = self.folder(&task, context).await?;
-        let password = self.ports.tasks.password(id).await?;
-        let at = folder.join(&version.map_or_else(|| CURRENT.to_owned(), version_name)).join(path);
+        let secrets = self.secrets(&task).await?;
+        let inside = [version.map_or_else(|| CURRENT.to_owned(), version_name), path.to_owned()]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("/");
         let mut entries: Vec<Entry> = self
             .ports
             .host
-            .list(&at, password.as_ref(), context)
+            .list(&folder, &inside, &secrets, context)
             .await?
+            .entries
             .into_iter()
             .filter(|e| e.name != ".")
             .collect();
@@ -117,7 +119,7 @@ impl Backups {
                 to.clone()
             }
             (None, Place::Nas(source)) => source.clone(),
-            (None, Place::Remote(_)) => {
+            (None, Place::Remote(_) | Place::Cloud(_)) => {
                 return Err(Invalid(
                     "a server's backup is restored into a folder of the NAS: name one".into(),
                 )
@@ -133,8 +135,15 @@ impl Backups {
             .folder(&task, context)
             .await?
             .join(&request.version.map_or_else(|| CURRENT.to_owned(), version_name));
-        let plan = RestorePlan { task: id, from, paths: request.paths, to, existing: request.existing };
-        let password = self.ports.tasks.password(id).await?;
+        let plan = RestorePlan {
+            task: id,
+            from,
+            paths: request.paths,
+            to,
+            existing: request.existing,
+            encrypted: task.settings.encrypted,
+        };
+        let secrets = self.secrets(&task).await?;
         let this = self.clone();
         let (who, context) = (actor.clone(), context.clone());
         let name = task.settings.name.clone();
@@ -149,7 +158,7 @@ impl Backups {
                 let done = this
                     .ports
                     .host
-                    .restore(&plan, password.as_ref(), &steps, &context)
+                    .restore(&plan, &secrets, &steps, &context)
                     .await
                     .map_err(BackupError::from);
                 this.audit("backup.restore", audited(&done), &name, Some(&who), &context).await;

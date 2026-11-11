@@ -42,12 +42,13 @@ pub use apps::{
 };
 pub use backup::{
     BACKUP_EXCLUDES_MAX, BACKUP_HOST_KEY_CHANGED, BACKUP_KEY, BACKUP_PRUNE_MAX, BACKUP_RESTORE_PATHS_MAX,
-    BACKUP_STATE, BackupEnd, BackupExisting, BackupFolder, BackupHostKey, BackupHostName, BackupMode,
-    BackupPassword, BackupPattern, BackupPruned, BackupRemotePath, BackupRestore, BackupRoot, BackupRun,
-    BackupServer, BackupStamp, BackupTaskId, BackupTransport, BackupWord, InvalidBackupFolder,
+    BACKUP_STATE, BackupCloud, BackupCloudAccess, BackupCloudWord, BackupCrypt, BackupEnd, BackupExisting,
+    BackupFolder, BackupHostKey, BackupHostName, BackupMode, BackupPassword, BackupPattern, BackupPruned,
+    BackupRemotePath, BackupRestore, BackupRoot, BackupRun, BackupSecret, BackupSecrets, BackupServer,
+    BackupStamp, BackupTaskId, BackupTransport, BackupWord, InvalidBackupCloudWord, InvalidBackupFolder,
     InvalidBackupHostKey, InvalidBackupHostName, InvalidBackupPassword, InvalidBackupPattern,
-    InvalidBackupPruned, InvalidBackupRemotePath, InvalidBackupStamp, InvalidBackupTaskId, InvalidBackupWord,
-    is_stamp,
+    InvalidBackupPruned, InvalidBackupRemotePath, InvalidBackupSecret, InvalidBackupStamp,
+    InvalidBackupTaskId, InvalidBackupWord, is_stamp,
 };
 pub use client::{AgentTransport, Report, TransportError, UnixTransport};
 pub use descriptor::{MessageReader, read_message_with_file, write_message_with_file};
@@ -668,8 +669,8 @@ pub enum Request {
     OpenVmConsole {
         id: VmId,
     },
-    /// Whether rsync and the SSH client are installed, and the NAS's
-    /// public key for SSH servers once made. Answers
+    /// Whether rsync, the SSH client and rclone are installed, and the
+    /// NAS's public key for SSH servers once made. Answers
     /// [`Response::BackupFacts`].
     BackupFacts {},
     /// Makes the NAS's key pair for SSH servers (ed25519) in
@@ -682,39 +683,45 @@ pub enum Request {
         host: BackupHostName,
         port: u16,
     },
-    /// What a folder holds, one level (`rsync --list-only`, in a unit of
-    /// its own that may only read it). Answers [`Response::BackupListing`].
+    /// What the folder `inside` of `at` holds, one level (`rsync
+    /// --list-only`, `rclone lsjson`; through the crypt rooted at `at` if
+    /// `secrets` have one), in a unit of its own that may only read it.
+    /// Answers [`Response::BackupListing`].
     ListBackup {
         at: BackupEnd,
         #[serde(default)]
-        password: Option<BackupPassword>,
+        inside: SharePath,
+        #[serde(default)]
+        secrets: BackupSecrets,
     },
-    /// Runs a task's backup with rsync in a unit of its own that reads only
-    /// the source and writes only the target, with the network only for a
-    /// server; reporting how far. Answers [`Response::BackupRan`].
+    /// Runs a task's backup in a unit of its own that reads only the source
+    /// and writes only the target, with the network only for a server or a
+    /// cloud; reporting how far. rsync does it, rclone for a cloud or with
+    /// a crypt. Answers [`Response::BackupRan`].
     RunBackup {
         run: BackupRun,
         #[serde(default)]
-        password: Option<BackupPassword>,
+        secrets: BackupSecrets,
     },
     /// Stops a task's run (its unit); none running is no failure.
     StopBackup {
         task: BackupTaskId,
     },
     /// Removes versions (and kept changes) from a task's folder `at`.
+    /// Answers [`Response::BackupPruned`].
     PruneBackup {
         task: BackupTaskId,
         at: BackupEnd,
         names: Vec<BackupPruned>,
         #[serde(default)]
-        password: Option<BackupPassword>,
+        secrets: BackupSecrets,
     },
     /// Restores from a task's backup into a folder of the NAS, in a unit of
     /// its own. Answers [`Response::BackupRestored`].
     RestoreBackup {
         restore: BackupRestore,
         #[serde(default)]
-        password: Option<BackupPassword>,
+        secrets: BackupSecrets,
     },
     /// Whether acme.sh is installed. Answers [`Response::AcmeState`].
     AcmeState {},
@@ -1406,6 +1413,8 @@ pub enum Response {
         rsync: bool,
         /// The SSH client and `ssh-keygen`.
         ssh: bool,
+        #[serde(default)]
+        rclone: bool,
         /// `id_ed25519.pub`, once made.
         public_key: Option<String>,
     },
@@ -1417,10 +1426,14 @@ pub enum Response {
         keyscan: String,
     },
     BackupListing {
-        /// What `rsync --list-only` printed.
+        /// What `rsync --list-only` printed (rclone's listing written as
+        /// rsync's).
         listing: String,
         /// The folder is not there.
         missing: bool,
+        /// A cloud's token rclone refreshed meanwhile: zendiloosd keeps it.
+        #[serde(default)]
+        token: Option<BackupSecret>,
     },
     BackupRan {
         files: u64,
@@ -1433,11 +1446,19 @@ pub enum Response {
         transfers_total: u64,
         /// The task's folder after the run, as `rsync --list-only` prints it.
         listing: String,
+        #[serde(default)]
+        token: Option<BackupSecret>,
     },
     BackupRestored {
         files: u64,
         bytes: u64,
         partial: Option<String>,
+        #[serde(default)]
+        token: Option<BackupSecret>,
+    },
+    BackupPruned {
+        #[serde(default)]
+        token: Option<BackupSecret>,
     },
     AcmeState {
         /// acme.sh is installed.

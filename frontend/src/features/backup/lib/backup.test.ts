@@ -75,6 +75,7 @@ function task(extra: Partial<BackupTask> = {}): BackupTask {
     target: { kind: 'share', share_id: 2, path: '' },
     server: null,
     password_set: false,
+    encrypted: false,
     mode: { kind: 'versioned', keep_last: 30, keep_days: null },
     schedule: { frequency: 'daily', weekday: null, hour: 3, minute: 0 },
     on_plug: false,

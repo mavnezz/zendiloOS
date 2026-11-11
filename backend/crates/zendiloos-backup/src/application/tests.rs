@@ -33,6 +33,7 @@ fn local(name: &str) -> TaskSettings {
         filters: Filters::default(),
         bwlimit_kib: None,
         notify_success: false,
+        encrypted: false,
     }
 }
 
@@ -72,7 +73,7 @@ async fn the_plugin_installs_once() {
     assert!(matches!(backups.install(&alice(), &context()).await, Err(BackupError::Installed)));
     *fakes.host.installed.lock().unwrap() = false;
     assert!(matches!(
-        backups.create(local("a"), None, &alice(), &context()).await,
+        backups.create(local("a"), None, None, &alice(), &context()).await,
         Err(BackupError::NotInstalled)
     ));
     let job = backups.install(&alice(), &context()).await.unwrap();
@@ -97,25 +98,29 @@ async fn the_key_pair_is_made_once_when_asked_for() {
 #[tokio::test]
 async fn a_task_is_made_with_its_folder_and_names_are_unique() {
     let (backups, _) = backups();
-    let made = backups.create(local(" Albums nightly "), None, &alice(), &context()).await.unwrap();
+    let made = backups.create(local(" Albums nightly "), None, None, &alice(), &context()).await.unwrap();
     assert_eq!((made.task.name(), made.task.folder.as_str()), ("Albums nightly", "Albums nightly"));
     assert!(made.reachable && !made.running && made.last_run.is_none() && made.next_at.is_none());
     assert!(matches!(
-        backups.create(local("albums NIGHTLY"), None, &alice(), &context()).await,
+        backups.create(local("albums NIGHTLY"), None, None, &alice(), &context()).await,
         Err(BackupError::Invalid(_))
     ));
     // Another name, but the same folder in the same target.
     let mut same_folder = local("Albums nightly/");
     same_folder.name = "Albums nightly.".into();
     assert!(matches!(
-        backups.create(same_folder, None, &alice(), &context()).await,
+        backups.create(same_folder, None, None, &alice(), &context()).await,
         Err(BackupError::FolderTaken(_))
     ));
     let mut gone = local("gone");
     gone.target = share(9, "");
-    assert!(matches!(backups.create(gone, None, &alice(), &context()).await, Err(BackupError::ShareMissing)));
+    assert!(matches!(
+        backups.create(gone, None, None, &alice(), &context()).await,
+        Err(BackupError::ShareMissing)
+    ));
     // Renamed, its folder stays.
-    let renamed = backups.update(made.task.id, local("Albums"), None, &alice(), &context()).await.unwrap();
+    let renamed =
+        backups.update(made.task.id, local("Albums"), None, None, &alice(), &context()).await.unwrap();
     assert_eq!((renamed.task.name(), renamed.task.folder.as_str()), ("Albums", "Albums nightly"));
 }
 
@@ -126,6 +131,7 @@ async fn a_daemons_password_stays_with_that_daemon() {
         .create(
             push("offsite", daemon("nas2.lan", "zendi")),
             Some(Secret::new("s3cret")),
+            None,
             &alice(),
             &context(),
         )
@@ -136,7 +142,7 @@ async fn a_daemons_password_stays_with_that_daemon() {
     // Changed otherwise, without a password typed: it stays.
     let mut renamed = push("offsite 2", daemon("NAS2.lan", "zendi"));
     renamed.bwlimit_kib = Some(1000);
-    assert!(backups.update(id, renamed, None, &alice(), &context()).await.unwrap().password_set);
+    assert!(backups.update(id, renamed, None, None, &alice(), &context()).await.unwrap().password_set);
     // The server is checked with it, for the same daemon only.
     let place = RemotePlace { server: daemon("nas2.lan", "zendi"), path: "photos".into() };
     backups.check_server(&place, None, Some(id), &context()).await.unwrap();
@@ -144,8 +150,9 @@ async fn a_daemons_password_stays_with_that_daemon() {
     backups.check_server(&other, None, Some(id), &context()).await.unwrap();
     assert_eq!(*fakes.host.passwords.lock().unwrap(), [Some("s3cret".to_owned()), None]);
     // Another server: it goes.
-    let moved =
-        backups.update(id, push("offsite 2", daemon("nas3.lan", "zendi")), None, &alice(), &context()).await;
+    let moved = backups
+        .update(id, push("offsite 2", daemon("nas3.lan", "zendi")), None, None, &alice(), &context())
+        .await;
     assert!(!moved.unwrap().password_set);
     let down = RemotePlace { server: daemon("down.lan", "zendi"), path: String::new() };
     assert!(matches!(
@@ -157,7 +164,7 @@ async fn a_daemons_password_stays_with_that_daemon() {
 #[tokio::test]
 async fn a_versioned_run_is_logged_and_retention_keeps_its_number() {
     let (backups, fakes) = backups();
-    let id = backups.create(local("albums"), None, &alice(), &context()).await.unwrap().task.id;
+    let id = backups.create(local("albums"), None, None, &alice(), &context()).await.unwrap().task.id;
     let folder_at = Location::Share { volume: 2, share: "backups".into(), path: "albums".into() };
     // Two versions from before, and one cut off.
     let day = 24 * 3600;
@@ -210,7 +217,7 @@ async fn a_versioned_run_is_logged_and_retention_keeps_its_number() {
 #[tokio::test]
 async fn one_run_per_task_and_a_stopped_run_is_not_a_failure() {
     let (backups, fakes) = backups();
-    let id = backups.create(local("albums"), None, &alice(), &context()).await.unwrap().task.id;
+    let id = backups.create(local("albums"), None, None, &alice(), &context()).await.unwrap().task.id;
     let gate = fakes.host.gate.lock().await;
     let job = backups.run_now(id, &alice(), &context()).await.unwrap();
     for _ in 0..50 {
@@ -244,7 +251,7 @@ async fn failures_and_partial_runs_are_told_and_success_when_asked() {
     let (backups, fakes) = backups();
     let mut settings = local("albums");
     settings.notify_success = true;
-    let id = backups.create(settings, None, &alice(), &context()).await.unwrap().task.id;
+    let id = backups.create(settings, None, None, &alice(), &context()).await.unwrap().task.id;
     *fakes.host.fail_next.lock().unwrap() =
         Some(HostError::HostKeyChanged("ED25519 key for nas2.lan".into()));
     let job = backups.run_now(id, &alice(), &context()).await.unwrap();
@@ -265,7 +272,7 @@ async fn schedules_come_due_once_and_wait_for_an_update() {
     let (backups, fakes) = backups();
     let mut settings = local("albums");
     settings.schedule = Some(Schedule { frequency: Frequency::Daily, hour: 9, minute: 0 });
-    let id = backups.create(settings, None, &alice(), &context()).await.unwrap().task.id;
+    let id = backups.create(settings, None, None, &alice(), &context()).await.unwrap().task.id;
     let view = backups.task(id, &context()).await.unwrap();
     assert_eq!(view.next_at, Some(Timestamp::from_unix_seconds(NOW + 2 * 3600)));
     assert!(backups.run_due().await.is_empty(), "not yet");
@@ -289,6 +296,8 @@ async fn schedules_come_due_once_and_wait_for_an_update() {
             host: fakes.host.clone(),
             shares: fakes.shares.clone(),
             drives: fakes.drives.clone(),
+            accounts: fakes.accounts.clone(),
+            sign_in: Arc::new(crate::testing::FakeSignIn::default()),
             jobs,
             notifier: zendiloos_notify::Notifier::new(fakes.notifications.clone(), fakes.clock.clone()),
             audit: fakes.audit.clone(),
@@ -314,7 +323,7 @@ async fn plugging_in_its_drive_starts_a_task() {
     let mut settings = local("to disk");
     settings.target = Place::Nas(NasPlace::Drive { drive: DISK.into(), path: "nas".into() });
     settings.on_plug = true;
-    let id = backups.create(settings, None, &alice(), &context()).await.unwrap().task.id;
+    let id = backups.create(settings, None, None, &alice(), &context()).await.unwrap().task.id;
     assert!(backups.run_due().await.is_empty(), "plugged in when it was made: not a new plugging in");
 
     fakes.drives.pull(DISK);
@@ -337,13 +346,13 @@ async fn a_drive_without_links_takes_mirrors_only_and_a_missing_one_is_told() {
     let mut versions = local("stick");
     versions.target = Place::Nas(NasPlace::Drive { drive: STICK.into(), path: String::new() });
     assert!(matches!(
-        backups.create(versions.clone(), None, &alice(), &context()).await,
+        backups.create(versions.clone(), None, None, &alice(), &context()).await,
         Err(BackupError::Invalid(_))
     ));
     let mut mirror = versions;
     mirror.mode = Mode::Mirror { keep_changed_days: Some(7) };
     mirror.schedule = Some(Schedule { frequency: Frequency::Hourly, hour: 0, minute: 0 });
-    let id = backups.create(mirror, None, &alice(), &context()).await.unwrap().task.id;
+    let id = backups.create(mirror, None, None, &alice(), &context()).await.unwrap().task.id;
     fakes.drives.pull(STICK);
     assert!(matches!(backups.run_now(id, &alice(), &context()).await, Err(BackupError::DriveMissing)));
     // On schedule, without "when plugged in": a failed run, told.
@@ -358,7 +367,7 @@ async fn a_mirror_prunes_kept_changes_by_age() {
     let (backups, fakes) = backups();
     let mut settings = local("mirror");
     settings.mode = Mode::Mirror { keep_changed_days: Some(7) };
-    let id = backups.create(settings, None, &alice(), &context()).await.unwrap().task.id;
+    let id = backups.create(settings, None, None, &alice(), &context()).await.unwrap().task.id;
     let folder_at = Location::Share { volume: 2, share: "backups".into(), path: "mirror".into() };
     let day = 24 * 3600;
     fakes.host.put(
@@ -382,7 +391,7 @@ async fn a_mirror_prunes_kept_changes_by_age() {
 #[tokio::test]
 async fn restores_go_back_or_elsewhere() {
     let (backups, fakes) = backups();
-    let id = backups.create(local("albums"), None, &alice(), &context()).await.unwrap().task.id;
+    let id = backups.create(local("albums"), None, None, &alice(), &context()).await.unwrap().task.id;
     let version = Timestamp::from_unix_seconds(NOW - 3600);
     let request = RestoreRequest {
         version: Some(version),
@@ -426,7 +435,7 @@ async fn restores_go_back_or_elsewhere() {
     // A server's backup goes into a folder named.
     let mut pull = local("server");
     pull.source = Place::Remote(RemotePlace { server: daemon("www.lan", "backup"), path: "/srv".into() });
-    let pulled = backups.create(pull, None, &alice(), &context()).await.unwrap().task.id;
+    let pulled = backups.create(pull, None, None, &alice(), &context()).await.unwrap().task.id;
     let request = RestoreRequest { version: None, paths: vec![], to: None, existing: Existing::Skip };
     assert!(matches!(
         backups.restore(pulled, request, &alice(), &context()).await,
@@ -438,7 +447,7 @@ async fn restores_go_back_or_elsewhere() {
 #[tokio::test]
 async fn browsing_a_version_lists_its_folder() {
     let (backups, fakes) = backups();
-    let id = backups.create(local("albums"), None, &alice(), &context()).await.unwrap().task.id;
+    let id = backups.create(local("albums"), None, None, &alice(), &context()).await.unwrap().task.id;
     let at = Location::Share { volume: 2, share: "backups".into(), path: "albums/current/2024".into() };
     fakes.host.put(&at, vec![folder("."), folder("summer")]);
     let entries = backups.browse(id, None, "2024", &context()).await.unwrap();
@@ -449,7 +458,7 @@ async fn browsing_a_version_lists_its_folder() {
 #[tokio::test]
 async fn the_log_is_kept_for_its_days_and_runs_cut_off_are_marked() {
     let (backups, fakes) = backups();
-    let id = backups.create(local("albums"), None, &alice(), &context()).await.unwrap().task.id;
+    let id = backups.create(local("albums"), None, None, &alice(), &context()).await.unwrap().task.id;
     let job = backups.run_now(id, &alice(), &context()).await.unwrap();
     finished(&fakes, &job).await;
     fakes
@@ -484,4 +493,131 @@ async fn readers_of_a_target_share_are_named() {
     let (backups, _) = backups();
     assert_eq!(backups.readers(2).await.unwrap().accounts, ["alice"]);
     assert!(matches!(backups.readers(9).await, Err(BackupError::NotFound)));
+}
+
+#[tokio::test]
+async fn a_cloud_account_is_signed_in_to_with_the_address_pasted_back() {
+    let (backups, fakes) = backups();
+    let begun =
+        backups.start_sign_in(crate::domain::Provider::OneDrive, " My OneDrive ", None, None).unwrap();
+    assert!(begun.url.contains("state=state1") && begun.url.contains("client=rclone"));
+    assert!(backups.start_sign_in(crate::domain::Provider::GoogleDrive, "", None, None).is_err());
+    let other = "http://127.0.0.1:53682/?state=elsewhere&code=good";
+    assert!(matches!(
+        backups.finish_sign_in(&begun.flow, other, &alice(), &context()).await,
+        Err(BackupError::Invalid(_))
+    ));
+    let denied = "http://localhost:53682/?error=access_denied&state=state1";
+    assert!(matches!(
+        backups.finish_sign_in(&begun.flow, denied, &alice(), &context()).await,
+        Err(BackupError::Refused(_))
+    ));
+    let bad = format!("http://127.0.0.1:53682/?state={}&code=bad", begun.flow);
+    assert!(matches!(
+        backups.finish_sign_in(&begun.flow, &bad, &alice(), &context()).await,
+        Err(BackupError::Refused(_))
+    ));
+    // A failed exchange ends the sign-in: it is begun again.
+    let good = format!("http://127.0.0.1:53682/?state={}&code=good", begun.flow);
+    assert!(matches!(
+        backups.finish_sign_in(&begun.flow, &good, &alice(), &context()).await,
+        Err(BackupError::SignInExpired)
+    ));
+    let again = backups
+        .start_sign_in(
+            crate::domain::Provider::OneDrive,
+            "My OneDrive",
+            Some("own".into()),
+            Some(Secret::new("s")),
+        )
+        .unwrap();
+    let good = format!("http://127.0.0.1:53682/?state={}&code=good", again.flow);
+    let account = backups.finish_sign_in(&again.flow, &good, &alice(), &context()).await.unwrap();
+    assert_eq!(
+        (account.name.as_str(), account.drive_id.as_deref(), account.client_id.as_deref()),
+        ("My OneDrive", Some("b!drive"), Some("own"))
+    );
+    assert!(fakes.accounts.token(account.id).unwrap().contains("refresh_token"));
+    assert_eq!(backups.accounts().await.unwrap().len(), 1);
+    assert!(fakes.audit.actions().contains(&("backup.cloud_sign_in", zendiloos_kernel::Outcome::Success)));
+}
+
+#[tokio::test]
+async fn an_encrypted_cloud_task_hands_its_secrets_to_the_run_and_keeps_a_refreshed_token() {
+    let (backups, fakes) = backups();
+    let begun = backups.start_sign_in(crate::domain::Provider::GoogleDrive, "Drive", None, None).unwrap();
+    let pasted = format!("http://127.0.0.1:53682/?state={}&code=good", begun.flow);
+    let account = backups.finish_sign_in(&begun.flow, &pasted, &alice(), &context()).await.unwrap();
+    let mut settings = local("to the cloud");
+    settings.target = Place::Cloud(crate::domain::CloudPlace { account: account.id, path: "nas".into() });
+    settings.encrypted = true;
+    assert!(matches!(
+        backups.create(settings.clone(), None, None, &alice(), &context()).await,
+        Err(BackupError::Invalid(_))
+    ));
+    let crypt = Crypt { password: Secret::new("correct horse"), salt: Some(Secret::new("salt")) };
+    let made = backups.create(settings.clone(), None, Some(crypt), &alice(), &context()).await.unwrap();
+    assert!(made.reachable);
+    fakes.host.refresh_token(r#"{"access_token":"new"}"#);
+    let job = backups.run_now(made.task.id, &alice(), &context()).await.unwrap();
+    assert_eq!(finished(&fakes, &job).await.state, JobState::Succeeded);
+    let plan = fakes.host.runs().pop().unwrap();
+    assert!(plan.encrypted);
+    assert_eq!(
+        plan.target,
+        Location::Cloud {
+            provider: crate::domain::Provider::GoogleDrive,
+            account: account.id,
+            path: "nas/to the cloud".into()
+        }
+    );
+    let seen = fakes.host.secrets_seen.lock().unwrap().clone();
+    assert!(seen[0].starts_with("|correct horse|{"), "{seen:?}");
+    assert_eq!(
+        fakes.accounts.token(account.id).as_deref(),
+        Some(r#"{"access_token":"new"}"#),
+        "the refreshed token is kept"
+    );
+    // Changed without its password: it stays; another is refused; not
+    // encrypted any more: it goes.
+    backups.update(made.task.id, settings.clone(), None, None, &alice(), &context()).await.unwrap();
+    let other = Crypt { password: Secret::new("another one"), salt: None };
+    let refused =
+        backups.update(made.task.id, settings.clone(), None, Some(other), &alice(), &context()).await;
+    assert!(matches!(refused, Err(BackupError::Invalid(_))));
+    assert!(fakes.tasks.crypt(made.task.id).await.unwrap().is_some());
+    let mut plain = settings;
+    plain.encrypted = false;
+    backups.update(made.task.id, plain, None, None, &alice(), &context()).await.unwrap();
+    assert!(fakes.tasks.crypt(made.task.id).await.unwrap().is_none());
+    // The account stays while a task backs up into it.
+    assert!(matches!(
+        backups.delete_account(account.id, &alice(), &context()).await,
+        Err(BackupError::AccountInUse(_))
+    ));
+    backups.delete(made.task.id, &alice(), &context()).await.unwrap();
+    backups.delete_account(account.id, &alice(), &context()).await.unwrap();
+    assert!(matches!(
+        backups.delete_account(account.id, &alice(), &context()).await,
+        Err(BackupError::NotFound)
+    ));
+    let mut gone = local("gone");
+    gone.target = Place::Cloud(crate::domain::CloudPlace { account: 9, path: String::new() });
+    assert!(backups.create(gone, None, None, &alice(), &context()).await.is_err());
+}
+
+#[tokio::test]
+async fn versions_with_rclone_need_no_hard_links_on_a_drive() {
+    let (backups, fakes) = backups();
+    fakes.drives.plug(STICK, "vfat", "boot1:1");
+    let mut settings = local("crypt stick");
+    settings.target = Place::Nas(NasPlace::Drive { drive: STICK.into(), path: String::new() });
+    settings.encrypted = true;
+    let crypt = Crypt { password: Secret::new("pw"), salt: None };
+    let made = backups.create(settings, None, Some(crypt), &alice(), &context()).await.unwrap();
+    let job = backups.run_now(made.task.id, &alice(), &context()).await.unwrap();
+    assert_eq!(finished(&fakes, &job).await.state, JobState::Succeeded);
+    fakes.host.refresh_token("ignored without a cloud");
+    let versions = backups.versions(made.task.id, &context()).await.unwrap();
+    assert_eq!(versions.versions.len(), 1);
 }

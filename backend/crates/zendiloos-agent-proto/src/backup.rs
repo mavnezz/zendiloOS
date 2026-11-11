@@ -1,8 +1,10 @@
 //! Backup tasks (docs/architecture.md, 4.14): rsync between a folder of a
 //! share and another place on the NAS (a share, a removable drive) or an
-//! rsync server, through a daemon (`rsync://`) or SSH. Every value that
-//! reaches rsync's or ssh's command line is one of these types, checked
-//! while the request is read; a password never reaches one.
+//! rsync server, through a daemon (`rsync://`) or SSH; rclone to Google
+//! Drive and OneDrive, and wherever a task is encrypted (rclone's crypt).
+//! Every value that reaches rsync's, rclone's or ssh's command line is one
+//! of these types, checked while the request is read; a secret never
+//! reaches one.
 
 use std::fmt;
 
@@ -229,6 +231,112 @@ impl From<BackupPassword> for String {
     }
 }
 
+/// A secret rclone is given: a cloud's OAuth token (JSON), its own
+/// client's secret, the crypt's password and salt. One line of up to
+/// 16 KiB; never shown in logs, never on a command line.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct BackupSecret(String);
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("a secret is one line of up to 16 KiB")]
+pub struct InvalidBackupSecret;
+
+impl BackupSecret {
+    pub fn new(value: &str) -> Result<Self, InvalidBackupSecret> {
+        let valid = (1..=16 * 1024).contains(&value.len()) && !value.chars().any(char::is_control);
+        if valid { Ok(Self(value.to_owned())) } else { Err(InvalidBackupSecret) }
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for BackupSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("BackupSecret(…)")
+    }
+}
+
+impl TryFrom<String> for BackupSecret {
+    type Error = InvalidBackupSecret;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(&value)
+    }
+}
+
+impl From<BackupSecret> for String {
+    fn from(value: BackupSecret) -> Self {
+        value.0
+    }
+}
+
+checked!(
+    /// What names a cloud's client or drive for rclone: an OAuth client's
+    /// id, OneDrive's drive id and type. Letters, digits and `._-!~`, at
+    /// most 256.
+    BackupCloudWord,
+    InvalidBackupCloudWord,
+    "not a client's or drive's id rclone can be given",
+    |word| {
+        (1..=256).contains(&word.len())
+            && !word.starts_with('-')
+            && word.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-!~".contains(&b))
+    }
+);
+
+/// A cloud a backup goes to, through rclone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupCloud {
+    GoogleDrive,
+    #[serde(rename = "onedrive")]
+    OneDrive,
+}
+
+/// rclone's crypt: names and contents of a task's folder encrypted with
+/// its password, and its salt (rclone's `password2`) if given.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupCrypt {
+    pub password: BackupSecret,
+    #[serde(default)]
+    pub salt: Option<BackupSecret>,
+}
+
+/// How rclone reaches a cloud account: the token zendiloosd keeps, and
+/// the administrator's own client if given (else rclone's).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupCloudAccess {
+    pub token: BackupSecret,
+    #[serde(default)]
+    pub client_id: Option<BackupCloudWord>,
+    #[serde(default)]
+    pub client_secret: Option<BackupSecret>,
+    /// OneDrive's drive.
+    #[serde(default)]
+    pub drive_id: Option<BackupCloudWord>,
+    #[serde(default)]
+    pub drive_type: Option<BackupCloudWord>,
+}
+
+/// What a backup's unit needs to reach its places, on its standard input:
+/// a daemon's password, the crypt's, a cloud's access.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupSecrets {
+    #[serde(default)]
+    pub password: Option<BackupPassword>,
+    /// The task's folder is encrypted with rclone's crypt.
+    #[serde(default)]
+    pub crypt: Option<BackupCrypt>,
+    #[serde(default)]
+    pub cloud: Option<BackupCloudAccess>,
+}
+
 /// A task, by its number in zendiloosd: it names the task's units, so
 /// systemd runs one of each at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -293,23 +401,36 @@ pub struct BackupServer {
     pub user: BackupWord,
 }
 
-/// One end of a backup: a folder on the NAS beneath a root, or on a server.
+/// One end of a backup: a folder on the NAS beneath a root, on a server,
+/// or in a cloud (as a target, and restored from).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BackupEnd {
-    Nas { root: BackupRoot, path: SharePath },
-    Remote { server: BackupServer, path: BackupRemotePath },
+    Nas {
+        root: BackupRoot,
+        path: SharePath,
+    },
+    Remote {
+        server: BackupServer,
+        path: BackupRemotePath,
+    },
+    /// From the account's root (its access in [`BackupSecrets::cloud`]).
+    Cloud {
+        cloud: BackupCloud,
+        path: SharePath,
+    },
 }
 
 impl BackupEnd {
+    /// Off the NAS: a server or a cloud.
     pub fn is_remote(&self) -> bool {
-        matches!(self, Self::Remote { .. })
+        !matches!(self, Self::Nas { .. })
     }
 
     pub fn server(&self) -> Option<&BackupServer> {
         match self {
             Self::Remote { server, .. } => Some(server),
-            Self::Nas { .. } => None,
+            _ => None,
         }
     }
 }
@@ -358,8 +479,10 @@ pub enum BackupExisting {
 #[serde(deny_unknown_fields)]
 pub struct BackupRestore {
     pub task: BackupTaskId,
-    /// A version, or a mirror's copy.
+    /// The task's folder (where an encryption begins).
     pub from: BackupEnd,
+    /// The version in it, or the mirror's copy (`current`).
+    pub within: SharePath,
     /// What of it, as paths in it; none for all.
     pub paths: Vec<SharePath>,
     /// A folder on the NAS; made if it is missing.
@@ -408,6 +531,28 @@ mod tests {
     fn passwords_stay_out_of_logs() {
         let password = BackupPassword::new("s3cret").unwrap();
         assert_eq!(format!("{password:?}"), "BackupPassword(…)");
+        let secrets = BackupSecrets {
+            password: Some(password),
+            crypt: Some(BackupCrypt { password: BackupSecret::new("crypt pw").unwrap(), salt: None }),
+            cloud: Some(BackupCloudAccess {
+                token: BackupSecret::new(r#"{"access_token":"ya29.x"}"#).unwrap(),
+                client_id: Some(BackupCloudWord::parse("202264815644.apps.googleusercontent.com").unwrap()),
+                client_secret: None,
+                drive_id: None,
+                drive_type: None,
+            }),
+        };
+        let shown = format!("{secrets:?}");
+        assert!(
+            !shown.contains("s3cret") && !shown.contains("crypt pw") && !shown.contains("ya29"),
+            "{shown}"
+        );
+        assert!(BackupSecret::new(&"x".repeat(16 * 1024 + 1)).is_err());
+        assert!(BackupCloudWord::parse("-x").is_err());
+        assert!(BackupCloudWord::parse("b!AbC-12_x").is_ok());
+        let cloud: BackupEnd =
+            serde_json::from_str(r#"{"kind":"cloud","cloud":"onedrive","path":"nas"}"#).unwrap();
+        assert!(cloud.is_remote() && cloud.server().is_none());
         assert!(BackupPassword::new("a\nb").is_err());
         assert!(BackupPassword::new("").is_err());
         let line = r#"{"kind":"daemon","module":"-x"}"#;

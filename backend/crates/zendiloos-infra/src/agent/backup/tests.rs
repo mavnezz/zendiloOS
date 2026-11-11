@@ -1,3 +1,4 @@
+use zendiloos_backup::application::{CloudCredentials, Crypt};
 use zendiloos_backup::domain::Filters;
 use zendiloos_kernel::Timestamp;
 
@@ -14,6 +15,14 @@ impl Steps for Heard {
 
 fn context() -> RequestContext {
     RequestContext::default()
+}
+
+fn no_secrets() -> Secrets {
+    Secrets::default()
+}
+
+fn password(password: &str) -> Secrets {
+    Secrets { password: Some(Secret::new(password)), ..Secrets::default() }
 }
 
 fn daemon() -> Server {
@@ -75,6 +84,7 @@ async fn a_run_goes_to_the_agent_as_its_types_and_comes_back_read() {
             transfers: vec![">f+++++++++ a.jpg".into()],
             transfers_total: 2,
             listing: "drwxr-xr-x           4096 2026/11/11 03:00:00 2026-11-11_030000Z".into(),
+            token: None,
         },
     ));
     let host = AgentBackup::new(scripted.clone());
@@ -86,13 +96,14 @@ async fn a_run_goes_to_the_agent_as_its_types_and_comes_back_read() {
         stamp: "2026-11-11_030000Z".into(),
         filters: Filters { excludes: vec!["*.tmp".into()], hidden: false },
         bwlimit_kib: 100,
+        encrypted: false,
     };
     let heard = Heard(Default::default());
-    let report = host.run(&plan, Some(&Secret::new("s3cret")), &heard, &context()).await.unwrap();
+    let report = host.run(&plan, &password("s3cret"), &heard, &context()).await.unwrap();
     assert_eq!((report.files, report.transfers.len(), report.entries.len()), (2, 1, 1));
     assert_eq!(*heard.0.lock().unwrap(), [("transferring".to_owned(), Some(40))]);
-    let Request::RunBackup { run, password } = scripted.only() else { panic!() };
-    assert_eq!(password.unwrap().expose(), "s3cret");
+    let Request::RunBackup { run, secrets } = scripted.only() else { panic!() };
+    assert_eq!(secrets.password.unwrap().expose(), "s3cret");
     assert_eq!((run.task.get(), run.folder.as_str()), (3, "Photos nightly"));
     let BackupEnd::Remote { path, .. } = &run.target else { panic!() };
     assert_eq!(path.as_str(), "nas");
@@ -101,7 +112,7 @@ async fn a_run_goes_to_the_agent_as_its_types_and_comes_back_read() {
     // Values the protocol would not take never reach the agent.
     let mut bad = plan.clone();
     bad.filters.excludes = vec!["- *".into()];
-    assert!(matches!(host.run(&bad, None, &heard, &context()).await, Err(HostError::Port(_))));
+    assert!(matches!(host.run(&bad, &no_secrets(), &heard, &context()).await, Err(HostError::Port(_))));
 }
 
 #[tokio::test]
@@ -112,20 +123,21 @@ async fn refusals_and_a_changed_host_key_are_told_apart() {
         &format!("refused: {BACKUP_HOST_KEY_CHANGED}: Host key verification failed."),
     )));
     assert!(
-        matches!(refused.list(&at, None, &context()).await, Err(HostError::HostKeyChanged(detail)) if detail == "Host key verification failed.")
+        matches!(refused.list(&at, "", &no_secrets(), &context()).await, Err(HostError::HostKeyChanged(detail)) if detail == "Host key verification failed.")
     );
     let other =
         AgentBackup::new(Arc::new(Scripted::refusing(ErrorCode::Forbidden, "refused: holds other files")));
     assert!(
-        matches!(other.list(&at, None, &context()).await, Err(HostError::Refused(reason)) if reason == "holds other files")
+        matches!(other.list(&at, "", &no_secrets(), &context()).await, Err(HostError::Refused(reason)) if reason == "holds other files")
     );
     let failed = AgentBackup::new(Arc::new(Scripted::refusing(ErrorCode::Failed, "rsync ended with 10")));
-    assert!(matches!(failed.list(&at, None, &context()).await, Err(HostError::Failed(_))));
+    assert!(matches!(failed.list(&at, "", &no_secrets(), &context()).await, Err(HostError::Failed(_))));
     let missing = AgentBackup::new(Arc::new(Scripted::answering([Response::BackupListing {
         listing: "x".into(),
         missing: true,
+        token: None,
     }])));
-    assert!(missing.list(&at, None, &context()).await.unwrap().is_empty());
+    assert!(missing.list(&at, "", &no_secrets(), &context()).await.unwrap().entries.is_empty());
 }
 
 #[tokio::test]
@@ -151,15 +163,15 @@ async fn the_plugin_installs_through_apt_and_keys_are_asked_for() {
     assert!(matches!(scripted.asked()[0], Request::StartPackages { task: PackageTask::InstallBackup, .. }));
 
     let scripted = Arc::new(Scripted::answering([
-        Response::BackupFacts { rsync: true, ssh: true, public_key: None },
+        Response::BackupFacts { rsync: true, ssh: true, rclone: false, public_key: None },
         Response::BackupKey { public_key: "ssh-ed25519 AAAA".into() },
         Response::BackupHostKeys {
             keyscan: "h ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
                 .into(),
         },
         Response::Done,
-        Response::Done,
-        Response::BackupRestored { files: 1, bytes: 2, partial: None },
+        Response::BackupPruned { token: None },
+        Response::BackupRestored { files: 1, bytes: 2, partial: None, token: None },
     ]));
     let host = AgentBackup::new(scripted.clone());
     assert!(host.facts(&context()).await.unwrap().rsync);
@@ -167,9 +179,9 @@ async fn the_plugin_installs_through_apt_and_keys_are_asked_for() {
     assert_eq!(host.host_keys("nas2.lan", 22, &context()).await.unwrap().len(), 1);
     host.stop(3, &context()).await.unwrap();
     let folder = Location::Drive { drive: "1A2B-3C4D".into(), path: "nas/photos".into() };
-    host.prune(3, &folder, &["2026-11-01_030000Z".into()], None, &context()).await.unwrap();
+    host.prune(3, &folder, &["2026-11-01_030000Z".into()], &no_secrets(), &context()).await.unwrap();
     assert!(
-        host.prune(3, &folder, &["current".into()], None, &context()).await.is_err(),
+        host.prune(3, &folder, &["current".into()], &no_secrets(), &context()).await.is_err(),
         "never what is no version"
     );
     let plan = RestorePlan {
@@ -178,11 +190,14 @@ async fn the_plugin_installs_through_apt_and_keys_are_asked_for() {
         paths: vec!["2024".into()],
         to: Location::Share { volume: 1, share: "photos".into(), path: String::new() },
         existing: Existing::Replace,
+        encrypted: false,
     };
     let heard = Heard(Default::default());
-    assert_eq!(host.restore(&plan, None, &heard, &context()).await.unwrap().files, 1);
+    assert_eq!(host.restore(&plan, &no_secrets(), &heard, &context()).await.unwrap().files, 1);
     let Request::RestoreBackup { restore, .. } = scripted.asked().pop().unwrap() else { panic!() };
     assert_eq!(restore.existing, BackupExisting::Replace);
+    let BackupEnd::Nas { path, .. } = &restore.from else { panic!() };
+    assert_eq!((path.as_str(), restore.within.as_str()), ("nas/photos", "2026-11-01_030000Z"));
 }
 
 #[test]
@@ -193,4 +208,69 @@ fn a_folder_on_the_root_of_a_server_keeps_its_slash() {
     let at = Location::Share { volume: 1, share: "photos".into(), path: "a/b".into() };
     let (parent, folder) = split_folder(&at).unwrap();
     assert_eq!((parent.path(), folder.as_str()), ("a", "b"));
+}
+
+#[tokio::test]
+async fn an_encrypted_cloud_run_carries_its_secrets_and_brings_back_a_refreshed_token() {
+    let scripted = Arc::new(Scripted::reporting(
+        Vec::new(),
+        Response::BackupRan {
+            files: 1,
+            bytes: 1,
+            partial: None,
+            transfers: Vec::new(),
+            transfers_total: 0,
+            listing: String::new(),
+            token: Some(BackupSecret::new(r#"{"access_token":"fresh"}"#).unwrap()),
+        },
+    ));
+    let host = AgentBackup::new(scripted.clone());
+    let plan = RunPlan {
+        task: 4,
+        source: Location::Share { volume: 1, share: "photos".into(), path: String::new() },
+        target: Location::Cloud { provider: Provider::OneDrive, account: 2, path: "nas/Photos".into() },
+        mode: RunMode::Versioned,
+        stamp: "2026-11-11_030000Z".into(),
+        filters: Filters { excludes: Vec::new(), hidden: true },
+        bwlimit_kib: 0,
+        encrypted: true,
+    };
+    let mut secrets = Secrets {
+        password: None,
+        crypt: Some(Crypt { password: Secret::new("correct horse"), salt: Some(Secret::new("pepper")) }),
+        cloud: Some(CloudCredentials {
+            provider: Provider::OneDrive,
+            token: Secret::new(r#"{"access_token":"old"}"#),
+            client_id: None,
+            client_secret: None,
+            drive_id: Some("b!drive".into()),
+            drive_type: Some("business".into()),
+        }),
+    };
+    let heard = Heard(Default::default());
+    let report = host.run(&plan, &secrets, &heard, &context()).await.unwrap();
+    assert_eq!(report.token.map(|t| t.expose().to_owned()).as_deref(), Some(r#"{"access_token":"fresh"}"#));
+    let Request::RunBackup { run, secrets: sent } = scripted.only() else { panic!() };
+    assert_eq!(sent.crypt.unwrap().salt.unwrap().expose(), "pepper");
+    assert_eq!(sent.cloud.unwrap().drive_id.unwrap().as_str(), "b!drive");
+    let BackupEnd::Cloud { cloud, path } = &run.target else { panic!() };
+    assert_eq!((*cloud, path.as_str(), run.folder.as_str()), (BackupCloud::OneDrive, "nas", "Photos"));
+
+    // Encrypted without its password: nothing is asked.
+    secrets.crypt = None;
+    assert!(matches!(host.run(&plan, &secrets, &heard, &context()).await, Err(HostError::Refused(_))));
+    // Not encrypted: the crypt stays behind.
+    let mut plain = plan.clone();
+    plain.encrypted = false;
+    secrets.crypt = Some(Crypt { password: Secret::new("x"), salt: None });
+    let scripted = Arc::new(Scripted::answering([Response::BackupListing {
+        listing: String::new(),
+        missing: false,
+        token: None,
+    }]));
+    let host = AgentBackup::new(scripted.clone());
+    host.list(&plain.target, "2026-11-10_030000Z/2024", &secrets, &context()).await.unwrap();
+    let Request::ListBackup { inside, secrets: sent, .. } = scripted.only() else { panic!() };
+    assert_eq!(inside.as_str(), "2026-11-10_030000Z/2024");
+    assert!(sent.crypt.is_some(), "a listing decrypts when a crypt is given");
 }

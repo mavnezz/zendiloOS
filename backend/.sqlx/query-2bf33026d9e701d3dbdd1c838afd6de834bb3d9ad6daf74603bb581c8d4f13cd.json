@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM backup_cloud_accounts WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "2bf33026d9e701d3dbdd1c838afd6de834bb3d9ad6daf74603bb581c8d4f13cd"
+}

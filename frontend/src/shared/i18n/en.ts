@@ -2686,6 +2686,7 @@ const en = {
       local: 'On this NAS',
       push: 'To an rsync server',
       pull: 'From an rsync server',
+      cloud: 'To a cloud',
     },
     kindHints: {
       local: 'A folder of a share to a share on another pool, or to a USB drive.',
@@ -2710,6 +2711,8 @@ const en = {
       driveRoot: 'Drive {drive}',
       server: '{server} › {path}',
       serverRoot: '{server}',
+      cloud: '{account} › {path}',
+      cloudRoot: '{account}',
     },
     frequencies: {
       hourly: 'Hourly',

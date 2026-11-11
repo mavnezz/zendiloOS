@@ -1,6 +1,24 @@
+-- Cloud accounts backups go to (Google Drive, OneDrive), signed in to with
+-- OAuth. The token, and the administrator's own client's secret if given,
+-- are never sent back; rclone's refreshed token replaces the token.
+CREATE TABLE backup_cloud_accounts (
+    id            INTEGER PRIMARY KEY,
+    name          TEXT    NOT NULL UNIQUE COLLATE NOCASE CHECK (length(name) BETWEEN 1 AND 256),
+    provider      TEXT    NOT NULL CHECK (provider IN ('google_drive', 'onedrive')),
+    -- NULL: rclone's public client.
+    client_id     TEXT,
+    client_secret TEXT,
+    token         TEXT    NOT NULL,
+    -- OneDrive's drive.
+    drive_id      TEXT,
+    drive_type    TEXT,
+    created_at    INTEGER NOT NULL
+) STRICT;
+
 -- Backup tasks (zendiloos-backup, docs/architecture.md, 4.14): a folder of
--- a share backed up to a folder on the NAS (a share, a removable drive) or
--- of an rsync server, or a server's folder pulled into the NAS.
+-- a share backed up to a folder on the NAS (a share, a removable drive),
+-- of an rsync server or of a cloud account, or a server's folder pulled
+-- into the NAS.
 CREATE TABLE backup_tasks (
     id                 INTEGER PRIMARY KEY,
     name               TEXT    NOT NULL UNIQUE COLLATE NOCASE CHECK (length(name) BETWEEN 1 AND 256),
@@ -12,10 +30,11 @@ CREATE TABLE backup_tasks (
     source_share       INTEGER,
     source_path        TEXT    NOT NULL,
     -- Where to: a share's folder, a drive's (by its file system's UUID),
-    -- or the server's.
-    target_kind        TEXT    NOT NULL CHECK (target_kind IN ('share', 'drive', 'server')),
+    -- the server's, or a cloud account's (which stays while a task uses it).
+    target_kind        TEXT    NOT NULL CHECK (target_kind IN ('share', 'drive', 'server', 'cloud')),
     target_share       INTEGER,
     target_drive       TEXT,
+    target_account     INTEGER REFERENCES backup_cloud_accounts (id) ON DELETE RESTRICT,
     target_path        TEXT    NOT NULL,
     -- The server, if one end is one: an rsync daemon (its module, and a
     -- password that is never sent back) or SSH (its host key, pinned).
@@ -45,6 +64,12 @@ CREATE TABLE backup_tasks (
     -- KiB/s; NULL follows the settings, 0 is none.
     bwlimit_kib        INTEGER CHECK (bwlimit_kib >= 0),
     notify_success     INTEGER NOT NULL CHECK (notify_success IN (0, 1)),
+    -- With rclone's crypt: names and contents in the target encrypted with
+    -- this password and salt, never sent back. Lost, the backup cannot be
+    -- restored.
+    encrypted          INTEGER NOT NULL DEFAULT 0 CHECK (encrypted IN (0, 1)),
+    crypt_password     TEXT,
+    crypt_salt         TEXT,
     created_at         INTEGER NOT NULL,
     -- Runs on its schedule are due from then: made, changed, last started.
     since              INTEGER NOT NULL,
@@ -53,6 +78,7 @@ CREATE TABLE backup_tasks (
     CHECK ((source_kind = 'share') = (source_share IS NOT NULL)),
     CHECK ((target_kind = 'share') = (target_share IS NOT NULL)),
     CHECK ((target_kind = 'drive') = (target_drive IS NOT NULL)),
+    CHECK ((target_kind = 'cloud') = (target_account IS NOT NULL)),
     CHECK ((source_kind = 'server' OR target_kind = 'server') = (server_transport IS NOT NULL)),
     CHECK (NOT (source_kind = 'server' AND target_kind = 'server'))
 ) STRICT;

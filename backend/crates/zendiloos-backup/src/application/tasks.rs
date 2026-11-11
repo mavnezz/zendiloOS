@@ -3,7 +3,7 @@
 use zendiloos_jobs::Job;
 use zendiloos_kernel::{Actor, RequestContext, Secret, Timestamp};
 
-use super::ports::{HostFacts, HostKey, Location, NewTask, PasswordChange, Readers};
+use super::ports::{Crypt, HostFacts, HostKey, Location, NewTask, PasswordChange, Readers, Secrets};
 use super::{BackupError, Backups, audited};
 use crate::domain::{
     Entry, Invalid, Mode, NasPlace, Place, RemotePlace, Run, Settings, Task, TaskSettings, folder_name,
@@ -36,9 +36,11 @@ impl Backups {
         Ok(Plugin { facts: self.ports.host.facts(context).await? })
     }
 
-    /// Installs rsync and the SSH client from Debian, in a job.
+    /// Installs rsync, the SSH client and rclone from Debian, in a job;
+    /// again if one of them is missing.
     pub async fn install(&self, actor: &Actor, context: &RequestContext) -> Result<Job, BackupError> {
-        if self.ports.host.facts(context).await?.rsync {
+        let facts = self.ports.host.facts(context).await?;
+        if facts.rsync && facts.ssh && facts.rclone {
             return Err(BackupError::Installed);
         }
         let this = self.clone();
@@ -113,7 +115,8 @@ impl Backups {
             (None, None) => None,
         };
         let at = Location::Remote { server: place.server.clone(), path: place.path.clone() };
-        Ok(self.ports.host.list(&at, password.as_ref(), context).await?)
+        let secrets = Secrets { password, ..Secrets::default() };
+        Ok(self.ports.host.list(&at, "", &secrets, context).await?.entries)
     }
 
     /// Who may read `share_id`: whoever may read a share reads the backups
@@ -163,7 +166,7 @@ impl Backups {
                 Place::Nas(NasPlace::Drive { drive, .. }) => {
                     reachable &= drives.iter().any(|d| d.id == *drive && d.mounted);
                 }
-                Place::Remote(_) => {}
+                Place::Remote(_) | Place::Cloud(_) => {}
             }
         }
         let password_set = task.server().is_some_and(|s| s.is_daemon())
@@ -186,6 +189,11 @@ impl Backups {
             {
                 return Err(BackupError::ShareMissing);
             }
+            if let Place::Cloud(cloud) = place
+                && self.ports.accounts.find(cloud.account).await?.is_none()
+            {
+                return Err(Invalid("there is no such cloud account".into()).into());
+            }
         }
         let others = self.ports.tasks.list().await?;
         if let Some(other) = others.iter().find(|other| {
@@ -199,6 +207,7 @@ impl Backups {
         let found = self.ports.drives.drives(context).await?.into_iter().find(|d| d.id == drive);
         if let Some(found) = &found
             && matches!(settings.mode, Mode::Versioned { .. })
+            && !settings.rclone()
             && !found.links()
         {
             return Err(Invalid(format!(
@@ -227,6 +236,7 @@ impl Backups {
         &self,
         settings: TaskSettings,
         password: Option<Secret>,
+        crypt: Option<Crypt>,
         actor: &Actor,
         context: &RequestContext,
     ) -> Result<TaskView, BackupError> {
@@ -235,11 +245,18 @@ impl Backups {
         let settings = settings.check(&names.iter().map(String::as_str).collect::<Vec<_>>())?;
         let folder = folder_name(&settings.name);
         let last_plug = self.check_places(&settings, &folder, None, context).await?;
+        let crypt = crypt.filter(|c| !c.password.expose().is_empty());
+        if settings.encrypted && crypt.is_none() {
+            return Err(Invalid("an encrypted task needs its password".into()).into());
+        }
         let password = password.filter(|p| !p.expose().is_empty() && settings_daemon(&settings));
         let now = self.now();
         let new = NewTask { settings, folder, created_at: now, last_plug };
         let created = self.ports.tasks.create(&new, password.as_ref()).await;
         let done = match created {
+            Ok(Some(id)) if new.settings.encrypted => {
+                self.ports.tasks.set_crypt(id, crypt.as_ref()).await.map(|()| id).map_err(BackupError::from)
+            }
             Ok(Some(id)) => Ok(id),
             Ok(None) => Err(BackupError::NameTaken),
             Err(error) => Err(error.into()),
@@ -250,12 +267,15 @@ impl Backups {
 
     /// Changes a task. Its folder in the target stays as it was named. A
     /// daemon's password stays unless another is given, and only for the
-    /// same daemon, port, user and module.
+    /// same daemon, port, user and module. The crypt's password stays as
+    /// long as the task is encrypted: what it backed up is encrypted with
+    /// it.
     pub async fn update(
         &self,
         id: i64,
         settings: TaskSettings,
         password: Option<Secret>,
+        crypt: Option<Crypt>,
         actor: &Actor,
         context: &RequestContext,
     ) -> Result<TaskView, BackupError> {
@@ -269,6 +289,18 @@ impl Backups {
         if settings.target == task.settings.target && last_plug.is_none() {
             last_plug = task.last_plug.clone();
         }
+        let crypt = crypt.filter(|c| !c.password.expose().is_empty());
+        let stored = self.ports.tasks.crypt(id).await?;
+        if settings.encrypted && crypt.is_none() && stored.is_none() {
+            return Err(Invalid("an encrypted task needs its password".into()).into());
+        }
+        if settings.encrypted && task.settings.encrypted && stored.is_some() && crypt.is_some() {
+            return Err(Invalid(
+                "an encrypted task's password cannot change: what it backed up is encrypted with it; make a new task for another"
+                    .into(),
+            )
+            .into());
+        }
         let change = match password.filter(|p| !p.expose().is_empty()) {
             Some(password) if settings_daemon(&settings) => PasswordChange::Set(password),
             _ => match (task.server(), settings_server(&settings)) {
@@ -277,7 +309,12 @@ impl Backups {
             },
         };
         let changed = Task { settings, since: self.now(), last_plug, ..task };
+        let encrypted = changed.settings.encrypted;
         let done = match self.ports.tasks.update(&changed, change).await {
+            Ok(true) if !encrypted => self.ports.tasks.set_crypt(id, None).await.map_err(BackupError::from),
+            Ok(true) if crypt.is_some() => {
+                self.ports.tasks.set_crypt(id, crypt.as_ref()).await.map_err(BackupError::from)
+            }
             Ok(true) => Ok(()),
             Ok(false) => Err(BackupError::NameTaken),
             Err(error) => Err(error.into()),

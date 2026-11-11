@@ -47,6 +47,7 @@ impl Host {
             ssh: "/bin/false".into(),
             ssh_keygen: "/bin/false".into(),
             ssh_keyscan: "/bin/false".into(),
+            rclone: "/bin/false".into(),
             systemd_mount: "/bin/false".into(),
             umount: "/bin/false".into(),
             rmdir: "/bin/false".into(),

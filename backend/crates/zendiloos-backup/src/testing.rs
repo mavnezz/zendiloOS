@@ -12,11 +12,14 @@ use zendiloos_notify::Notifier;
 use zendiloos_notify::testing::MemoryNotifications;
 
 use crate::application::{
-    BackupHost, BackupPorts, Backups, Drive, Drives, HostError, HostFacts, HostKey, Location, NewRun,
-    NewTask, PasswordChange, Readers, RestorePlan, RestoreReport, RunEnd, RunMode, RunPlan, RunReport,
-    RunRepository, SettingsRepository, ShareSpot, Shares, Steps, TaskRepository,
+    BackupHost, BackupPorts, Backups, CloudAccountRepository, CloudSignIn, Crypt, Drive, Drives, HostError,
+    HostFacts, HostKey, Listing, Location, NewAccount, NewRun, NewTask, PasswordChange, Readers, RestorePlan,
+    RestoreReport, RunEnd, RunMode, RunPlan, RunReport, RunRepository, Secrets, SettingsRepository,
+    ShareSpot, Shares, Steps, TaskRepository,
 };
-use crate::domain::{Entry, EntryKind, INCOMPLETE, MARKER, Outcome, Run, Settings, Task, Transfer};
+use crate::domain::{
+    CloudAccount, Entry, EntryKind, INCOMPLETE, MARKER, Outcome, Provider, Run, Settings, Task, Transfer,
+};
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -26,6 +29,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 pub struct MemoryTasks {
     tasks: Mutex<Vec<Task>>,
     passwords: Mutex<BTreeMap<i64, String>>,
+    crypts: Mutex<BTreeMap<i64, (String, Option<String>)>>,
 }
 
 #[async_trait]
@@ -103,6 +107,129 @@ impl TaskRepository for MemoryTasks {
             task.last_plug = plug.map(str::to_owned);
         }
         Ok(())
+    }
+    async fn crypt(&self, id: i64) -> Result<Option<Crypt>, PortError> {
+        Ok(lock(&self.crypts).get(&id).map(|(password, salt)| Crypt {
+            password: Secret::new(password),
+            salt: salt.as_deref().map(Secret::new),
+        }))
+    }
+
+    async fn set_crypt(&self, id: i64, crypt: Option<&Crypt>) -> Result<(), PortError> {
+        let mut crypts = lock(&self.crypts);
+        match crypt {
+            Some(crypt) => {
+                let salt = crypt.salt.as_ref().map(|s| s.expose().to_owned());
+                crypts.insert(id, (crypt.password.expose().to_owned(), salt));
+            }
+            None => {
+                crypts.remove(&id);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Cloud accounts with their tokens, by id.
+#[derive(Default)]
+pub struct MemoryAccounts {
+    accounts: Mutex<Vec<CloudAccount>>,
+    tokens: Mutex<BTreeMap<i64, String>>,
+}
+
+impl MemoryAccounts {
+    pub fn token(&self, id: i64) -> Option<String> {
+        lock(&self.tokens).get(&id).cloned()
+    }
+}
+
+#[async_trait]
+impl CloudAccountRepository for MemoryAccounts {
+    async fn list(&self) -> Result<Vec<CloudAccount>, PortError> {
+        Ok(lock(&self.accounts).clone())
+    }
+
+    async fn find(&self, id: i64) -> Result<Option<CloudAccount>, PortError> {
+        Ok(lock(&self.accounts).iter().find(|a| a.id == id).cloned())
+    }
+
+    async fn create(
+        &self,
+        new: &NewAccount,
+        token: &Secret,
+        _: Option<&Secret>,
+    ) -> Result<Option<i64>, PortError> {
+        let mut accounts = lock(&self.accounts);
+        if accounts.iter().any(|a| a.name.eq_ignore_ascii_case(&new.name)) {
+            return Ok(None);
+        }
+        let id = i64::try_from(accounts.len()).unwrap_or(0) + 1;
+        accounts.push(CloudAccount {
+            id,
+            name: new.name.clone(),
+            provider: new.provider,
+            client_id: new.client_id.clone(),
+            drive_id: new.drive_id.clone(),
+            drive_type: new.drive_type.clone(),
+            created_at: new.created_at,
+        });
+        lock(&self.tokens).insert(id, token.expose().to_owned());
+        Ok(Some(id))
+    }
+
+    async fn secrets(&self, id: i64) -> Result<Option<(Secret, Option<Secret>)>, PortError> {
+        Ok(lock(&self.tokens).get(&id).map(|token| (Secret::new(token), None)))
+    }
+
+    async fn set_token(&self, id: i64, token: &Secret) -> Result<(), PortError> {
+        lock(&self.tokens).insert(id, token.expose().to_owned());
+        Ok(())
+    }
+
+    async fn delete(&self, id: i64) -> Result<bool, PortError> {
+        let mut accounts = lock(&self.accounts);
+        let before = accounts.len();
+        accounts.retain(|a| a.id != id);
+        Ok(accounts.len() < before)
+    }
+}
+
+/// OAuth pretended: the code `good` gives a token, others are refused.
+#[derive(Default)]
+pub struct FakeSignIn(Mutex<u32>);
+
+#[async_trait]
+impl CloudSignIn for FakeSignIn {
+    fn new_state(&self) -> String {
+        let mut count = lock(&self.0);
+        *count += 1;
+        format!("state{count}")
+    }
+
+    fn consent_url(&self, provider: Provider, client_id: Option<&str>, state: &str) -> String {
+        format!(
+            "https://consent.test/{}?client={}&state={state}",
+            provider.as_str(),
+            client_id.unwrap_or("rclone")
+        )
+    }
+
+    async fn exchange(
+        &self,
+        _: Provider,
+        _: Option<&str>,
+        _: Option<&Secret>,
+        code: &str,
+    ) -> Result<Secret, HostError> {
+        if code == "good" {
+            Ok(Secret::new(r#"{"access_token":"a","refresh_token":"r","expiry":"2026-11-11T08:00:00Z"}"#))
+        } else {
+            Err(HostError::Refused("invalid_grant".into()))
+        }
+    }
+
+    async fn drive(&self, provider: Provider, _: &Secret) -> Result<Option<(String, String)>, HostError> {
+        Ok((provider == Provider::OneDrive).then(|| ("b!drive".to_owned(), "personal".to_owned())))
     }
 }
 
@@ -301,6 +428,9 @@ pub struct FakeHost {
     pub partial_next: Mutex<Option<String>>,
     /// Held to keep runs waiting.
     pub gate: tokio::sync::Mutex<()>,
+    /// The secrets each run was given: `password|crypt|token`.
+    pub secrets_seen: Mutex<Vec<String>>,
+    refreshed: Mutex<Option<String>>,
 }
 
 impl Default for FakeHost {
@@ -314,6 +444,8 @@ impl Default for FakeHost {
             fail_next: Mutex::default(),
             partial_next: Mutex::default(),
             gate: tokio::sync::Mutex::new(()),
+            secrets_seen: Mutex::default(),
+            refreshed: Mutex::default(),
         }
     }
 }
@@ -326,6 +458,7 @@ pub fn key(at: &Location) -> String {
         Location::Remote { server, path } => {
             format!("{}@{}:{}/{path}", server.user, server.host, server.port)
         }
+        Location::Cloud { provider, account, path } => format!("{}:{account}/{path}", provider.as_str()),
     }
 }
 
@@ -348,6 +481,16 @@ impl FakeHost {
             .collect()
     }
 
+    /// What the next run, listing, retention or restore hands back as a
+    /// refreshed token.
+    pub fn refresh_token(&self, token: &str) {
+        *lock(&self.refreshed) = Some(token.to_owned());
+    }
+
+    fn refreshed(&self) -> Option<Secret> {
+        lock(&self.refreshed).take().map(Secret::new)
+    }
+
     pub fn put(&self, at: &Location, entries: Vec<Entry>) {
         lock(&self.listings).insert(key(at), entries);
     }
@@ -365,7 +508,12 @@ impl FakeHost {
 impl BackupHost for FakeHost {
     async fn facts(&self, _: &RequestContext) -> Result<HostFacts, PortError> {
         let installed = *lock(&self.installed);
-        Ok(HostFacts { rsync: installed, ssh: installed, public_key: lock(&self.public_key).clone() })
+        Ok(HostFacts {
+            rsync: installed,
+            ssh: installed,
+            rclone: installed,
+            public_key: lock(&self.public_key).clone(),
+        })
     }
 
     async fn install(&self, _: &RequestContext) -> Result<(), HostError> {
@@ -394,28 +542,36 @@ impl BackupHost for FakeHost {
     async fn list(
         &self,
         at: &Location,
-        password: Option<&Secret>,
+        inside: &str,
+        secrets: &Secrets,
         _: &RequestContext,
-    ) -> Result<Vec<Entry>, HostError> {
+    ) -> Result<Listing, HostError> {
+        let at = &at.join(inside);
         self.call(HostCall::List(at.clone()));
-        lock(&self.passwords).push(password.map(|p| p.expose().to_owned()));
+        lock(&self.passwords).push(secrets.password.as_ref().map(|p| p.expose().to_owned()));
         if let Location::Remote { server, .. } = at
             && server.host == "down.lan"
         {
             return Err(HostError::Failed("rsync: failed to connect to down.lan: Connection refused".into()));
         }
-        Ok(self.listing(at))
+        Ok(Listing { entries: self.listing(at), token: self.refreshed() })
     }
 
     async fn run(
         &self,
         plan: &RunPlan,
-        password: Option<&Secret>,
+        secrets: &Secrets,
         steps: &dyn Steps,
         _: &RequestContext,
     ) -> Result<RunReport, HostError> {
         self.call(HostCall::Run(plan.clone()));
-        lock(&self.passwords).push(password.map(|p| p.expose().to_owned()));
+        lock(&self.passwords).push(secrets.password.as_ref().map(|p| p.expose().to_owned()));
+        lock(&self.secrets_seen).push(format!(
+            "{}|{}|{}",
+            secrets.password.as_ref().map_or("", |p| p.expose()),
+            secrets.crypt.as_ref().map_or("", |c| c.password.expose()),
+            secrets.cloud.as_ref().map_or("", |c| c.token.expose()),
+        ));
         steps.step("transferring", Some(50));
         let _gate = self.gate.lock().await;
         if let Some(error) = lock(&self.fail_next).take() {
@@ -446,6 +602,7 @@ impl BackupHost for FakeHost {
             transfers: vec![Transfer { change: ">f+++++++++".into(), path: "a.jpg".into() }],
             transfers_total: 3,
             entries,
+            token: self.refreshed(),
         })
     }
 
@@ -461,26 +618,26 @@ impl BackupHost for FakeHost {
         _: i64,
         at: &Location,
         names: &[String],
-        _: Option<&Secret>,
+        _: &Secrets,
         _: &RequestContext,
-    ) -> Result<(), HostError> {
+    ) -> Result<Option<Secret>, HostError> {
         self.call(HostCall::Prune(at.clone(), names.to_vec()));
         let mut entries = self.listing(at);
         entries.retain(|entry| !names.contains(&entry.name));
         self.put(at, entries);
-        Ok(())
+        Ok(self.refreshed())
     }
 
     async fn restore(
         &self,
         plan: &RestorePlan,
-        _: Option<&Secret>,
+        _: &Secrets,
         steps: &dyn Steps,
         _: &RequestContext,
     ) -> Result<RestoreReport, HostError> {
         self.call(HostCall::Restore(plan.clone()));
         steps.step("restoring", Some(100));
-        Ok(RestoreReport { files: 2, bytes: 20, partial: None })
+        Ok(RestoreReport { files: 2, bytes: 20, partial: None, token: self.refreshed() })
     }
 }
 
@@ -528,6 +685,7 @@ pub struct Fakes {
     pub host: Arc<FakeHost>,
     pub shares: Arc<FakeShares>,
     pub drives: Arc<FakeDrives>,
+    pub accounts: Arc<MemoryAccounts>,
     pub jobs: Arc<MemoryJobs>,
     pub notifications: Arc<MemoryNotifications>,
     pub audit: Arc<MemoryAudit>,
@@ -546,6 +704,7 @@ pub fn backups() -> (Backups, Fakes) {
         host: Arc::default(),
         shares: Arc::default(),
         drives: Arc::default(),
+        accounts: Arc::default(),
         jobs: Arc::default(),
         notifications: Arc::default(),
         audit: Arc::default(),
@@ -560,6 +719,8 @@ pub fn backups() -> (Backups, Fakes) {
         host: fakes.host.clone(),
         shares: fakes.shares.clone(),
         drives: fakes.drives.clone(),
+        accounts: fakes.accounts.clone(),
+        sign_in: Arc::new(FakeSignIn::default()),
         jobs,
         notifier,
         audit: fakes.audit.clone(),

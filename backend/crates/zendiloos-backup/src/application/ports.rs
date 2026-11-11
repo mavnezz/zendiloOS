@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext, Secret, Timestamp};
 
 use crate::domain::{
-    Entry, Existing, Filters, Outcome, Run, Server, Settings, Task, TaskSettings, Transfer, Trigger,
+    CloudAccount, Entry, Existing, Filters, Outcome, Provider, Run, Server, Settings, Task, TaskSettings,
+    Transfer, Trigger,
 };
 
 /// A task to be kept.
@@ -43,6 +44,88 @@ pub trait TaskRepository: Send + Sync {
     async fn noted(&self, id: i64, since: Timestamp) -> Result<(), PortError>;
     /// Its target drive's plugging in, backed up for.
     async fn plugged(&self, id: i64, plug: Option<&str>) -> Result<(), PortError>;
+    /// The password (and salt) its target is encrypted with, never shown.
+    async fn crypt(&self, id: i64) -> Result<Option<Crypt>, PortError>;
+    async fn set_crypt(&self, id: i64, crypt: Option<&Crypt>) -> Result<(), PortError>;
+}
+
+/// rclone's crypt: its password, and its salt (rclone's `password2`).
+#[derive(Debug, Clone)]
+pub struct Crypt {
+    pub password: Secret,
+    pub salt: Option<Secret>,
+}
+
+/// A cloud account's sign-in, as a run hands it to rclone.
+#[derive(Debug, Clone)]
+pub struct CloudCredentials {
+    pub provider: Provider,
+    /// The OAuth token as rclone keeps it (JSON).
+    pub token: Secret,
+    /// The administrator's own client; none: rclone's public one.
+    pub client_id: Option<String>,
+    pub client_secret: Option<Secret>,
+    pub drive_id: Option<String>,
+    pub drive_type: Option<String>,
+}
+
+/// What a run needs to reach its places, none of it ever shown.
+#[derive(Debug, Clone, Default)]
+pub struct Secrets {
+    /// An rsync daemon's.
+    pub password: Option<Secret>,
+    pub crypt: Option<Crypt>,
+    pub cloud: Option<CloudCredentials>,
+}
+
+/// A cloud account to keep.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewAccount {
+    pub name: String,
+    pub provider: Provider,
+    pub client_id: Option<String>,
+    pub drive_id: Option<String>,
+    pub drive_type: Option<String>,
+    pub created_at: Timestamp,
+}
+
+#[async_trait]
+pub trait CloudAccountRepository: Send + Sync {
+    async fn list(&self) -> Result<Vec<CloudAccount>, PortError>;
+    async fn find(&self, id: i64) -> Result<Option<CloudAccount>, PortError>;
+    /// The new account's id; `None` if another has its name.
+    async fn create(
+        &self,
+        account: &NewAccount,
+        token: &Secret,
+        client_secret: Option<&Secret>,
+    ) -> Result<Option<i64>, PortError>;
+    /// Its token and own client's secret.
+    async fn secrets(&self, id: i64) -> Result<Option<(Secret, Option<Secret>)>, PortError>;
+    /// A token rclone refreshed.
+    async fn set_token(&self, id: i64, token: &Secret) -> Result<(), PortError>;
+    async fn delete(&self, id: i64) -> Result<bool, PortError>;
+}
+
+/// Signing in to a cloud with OAuth: the provider's consent page, the code
+/// a browser brought back exchanged for a token.
+#[async_trait]
+pub trait CloudSignIn: Send + Sync {
+    /// A random state for one sign-in.
+    fn new_state(&self) -> String;
+    /// The page where the administrator consents; it sends the browser to
+    /// `http://127.0.0.1:53682/` with the code.
+    fn consent_url(&self, provider: Provider, client_id: Option<&str>, state: &str) -> String;
+    /// The token for `code`, as rclone keeps one (JSON).
+    async fn exchange(
+        &self,
+        provider: Provider,
+        client_id: Option<&str>,
+        client_secret: Option<&Secret>,
+        code: &str,
+    ) -> Result<Secret, HostError>;
+    /// OneDrive's drive (its id and type) the token reaches; none for others.
+    async fn drive(&self, provider: Provider, token: &Secret) -> Result<Option<(String, String)>, HostError>;
 }
 
 /// A run as it starts.
@@ -145,15 +228,34 @@ pub trait Drives: Send + Sync {
 /// drive's, or of an rsync server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Location {
-    Share { volume: u16, share: String, path: String },
-    Drive { drive: String, path: String },
-    Remote { server: Server, path: String },
+    Share {
+        volume: u16,
+        share: String,
+        path: String,
+    },
+    Drive {
+        drive: String,
+        path: String,
+    },
+    Remote {
+        server: Server,
+        path: String,
+    },
+    /// A folder of a cloud account.
+    Cloud {
+        provider: Provider,
+        account: i64,
+        path: String,
+    },
 }
 
 impl Location {
     pub fn path(&self) -> &str {
         match self {
-            Self::Share { path, .. } | Self::Drive { path, .. } | Self::Remote { path, .. } => path,
+            Self::Share { path, .. }
+            | Self::Drive { path, .. }
+            | Self::Remote { path, .. }
+            | Self::Cloud { path, .. } => path,
         }
     }
 
@@ -171,6 +273,9 @@ impl Location {
             }
             Self::Drive { drive, path } => Self::Drive { drive: drive.clone(), path: join(path) },
             Self::Remote { server, path } => Self::Remote { server: server.clone(), path: join(path) },
+            Self::Cloud { provider, account, path } => {
+                Self::Cloud { provider: *provider, account: *account, path: join(path) }
+            }
         }
     }
 
@@ -206,10 +311,12 @@ pub struct RunPlan {
     pub filters: Filters,
     /// KiB/s, 0 for none.
     pub bwlimit_kib: u32,
+    /// Through rclone's crypt (its secrets come apart).
+    pub encrypted: bool,
 }
 
 /// What a run did.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct RunReport {
     pub files: u64,
     pub bytes: u64,
@@ -219,26 +326,38 @@ pub struct RunReport {
     pub transfers_total: u64,
     /// The task's folder after the run, for retention.
     pub entries: Vec<Entry>,
+    /// A cloud's token rclone refreshed meanwhile, to keep.
+    pub token: Option<Secret>,
+}
+
+/// A folder's entries, and a cloud's token refreshed meanwhile.
+#[derive(Debug, Clone, Default)]
+pub struct Listing {
+    pub entries: Vec<Entry>,
+    pub token: Option<Secret>,
 }
 
 /// A restore, as the host carries it out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestorePlan {
     pub task: i64,
-    /// The version (or a mirror's copy) restored from.
+    /// The version (or a mirror's copy) restored from: a folder in the
+    /// task's folder.
     pub from: Location,
     /// What of it, as paths in it; none for all.
     pub paths: Vec<String>,
     /// A folder on the NAS.
     pub to: Location,
     pub existing: Existing,
+    pub encrypted: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct RestoreReport {
     pub files: u64,
     pub bytes: u64,
     pub partial: Option<String>,
+    pub token: Option<Secret>,
 }
 
 /// What the host offers.
@@ -246,6 +365,8 @@ pub struct RestoreReport {
 pub struct HostFacts {
     pub rsync: bool,
     pub ssh: bool,
+    /// rclone, for clouds and encryption.
+    pub rclone: bool,
     /// The NAS's own public key for SSH servers, once made.
     pub public_key: Option<String>,
 }
@@ -293,17 +414,21 @@ pub trait BackupHost: Send + Sync {
         port: u16,
         context: &RequestContext,
     ) -> Result<Vec<HostKey>, HostError>;
-    /// The entries of a folder; none if it is not there.
+    /// The entries of the folder `inside` (names separated by `/`) of `at`;
+    /// none if it is not there. With a crypt among `secrets`, `at` is the
+    /// task's folder, where the encryption begins: what is inside is read
+    /// decrypted.
     async fn list(
         &self,
         at: &Location,
-        password: Option<&Secret>,
+        inside: &str,
+        secrets: &Secrets,
         context: &RequestContext,
-    ) -> Result<Vec<Entry>, HostError>;
+    ) -> Result<Listing, HostError>;
     async fn run(
         &self,
         plan: &RunPlan,
-        password: Option<&Secret>,
+        secrets: &Secrets,
         steps: &dyn Steps,
         context: &RequestContext,
     ) -> Result<RunReport, HostError>;
@@ -316,13 +441,13 @@ pub trait BackupHost: Send + Sync {
         task: i64,
         at: &Location,
         names: &[String],
-        password: Option<&Secret>,
+        secrets: &Secrets,
         context: &RequestContext,
-    ) -> Result<(), HostError>;
+    ) -> Result<Option<Secret>, HostError>;
     async fn restore(
         &self,
         plan: &RestorePlan,
-        password: Option<&Secret>,
+        secrets: &Secrets,
         steps: &dyn Steps,
         context: &RequestContext,
     ) -> Result<RestoreReport, HostError>;

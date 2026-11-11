@@ -1834,6 +1834,180 @@
         ]
       }
     },
+    "/api/v1/backup/accounts": {
+      "get": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "The cloud accounts, by name. Needs `backup.manage`.",
+        "operationId": "list_backup_accounts",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BackupCloudAccount"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/backup/accounts/sign-in": {
+      "post": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "Begins signing in to a cloud account (for 30 minutes). Needs\n`backup.manage`.",
+        "operationId": "start_backup_sign_in",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupSignInRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupSignIn"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/backup/accounts/sign-in/{flow}": {
+      "post": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "Finishes a sign-in: the code in the address exchanged for a token, kept\nwith a new account. Needs `backup.manage`.",
+        "operationId": "finish_backup_sign_in",
+        "parameters": [
+          {
+            "name": "flow",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupSignInFinish"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupCloudAccount"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`cloud_sign_in_expired`, `refused` (in the provider's words), `name_taken`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/backup/accounts/{id}": {
+      "delete": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "Forgets a cloud account and its token. Needs `backup.manage`.",
+        "operationId": "delete_backup_account",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`account_in_use`, with the tasks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/backup/key": {
       "post": {
         "tags": [
@@ -2215,7 +2389,6 @@
         "tags": [
           "backup"
         ],
-        "summary": "Who may read share `id`: whoever may, reads what is backed up into it.\nNeeds `backup.manage`.",
         "operationId": "backup_share_readers",
         "parameters": [
           {
@@ -15409,6 +15582,39 @@
           }
         }
       },
+      "BackupCloudAccount": {
+        "type": "object",
+        "description": "A cloud account signed in to. Its token, and its own client's secret if\ngiven, are never shown.",
+        "required": [
+          "id",
+          "name",
+          "provider",
+          "created_at"
+        ],
+        "properties": {
+          "client_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The administrator's own OAuth client; none: rclone's."
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/BackupProvider"
+          }
+        }
+      },
       "BackupEntry": {
         "type": "object",
         "description": "An entry of a folder in a backup or on a server.",
@@ -15643,9 +15849,33 @@
                 "type": "string"
               }
             }
+          },
+          {
+            "type": "object",
+            "description": "From the account's root.",
+            "required": [
+              "account_id",
+              "path",
+              "kind"
+            ],
+            "properties": {
+              "account_id": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "cloud"
+                ]
+              },
+              "path": {
+                "type": "string"
+              }
+            }
           }
         ],
-        "description": "Where a task reads or writes: a folder of a share, of a removable drive\n(by its file system's UUID), or of the task's server."
+        "description": "Where a task reads or writes: a folder of a share, of a removable drive\n(by its file system's UUID), of the task's server, or of a cloud\naccount (a target only)."
       },
       "BackupPlanRequest": {
         "type": "object",
@@ -15784,10 +16014,11 @@
       },
       "BackupPlugin": {
         "type": "object",
-        "description": "The plugin: rsync and the SSH client installed, and the NAS's public\nkey for SSH servers once made.",
+        "description": "The plugin: rsync and the SSH client installed, rclone (for clouds and\nencryption), and the NAS's public key for SSH servers once made.",
         "required": [
           "installed",
-          "ssh"
+          "ssh",
+          "rclone"
         ],
         "properties": {
           "installed": {
@@ -15799,10 +16030,21 @@
               "null"
             ]
           },
+          "rclone": {
+            "type": "boolean"
+          },
           "ssh": {
             "type": "boolean"
           }
         }
+      },
+      "BackupProvider": {
+        "type": "string",
+        "description": "Who may read share `id`: whoever may, reads what is backed up into it.\nNeeds `backup.manage`.",
+        "enum": [
+          "google_drive",
+          "onedrive"
+        ]
       },
       "BackupReadersView": {
         "type": "object",
@@ -16121,6 +16363,65 @@
           }
         }
       },
+      "BackupSignIn": {
+        "type": "object",
+        "description": "A sign-in under way: the provider's consent page to open, and the\nsign-in's number to finish it with.",
+        "required": [
+          "flow",
+          "url"
+        ],
+        "properties": {
+          "flow": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "description": "The browser lands on `http://127.0.0.1:53682/` (or `localhost`)\nafter consenting, where nothing answers: that address is pasted\nback."
+          }
+        }
+      },
+      "BackupSignInFinish": {
+        "type": "object",
+        "description": "The address the browser landed on after consenting.",
+        "required": [
+          "address"
+        ],
+        "properties": {
+          "address": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "BackupSignInRequest": {
+        "type": "object",
+        "description": "A sign-in to begin: the account's name, and the administrator's own\nOAuth client if wished.",
+        "required": [
+          "provider",
+          "name"
+        ],
+        "properties": {
+          "client_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "client_secret": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/BackupProvider"
+          }
+        },
+        "additionalProperties": false
+      },
       "BackupState": {
         "type": "string",
         "enum": [
@@ -16145,6 +16446,7 @@
           "excludes",
           "hidden",
           "notify_success",
+          "encrypted",
           "created_at",
           "running",
           "reachable"
@@ -16161,6 +16463,10 @@
           "created_at": {
             "type": "integer",
             "format": "int64"
+          },
+          "encrypted": {
+            "type": "boolean",
+            "description": "Encrypted with rclone's crypt (its password is never shown)."
           },
           "excludes": {
             "type": "array",
@@ -16255,7 +16561,8 @@
         "enum": [
           "local",
           "push",
-          "pull"
+          "pull",
+          "cloud"
         ]
       },
       "BackupTaskRequest": {
@@ -16278,6 +16585,24 @@
             "format": "int32",
             "description": "KiB/s; none follows the settings, 0 is no limit.",
             "minimum": 0
+          },
+          "crypt_password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The crypt's password: needed to make an encrypted task, kept when\nleft out on a change. Without it the backup cannot be restored."
+          },
+          "crypt_salt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The crypt's salt (rclone's `password2`), optional."
+          },
+          "encrypted": {
+            "type": "boolean",
+            "description": "Names and contents encrypted in the target (rclone's crypt): not to\nan rsync daemon, nor pulled."
           },
           "excludes": {
             "type": "array",

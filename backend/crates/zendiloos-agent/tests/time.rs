@@ -82,6 +82,7 @@ impl Host {
             ssh: "/bin/false".into(),
             ssh_keygen: "/bin/false".into(),
             ssh_keyscan: "/bin/false".into(),
+            rclone: "/bin/false".into(),
             dockerd: any,
         };
         let paths = Paths {

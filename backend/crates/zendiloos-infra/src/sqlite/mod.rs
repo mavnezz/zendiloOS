@@ -50,7 +50,7 @@ use sqlx::sqlite::{
 pub use accounts::SqliteAccounts;
 pub use app_sources::SqliteAppSources;
 pub use audit::SqliteAuditLog;
-pub use backup_tasks::{SqliteBackupRuns, SqliteBackupSettings, SqliteBackupTasks};
+pub use backup_tasks::{SqliteBackupAccounts, SqliteBackupRuns, SqliteBackupSettings, SqliteBackupTasks};
 pub use certificates::SqliteCertificates;
 pub use channels::{SqliteAccountAddresses, SqliteChannels};
 pub use enclosure::{SqliteDiskInventory, SqliteEnclosure};

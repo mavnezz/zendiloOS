@@ -1,7 +1,8 @@
-//! [`BackupHost`] through the system agent: the Backup context's places
-//! and tasks checked once more as protocol types; what rsync and
-//! ssh-keyscan printed read here, unprivileged (a listing's entries, a
-//! run's itemized changes, a server's host keys with their fingerprints).
+//! [`BackupHost`] through the system agent: the Backup context's places,
+//! tasks and secrets checked once more as protocol types; what rsync,
+//! rclone and ssh-keyscan printed read here, unprivileged (a listing's
+//! entries, a run's itemized changes, a server's host keys with their
+//! fingerprints); a cloud's token rclone refreshed passed back.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,17 +11,18 @@ use async_trait::async_trait;
 use base64::Engine;
 use sha2::{Digest, Sha256};
 use zendiloos_agent_proto::{
-    AgentTransport, BACKUP_HOST_KEY_CHANGED, BackupEnd, BackupExisting, BackupFolder, BackupHostKey,
-    BackupHostName, BackupMode, BackupPassword, BackupPattern, BackupPruned, BackupRemotePath, BackupRestore,
-    BackupRoot, BackupRun, BackupServer, BackupStamp, BackupTaskId, BackupTransport, BackupWord, ErrorCode,
+    AgentTransport, BACKUP_HOST_KEY_CHANGED, BackupCloud, BackupCloudAccess, BackupCloudWord, BackupCrypt,
+    BackupEnd, BackupExisting, BackupFolder, BackupHostKey, BackupHostName, BackupMode, BackupPassword,
+    BackupPattern, BackupPruned, BackupRemotePath, BackupRestore, BackupRoot, BackupRun, BackupSecret,
+    BackupSecrets, BackupServer, BackupStamp, BackupTaskId, BackupTransport, BackupWord, ErrorCode,
     PackageRunState, PackageTask, RemovableId, Report, Request, Response, ShareLocation, ShareName,
     SharePath, VolumeNumber,
 };
 use zendiloos_backup::application::{
-    BackupHost, HostError, HostFacts, HostKey, Location, RestorePlan, RestoreReport, RunMode, RunPlan,
-    RunReport, Steps,
+    BackupHost, HostError, HostFacts, HostKey, Listing, Location, RestorePlan, RestoreReport, RunMode,
+    RunPlan, RunReport, Secrets, Steps,
 };
-use zendiloos_backup::domain::{Entry, EntryKind, Existing, Server, Transfer, Transport};
+use zendiloos_backup::domain::{Entry, EntryKind, Existing, Provider, Server, Transfer, Transport};
 use zendiloos_kernel::{PortError, RequestContext, Secret, UtcTime};
 
 use super::{WHAT, agent_error, call, call_raw, call_raw_reporting, unexpected};
@@ -64,8 +66,53 @@ fn host_answer(response: Response) -> Result<Response, HostError> {
     }
 }
 
-fn password(secret: Option<&Secret>) -> Result<Option<BackupPassword>, HostError> {
-    secret.map(|s| BackupPassword::new(s.expose()).map_err(|_| invalid("password"))).transpose()
+fn secret(secret: &Secret, what: &str) -> Result<BackupSecret, HostError> {
+    BackupSecret::new(secret.expose()).map_err(|_| invalid(what))
+}
+
+fn word(word: &str, what: &str) -> Result<BackupCloudWord, HostError> {
+    BackupCloudWord::parse(word).map_err(|_| invalid(what))
+}
+
+/// What the unit needs, checked; a crypt only for what is `encrypted`.
+fn secrets(secrets: &Secrets, encrypted: bool) -> Result<BackupSecrets, HostError> {
+    let password = secrets
+        .password
+        .as_ref()
+        .map(|s| BackupPassword::new(s.expose()).map_err(|_| invalid("password")))
+        .transpose()?;
+    let crypt = match (&secrets.crypt, encrypted) {
+        (Some(crypt), true) => Some(BackupCrypt {
+            password: secret(&crypt.password, "crypt's password")?,
+            salt: crypt.salt.as_ref().map(|salt| secret(salt, "crypt's salt")).transpose()?,
+        }),
+        (None, true) => {
+            return Err(HostError::Refused("the task is encrypted, but its password is missing".into()));
+        }
+        (_, false) => None,
+    };
+    let cloud = secrets
+        .cloud
+        .as_ref()
+        .map(|cloud| {
+            Ok::<_, HostError>(BackupCloudAccess {
+                token: secret(&cloud.token, "cloud's token")?,
+                client_id: cloud.client_id.as_deref().map(|id| word(id, "client id")).transpose()?,
+                client_secret: cloud
+                    .client_secret
+                    .as_ref()
+                    .map(|s| secret(s, "client secret"))
+                    .transpose()?,
+                drive_id: cloud.drive_id.as_deref().map(|id| word(id, "drive id")).transpose()?,
+                drive_type: cloud.drive_type.as_deref().map(|kind| word(kind, "drive type")).transpose()?,
+            })
+        })
+        .transpose()?;
+    Ok(BackupSecrets { password, crypt, cloud })
+}
+
+fn kept(token: Option<BackupSecret>) -> Option<Secret> {
+    token.map(|token| Secret::new(token.expose()))
 }
 
 fn server(server: &Server) -> Result<BackupServer, HostError> {
@@ -106,6 +153,13 @@ fn end(location: &Location) -> Result<BackupEnd, HostError> {
             server: server(remote)?,
             path: BackupRemotePath::parse(folder).map_err(|_| invalid("folder on a server"))?,
         },
+        Location::Cloud { provider, path: folder, .. } => BackupEnd::Cloud {
+            cloud: match provider {
+                Provider::GoogleDrive => BackupCloud::GoogleDrive,
+                Provider::OneDrive => BackupCloud::OneDrive,
+            },
+            path: path(folder)?,
+        },
     })
 }
 
@@ -126,6 +180,9 @@ fn split_folder(location: &Location) -> Result<(Location, BackupFolder), HostErr
         Location::Remote { server, path } => {
             let parent = if parent.is_empty() && path.starts_with('/') { "/".to_owned() } else { parent };
             Location::Remote { server: server.clone(), path: parent }
+        }
+        Location::Cloud { provider, account, .. } => {
+            Location::Cloud { provider: *provider, account: *account, path: parent }
         }
     };
     Ok((parent, folder))
@@ -247,7 +304,9 @@ impl Report for Forward<'_> {
 impl BackupHost for AgentBackup {
     async fn facts(&self, context: &RequestContext) -> Result<HostFacts, PortError> {
         match call(self.transport(), Request::BackupFacts {}, context).await? {
-            Response::BackupFacts { rsync, ssh, public_key } => Ok(HostFacts { rsync, ssh, public_key }),
+            Response::BackupFacts { rsync, ssh, rclone, public_key } => {
+                Ok(HostFacts { rsync, ssh, rclone, public_key })
+            }
             other => Err(unexpected(other)),
         }
     }
@@ -305,13 +364,22 @@ impl BackupHost for AgentBackup {
     async fn list(
         &self,
         at: &Location,
-        secret: Option<&Secret>,
+        inside: &str,
+        secrets: &Secrets,
         context: &RequestContext,
-    ) -> Result<Vec<Entry>, HostError> {
-        let request = Request::ListBackup { at: end(at)?, password: password(secret)? };
+    ) -> Result<Listing, HostError> {
+        let request = Request::ListBackup {
+            at: end(at)?,
+            inside: SharePath::parse(inside).map_err(|_| invalid("path"))?,
+            secrets: self::secrets(secrets, secrets.crypt.is_some())?,
+        };
         match host_answer(call_raw(self.transport(), request, context).await?)? {
-            Response::BackupListing { missing: true, .. } => Ok(Vec::new()),
-            Response::BackupListing { listing, .. } => Ok(entries(&listing)),
+            Response::BackupListing { missing: true, token, .. } => {
+                Ok(Listing { entries: Vec::new(), token: kept(token) })
+            }
+            Response::BackupListing { listing, token, .. } => {
+                Ok(Listing { entries: entries(&listing), token: kept(token) })
+            }
             other => Err(unexpected(other).into()),
         }
     }
@@ -319,7 +387,7 @@ impl BackupHost for AgentBackup {
     async fn run(
         &self,
         plan: &RunPlan,
-        secret: Option<&Secret>,
+        secrets: &Secrets,
         steps: &dyn Steps,
         context: &RequestContext,
     ) -> Result<RunReport, HostError> {
@@ -344,9 +412,9 @@ impl BackupHost for AgentBackup {
             hidden: plan.filters.hidden,
             bwlimit_kib: plan.bwlimit_kib,
         };
-        let request = Request::RunBackup { run, password: password(secret)? };
+        let request = Request::RunBackup { run, secrets: self::secrets(secrets, plan.encrypted)? };
         match host_answer(call_raw_reporting(self.transport(), request, &Forward(steps), context).await?)? {
-            Response::BackupRan { files, bytes, partial, transfers, transfers_total, listing } => {
+            Response::BackupRan { files, bytes, partial, transfers, transfers_total, listing, token } => {
                 Ok(RunReport {
                     files,
                     bytes,
@@ -354,6 +422,7 @@ impl BackupHost for AgentBackup {
                     transfers: transfers.iter().filter_map(|line| transfer(line)).collect(),
                     transfers_total,
                     entries: entries(&listing),
+                    token: kept(token),
                 })
             }
             other => Err(unexpected(other).into()),
@@ -374,17 +443,17 @@ impl BackupHost for AgentBackup {
         task: i64,
         at: &Location,
         names: &[String],
-        secret: Option<&Secret>,
+        secrets: &Secrets,
         context: &RequestContext,
-    ) -> Result<(), HostError> {
+    ) -> Result<Option<Secret>, HostError> {
         let names = names
             .iter()
             .map(|name| BackupPruned::parse(name).map_err(|_| invalid("version to remove")))
             .collect::<Result<Vec<_>, _>>()?;
-        let request =
-            Request::PruneBackup { task: task_id(task)?, at: end(at)?, names, password: password(secret)? };
+        let secrets = self::secrets(secrets, secrets.crypt.is_some())?;
+        let request = Request::PruneBackup { task: task_id(task)?, at: end(at)?, names, secrets };
         match host_answer(call_raw(self.transport(), request, context).await?)? {
-            Response::Done => Ok(()),
+            Response::BackupPruned { token } => Ok(kept(token)),
             other => Err(unexpected(other).into()),
         }
     }
@@ -392,7 +461,7 @@ impl BackupHost for AgentBackup {
     async fn restore(
         &self,
         plan: &RestorePlan,
-        secret: Option<&Secret>,
+        secrets: &Secrets,
         steps: &dyn Steps,
         context: &RequestContext,
     ) -> Result<RestoreReport, HostError> {
@@ -401,9 +470,12 @@ impl BackupHost for AgentBackup {
             .iter()
             .map(|path| SharePath::parse(path).map_err(|_| invalid("path to restore")))
             .collect::<Result<Vec<_>, _>>()?;
+        // The task's folder, where an encryption begins, and the version in it.
+        let (folder, version) = split_folder(&plan.from)?;
         let restore = BackupRestore {
             task: task_id(plan.task)?,
-            from: end(&plan.from)?,
+            from: end(&folder)?,
+            within: SharePath::parse(version.as_str()).map_err(|_| invalid("version"))?,
             paths,
             to: end(&plan.to)?,
             existing: match plan.existing {
@@ -411,9 +483,11 @@ impl BackupHost for AgentBackup {
                 Existing::Replace => BackupExisting::Replace,
             },
         };
-        let request = Request::RestoreBackup { restore, password: password(secret)? };
+        let request = Request::RestoreBackup { restore, secrets: self::secrets(secrets, plan.encrypted)? };
         match host_answer(call_raw_reporting(self.transport(), request, &Forward(steps), context).await?)? {
-            Response::BackupRestored { files, bytes, partial } => Ok(RestoreReport { files, bytes, partial }),
+            Response::BackupRestored { files, bytes, partial, token } => {
+                Ok(RestoreReport { files, bytes, partial, token: kept(token) })
+            }
             other => Err(unexpected(other).into()),
         }
     }

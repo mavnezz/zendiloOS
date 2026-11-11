@@ -1,6 +1,7 @@
 //! A backup task's work in its unit (`backup-unit <job>`), which the system
 //! agent starts with `systemd-run` (docs/architecture.md, 4.14): a run, a
-//! listing, retention or a restore, each one or more calls of rsync.
+//! listing, retention or a restore, each one or more calls of rsync; of
+//! rclone for a cloud or an encrypted task ([`rclone`]).
 //!
 //! The unit's sandbox (see [`crate::backup`]) shows it the roots of the
 //! places it works on and nothing else of the volumes and drives, read-only
@@ -16,7 +17,10 @@
 //! Secrets come on standard input, one line of JSON, never on a command
 //! line: a daemon's password goes into a file in the unit's private `/tmp`
 //! (0600), rsync reads it there (`--password-file`); the NAS's SSH key is
-//! the unit's credential (`LoadCredential=`), which only the unit sees.
+//! the unit's credential (`LoadCredential=`), which only the unit sees;
+//! what rclone needs is set for it alone ([`rclone`]).
+
+mod rclone;
 
 use std::io::{BufRead, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -27,8 +31,8 @@ use rustix::fs::{Mode, OFlags, RenameFlags, ResolveFlags};
 use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
 use zendiloos_agent_proto::{
-    BackupExisting, BackupFolder, BackupHostKey, BackupHostName, BackupMode, BackupPattern, BackupPruned,
-    BackupRemotePath, BackupStamp, BackupWord, SharePath, is_stamp,
+    BackupCloud, BackupExisting, BackupFolder, BackupHostKey, BackupHostName, BackupMode, BackupPattern,
+    BackupPruned, BackupRemotePath, BackupSecrets, BackupStamp, BackupWord, SharePath, is_stamp,
 };
 use zendiloos_exec::{Limits, Program, Surroundings};
 
@@ -41,6 +45,7 @@ const BENEATH: ResolveFlags = ResolveFlags::BENEATH
     .union(ResolveFlags::NO_XDEV);
 /// What marks a task's folder as a backup of zendiloOS's.
 pub(crate) const MARKER: &str = ".zendiloos-backup";
+const MARKER_TEXT: &str = "This folder holds a backup of zendiloOS's. Do not change what is in it.\n";
 const INCOMPLETE: &str = ".incomplete";
 /// Entries of the transfer list kept; the count goes on.
 pub(crate) const TRANSFERS_KEPT: usize = 5000;
@@ -81,6 +86,51 @@ pub(crate) enum End {
         path: BackupRemotePath,
         host_key: BackupHostKey,
     },
+    /// A folder of a cloud account, from its root.
+    Cloud {
+        cloud: BackupCloud,
+        path: SharePath,
+    },
+}
+
+impl End {
+    /// The folder `more` (names separated by `/`) in this one.
+    fn join(&self, more: &str) -> End {
+        let join = |path: &str| {
+            [path.trim_end_matches('/'), more]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        let lead = |path: &str, joined: String| {
+            if path.starts_with('/') && !joined.starts_with('/') { format!("/{joined}") } else { joined }
+        };
+        match self {
+            End::Local { root, path } => End::Local {
+                root: root.clone(),
+                path: SharePath::parse(&join(path.as_str())).unwrap_or_default(),
+            },
+            End::Daemon { host, port, user, module, path } => End::Daemon {
+                host: host.clone(),
+                port: *port,
+                user: user.clone(),
+                module: module.clone(),
+                path: BackupRemotePath::parse(&join(path.as_str())).unwrap_or_else(|_| path.clone()),
+            },
+            End::Ssh { host, port, user, path, host_key } => End::Ssh {
+                host: host.clone(),
+                port: *port,
+                user: user.clone(),
+                path: BackupRemotePath::parse(&lead(path.as_str(), join(path.as_str())))
+                    .unwrap_or_else(|_| path.clone()),
+                host_key: host_key.clone(),
+            },
+            End::Cloud { cloud, path } => {
+                End::Cloud { cloud: *cloud, path: SharePath::parse(&join(path.as_str())).unwrap_or_default() }
+            }
+        }
+    }
 }
 
 /// A run, as the agent hands it to the unit.
@@ -100,7 +150,11 @@ pub(crate) struct RunJob {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RestoreJob {
+    /// The task's folder (where a crypt begins).
     pub from: End,
+    /// The version in it, or the mirror's copy.
+    #[serde(default)]
+    pub within: SharePath,
     pub paths: Vec<SharePath>,
     /// Always [`End::Local`].
     pub to: End,
@@ -113,9 +167,17 @@ pub(crate) struct RestoreJob {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "work", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Work {
-    List { at: End },
+    /// The folder `inside` of `at` (through the crypt rooted at `at`).
+    List {
+        at: End,
+        #[serde(default)]
+        inside: SharePath,
+    },
     Run(Box<RunJob>),
-    Prune { at: End, names: Vec<BackupPruned> },
+    Prune {
+        at: End,
+        names: Vec<BackupPruned>,
+    },
     Restore(Box<RestoreJob>),
 }
 
@@ -124,18 +186,26 @@ pub(crate) enum Work {
 pub(crate) struct UnitJob {
     pub work: Work,
     pub rsync: PathBuf,
+    #[serde(default)]
+    pub rclone: PathBuf,
     pub ssh: PathBuf,
     /// The NAS's SSH key as the unit's credential:
     /// `/run/credentials/<unit>/backup-key`.
     pub key: PathBuf,
 }
 
-/// What comes on standard input.
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Secrets {
-    #[serde(default)]
-    password: Option<String>,
+impl Work {
+    /// Whether rclone does it: a cloud is involved, or the task's folder
+    /// is encrypted.
+    pub(crate) fn rclone(&self, encrypted: bool) -> bool {
+        let cloud = |end: &End| matches!(end, End::Cloud { .. });
+        encrypted
+            || match self {
+                Work::List { at, .. } | Work::Prune { at, .. } => cloud(at),
+                Work::Run(run) => cloud(&run.target) || cloud(&run.source),
+                Work::Restore(restore) => cloud(&restore.from),
+            }
+    }
 }
 
 /// How a unit's work failed.
@@ -177,6 +247,9 @@ pub(crate) struct Report {
     pub transfers_total: u64,
     pub listing: String,
     pub missing: bool,
+    /// A cloud's token rclone refreshed meanwhile.
+    #[serde(default)]
+    pub token: Option<String>,
 }
 
 #[derive(Debug)]
@@ -205,13 +278,13 @@ pub async fn run_backup_unit(hex: &str, input: &mut dyn BufRead, out: &mut (dyn 
         let job = decode::<UnitJob>(hex).map_err(refused)?;
         let mut line = String::new();
         let _ = std::io::Read::take(&mut *input, 64 * 1024).read_line(&mut line);
-        let secrets: Secrets = if line.trim().is_empty() {
-            Secrets::default()
+        let secrets: BackupSecrets = if line.trim().is_empty() {
+            BackupSecrets::default()
         } else {
             serde_json::from_str(&line).map_err(|e| refused(format!("the secrets cannot be read: {e}")))?
         };
         let scratch = Scratch::make()?;
-        let unit = Unit { job: &job, scratch: &scratch, password: secrets.password };
+        let unit = Unit { job: &job, scratch: &scratch, secrets };
         let result = unit.work(out).await;
         drop(scratch);
         result
@@ -368,6 +441,17 @@ fn open_in(parent: &Opened, name: &str, make: bool) -> Result<Option<Opened>, Fa
 struct Listed {
     name: String,
     folder: bool,
+}
+
+/// Whether an entry of a task's folder is the backup's: the marker,
+/// `current`, `removed`, versions and versions cut off.
+fn ours(entry: &Listed) -> bool {
+    entry.name == MARKER
+        || (entry.folder
+            && (entry.name == "current"
+                || entry.name == "removed"
+                || is_stamp(&entry.name)
+                || entry.name.strip_suffix(INCOMPLETE).is_some_and(is_stamp)))
 }
 
 /// The name and kind of an entry `rsync --list-only` printed: the mode's
@@ -541,13 +625,21 @@ enum Ended {
 struct Unit<'a> {
     job: &'a UnitJob,
     scratch: &'a Scratch,
-    password: Option<String>,
+    secrets: BackupSecrets,
 }
 
 impl Unit<'_> {
     async fn work(&self, out: &mut (dyn Write + Send)) -> Result<Report, Fail> {
+        if self.job.work.rclone(self.secrets.crypt.is_some()) {
+            return match &self.job.work {
+                Work::List { at, inside } => self.rclone_list(at, inside).await,
+                Work::Run(run) => self.rclone_run(run, out).await,
+                Work::Prune { at, names } => self.rclone_prune(at, names).await,
+                Work::Restore(restore) => self.rclone_restore(restore, out).await,
+            };
+        }
         match &self.job.work {
-            Work::List { at } => self.list_work(at).await,
+            Work::List { at, inside } => self.list_work(&at.join(inside.as_str())).await,
             Work::Run(run) => self.run(run, out).await,
             Work::Prune { at, names } => self.prune(at, names).await.map(|()| Report::default()),
             Work::Restore(restore) => self.restore(restore, out).await,
@@ -566,7 +658,7 @@ impl Unit<'_> {
             if host.as_str().contains(':') { format!("[{host}]") } else { host.to_string() }
         };
         match end {
-            End::Local { .. } => None,
+            End::Local { .. } | End::Cloud { .. } => None,
             // Within the module: a path from its root.
             End::Daemon { host: name, port, user, module, path } => {
                 Some(format!("rsync://{user}@{}:{port}/{module}/{}", host(name), join(path.as_str())))
@@ -583,9 +675,11 @@ impl Unit<'_> {
     fn server_args(&self, end: &End) -> Result<Vec<String>, Fail> {
         match end {
             End::Local { .. } => Ok(Vec::new()),
+            End::Cloud { .. } => Err(refused("a cloud is reached with rclone alone")),
             End::Daemon { .. } => {
                 let mut args = vec![IO_TIMEOUT.to_owned(), "--contimeout=30".to_owned()];
-                if let Some(password) = &self.password {
+                if let Some(password) = &self.secrets.password {
+                    let password = password.expose();
                     if password.contains(['\n', '\r']) {
                         return Err(refused("a password is one line"));
                     }
@@ -594,9 +688,9 @@ impl Unit<'_> {
                 }
                 Ok(args)
             }
-            End::Ssh { host, port, user, host_key, .. } => {
-                let name = if *port == 22 { host.to_string() } else { format!("[{host}]:{port}") };
-                let known = self.scratch.once("known_hosts", &format!("{name} {host_key}\n"))?;
+            End::Ssh { .. } => {
+                let End::Ssh { port, user, .. } = end else { unreachable!() };
+                let known = self.known_hosts(end)?;
                 let ssh = [
                     self.job.ssh.display().to_string(),
                     "-F".into(),
@@ -632,6 +726,16 @@ impl Unit<'_> {
                 Ok(vec![IO_TIMEOUT.to_owned(), format!("--rsh={}", ssh.join(" "))])
             }
         }
+    }
+
+    /// The pinned host key of an SSH server, as OpenSSH (and rclone) read
+    /// known hosts.
+    fn known_hosts(&self, end: &End) -> Result<PathBuf, Fail> {
+        let End::Ssh { host, port, host_key, .. } = end else {
+            return Err(refused("no SSH server"));
+        };
+        let name = if *port == 22 { host.to_string() } else { format!("[{host}]:{port}") };
+        self.scratch.once("known_hosts", &format!("{name} {host_key}\n"))
     }
 
     /// Runs rsync with `args`, passing its lines to `heard`, telling the
@@ -787,14 +891,6 @@ impl Unit<'_> {
         let (lines, _) = self.list_raw(&task_end, task_folder.as_ref()).await?;
         let entries: Vec<Listed> = lines.iter().filter_map(|l| listed(l)).filter(|e| e.name != ".").collect();
         let marked = entries.iter().any(|e| e.name == MARKER && !e.folder);
-        let ours = |e: &Listed| {
-            e.name == MARKER
-                || (e.folder
-                    && (e.name == "current"
-                        || e.name == "removed"
-                        || is_stamp(&e.name)
-                        || e.name.strip_suffix(INCOMPLETE).is_some_and(is_stamp)))
-        };
         if !marked && !entries.is_empty() && entries.iter().any(|e| !ours(e)) {
             return Err(refused(format!(
                 "the folder {folder} in the target holds other files: it is no backup of zendiloOS's, and nothing is written into it"
@@ -910,44 +1006,18 @@ impl Unit<'_> {
             transfers_total: heard.transfers_total,
             listing: listing.join("\n"),
             missing: false,
+            token: None,
         })
     }
 
     /// The task's folder as an end: in the target folder.
     fn task_end(&self, target: &End, folder: &str) -> End {
-        let join = |path: &str| {
-            if path.is_empty() {
-                folder.to_owned()
-            } else {
-                format!("{}/{folder}", path.trim_end_matches('/'))
-            }
-        };
-        match target {
-            End::Local { root, path } => End::Local {
-                root: root.clone(),
-                path: SharePath::parse(&join(path.as_str())).unwrap_or_default(),
-            },
-            End::Daemon { host, port, user, module, path } => End::Daemon {
-                host: host.clone(),
-                port: *port,
-                user: user.clone(),
-                module: module.clone(),
-                path: BackupRemotePath::parse(&join(path.as_str())).unwrap_or_else(|_| path.clone()),
-            },
-            End::Ssh { host, port, user, path, host_key } => End::Ssh {
-                host: host.clone(),
-                port: *port,
-                user: user.clone(),
-                path: BackupRemotePath::parse(&join(path.as_str())).unwrap_or_else(|_| path.clone()),
-                host_key: host_key.clone(),
-            },
-        }
+        target.join(folder)
     }
 
     /// Puts the marker into the task's folder: as a file of its own on the
     /// NAS, by rsync on a server (which makes the folder too).
     async fn mark(&self, target: &End, task_folder: Option<&Opened>, folder: &str) -> Result<(), Fail> {
-        const TEXT: &str = "This folder holds a backup of zendiloOS's. Do not change what is in it.\n";
         if let Some(task) = task_folder {
             let file = rustix::fs::openat(
                 &task.fd,
@@ -956,7 +1026,7 @@ impl Unit<'_> {
                 Mode::from_raw_mode(0o644),
             );
             return match file {
-                Ok(file) => rustix::io::write(&file, TEXT.as_bytes())
+                Ok(file) => rustix::io::write(&file, MARKER_TEXT.as_bytes())
                     .map(|_| ())
                     .map_err(|e| failed(format!("{MARKER}: {e}"))),
                 Err(Errno::EXIST) => Ok(()),
@@ -964,7 +1034,7 @@ impl Unit<'_> {
             };
         }
         let stage = self.scratch.folder(&format!("stage/{folder}"))?;
-        std::fs::write(stage.join(MARKER), TEXT).map_err(|e| failed(format!("{MARKER}: {e}")))?;
+        std::fs::write(stage.join(MARKER), MARKER_TEXT).map_err(|e| failed(format!("{MARKER}: {e}")))?;
         let mut args = vec!["--recursive".to_owned()];
         args.extend(self.server_args(target)?);
         args.push(stage.display().to_string());
@@ -1042,7 +1112,9 @@ impl Unit<'_> {
         let End::Local { root, path } = &restore.to else {
             return Err(refused("a restore goes into a folder of the NAS"));
         };
-        let from_opened = match &restore.from {
+        let from = restore.from.join(restore.within.as_str());
+        let from = &from;
+        let from_opened = match from {
             End::Local { root, path } => Some(
                 open_beneath(root, path, false)?
                     .ok_or_else(|| refused("the backup to restore from is not there"))?,
@@ -1076,8 +1148,8 @@ impl Unit<'_> {
             let file = self.scratch.file("paths", &list)?;
             args.push(format!("--files-from={}", file.display()));
         }
-        args.extend(self.server_args(&restore.from)?);
-        args.push(self.source_arg(&restore.from, from_opened.as_ref()));
+        args.extend(self.server_args(from)?);
+        args.push(self.source_arg(from, from_opened.as_ref()));
         args.push(to.arg(""));
         say(out, &UnitSays::Progress { step: "restoring".into(), percent: 0 });
         let mut heard = Heard::default();

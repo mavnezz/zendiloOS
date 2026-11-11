@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT crypt_password, crypt_salt FROM backup_tasks WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "crypt_password",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "backup_tasks",
+            "name": "crypt_password"
+          }
+        }
+      },
+      {
+        "name": "crypt_salt",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "backup_tasks",
+            "name": "crypt_salt"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "070524b467172ee15eb3aab0ca327cdfcd2810afdac6ceb0c779b84506b5485e"
+}

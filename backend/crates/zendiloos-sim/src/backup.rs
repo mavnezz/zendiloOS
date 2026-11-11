@@ -1,6 +1,7 @@
-//! Backup tasks, simulated: rsync's folders as listings by place, a run
-//! adding its version (or a mirror's copy) to its task's folder, and a
-//! server that answers with one host key. Nothing is copied.
+//! Backup tasks, simulated: rsync's and rclone's folders as listings by
+//! place (a cloud's too), a run adding its version (or a mirror's copy) to
+//! its task's folder, and a server that answers with one host key. Nothing
+//! is copied, and nothing encrypted.
 
 use std::collections::BTreeMap;
 
@@ -14,7 +15,7 @@ const HOST_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoq
 
 #[derive(Debug, Default)]
 pub(crate) struct SimBackup {
-    /// rsync and the SSH client installed (the plugin's run of apt).
+    /// rsync, the SSH client and rclone installed (the plugin's run of apt).
     pub(crate) installed: bool,
     key: bool,
     /// Folders by place: their entries' names, folders marked `/`.
@@ -41,6 +42,7 @@ fn place(end: &BackupEnd) -> String {
             };
             format!("{}{module}:{}/{}", server.host, server.port, path.as_str().trim_start_matches('/'))
         }
+        BackupEnd::Cloud { cloud, path } => format!("cloud:{cloud:?}/{}", path.as_str()),
     }
 }
 
@@ -69,6 +71,7 @@ impl SimBackup {
             Request::BackupFacts {} => Response::BackupFacts {
                 rsync: self.installed,
                 ssh: self.installed,
+                rclone: self.installed,
                 public_key: self.key.then(|| KEY.to_owned()),
             },
             Request::MakeBackupKey {} if !self.installed => not_installed(),
@@ -79,10 +82,16 @@ impl SimBackup {
             Request::ScanBackupHostKeys { host, port } => {
                 Response::BackupHostKeys { keyscan: format!("[{host}]:{port} {HOST_KEY}\n") }
             }
-            Request::ListBackup { at, .. } => match self.folders.get(&place(at)) {
-                Some(entries) => Response::BackupListing { listing: listing(entries), missing: false },
-                None => Response::BackupListing { listing: String::new(), missing: true },
-            },
+            Request::ListBackup { at, inside, .. } => {
+                let at =
+                    if inside.as_str().is_empty() { place(at) } else { joined(&place(at), inside.as_str()) };
+                match self.folders.get(&at) {
+                    Some(entries) => {
+                        Response::BackupListing { listing: listing(entries), missing: false, token: None }
+                    }
+                    None => Response::BackupListing { listing: String::new(), missing: true, token: None },
+                }
+            }
             Request::RunBackup { .. } | Request::RestoreBackup { .. } if !self.installed => not_installed(),
             Request::RunBackup { run, .. } => {
                 let folder = joined(&place(&run.target), run.folder.as_str());
@@ -107,6 +116,7 @@ impl SimBackup {
                     transfers: vec![">f+++++++++ notes.txt".into(), "cd+++++++++ photos/".into()],
                     transfers_total: 2,
                     listing: listed,
+                    token: None,
                 }
             }
             Request::StopBackup { .. } => Response::Done,
@@ -116,10 +126,10 @@ impl SimBackup {
                         !names.iter().any(|name| entry.trim_end_matches('/') == name.as_str())
                     });
                 }
-                Response::Done
+                Response::BackupPruned { token: None }
             }
             Request::RestoreBackup { .. } => {
-                Response::BackupRestored { files: 2, bytes: 2048, partial: None }
+                Response::BackupRestored { files: 2, bytes: 2048, partial: None, token: None }
             }
             _ => return None,
         })
@@ -162,7 +172,7 @@ mod tests {
                 hidden: true,
                 bwlimit_kib: 0,
             },
-            password: None,
+            secrets: Default::default(),
         };
         assert!(matches!(sim.handle(&run), Some(Response::Error { .. })), "not installed");
         sim.installed = true;
@@ -181,12 +191,14 @@ mod tests {
             task: BackupTaskId::new(1).unwrap(),
             at: folder.clone(),
             names: vec![BackupPruned::parse("2026-11-11_030000Z").unwrap()],
-            password: None,
+            secrets: Default::default(),
         };
         sim.handle(&prune);
-        let Some(Response::BackupListing { listing, missing }) =
-            sim.handle(&Request::ListBackup { at: folder, password: None })
-        else {
+        let Some(Response::BackupListing { listing, missing, .. }) = sim.handle(&Request::ListBackup {
+            at: folder,
+            inside: SharePath::default(),
+            secrets: Default::default(),
+        }) else {
             panic!()
         };
         assert!(!missing && !listing.contains("2026-11-11_030000Z"));

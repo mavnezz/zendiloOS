@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE backup_tasks SET name = ?, source_kind = ?, source_share = ?, source_path = ?, target_kind = ?,\n                 target_share = ?, target_drive = ?, target_account = ?, target_path = ?, server_transport = ?,\n                 server_host = ?, server_port = ?, server_user = ?, server_module = ?, server_host_key = ?,\n                 server_fingerprint = ?, mode = ?, keep_changed_days = ?, keep_last = ?, keep_days = ?, schedule = ?,\n                 schedule_weekday = ?, schedule_hour = ?, schedule_minute = ?, on_plug = ?, excludes = ?, hidden = ?,\n                 bwlimit_kib = ?, notify_success = ?, encrypted = ?, since = ?, last_plug = ?\n             WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 33
+    },
+    "nullable": []
+  },
+  "hash": "6d301768c0886e1454b6d1ad678bf1a8e6522722f348edd95f820ec22540d37a"
+}

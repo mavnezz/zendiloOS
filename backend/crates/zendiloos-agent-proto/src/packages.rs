@@ -18,8 +18,8 @@ pub enum PackageTask {
     /// packages, so libvirt's own network (a bridge, dnsmasq and firewall
     /// rules) and its network filters never come along.
     InstallVms,
-    /// rsync and the SSH client from Debian, for backup tasks; without
-    /// recommended packages.
+    /// rsync, the SSH client and rclone from Debian, for backup tasks;
+    /// without recommended packages.
     InstallBackup,
     /// `systemd-resolved` from Debian, for taking the network over from
     /// ifupdown (systemd-networkd comes with `systemd`). The network stays

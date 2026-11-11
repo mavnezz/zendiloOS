@@ -100,6 +100,7 @@ async fn creates_a_private_database_and_applies_all_migrations() {
             "app_icons",
             "app_sources",
             "audit_log",
+            "backup_cloud_accounts",
             "backup_runs",
             "backup_settings",
             "backup_tasks",

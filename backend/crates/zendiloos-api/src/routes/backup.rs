@@ -1,8 +1,10 @@
 //! Backup tasks (`backup.manage`, administrators): the App Center's plugin
 //! and the NAS's SSH key, servers' host keys and a look into a server's
-//! folder, tasks made, changed and removed, runs started and stopped, the
-//! log with each run's transfer list, versions looked into and restored,
-//! and the plugin's settings. A daemon's password is taken, never returned.
+//! folder, cloud accounts signed in to (Google Drive, OneDrive), tasks
+//! made, changed and removed, runs started and stopped, the log with each
+//! run's transfer list, versions looked into and restored, and the
+//! plugin's settings. A daemon's password, the crypt's password and salt,
+//! and a cloud's token are taken, never returned.
 
 use axum::Json;
 use axum::extract::State;
@@ -11,8 +13,10 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
-use zendiloos_backup::application::{self as backup, BackupError, RestoreRequest};
-use zendiloos_backup::domain::{self as domain, Existing, NasPlace, Place, RemotePlace};
+use zendiloos_backup::application::{self as backup, BackupError, Crypt, RestoreRequest};
+use zendiloos_backup::domain::{
+    self as domain, CloudPlace, Existing, NasPlace, Place, Provider, RemotePlace,
+};
 use zendiloos_identity::domain::Permission;
 use zendiloos_kernel::{Secret, Timestamp};
 
@@ -30,6 +34,10 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(backup_host_keys))
         .routes(routes!(check_backup_server))
         .routes(routes!(backup_share_readers))
+        .routes(routes!(list_backup_accounts))
+        .routes(routes!(start_backup_sign_in))
+        .routes(routes!(finish_backup_sign_in))
+        .routes(routes!(delete_backup_account))
         .routes(routes!(list_backup_tasks, create_backup_task))
         .routes(routes!(get_backup_task, update_backup_task, delete_backup_task))
         .routes(routes!(run_backup_task))
@@ -62,6 +70,10 @@ impl From<BackupError> for ApiError {
             BackupError::HostKeyChanged(detail) => {
                 rejected(StatusCode::CONFLICT, "host_key_changed", Some(detail))
             }
+            BackupError::AccountInUse(tasks) => {
+                rejected(StatusCode::CONFLICT, "account_in_use", Some(tasks.join(", ")))
+            }
+            BackupError::SignInExpired => rejected(StatusCode::CONFLICT, "cloud_sign_in_expired", None),
             BackupError::Refused(detail) => rejected(StatusCode::CONFLICT, "refused", Some(detail)),
             BackupError::HostFailed(detail) => {
                 rejected(StatusCode::BAD_GATEWAY, "agent_failed", Some(detail))
@@ -71,17 +83,19 @@ impl From<BackupError> for ApiError {
     }
 }
 
-/// The plugin: rsync and the SSH client installed, and the NAS's public
-/// key for SSH servers once made.
+/// The plugin: rsync and the SSH client installed, rclone (for clouds and
+/// encryption), and the NAS's public key for SSH servers once made.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BackupPlugin {
     pub installed: bool,
     pub ssh: bool,
+    pub rclone: bool,
     pub public_key: Option<String>,
 }
 
 /// Where a task reads or writes: a folder of a share, of a removable drive
-/// (by its file system's UUID), or of the task's server.
+/// (by its file system's UUID), of the task's server, or of a cloud
+/// account (a target only).
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BackupPlace {
@@ -96,6 +110,11 @@ pub enum BackupPlace {
     /// In the daemon's module, or on the SSH server (from the user's home
     /// unless it starts with `/`).
     Server {
+        path: String,
+    },
+    /// From the account's root.
+    Cloud {
+        account_id: i64,
         path: String,
     },
 }
@@ -188,6 +207,17 @@ pub struct BackupTaskRequest {
     pub bwlimit_kib: Option<u32>,
     #[serde(default)]
     pub notify_success: bool,
+    /// Names and contents encrypted in the target (rclone's crypt): not to
+    /// an rsync daemon, nor pulled.
+    #[serde(default)]
+    pub encrypted: bool,
+    /// The crypt's password: needed to make an encrypted task, kept when
+    /// left out on a change. Without it the backup cannot be restored.
+    #[serde(default)]
+    pub crypt_password: Option<String>,
+    /// The crypt's salt (rclone's `password2`), optional.
+    #[serde(default)]
+    pub crypt_salt: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]
@@ -196,6 +226,7 @@ pub enum BackupTaskKind {
     Local,
     Push,
     Pull,
+    Cloud,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]
@@ -287,6 +318,8 @@ pub struct BackupTask {
     pub hidden: bool,
     pub bwlimit_kib: Option<u32>,
     pub notify_success: bool,
+    /// Encrypted with rclone's crypt (its password is never shown).
+    pub encrypted: bool,
     pub created_at: i64,
     pub running: bool,
     /// Its places on the NAS are there now (a server's is not looked at).
@@ -305,6 +338,7 @@ fn place_dto(place: &Place) -> BackupPlace {
             BackupPlace::Drive { drive: drive.clone(), path: path.clone() }
         }
         Place::Remote(remote) => BackupPlace::Server { path: remote.path.clone() },
+        Place::Cloud(cloud) => BackupPlace::Cloud { account_id: cloud.account, path: cloud.path.clone() },
     }
 }
 
@@ -336,6 +370,7 @@ fn task_dto(view: backup::TaskView) -> BackupTask {
             domain::TaskKind::Local => BackupTaskKind::Local,
             domain::TaskKind::Push => BackupTaskKind::Push,
             domain::TaskKind::Pull => BackupTaskKind::Pull,
+            domain::TaskKind::Cloud => BackupTaskKind::Cloud,
         },
         folder: task.folder.clone(),
         source: place_dto(&settings.source),
@@ -366,6 +401,7 @@ fn task_dto(view: backup::TaskView) -> BackupTask {
         hidden: settings.filters.hidden,
         bwlimit_kib: settings.bwlimit_kib,
         notify_success: settings.notify_success,
+        encrypted: settings.encrypted,
         created_at: task.created_at.unix_seconds(),
         running: view.running,
         reachable: view.reachable,
@@ -401,10 +437,14 @@ fn place_domain(place: BackupPlace, server: Option<&domain::Server>) -> Result<P
                 .ok_or_else(|| ApiError::InvalidInput("a server's folder needs the server".into()))?,
             path,
         }),
+        BackupPlace::Cloud { account_id, path } => Place::Cloud(CloudPlace { account: account_id, path }),
     })
 }
 
-fn settings_domain(request: BackupTaskRequest) -> Result<(domain::TaskSettings, Option<Secret>), ApiError> {
+/// A task's settings, its daemon's password and its crypt, as asked for.
+type Asked = (domain::TaskSettings, Option<Secret>, Option<Crypt>);
+
+fn settings_domain(request: BackupTaskRequest) -> Result<Asked, ApiError> {
     let server = request.server.map(server_domain).transpose()?;
     let schedule = request
         .schedule
@@ -436,8 +476,22 @@ fn settings_domain(request: BackupTaskRequest) -> Result<(domain::TaskSettings, 
         filters: domain::Filters { excludes: request.excludes, hidden: request.hidden },
         bwlimit_kib: request.bwlimit_kib,
         notify_success: request.notify_success,
+        encrypted: request.encrypted,
     };
-    Ok((settings, request.password.filter(|p| !p.is_empty()).map(Secret::new)))
+    let crypt = request.crypt_password.filter(|p| !p.is_empty()).map(|password| Crypt {
+        password: Secret::new(password),
+        salt: request.crypt_salt.filter(|s| !s.is_empty()).map(Secret::new),
+    });
+    if crypt.as_ref().is_some_and(|c| {
+        [Some(&c.password), c.salt.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|s| s.expose().chars().any(char::is_control))
+    }) || crypt.as_ref().is_some_and(|c| c.password.expose().len() > 1024)
+    {
+        return Err(ApiError::InvalidInput("a crypt's password is one line of up to 1024 bytes".into()));
+    }
+    Ok((settings, request.password.filter(|p| !p.is_empty()).map(Secret::new), crypt))
 }
 
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]
@@ -481,7 +535,12 @@ async fn backup_plugin(
 ) -> Result<Json<BackupPlugin>, ApiError> {
     auth.require(Permission::BackupManage)?;
     let facts = state.backup.plugin(&client).await?.facts;
-    Ok(Json(BackupPlugin { installed: facts.rsync, ssh: facts.ssh, public_key: facts.public_key }))
+    Ok(Json(BackupPlugin {
+        installed: facts.rsync,
+        ssh: facts.ssh,
+        rclone: facts.rclone,
+        public_key: facts.public_key,
+    }))
 }
 
 /// Installs rsync and the SSH client from Debian, as a job. Needs
@@ -615,6 +674,126 @@ pub struct BackupShareReaders {
 
 /// Who may read share `id`: whoever may, reads what is backed up into it.
 /// Needs `backup.manage`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupProvider {
+    GoogleDrive,
+    #[serde(rename = "onedrive")]
+    OneDrive,
+}
+
+/// A cloud account signed in to. Its token, and its own client's secret if
+/// given, are never shown.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BackupCloudAccount {
+    pub id: i64,
+    pub name: String,
+    pub provider: BackupProvider,
+    /// The administrator's own OAuth client; none: rclone's.
+    pub client_id: Option<String>,
+    pub created_at: i64,
+}
+
+fn account_dto(account: domain::CloudAccount) -> BackupCloudAccount {
+    BackupCloudAccount {
+        id: account.id,
+        name: account.name,
+        provider: match account.provider {
+            Provider::GoogleDrive => BackupProvider::GoogleDrive,
+            Provider::OneDrive => BackupProvider::OneDrive,
+        },
+        client_id: account.client_id,
+        created_at: account.created_at.unix_seconds(),
+    }
+}
+
+/// The cloud accounts, by name. Needs `backup.manage`.
+#[utoipa::path(get, path = "/backup/accounts", tag = "backup", security(("session" = [])), responses((status = OK, body = Vec<BackupCloudAccount>)))]
+async fn list_backup_accounts(
+    auth: Auth,
+    State(state): State<ApiState>,
+) -> Result<Json<Vec<BackupCloudAccount>>, ApiError> {
+    auth.require(Permission::BackupManage)?;
+    Ok(Json(state.backup.accounts().await?.into_iter().map(account_dto).collect()))
+}
+
+/// A sign-in to begin: the account's name, and the administrator's own
+/// OAuth client if wished.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BackupSignInRequest {
+    pub provider: BackupProvider,
+    pub name: String,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub client_secret: Option<String>,
+}
+
+/// A sign-in under way: the provider's consent page to open, and the
+/// sign-in's number to finish it with.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BackupSignIn {
+    pub flow: String,
+    /// The browser lands on `http://127.0.0.1:53682/` (or `localhost`)
+    /// after consenting, where nothing answers: that address is pasted
+    /// back.
+    pub url: String,
+}
+
+/// Begins signing in to a cloud account (for 30 minutes). Needs
+/// `backup.manage`.
+#[utoipa::path(post, path = "/backup/accounts/sign-in", tag = "backup", security(("session" = [])), request_body = BackupSignInRequest, responses((status = OK, body = BackupSignIn), (status = BAD_REQUEST, body = Problem)))]
+async fn start_backup_sign_in(
+    auth: Auth,
+    State(state): State<ApiState>,
+    ApiJson(request): ApiJson<BackupSignInRequest>,
+) -> Result<Json<BackupSignIn>, ApiError> {
+    auth.require(Permission::BackupManage)?;
+    let provider = match request.provider {
+        BackupProvider::GoogleDrive => Provider::GoogleDrive,
+        BackupProvider::OneDrive => Provider::OneDrive,
+    };
+    let secret = request.client_secret.map(Secret::new);
+    let begun = state.backup.start_sign_in(provider, &request.name, request.client_id, secret)?;
+    Ok(Json(BackupSignIn { flow: begun.flow, url: begun.url }))
+}
+
+/// The address the browser landed on after consenting.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BackupSignInFinish {
+    pub address: String,
+}
+
+/// Finishes a sign-in: the code in the address exchanged for a token, kept
+/// with a new account. Needs `backup.manage`.
+#[utoipa::path(post, path = "/backup/accounts/sign-in/{flow}", tag = "backup", security(("session" = [])), params(("flow" = String, Path)), request_body = BackupSignInFinish, responses((status = CREATED, body = BackupCloudAccount), (status = CONFLICT, body = Problem, description = "`cloud_sign_in_expired`, `refused` (in the provider's words), `name_taken`")))]
+async fn finish_backup_sign_in(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(flow): Path<String>,
+    ApiJson(request): ApiJson<BackupSignInFinish>,
+) -> Result<(StatusCode, Json<BackupCloudAccount>), ApiError> {
+    auth.require(Permission::BackupManage)?;
+    let account = state.backup.finish_sign_in(&flow, &request.address, &auth.0.actor(), &client).await?;
+    Ok((StatusCode::CREATED, Json(account_dto(account))))
+}
+
+/// Forgets a cloud account and its token. Needs `backup.manage`.
+#[utoipa::path(delete, path = "/backup/accounts/{id}", tag = "backup", security(("session" = [])), params(("id" = i64, Path)), responses((status = NO_CONTENT), (status = NOT_FOUND, body = Problem), (status = CONFLICT, body = Problem, description = "`account_in_use`, with the tasks")))]
+async fn delete_backup_account(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, ApiError> {
+    auth.require(Permission::BackupManage)?;
+    state.backup.delete_account(id, &auth.0.actor(), &client).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[utoipa::path(get, path = "/backup/shares/{id}/readers", tag = "backup", security(("session" = [])), params(("id" = i64, Path)), responses((status = OK, body = BackupShareReaders), (status = NOT_FOUND, body = Problem)))]
 async fn backup_share_readers(
     auth: Auth,
@@ -657,8 +836,8 @@ async fn create_backup_task(
     ApiJson(request): ApiJson<BackupTaskRequest>,
 ) -> Result<(StatusCode, Json<BackupTask>), ApiError> {
     auth.require(Permission::BackupManage)?;
-    let (settings, password) = settings_domain(request)?;
-    let made = state.backup.create(settings, password, &auth.0.actor(), &client).await?;
+    let (settings, password, crypt) = settings_domain(request)?;
+    let made = state.backup.create(settings, password, crypt, &auth.0.actor(), &client).await?;
     Ok((StatusCode::CREATED, Json(task_dto(made))))
 }
 
@@ -697,8 +876,8 @@ async fn update_backup_task(
     ApiJson(request): ApiJson<BackupTaskRequest>,
 ) -> Result<Json<BackupTask>, ApiError> {
     auth.require(Permission::BackupManage)?;
-    let (settings, password) = settings_domain(request)?;
-    Ok(Json(task_dto(state.backup.update(id, settings, password, &auth.0.actor(), &client).await?)))
+    let (settings, password, crypt) = settings_domain(request)?;
+    Ok(Json(task_dto(state.backup.update(id, settings, password, crypt, &auth.0.actor(), &client).await?)))
 }
 
 /// Forgets a task and its log; what it backed up stays. Needs
@@ -923,7 +1102,7 @@ async fn restore_backup_task(
         None => None,
         Some(BackupPlace::Share { share_id, path }) => Some(NasPlace::Share { share_id, path }),
         Some(BackupPlace::Drive { drive, path }) => Some(NasPlace::Drive { drive, path }),
-        Some(BackupPlace::Server { .. }) => {
+        Some(BackupPlace::Server { .. } | BackupPlace::Cloud { .. }) => {
             return Err(ApiError::InvalidInput("a restore goes into a folder of the NAS".into()));
         }
     };

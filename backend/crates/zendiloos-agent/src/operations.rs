@@ -161,6 +161,7 @@ impl Operations {
                     systemd_run: Program::new(&tools.systemd_run)?,
                     systemctl: Program::new(&tools.systemctl)?,
                     rsync: tools.rsync.clone(),
+                    rclone: tools.rclone.clone(),
                     ssh: tools.ssh.clone(),
                     ssh_keygen: tools.ssh_keygen.clone(),
                     ssh_keyscan: tools.ssh_keyscan.clone(),
@@ -289,15 +290,13 @@ impl Operations {
             Request::BackupFacts {} => Ok(self.backups.facts()),
             Request::MakeBackupKey {} => self.backups.make_key().await,
             Request::ScanBackupHostKeys { host, port } => self.backups.scan(host, *port).await,
-            Request::ListBackup { at, password } => self.backups.list(at, password.as_ref()).await,
-            Request::RunBackup { run, password } => self.backups.run(run, password.as_ref()).await,
+            Request::ListBackup { at, inside, secrets } => self.backups.list(at, inside, secrets).await,
+            Request::RunBackup { run, secrets } => self.backups.run(run, secrets).await,
             Request::StopBackup { task } => self.backups.stop(*task).await,
-            Request::PruneBackup { task, at, names, password } => {
-                self.backups.prune(*task, at, names, password.as_ref()).await
+            Request::PruneBackup { task, at, names, secrets } => {
+                self.backups.prune(*task, at, names, secrets).await
             }
-            Request::RestoreBackup { restore, password } => {
-                self.backups.restore(restore, password.as_ref()).await
-            }
+            Request::RestoreBackup { restore, secrets } => self.backups.restore(restore, secrets).await,
             Request::StartApp { app } => self.apps.start(app).await,
             Request::StopApp { app } => self.apps.stop(app).await,
             Request::RemoveApp { app, pool, volume } => match self.apps.remove(app).await {

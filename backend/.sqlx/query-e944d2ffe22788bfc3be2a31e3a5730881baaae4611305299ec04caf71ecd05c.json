@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", name, folder, source_kind, source_share, source_path, target_kind,\n                      target_share, target_drive, target_path, server_transport, server_host, server_port,\n                      server_user, server_module, server_host_key, server_fingerprint, mode, keep_changed_days,\n                      keep_last, keep_days, schedule, schedule_weekday, schedule_hour, schedule_minute,\n                      on_plug AS \"on_plug: bool\", excludes, hidden AS \"hidden: bool\", bwlimit_kib,\n                      notify_success AS \"notify_success: bool\", created_at, since, last_plug\n               FROM backup_tasks WHERE id = ?",
+  "query": "SELECT id AS \"id!\", name, folder, source_kind, source_share, source_path, target_kind,\n                      target_share, target_drive, target_account, target_path, server_transport, server_host,\n                      server_port,\n                      server_user, server_module, server_host_key, server_fingerprint, mode, keep_changed_days,\n                      keep_last, keep_days, schedule, schedule_weekday, schedule_hour, schedule_minute,\n                      on_plug AS \"on_plug: bool\", excludes, hidden AS \"hidden: bool\", bwlimit_kib,\n                      notify_success AS \"notify_success: bool\", encrypted AS \"encrypted: bool\", created_at,\n                      since, last_plug\n               FROM backup_tasks ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -103,8 +103,19 @@
         }
       },
       {
-        "name": "target_path",
+        "name": "target_account",
         "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "backup_tasks",
+            "name": "target_account"
+          }
+        }
+      },
+      {
+        "name": "target_path",
+        "ordinal": 10,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -115,7 +126,7 @@
       },
       {
         "name": "server_transport",
-        "ordinal": 10,
+        "ordinal": 11,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -126,7 +137,7 @@
       },
       {
         "name": "server_host",
-        "ordinal": 11,
+        "ordinal": 12,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -137,7 +148,7 @@
       },
       {
         "name": "server_port",
-        "ordinal": 12,
+        "ordinal": 13,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -148,7 +159,7 @@
       },
       {
         "name": "server_user",
-        "ordinal": 13,
+        "ordinal": 14,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -159,7 +170,7 @@
       },
       {
         "name": "server_module",
-        "ordinal": 14,
+        "ordinal": 15,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -170,7 +181,7 @@
       },
       {
         "name": "server_host_key",
-        "ordinal": 15,
+        "ordinal": 16,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -181,7 +192,7 @@
       },
       {
         "name": "server_fingerprint",
-        "ordinal": 16,
+        "ordinal": 17,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -192,7 +203,7 @@
       },
       {
         "name": "mode",
-        "ordinal": 17,
+        "ordinal": 18,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -203,7 +214,7 @@
       },
       {
         "name": "keep_changed_days",
-        "ordinal": 18,
+        "ordinal": 19,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -214,7 +225,7 @@
       },
       {
         "name": "keep_last",
-        "ordinal": 19,
+        "ordinal": 20,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -225,7 +236,7 @@
       },
       {
         "name": "keep_days",
-        "ordinal": 20,
+        "ordinal": 21,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -236,7 +247,7 @@
       },
       {
         "name": "schedule",
-        "ordinal": 21,
+        "ordinal": 22,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -247,7 +258,7 @@
       },
       {
         "name": "schedule_weekday",
-        "ordinal": 22,
+        "ordinal": 23,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -258,7 +269,7 @@
       },
       {
         "name": "schedule_hour",
-        "ordinal": 23,
+        "ordinal": 24,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -269,7 +280,7 @@
       },
       {
         "name": "schedule_minute",
-        "ordinal": 24,
+        "ordinal": 25,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -280,7 +291,7 @@
       },
       {
         "name": "on_plug: bool",
-        "ordinal": 25,
+        "ordinal": 26,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -291,7 +302,7 @@
       },
       {
         "name": "excludes",
-        "ordinal": 26,
+        "ordinal": 27,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -302,7 +313,7 @@
       },
       {
         "name": "hidden: bool",
-        "ordinal": 27,
+        "ordinal": 28,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -313,7 +324,7 @@
       },
       {
         "name": "bwlimit_kib",
-        "ordinal": 28,
+        "ordinal": 29,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -324,7 +335,7 @@
       },
       {
         "name": "notify_success: bool",
-        "ordinal": 29,
+        "ordinal": 30,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -334,8 +345,19 @@
         }
       },
       {
+        "name": "encrypted: bool",
+        "ordinal": 31,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "backup_tasks",
+            "name": "encrypted"
+          }
+        }
+      },
+      {
         "name": "created_at",
-        "ordinal": 30,
+        "ordinal": 32,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -346,7 +368,7 @@
       },
       {
         "name": "since",
-        "ordinal": 31,
+        "ordinal": 33,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -357,7 +379,7 @@
       },
       {
         "name": "last_plug",
-        "ordinal": 32,
+        "ordinal": 34,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -368,7 +390,7 @@
       }
     ],
     "parameters": {
-      "Right": 1
+      "Right": 0
     },
     "nullable": [
       false,
@@ -380,13 +402,6 @@
       false,
       true,
       true,
-      false,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
       true,
       false,
       true,
@@ -394,17 +409,26 @@
       true,
       true,
       true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
       false,
       false,
       false,
       false,
       false,
       true,
+      false,
       false,
       false,
       false,
       true
     ]
   },
-  "hash": "8580cbf6cd0aa02f3c8ba4c7d08c07f1f4e93ae1a947fd171ceb6878d105cfbf"
+  "hash": "e944d2ffe22788bfc3be2a31e3a5730881baaae4611305299ec04caf71ecd05c"
 }
