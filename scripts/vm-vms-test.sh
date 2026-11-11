@@ -200,7 +200,12 @@ grep -q "<backend type='passt'/>" <<<"$xml" || fail "no passt: $xml"
 grep -q "socket='/run/zendiloos-vms/$id.vnc'" <<<"$xml" || fail "no console socket: $xml"
 grep -q "firmware='efi'" <<<"$xml" || fail "not UEFI: $xml"
 vm "sudo test -f /etc/zendiloos/vms/$domain.xml" || fail "the domain's XML is not kept"
-[[ $(status POST "/vms/$id/start") == 200 ]] || fail "start: $(cat "$work/last")"
+if [[ $(status POST "/vms/$id/start") != 200 ]]; then
+    # What QEMU or AppArmor said, for a start that failed.
+    note "libvirt: $(vm "sudo tail -n 5 /var/log/libvirt/qemu/$domain.log" 2>&1)"
+    note "AppArmor: $(vm "sudo journalctl -k -n 200 --no-pager | grep -i 'apparmor=\"DENIED\"' | tail -n 5" 2>&1)"
+    fail "start: $(cat "$work/last")"
+fi
 jq -e '.state == "running"' "$work/last" >/dev/null || fail "not running: $(cat "$work/last")"
 [[ $(vm "sudo virsh -c qemu:///system domstate $domain") == running ]] || fail "libvirt does not say it runs"
 [[ $(status POST "/vms/$id/start") == 409 ]] || fail "a second start: $(cat "$work/last")"

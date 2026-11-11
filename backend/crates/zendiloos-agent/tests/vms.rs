@@ -139,7 +139,7 @@ fn host(installed: bool) -> Host {
             domains: root.join("domains"),
             consoles: root.join("consoles"),
             tmpfiles: root.join("tmpfiles.d/zendiloos-vms.conf"),
-            apparmor: root.join("apparmor/local/abstractions/libvirt-qemu"),
+            apparmor: root.join("apparmor/abstractions/libvirt-qemu.d/zendiloos-consoles"),
         },
         ..Paths::default()
     };
@@ -219,7 +219,8 @@ async fn the_storage_goes_on_a_pool_and_libvirt_follows_it() {
     };
     at("zfs create -o mountpoint=legacy -o setuid=off -o devices=off -o exec=off tank/zendiloos.vms");
     let enabled = at("systemctl enable --now volume1-\\x40vms.mount");
-    assert!(enabled < at("systemctl enable --now libvirtd.socket"));
+    assert!(enabled < at("systemctl enable --now virtlogd.socket"));
+    assert!(at("systemctl enable --now virtlogd.socket") < at("systemctl enable --now libvirtd.socket"));
     assert!(at("systemctl enable libvirtd.service") < at("systemctl restart libvirtd.service"));
     assert!(
         calls.iter().any(|call| call.starts_with("systemd-run")
@@ -232,7 +233,8 @@ async fn the_storage_goes_on_a_pool_and_libvirt_follows_it() {
     assert!(drop_in.contains("RequiresMountsFor=/volume1/@vms"), "{drop_in}");
     let tmpfiles = fs::read_to_string(host.path("tmpfiles.d/zendiloos-vms.conf")).unwrap();
     assert!(tmpfiles.contains("consoles 2770 libvirt-qemu root -"), "{tmpfiles}");
-    let apparmor = fs::read_to_string(host.path("apparmor/local/abstractions/libvirt-qemu")).unwrap();
+    let apparmor =
+        fs::read_to_string(host.path("apparmor/abstractions/libvirt-qemu.d/zendiloos-consoles")).unwrap();
     assert!(apparmor.contains("/consoles/*.vnc rw,"), "{apparmor}");
     // No network of libvirt's is ever started or defined.
     assert!(!calls.iter().any(|call| call.contains("net-") || call.contains("nwfilter")), "{calls:?}");

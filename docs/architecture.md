@@ -2380,7 +2380,8 @@ libvirtd has no network driver at all, so nothing of libvirt's ever makes a
 bridge, starts a DHCP server or writes a firewall table: the firewall of
 4.12 stays the only one. What `libvirt-daemon-system` would also do,
 enabling the daemon, the agent does when the storage is set up
-(`libvirtd.socket` and `libvirtd.service` enabled, the daemon restarted);
+(`virtlogd.socket`, which QEMU's output goes through, `libvirtd.socket`
+and `libvirtd.service` enabled, the daemon restarted);
 Debian 13 runs the monolithic `libvirtd`. The QEMU driver's own
 dependencies bring `systemd-container`; its recommendations (swtpm, passt)
 are left to the list above.
@@ -2451,8 +2452,10 @@ systemd-tmpfiles from `/etc/tmpfiles.d/zendiloos-vms.conf`, which the agent
 writes at setup: `libvirt-qemu`'s, its group root and set-group-ID, so the
 sockets QEMU makes there (umask 002) are writable by root's group, which
 lets the agent, root without `CAP_DAC_OVERRIDE`, connect; an AppArmor rule
-of zendiloOS's in `/etc/apparmor.d/local/abstractions/libvirt-qemu` (only
-written where nobody else wrote that file) lets QEMU use it. The agent
+of zendiloOS's in `/etc/apparmor.d/abstractions/libvirt-qemu.d/` (the
+abstraction's own folder: Debian's QEMU driver clears
+`local/abstractions/libvirt-qemu` as obsolete) lets QEMU use it, besides
+the socket's path that `virt-aa-helper` puts in each VM's profile. The agent
 opens the socket with `O_PATH | O_NOFOLLOW`, takes only a socket, connects
 through its descriptor (`/proc/self/fd/N`), so a link QEMU's account put
 there never leads it to another socket (Docker's) that zendiloosd would

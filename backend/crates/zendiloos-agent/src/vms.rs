@@ -69,7 +69,9 @@ pub struct VmPaths {
     /// Makes [`VmPaths::consoles`] at every boot, `libvirt-qemu`'s.
     pub tmpfiles: PathBuf,
     /// Lets the AppArmor profile libvirt makes for each VM use its console
-    /// socket there.
+    /// socket there: a file of zendiloOS's in the abstraction's own folder
+    /// (Debian's QEMU driver clears `local/abstractions/libvirt-qemu` as
+    /// obsolete).
     pub apparmor: PathBuf,
 }
 
@@ -84,7 +86,7 @@ impl Default for VmPaths {
             domains: PathBuf::from("/etc/zendiloos/vms"),
             consoles: PathBuf::from(VM_CONSOLES),
             tmpfiles: PathBuf::from("/etc/tmpfiles.d/zendiloos-vms.conf"),
-            apparmor: PathBuf::from("/etc/apparmor.d/local/abstractions/libvirt-qemu"),
+            apparmor: PathBuf::from("/etc/apparmor.d/abstractions/libvirt-qemu.d/zendiloos-consoles"),
         }
     }
 }
@@ -220,6 +222,9 @@ impl Vms {
         }
         self.make_consoles().await?;
         run(&self.tools.systemctl, &["daemon-reload"], QUICK).await?;
+        // QEMU's output goes through virtlogd; without libvirt-daemon-system
+        // nothing else enables its socket before the next boot.
+        run(&self.tools.systemctl, &["enable", "--now", "virtlogd.socket"], QUICK).await?;
         run(&self.tools.systemctl, &["enable", "--now", "libvirtd.socket"], QUICK).await?;
         run(&self.tools.systemctl, &["enable", "libvirtd.service"], QUICK).await?;
         run(&self.tools.systemctl, &["restart", "libvirtd.service"], SLOW).await?;
