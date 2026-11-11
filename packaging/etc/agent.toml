@@ -26,6 +26,8 @@
 #gpasswd = "/usr/bin/gpasswd"
 #smbpasswd = "/usr/bin/smbpasswd"
 #timedatectl = "/usr/bin/timedatectl"
+# Run in a transient unit: deletes the link of a bridge, bond or VLAN that goes.
+#ip = "/usr/sbin/ip"
 #sshd = "/usr/sbin/sshd"
 #systemd_run = "/usr/bin/systemd-run"
 # Virtual machines, once the App Center's plugin installed them:

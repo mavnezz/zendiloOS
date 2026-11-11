@@ -290,6 +290,8 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let network = NetworkUseCases::new(NetworkPorts {
         source: Arc::new(ip),
         configurator: Arc::new(AgentNetwork::new(network_agent)),
+        // A bridge a VM is on stays: the VMs' records say which.
+        users: Arc::new(zendiloos_infra::vms::VmsOnBridges::new(Arc::new(SqliteVms::new(database.clone())))),
         jobs: jobs.clone(),
         audit: audit.clone(),
         clock: Arc::new(SystemClock),

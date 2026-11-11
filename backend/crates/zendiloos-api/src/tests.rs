@@ -14,7 +14,7 @@ use zendiloos_jobs::Jobs;
 use zendiloos_jobs::testing::MemoryJobs;
 use zendiloos_kernel::{Outcome, PortError, RequestContext};
 use zendiloos_network::application::NetworkUseCases;
-use zendiloos_network::testing::FixedNetwork;
+use zendiloos_network::testing::{FakeUsers, SettableNetwork};
 use zendiloos_notify::testing::MemoryNotifications;
 use zendiloos_notify::{Level, NewNotification, Notifier};
 use zendiloos_sharing::application::{FilesUseCases, SharingPorts, SharingUseCases};
@@ -291,6 +291,11 @@ pub(crate) struct Harness {
     /// The network's host, pretended: managed by systemd-networkd unless a
     /// test gives it ifupdown.
     pub(crate) network_host: Arc<zendiloos_network::testing::FakeConfigurator>,
+    /// The machine's interfaces, [`zendiloos_network::testing::FixedNetwork`]'s
+    /// until a test sets others.
+    pub(crate) network_source: Arc<SettableNetwork>,
+    /// What uses a device: VMs on a bridge.
+    pub(crate) network_users: Arc<FakeUsers>,
 }
 
 /// The App Center's projects, from the Docker fakes, as zendiloosd's
@@ -544,6 +549,8 @@ impl Harness {
             clock: identity.clock.clone(),
         });
         let network_host = Arc::new(zendiloos_network::testing::FakeConfigurator::default());
+        let network_source = Arc::new(SettableNetwork::default());
+        let network_users = Arc::new(FakeUsers::default());
         let use_cases = UseCases {
             vms,
             certificates,
@@ -555,8 +562,9 @@ impl Harness {
             sharing,
             files,
             network: NetworkUseCases::new(zendiloos_network::application::NetworkPorts {
-                source: Arc::new(FixedNetwork),
+                source: network_source.clone(),
                 configurator: network_host.clone(),
+                users: network_users.clone(),
                 jobs: jobs.clone(),
                 audit: identity.audit.clone(),
                 clock: identity.clock.clone(),
@@ -623,6 +631,8 @@ impl Harness {
             firewall,
             vm_host,
             network_host,
+            network_source,
+            network_users,
         }
     }
 
@@ -1805,6 +1815,9 @@ fn openapi_documents_every_route() {
             "/api/v1/logs/journal",
             "/api/v1/network",
             "/api/v1/network/confirm",
+            "/api/v1/network/devices",
+            "/api/v1/network/devices/plan",
+            "/api/v1/network/devices/{name}",
             "/api/v1/network/interfaces/{name}",
             "/api/v1/network/setup",
             "/api/v1/network/takeover",

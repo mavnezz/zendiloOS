@@ -72,6 +72,7 @@ impl Host {
             gpasswd: p("gpasswd"),
             smbpasswd: p("smbpasswd"),
             busctl: p("busctl"),
+            ip: "/bin/false".into(),
             timedatectl: p("timedatectl"),
             sshd: p("sshd"),
             systemd_run: p("systemd-run"),

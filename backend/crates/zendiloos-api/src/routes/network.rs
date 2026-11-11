@@ -1,6 +1,6 @@
 //! How the machine is connected (`system.view`), changing an interface's
-//! settings with confirmation, and taking the network over from ifupdown
-//! (`system.manage`).
+//! settings with confirmation, making, changing and removing bridges, bonds
+//! and VLANs, and taking the network over from ifupdown (`system.manage`).
 
 use crate::extract::ApiPath as Path;
 use axum::Json;
@@ -28,6 +28,9 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(configure_interface))
         .routes(routes!(take_over_network))
         .routes(routes!(confirm_network))
+        .routes(routes!(make_device))
+        .routes(routes!(change_device, remove_device))
+        .routes(routes!(plan_device))
 }
 
 impl From<ConfigureError> for ApiError {
@@ -40,6 +43,12 @@ impl From<ConfigureError> for ApiError {
                 ApiError::Rejected { status: StatusCode::CONFLICT, code: "change_pending", detail: None }
             }
             ConfigureError::Invalid(e) => ApiError::InvalidInput(e.to_string()),
+            ConfigureError::InvalidDevice(e) => ApiError::InvalidInput(e.to_string()),
+            ConfigureError::InUse(users) => ApiError::Rejected {
+                status: StatusCode::CONFLICT,
+                code: "device_in_use",
+                detail: Some(users.join(", ")),
+            },
             ConfigureError::NotCarriedOver(refused) => ApiError::Rejected {
                 status: StatusCode::CONFLICT,
                 code: "not_carried_over",
@@ -74,17 +83,108 @@ pub struct NetworkSetup {
     pub pending: Option<PendingNetworkChange>,
     /// Where ifupdown manages the network: what taking it over would do.
     pub takeover: Option<NetworkTakeover>,
+    /// The bridges, bonds and VLANs zendiloOS made: these can be changed
+    /// and removed.
+    pub devices: Vec<NetworkDevice>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PendingNetworkChange {
-    /// The interface whose settings changed; empty for a takeover.
+    /// The interface whose settings changed, or the device made, changed
+    /// or removed; empty for a takeover.
     pub interface: String,
     /// zendiloOS took the network over from ifupdown: unless confirmed,
     /// ifupdown gets it back exactly as it was.
     pub takeover: bool,
+    /// A bridge, bond or VLAN (`interface`) was made, changed or removed.
+    pub device: Option<DeviceActionKind>,
     /// When the old settings return unless confirmed, in Unix seconds.
     pub revert_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceActionKind {
+    Made,
+    Changed,
+    Removed,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceKindName {
+    Bridge,
+    Bond,
+    Vlan,
+}
+
+/// How a bond spreads its traffic over its members.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BondModeInput {
+    /// One member carries, another takes over when it fails; any switch.
+    ActiveBackup,
+    /// IEEE 802.3ad: a managed switch bundles the ports.
+    Lacp,
+    /// Adaptive load balancing, without help from the switch.
+    BalanceAlb,
+}
+
+impl From<BondModeInput> for net::BondMode {
+    fn from(mode: BondModeInput) -> Self {
+        match mode {
+            BondModeInput::ActiveBackup => Self::ActiveBackup,
+            BondModeInput::Lacp => Self::Lacp,
+            BondModeInput::BalanceAlb => Self::BalanceAlb,
+        }
+    }
+}
+
+impl From<net::BondMode> for BondModeInput {
+    fn from(mode: net::BondMode) -> Self {
+        match mode {
+            net::BondMode::ActiveBackup => Self::ActiveBackup,
+            net::BondMode::Lacp => Self::Lacp,
+            net::BondMode::BalanceAlb => Self::BalanceAlb,
+        }
+    }
+}
+
+/// A bridge, bond or VLAN zendiloOS made, as its files say.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct NetworkDevice {
+    pub name: String,
+    pub kind: DeviceKindName,
+    /// A bridge's or bond's, in order: the first gets the settings back
+    /// when it goes.
+    pub members: Vec<String>,
+    /// A VLAN's: the interface it is on, and its id.
+    pub parent: Option<String>,
+    pub vlan_id: Option<u16>,
+    /// A bond's.
+    pub mode: Option<BondModeInput>,
+    /// A bridge's: whether it speaks the spanning tree protocol.
+    pub stp: Option<bool>,
+    /// Given at making it: its first member's.
+    pub mac: Option<String>,
+}
+
+fn device_dto(device: net::Device) -> NetworkDevice {
+    let (kind, parent, vlan_id, mode, stp) = match device.kind {
+        net::DeviceKind::Bridge { stp } => (DeviceKindName::Bridge, None, None, None, Some(stp)),
+        net::DeviceKind::Bond { mode } => (DeviceKindName::Bond, None, None, Some(mode.into()), None),
+        net::DeviceKind::Vlan { parent, id } => (DeviceKindName::Vlan, Some(parent), Some(id), None, None),
+    };
+    NetworkDevice {
+        name: device.name,
+        kind,
+        members: device.members,
+        parent,
+        vlan_id,
+        mode,
+        stp,
+        mac: device.mac,
+    }
 }
 
 /// Taking the network over from ifupdown, as it would go now.
@@ -130,6 +230,32 @@ pub enum PlannedIpv4 {
     Off,
 }
 
+/// An interface's settings as a change would set them.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PlannedSettings {
+    pub ipv4: PlannedIpv4,
+    pub ipv6: Ipv6Input,
+    #[schema(value_type = Vec<String>)]
+    pub dns: Vec<std::net::IpAddr>,
+}
+
+fn planned(settings: &net::InterfaceSettings) -> PlannedSettings {
+    PlannedSettings {
+        ipv4: match settings.ipv4 {
+            net::Ipv4Setting::Dhcp { keep } => PlannedIpv4::Dhcp { keep },
+            net::Ipv4Setting::Static { address, prefix, gateway } => {
+                PlannedIpv4::Static { address, prefix, gateway }
+            }
+            net::Ipv4Setting::Off => PlannedIpv4::Off,
+        },
+        ipv6: match settings.ipv6 {
+            net::Ipv6Setting::Automatic => Ipv6Input::Automatic,
+            net::Ipv6Setting::Off => Ipv6Input::Off,
+        },
+        dns: settings.dns.clone(),
+    }
+}
+
 /// Where ifupdown sets up something a takeover would not carry over.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct NotCarriedOver {
@@ -148,31 +274,30 @@ fn setup_dto(setup: app::NetworkSetup) -> NetworkSetup {
             app::Manager::Unknown => NetworkManagerKind::Unknown,
         },
         pending: setup.pending.map(|p| {
-            let (interface, takeover) = match p.change {
-                app::Change::Interface(interface) => (interface, false),
-                app::Change::Takeover(_) => (String::new(), true),
+            let (interface, takeover, device) = match p.change {
+                app::Change::Interface(interface) => (interface, false, None),
+                app::Change::Takeover(_) => (String::new(), true, None),
+                app::Change::Device(device, action) => (
+                    device,
+                    false,
+                    Some(match action {
+                        net::DeviceAction::Made => DeviceActionKind::Made,
+                        net::DeviceAction::Changed => DeviceActionKind::Changed,
+                        net::DeviceAction::Removed => DeviceActionKind::Removed,
+                    }),
+                ),
             };
-            PendingNetworkChange { interface, takeover, revert_at: p.revert_at.unix_seconds() }
+            PendingNetworkChange { interface, takeover, device, revert_at: p.revert_at.unix_seconds() }
         }),
+        devices: setup.devices.into_iter().map(device_dto).collect(),
         takeover: setup.takeover.map(|takeover| NetworkTakeover {
             interfaces: takeover
                 .plan
                 .interfaces
                 .into_iter()
-                .map(|settings| PlannedInterface {
-                    ipv4: match settings.ipv4 {
-                        net::Ipv4Setting::Dhcp { keep } => PlannedIpv4::Dhcp { keep },
-                        net::Ipv4Setting::Static { address, prefix, gateway } => {
-                            PlannedIpv4::Static { address, prefix, gateway }
-                        }
-                        net::Ipv4Setting::Off => PlannedIpv4::Off,
-                    },
-                    ipv6: match settings.ipv6 {
-                        net::Ipv6Setting::Automatic => Ipv6Input::Automatic,
-                        net::Ipv6Setting::Off => Ipv6Input::Off,
-                    },
-                    dns: settings.dns,
-                    name: settings.interface,
+                .map(|settings| {
+                    let PlannedSettings { ipv4, ipv6, dns } = planned(&settings);
+                    PlannedInterface { name: settings.interface, ipv4, ipv6, dns }
                 })
                 .collect(),
             refused: takeover
@@ -267,8 +392,13 @@ async fn configure_interface(
     ApiJson(input): ApiJson<InterfaceSettingsInput>,
 ) -> Result<(StatusCode, Json<NetworkSetup>), ApiError> {
     auth.require(Permission::SystemManage)?;
-    let settings = net::InterfaceSettings {
-        interface: name,
+    let setup = state.network.configure.apply(settings(name, input), &auth.0.actor(), &client).await?;
+    Ok((StatusCode::ACCEPTED, Json(setup_dto(setup))))
+}
+
+fn settings(interface: String, input: InterfaceSettingsInput) -> net::InterfaceSettings {
+    net::InterfaceSettings {
+        interface,
         ipv4: match input.ipv4 {
             Ipv4Input::Dhcp => net::Ipv4Setting::Dhcp { keep: None },
             Ipv4Input::Static { address, prefix, gateway } => {
@@ -281,9 +411,257 @@ async fn configure_interface(
             Ipv6Input::Off => net::Ipv6Setting::Off,
         },
         dns: input.dns,
-    };
-    let setup = state.network.configure.apply(settings, &auth.0.actor(), &client).await?;
+    }
+}
+
+/// A bridge, bond or VLAN to make.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NewDeviceInput {
+    /// Members: wired cards, and bonds and VLANs zendiloOS made; none for
+    /// a bridge only VMs are on. It takes the settings and the MAC address
+    /// of the first member that has settings.
+    Bridge {
+        name: String,
+        #[serde(default)]
+        members: Vec<String>,
+        /// Off by default.
+        #[serde(default)]
+        stp: bool,
+    },
+    /// Members: wired cards, at least one. It takes the settings of the
+    /// first member that has settings and the MAC address of its first.
+    Bond { name: String, members: Vec<String>, mode: BondModeInput },
+    /// On a wired card, a bond or a bridge, with an id from 1 to 4094 and
+    /// settings of its own (none: no addresses, up to carry others).
+    Vlan {
+        name: String,
+        parent: String,
+        id: u16,
+        #[serde(default)]
+        settings: Option<InterfaceSettingsInput>,
+    },
+}
+
+impl NewDeviceInput {
+    fn device(self) -> net::NewDevice {
+        match self {
+            Self::Bridge { name, members, stp } => {
+                net::NewDevice { name, kind: net::DeviceKind::Bridge { stp }, members, settings: None }
+            }
+            Self::Bond { name, members, mode } => net::NewDevice {
+                name,
+                kind: net::DeviceKind::Bond { mode: mode.into() },
+                members,
+                settings: None,
+            },
+            Self::Vlan { name, parent, id, settings: given } => net::NewDevice {
+                settings: given.map(|input| settings(name.clone(), input)),
+                name,
+                kind: net::DeviceKind::Vlan { parent, id },
+                members: Vec::new(),
+            },
+        }
+    }
+}
+
+/// A bridge's or bond's members, a bond's mode or a bridge's STP.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceUpdateInput {
+    /// All of them, in order: the first gets the settings back when it
+    /// goes.
+    pub members: Vec<String>,
+    /// A bond's; left out: as it is.
+    #[serde(default)]
+    pub mode: Option<BondModeInput>,
+    /// A bridge's; left out: as it is.
+    #[serde(default)]
+    pub stp: Option<bool>,
+}
+
+impl DeviceUpdateInput {
+    fn update(self, name: String) -> net::DeviceUpdate {
+        net::DeviceUpdate { name, members: self.members, mode: self.mode.map(Into::into), stp: self.stp }
+    }
+}
+
+/// A change of a device whose plan is asked for.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DevicePlanInput {
+    Make { device: NewDeviceInput },
+    Change { name: String, members: Vec<String>, mode: Option<BondModeInput>, stp: Option<bool> },
+    Remove { name: String },
+}
+
+/// What becomes of an interface a change touches.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(tag = "fate", rename_all = "snake_case")]
+pub enum Becomes {
+    /// A member of `device`; `moved`: its settings go to the device,
+    /// `dropped`: those it has go.
+    Member { device: String, moved: bool, dropped: bool },
+    /// These settings: a new VLAN's, a device's from its first member, or a
+    /// device's given back to that member.
+    Settings { settings: PlannedSettings },
+    /// Leaves its device, switched off.
+    SwitchedOff,
+    /// Keeps its settings; carries `vlan` from now on, or no longer.
+    Parent { vlan: String, carries: bool },
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct InterfaceFate {
+    pub interface: String,
+    pub becomes: Becomes,
+}
+
+/// What a change of a device would do.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DevicePlan {
+    /// The device as it would be; none when it goes.
+    pub device: Option<NetworkDevice>,
+    pub interfaces: Vec<InterfaceFate>,
+}
+
+fn plan_dto(edit: net::Edit) -> DevicePlan {
+    DevicePlan {
+        device: edit.devices.into_iter().next().map(device_dto),
+        interfaces: edit
+            .effects
+            .into_iter()
+            .map(|effect| InterfaceFate {
+                interface: effect.interface,
+                becomes: match effect.becomes {
+                    net::Becomes::Member { device, moved, dropped } => {
+                        Becomes::Member { device, moved, dropped }
+                    }
+                    net::Becomes::Settings(settings) => Becomes::Settings { settings: planned(&settings) },
+                    net::Becomes::SwitchedOff => Becomes::SwitchedOff,
+                    net::Becomes::Parent { vlan, carries } => Becomes::Parent { vlan, carries },
+                },
+            })
+            .collect(),
+    }
+}
+
+/// Makes a bridge, bond or VLAN, with what that does to its members and
+/// parent (see `POST /network/devices/plan`), as one change: unless it is
+/// confirmed within two minutes (`POST /network/confirm`), every file goes
+/// back and the device goes. Needs `system.manage`.
+#[utoipa::path(
+    post,
+    path = "/network/devices",
+    tag = "network",
+    security(("session" = [])),
+    request_body = NewDeviceInput,
+    responses(
+        (status = ACCEPTED, body = NetworkSetup, description = "Made; waits for confirmation."),
+        (status = CONFLICT, body = Problem, description = "`change_pending`, or `refused`: not managed by systemd-networkd, a name in use"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`: the detail says why"),
+    )
+)]
+async fn make_device(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    ApiJson(input): ApiJson<NewDeviceInput>,
+) -> Result<(StatusCode, Json<NetworkSetup>), ApiError> {
+    auth.require(Permission::SystemManage)?;
+    let device = app::DeviceRequest::Make(input.device());
+    let setup = state.network.configure.device(device, &auth.0.actor(), &client).await?;
     Ok((StatusCode::ACCEPTED, Json(setup_dto(setup))))
+}
+
+/// Changes a bridge's or bond's members, a bond's mode or a bridge's STP
+/// (the device is made anew for those two), as one change with
+/// confirmation. Members that leave are switched off. Needs
+/// `system.manage`.
+#[utoipa::path(
+    put,
+    path = "/network/devices/{name}",
+    tag = "network",
+    security(("session" = [])),
+    params(("name" = String, Path)),
+    request_body = DeviceUpdateInput,
+    responses(
+        (status = ACCEPTED, body = NetworkSetup, description = "Changed; waits for confirmation."),
+        (status = CONFLICT, body = Problem, description = "`change_pending`, `refused`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`: no such device of zendiloOS's, members not free, …"),
+    )
+)]
+async fn change_device(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(name): Path<String>,
+    ApiJson(input): ApiJson<DeviceUpdateInput>,
+) -> Result<(StatusCode, Json<NetworkSetup>), ApiError> {
+    auth.require(Permission::SystemManage)?;
+    let device = app::DeviceRequest::Change(input.update(name));
+    let setup = state.network.configure.device(device, &auth.0.actor(), &client).await?;
+    Ok((StatusCode::ACCEPTED, Json(setup_dto(setup))))
+}
+
+/// Removes a bridge, bond or VLAN zendiloOS made: a bridge or bond gives
+/// its settings back to its first member, the other members are switched
+/// off. Refused while a VM is on the bridge. As one change with
+/// confirmation. Needs `system.manage`.
+#[utoipa::path(
+    delete,
+    path = "/network/devices/{name}",
+    tag = "network",
+    security(("session" = [])),
+    params(("name" = String, Path)),
+    responses(
+        (status = ACCEPTED, body = NetworkSetup, description = "Removed; waits for confirmation."),
+        (status = CONFLICT, body = Problem, description = "`device_in_use` (the detail names the VMs), `change_pending`, `refused`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`: no device of zendiloOS's, a member or parent of another"),
+    )
+)]
+async fn remove_device(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(name): Path<String>,
+) -> Result<(StatusCode, Json<NetworkSetup>), ApiError> {
+    auth.require(Permission::SystemManage)?;
+    let setup =
+        state.network.configure.device(app::DeviceRequest::Remove(name), &auth.0.actor(), &client).await?;
+    Ok((StatusCode::ACCEPTED, Json(setup_dto(setup))))
+}
+
+/// What making, changing or removing a device would do to each interface
+/// it touches, checked as the change itself would be, without changing
+/// anything. Needs `system.manage`.
+#[utoipa::path(
+    post,
+    path = "/network/devices/plan",
+    tag = "network",
+    security(("session" = [])),
+    request_body = DevicePlanInput,
+    responses(
+        (status = OK, body = DevicePlan),
+        (status = CONFLICT, body = Problem, description = "`device_in_use`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`: the detail says why"),
+    )
+)]
+async fn plan_device(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    ApiJson(input): ApiJson<DevicePlanInput>,
+) -> Result<Json<DevicePlan>, ApiError> {
+    auth.require(Permission::SystemManage)?;
+    let device = match input {
+        DevicePlanInput::Make { device } => app::DeviceRequest::Make(device.device()),
+        DevicePlanInput::Change { name, members, mode, stp } => {
+            app::DeviceRequest::Change(DeviceUpdateInput { members, mode, stp }.update(name))
+        }
+        DevicePlanInput::Remove { name } => app::DeviceRequest::Remove(name),
+    };
+    Ok(Json(plan_dto(state.network.configure.plan(device, &client).await?)))
 }
 
 /// Lets zendiloOS manage the network where ifupdown does, as a job:
@@ -375,6 +753,8 @@ pub struct NetworkInterface {
     pub mtu: u32,
     /// The bridge or bond it belongs to; the addresses are on that one.
     pub member_of: Option<String>,
+    /// A VLAN's: the interface it is on.
+    pub parent: Option<String>,
     /// Global ones first.
     pub addresses: Vec<InterfaceAddress>,
 }
@@ -440,6 +820,7 @@ impl From<net::Network> for NetworkInfo {
                 mac: interface.mac,
                 mtu: interface.mtu,
                 member_of: interface.member_of,
+                parent: interface.parent,
             })
             .collect();
         Self {

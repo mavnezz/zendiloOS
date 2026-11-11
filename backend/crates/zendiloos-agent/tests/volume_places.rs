@@ -54,6 +54,7 @@ impl Agent {
             zfs: plain("zfs"),
             sgdisk: plain("sgdisk"),
             busctl: plain("busctl"),
+            ip: "/bin/false".into(),
             timedatectl: plain("timedatectl"),
             sshd: plain("sshd"),
             systemd_run: plain("systemd-run"),

@@ -62,6 +62,7 @@ zendiloos-sharing = { workspace = true, features = ["testing"] }
 zendiloos-storage = { workspace = true, features = ["testing"] }
 zendiloos-jobs = { workspace = true, features = ["testing"] }
 zendiloos-notify = { workspace = true, features = ["testing"] }
+zendiloos-vms = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 tokio.workspace = true
 
