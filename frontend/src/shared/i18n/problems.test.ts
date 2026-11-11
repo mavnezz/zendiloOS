@@ -40,6 +40,16 @@ const CODES = [
   'vm_creating',
   'vm_not_running',
   'iso_denied',
+  'backup_not_installed',
+  'backup_installed',
+  'folder_taken',
+  'task_running',
+  'task_not_running',
+  'restore_running',
+  'share_missing',
+  'drive_missing',
+  'drive_read_only',
+  'host_key_changed',
   'agent_failed',
 ]
 

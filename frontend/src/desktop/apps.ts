@@ -1,5 +1,6 @@
 import {
   Activity,
+  ArchiveRestore,
   Bell,
   Blocks,
   Box,
@@ -11,12 +12,14 @@ import {
   FolderOpen,
   Globe,
   HardDrive,
+  HardDriveDownload,
   Info,
   Languages,
   Layers,
   LayoutDashboard,
   LayoutGrid,
   LibraryBig,
+  ListChecks,
   MonitorCog,
   MonitorPlay,
   Network,
@@ -36,7 +39,7 @@ import { type Component, defineAsyncComponent } from 'vue'
 
 import type { Size } from './windowManager'
 
-export type AppId = 'settings' | 'files' | 'apps' | 'docker' | 'vms' | 'vm-console'
+export type AppId = 'settings' | 'files' | 'apps' | 'docker' | 'vms' | 'vm-console' | 'backup'
 
 /** A page inside an app: found by the launcher's search, opened directly. */
 export interface AppSection {
@@ -60,7 +63,7 @@ export interface AppDefinition {
   /** Accounts without it do not see the app. The server checks anyway. */
   permission: string
   /** Shown only once this is on the NAS (installed from the App Store). */
-  requires?: 'docker' | 'vms'
+  requires?: 'docker' | 'vms' | 'backup'
   /** Opened by another app only, never listed: the console of a VM. */
   hidden?: boolean
   /** Size of a newly opened window. */
@@ -254,6 +257,23 @@ export const APPS: AppDefinition[] = [
       { id: 'log', label: 'vms.sections.log', icon: ScrollText },
     ],
     component: defineAsyncComponent(() => import('@/features/vms/components/VmsApp.vue')),
+  },
+  {
+    id: 'backup',
+    icon: HardDriveDownload,
+    tile: 'bg-linear-to-br from-amber-400 to-orange-600',
+    permission: 'backup.manage',
+    requires: 'backup',
+    size: { width: 1120, height: 760 },
+    minimum: { width: 360, height: 320 },
+    sections: [
+      { id: 'overview', label: 'backup.sections.overview', icon: LayoutDashboard },
+      { id: 'tasks', label: 'backup.sections.tasks', icon: ListChecks },
+      { id: 'restore', label: 'backup.sections.restore', icon: ArchiveRestore },
+      { id: 'log', label: 'backup.sections.log', icon: ScrollText },
+      { id: 'settings', label: 'backup.sections.settings', icon: Settings2 },
+    ],
+    component: defineAsyncComponent(() => import('@/features/backup/components/BackupApp.vue')),
   },
   {
     // One console window at a time; its page is the VM's id.
