@@ -18,6 +18,11 @@ pub enum PackageTask {
     /// packages, so libvirt's own network (a bridge, dnsmasq and firewall
     /// rules) and its network filters never come along.
     InstallVms,
+    /// `systemd-resolved` from Debian, for taking the network over from
+    /// ifupdown (systemd-networkd comes with `systemd`). The network stays
+    /// as it was: installing it switches `/etc/resolv.conf` to it, which
+    /// the runner takes back; the takeover switches it on.
+    InstallNetworkd,
     /// apt's lists fetched again, and a [`PackageReport`] of what an
     /// update would bring; nothing installed.
     Check,
@@ -30,8 +35,15 @@ pub enum PackageTask {
 }
 
 impl PackageTask {
-    const ALL: [Self; 6] =
-        [Self::InstallDocker, Self::InstallAcme, Self::InstallVms, Self::Check, Self::Update, Self::Finish];
+    const ALL: [Self; 7] = [
+        Self::InstallDocker,
+        Self::InstallAcme,
+        Self::InstallVms,
+        Self::InstallNetworkd,
+        Self::Check,
+        Self::Update,
+        Self::Finish,
+    ];
 
     /// The name the runner is started with.
     pub fn as_str(self) -> &'static str {
@@ -39,6 +51,7 @@ impl PackageTask {
             Self::InstallDocker => "install-docker",
             Self::InstallAcme => "install-acme",
             Self::InstallVms => "install-vms",
+            Self::InstallNetworkd => "install-networkd",
             Self::Check => "check",
             Self::Update => "update",
             Self::Finish => "finish",
@@ -289,6 +302,7 @@ mod tests {
         assert_eq!(PackageTask::parse("install-docker"), Some(PackageTask::InstallDocker));
         assert_eq!(PackageTask::parse("install-acme"), Some(PackageTask::InstallAcme));
         assert_eq!(PackageTask::parse("install-vms"), Some(PackageTask::InstallVms));
+        assert_eq!(PackageTask::parse("install-networkd"), Some(PackageTask::InstallNetworkd));
         assert_eq!(PackageTask::parse("finish"), Some(PackageTask::Finish));
         assert!(PackageTask::Update.updates() && PackageTask::Finish.updates());
         assert!(!PackageTask::Check.updates() && !PackageTask::InstallDocker.updates());

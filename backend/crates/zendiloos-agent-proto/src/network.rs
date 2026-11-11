@@ -1,6 +1,6 @@
-//! Network settings the agent writes as a systemd-networkd file. Every
-//! value is checked while it is read, so the file can only say what these
-//! types allow.
+//! Network settings the agent writes as a systemd-networkd file, and the
+//! network taken over from ifupdown. Every value is checked while it is
+//! read, so the file can only say what these types allow.
 
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -80,8 +80,19 @@ impl From<Prefix> for u8 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Ipv4Config {
-    Dhcp,
-    Static { address: Ipv4Addr, prefix: Prefix, gateway: Option<Ipv4Addr> },
+    /// From DHCP. `request` is the address to ask for, the one the
+    /// interface has now, so it stays where the server agrees.
+    Dhcp {
+        #[serde(default)]
+        request: Option<Ipv4Addr>,
+    },
+    Static {
+        address: Ipv4Addr,
+        prefix: Prefix,
+        gateway: Option<Ipv4Addr>,
+    },
+    /// No IPv4 address; with IPv6 off too, the interface is switched off.
+    Off {},
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,13 +179,127 @@ impl From<ConfirmWithin> for u16 {
     }
 }
 
+/// What a change waiting to be confirmed changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NetworkChange {
+    /// One interface's settings.
+    Interface { interface: InterfaceName },
+    /// The network, taken over from ifupdown: these interfaces were set up.
+    Takeover { interfaces: Vec<InterfaceName> },
+}
+
 /// A change that waits to be confirmed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PendingNetwork {
-    pub interface: InterfaceName,
+    pub change: NetworkChange,
     /// When the old configuration returns, in Unix seconds.
     pub revert_at: i64,
+}
+
+/// One of the files ifupdown reads, by its path below `/etc/network`:
+/// `interfaces`, or `interfaces.d/<name>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IfupdownFile {
+    pub path: String,
+    /// Empty if it was not read.
+    pub text: String,
+    /// Why it was not read: a link (which may lead out of `/etc/network`),
+    /// not a plain file, too large, not text.
+    #[serde(default)]
+    pub skipped: Option<String>,
+}
+
+/// Where ifupdown manages the network: its files, for zendiloosd to read,
+/// and what a takeover needs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Ifupdown {
+    /// `/etc/network/interfaces`, then the files directly in
+    /// `interfaces.d`, by name.
+    pub files: Vec<IfupdownFile>,
+    /// Of the files as read: a takeover names it, and is refused if they
+    /// changed since.
+    pub digest: FilesDigest,
+    /// `networking.service` is active: ifupdown brought the network up.
+    pub active: bool,
+    /// systemd-resolved is installed; a takeover needs it.
+    pub resolved_installed: bool,
+}
+
+/// A SHA-256 in lowercase hex.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct FilesDigest(String);
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("not a SHA-256 in lowercase hex")]
+pub struct InvalidFilesDigest;
+
+impl FilesDigest {
+    pub fn parse(text: &str) -> Result<Self, InvalidFilesDigest> {
+        let valid =
+            text.len() == 64 && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        if valid { Ok(Self(text.to_owned())) } else { Err(InvalidFilesDigest) }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for FilesDigest {
+    type Error = InvalidFilesDigest;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<FilesDigest> for String {
+    fn from(digest: FilesDigest) -> Self {
+        digest.0
+    }
+}
+
+/// The settings a takeover writes: each interface once, at most
+/// [`TakeoverConfigs::MAX`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<NetworkConfig>", into = "Vec<NetworkConfig>")]
+pub struct TakeoverConfigs(Vec<NetworkConfig>);
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("at most 32 interfaces, each once")]
+pub struct InvalidTakeoverConfigs;
+
+impl TakeoverConfigs {
+    pub const MAX: usize = 32;
+
+    pub fn new(configs: Vec<NetworkConfig>) -> Result<Self, InvalidTakeoverConfigs> {
+        let twice =
+            configs.iter().enumerate().any(|(i, c)| configs[..i].iter().any(|o| o.interface == c.interface));
+        if configs.len() <= Self::MAX && !twice { Ok(Self(configs)) } else { Err(InvalidTakeoverConfigs) }
+    }
+
+    pub fn as_slice(&self) -> &[NetworkConfig] {
+        &self.0
+    }
+}
+
+impl TryFrom<Vec<NetworkConfig>> for TakeoverConfigs {
+    type Error = InvalidTakeoverConfigs;
+
+    fn try_from(value: Vec<NetworkConfig>) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<TakeoverConfigs> for Vec<NetworkConfig> {
+    fn from(configs: TakeoverConfigs) -> Self {
+        configs.0
+    }
 }
 
 #[cfg(test)]
@@ -198,5 +323,40 @@ mod tests {
         }
         assert!(serde_json::from_str::<ConfirmWithin>("10").is_err());
         assert_eq!(serde_json::from_str::<ConfirmWithin>("120").unwrap().get(), 120);
+
+        // DHCP may name the address to ask for; off takes nothing.
+        let dhcp: Ipv4Config = serde_json::from_str(r#"{"mode":"dhcp"}"#).unwrap();
+        assert_eq!(dhcp, Ipv4Config::Dhcp { request: None });
+        let asking: Ipv4Config =
+            serde_json::from_str(r#"{"mode":"dhcp","request":"192.168.1.127"}"#).unwrap();
+        assert_eq!(asking, Ipv4Config::Dhcp { request: Some("192.168.1.127".parse().unwrap()) });
+        assert_eq!(serde_json::from_str::<Ipv4Config>(r#"{"mode":"off"}"#).unwrap(), Ipv4Config::Off {});
+        assert!(serde_json::from_str::<Ipv4Config>(r#"{"mode":"off","address":"10.0.0.1"}"#).is_err());
+    }
+
+    #[test]
+    fn a_takeover_names_each_interface_once_and_the_files_it_read() {
+        let config = |name: &str| NetworkConfig {
+            interface: InterfaceName::parse(name).unwrap(),
+            ipv4: Ipv4Config::Dhcp { request: None },
+            ipv6: Ipv6Config::Automatic,
+            dns: NameServers::default(),
+        };
+        assert!(TakeoverConfigs::new(vec![config("enp2s0"), config("enp3s0")]).is_ok());
+        assert!(TakeoverConfigs::new(vec![config("enp2s0"), config("enp2s0")]).is_err());
+        let many = (0..33).map(|i| config(&format!("eth{i}"))).collect();
+        assert!(TakeoverConfigs::new(many).is_err());
+
+        let digest = "ab".repeat(32);
+        assert!(FilesDigest::parse(&digest).is_ok());
+        for bad in ["AB".repeat(32), "ab".repeat(31), format!("{}/x", "a".repeat(62)), String::new()] {
+            assert!(FilesDigest::parse(&bad).is_err(), "{bad}");
+        }
+        let change: NetworkChange =
+            serde_json::from_str(r#"{"kind":"takeover","interfaces":["enp2s0"]}"#).unwrap();
+        assert_eq!(
+            change,
+            NetworkChange::Takeover { interfaces: vec![InterfaceName::parse("enp2s0").unwrap()] }
+        );
     }
 }

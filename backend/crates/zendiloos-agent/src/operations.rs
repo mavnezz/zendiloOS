@@ -271,6 +271,9 @@ impl Operations {
             Request::ApplyNetwork { config, confirm_within } => {
                 self.network.apply(config, *confirm_within).await
             }
+            Request::TakeOverNetwork { configs, digest, confirm_within } => {
+                self.network.take_over(configs, digest, *confirm_within).await
+            }
             Request::ConfirmNetwork {} => self.network.confirm().await,
             Request::SshState {} => self.ssh.state().await,
             Request::SetSsh { config } => self.ssh.set(config).await,

@@ -1675,6 +1675,7 @@ const de: Messages = {
     change: {
       button: 'Ändern',
       title: '{name} ändern',
+      titleOn: '{name} einschalten',
       hint: 'Die neuen Einstellungen gelten sofort. Bestätigen Sie sie binnen zwei Minuten, bei neuer Adresse von dort aus, sonst kehren die alten zurück.',
       dhcp: 'Automatisch (DHCP)',
       static: 'Feste Adresse',
@@ -1682,13 +1683,19 @@ const de: Messages = {
       prefix: 'Präfix',
       dnsFromDhcp: 'Per DHCP',
       dnsHint: 'Bis zu drei, durch Kommas getrennt; leer: die per DHCP.',
+      ipv4Off: 'Aus',
       ipv6Automatic: 'Automatisch',
       ipv6Off: 'Aus',
+      switchedOff: 'Ohne IPv4 und IPv6 ist die Schnittstelle ausgeschaltet.',
+      switchOff: 'Ausschalten',
       apply: 'Anwenden',
     },
     pending: {
       title: 'Neue Einstellungen für {name} sind aktiv',
       hint: 'Bestätigen Sie sie, sonst kehren in {seconds} Sekunden die alten zurück.',
+      takeoverTitle: 'zendiloOS verwaltet das Netz jetzt',
+      takeoverHint:
+        'Bestätigen Sie es, sonst bekommt ifupdown das Netz in {seconds} Sekunden so zurück, wie es war.',
       elsewhere: 'Das NAS hat eine neue Adresse. Bestätigen Sie dort:',
       confirm: 'Neue Einstellungen behalten',
     },
@@ -1715,6 +1722,29 @@ const de: Messages = {
     none: 'keine',
     readOnly:
       'So, wie das System eingerichtet ist. systemd-networkd verwaltet das Netz hier nicht, daher wird es anderswo geändert.',
+    networkManager:
+      'So, wie das System eingerichtet ist. NetworkManager verwaltet das Netz hier, daher wird es dort geändert.',
+    takeover: {
+      title: 'ifupdown verwaltet das Netz hier',
+      hint: 'Debian hat das Netz mit ifupdown eingerichtet (/etc/network/interfaces), das zendiloOS nicht ändert. zendiloOS kann es übernehmen: Jede Schnittstelle, die ifupdown einschaltet, bekommt über systemd-networkd dieselben Einstellungen, und DHCP fragt nach der Adresse, die sie jetzt hat. Bestätigen Sie binnen zwei Minuten, sonst bekommt ifupdown alles so zurück, wie es war.',
+      interfaces: 'Was zendiloOS einrichtet',
+      dhcp: 'DHCP',
+      dhcpKeeps: 'DHCP, behält {address}',
+      via: 'über {gateway}',
+      ipv4Off: 'kein IPv4',
+      ipv6Automatic: 'IPv6 automatisch',
+      ipv6Off: 'IPv6 aus',
+      dns: 'Nameserver {servers}',
+      others: 'Nicht genannte Schnittstellen bleiben aus, bis Sie sie hier einrichten.',
+      refused:
+        'Das übernimmt zendiloOS nicht, daher behält ifupdown das Netz. Ändern Sie es in /etc/network, damit zendiloOS übernehmen kann:',
+      notRunning:
+        'networking.service läuft nicht: ifupdown hat das Netz nicht eingeschaltet, es gibt nichts zu übernehmen.',
+      resolved: 'Zuerst wird systemd-resolved aus Debian installiert.',
+      button: 'zendiloOS das Netz verwalten lassen',
+      working: 'Übernimmt …',
+      installing: 'Installiert systemd-resolved …',
+    },
   },
   settings: {
     groups: { personal: 'Persönlich', system: 'System' },
@@ -2480,6 +2510,7 @@ const de: Messages = {
       apps_update: 'App aktualisieren',
       apps_uninstall: 'App entfernen',
       certificates_acme_install: 'ACME-Client installieren',
+      network_take_over: 'zendiloOS das Netz verwalten lassen',
       certificates_issue: 'Zertifikat ausstellen',
       vms_install: 'libvirt und QEMU installieren',
       vms_create: 'Virtuelle Maschine anlegen',
@@ -2491,6 +2522,8 @@ const de: Messages = {
       invalid_operation: 'Nicht möglich.',
       agent_failed: 'Das System konnte es nicht ausführen.',
       refused: 'Das System hat aus Sicherheitsgründen abgelehnt.',
+      change_pending: 'Eine andere Änderung wartet auf Bestätigung.',
+      not_carried_over: 'ifupdown richtet etwas ein, das zendiloOS nicht übernimmt.',
       partly_moved:
         'Zum Teil verschoben: {example} ist geblieben, wo es war, da es sich während des Verschiebens geändert hat oder nicht verschoben werden kann. Was davon kopiert wurde, liegt auch im Ziel. |Zum Teil verschoben: {count} Einträge sind geblieben, wo sie waren, etwa {example}, da sie sich während des Verschiebens geändert haben oder nicht verschoben werden können. Was davon kopiert wurde, liegt auch im Ziel.',
       copied_not_moved:
@@ -3206,6 +3239,7 @@ const de: Messages = {
       'Die Platte steckt noch im NAS; nur Platten, die nicht mehr da sind, lassen sich entfernen.',
     delivery_failed: 'Die Nachricht ging nicht hinaus',
     change_pending: 'Eine andere Änderung wartet auf Bestätigung.',
+    not_carried_over: 'ifupdown richtet etwas ein, das zendiloOS nicht übernimmt',
     not_installed: 'Der SSH-Server ist nicht installiert.',
     port_in_use: 'Auf diesem Port lauscht schon ein anderes Programm.',
     address_blocked: 'Diese Adresse ist für die Weboberfläche gesperrt.',

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { Cable, Network, Pencil, Wifi } from 'lucide-vue-next'
-import { computed, onUnmounted, ref } from 'vue'
+import { Cable, LoaderCircle, Network, Pencil, Wifi } from 'lucide-vue-next'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import type { NetworkInterface } from '@/shared/api/types'
+import type { NetworkInterface, PlannedInterface } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
+import { useJobsStore } from '@/shared/jobs/store'
 import { cn } from '@/shared/lib/utils'
 import { Alert } from '@/shared/ui/alert'
 import { Badge } from '@/shared/ui/badge'
@@ -19,8 +20,9 @@ const { data: network, error } = useNetwork()
 /** Whether the signed-in account may change the network (`system.manage`). */
 const props = defineProps<{ canManage: boolean }>()
 
-const { data: setup } = useNetworkSetup()
+const { data: setup, refetch: refetchSetup } = useNetworkSetup()
 const actions = useNetworkActions()
+const jobs = useJobsStore()
 
 const CHANGEABLE = ['ethernet', 'bridge', 'bond', 'vlan']
 const changeable = (item: NetworkInterface) =>
@@ -46,6 +48,44 @@ const secondsLeft = computed(() => {
 const elsewhere = computed(
   () => newAddress.value !== null && newAddress.value !== window.location.hostname,
 )
+
+/** The latest takeover from ifupdown, running or done. */
+const takeoverJob = computed(() => jobs.list.find((job) => job.kind === 'network.take_over'))
+const takingOver = computed(() => takeoverJob.value?.state === 'running')
+const starting = ref(false)
+const takeover = computed(() => (setup.value?.manager === 'ifupdown' ? setup.value.takeover : null))
+const canTakeOver = computed(
+  () =>
+    props.canManage &&
+    !!takeover.value &&
+    takeover.value.refused.length === 0 &&
+    takeover.value.ifupdown_running &&
+    !takingOver.value &&
+    !starting.value,
+)
+
+// Once a takeover ends, what manages the network now; why, if it failed.
+watch(
+  () => takeoverJob.value?.state,
+  (state, before) => {
+    if (before !== 'running' || state === 'running') return
+    void refetchSetup()
+    const job = takeoverJob.value
+    if (state === 'failed' && job) failure.value = job.error_detail ?? job.error_code ?? null
+  },
+)
+
+async function takeOver(): Promise<void> {
+  failure.value = null
+  starting.value = true
+  try {
+    jobs.update(await actions.takeOver())
+  } catch (problem) {
+    failure.value = problemMessage(problem)
+  } finally {
+    starting.value = false
+  }
+}
 
 function change(item: NetworkInterface): void {
   editing.value = item
@@ -74,12 +114,35 @@ function icon(item: NetworkInterface) {
   return Network
 }
 
+/** How the takeover sets an interface up, in a line. */
+function planned(item: PlannedInterface): string {
+  const parts: string[] = []
+  const ipv4 = item.ipv4
+  if (ipv4.mode === 'dhcp') {
+    parts.push(
+      ipv4.keep
+        ? t('network.takeover.dhcpKeeps', { address: ipv4.keep })
+        : t('network.takeover.dhcp'),
+    )
+  } else if (ipv4.mode === 'static') {
+    parts.push(`${ipv4.address}/${ipv4.prefix}`)
+    if (ipv4.gateway) parts.push(t('network.takeover.via', { gateway: ipv4.gateway }))
+  } else {
+    parts.push(t('network.takeover.ipv4Off'))
+  }
+  parts.push(
+    item.ipv6 === 'automatic' ? t('network.takeover.ipv6Automatic') : t('network.takeover.ipv6Off'),
+  )
+  if (item.dns.length) parts.push(t('network.takeover.dns', { servers: item.dns.join(', ') }))
+  return parts.join(' · ')
+}
+
 /** Link-local addresses only matter to experts; they come last anyway. */
 const shown = (item: NetworkInterface) => item.addresses.filter((a) => a.scope !== 'link')
 const linkLocal = (item: NetworkInterface) => item.addresses.filter((a) => a.scope === 'link')
 </script>
 
-<!-- How the machine is connected. Read only for now. -->
+<!-- How the machine is connected, changed where zendiloOS manages it. -->
 <template>
   <div class="grid gap-6">
     <Alert v-if="error" variant="destructive">{{ problemMessage(error) }}</Alert>
@@ -90,9 +153,19 @@ const linkLocal = (item: NetworkInterface) => item.addresses.filter((a) => a.sco
       role="status"
     >
       <p class="font-medium">
-        {{ t('network.pending.title', { name: setup.pending.interface }) }}
+        {{
+          setup.pending.takeover
+            ? t('network.pending.takeoverTitle')
+            : t('network.pending.title', { name: setup.pending.interface })
+        }}
       </p>
-      <p>{{ t('network.pending.hint', { seconds: secondsLeft }) }}</p>
+      <p>
+        {{
+          setup.pending.takeover
+            ? t('network.pending.takeoverHint', { seconds: secondsLeft })
+            : t('network.pending.hint', { seconds: secondsLeft })
+        }}
+      </p>
       <p v-if="elsewhere">
         {{ t('network.pending.elsewhere') }}
         <a class="font-medium underline" :href="`https://${newAddress}/`"
@@ -104,6 +177,57 @@ const linkLocal = (item: NetworkInterface) => item.addresses.filter((a) => a.sco
       </div>
     </div>
     <template v-else-if="network">
+      <section
+        v-if="takeover"
+        class="grid gap-3 rounded-xl border bg-card p-4 text-sm"
+        aria-labelledby="network-takeover"
+      >
+        <h3 id="network-takeover" class="font-medium">{{ t('network.takeover.title') }}</h3>
+        <p class="text-muted-foreground">{{ t('network.takeover.hint') }}</p>
+        <div v-if="takeover.interfaces.length" class="grid gap-1">
+          <p class="font-medium">{{ t('network.takeover.interfaces') }}</p>
+          <ul class="grid gap-1">
+            <li v-for="item in takeover.interfaces" :key="item.name" class="flex flex-wrap gap-2">
+              <span class="font-mono">{{ item.name }}</span>
+              <span class="text-muted-foreground">{{ planned(item) }}</span>
+            </li>
+          </ul>
+          <p class="text-xs text-muted-foreground">{{ t('network.takeover.others') }}</p>
+        </div>
+        <div v-if="takeover.refused.length" class="grid gap-1" role="alert">
+          <p>{{ t('network.takeover.refused') }}</p>
+          <ul class="grid gap-1">
+            <li v-for="(item, index) in takeover.refused" :key="index">
+              <span class="font-mono">{{ item.place }}</span
+              ><span class="text-muted-foreground">: {{ item.reason }}</span>
+            </li>
+          </ul>
+        </div>
+        <p v-else-if="!takeover.ifupdown_running" role="alert">
+          {{ t('network.takeover.notRunning') }}
+        </p>
+        <p v-if="takeover.installs_resolved" class="text-xs text-muted-foreground">
+          {{ t('network.takeover.resolved') }}
+        </p>
+        <div v-if="canManage" class="flex items-center justify-end gap-3">
+          <span
+            v-if="takingOver"
+            class="flex items-center gap-2 text-muted-foreground"
+            role="status"
+          >
+            <LoaderCircle class="size-4 animate-spin" />
+            {{
+              takeoverJob?.step === 'packages'
+                ? t('network.takeover.installing')
+                : t('network.takeover.working')
+            }}
+          </span>
+          <Button size="sm" :disabled="!canTakeOver" @click="takeOver">
+            {{ t('network.takeover.button') }}
+          </Button>
+        </div>
+      </section>
+
       <dl class="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
         <dt class="text-muted-foreground">{{ t('network.gateway') }}</dt>
         <dd>
@@ -181,7 +305,10 @@ const linkLocal = (item: NetworkInterface) => item.addresses.filter((a) => a.sco
           </p>
         </section>
       </div>
-      <p v-if="setup && !setup.managed" class="text-xs text-muted-foreground">
+      <p v-if="setup?.manager === 'network_manager'" class="text-xs text-muted-foreground">
+        {{ t('network.networkManager') }}
+      </p>
+      <p v-else-if="setup?.manager === 'unknown'" class="text-xs text-muted-foreground">
         {{ t('network.readOnly') }}
       </p>
     </template>

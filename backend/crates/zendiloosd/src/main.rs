@@ -52,7 +52,7 @@ use zendiloos_infra::sqlite::{
 use zendiloos_infra::updates::{GitHubReleases, installed_notes};
 use zendiloos_jobs::Jobs;
 use zendiloos_kernel::{AllWork, AuditLog, Clock, RequestContext};
-use zendiloos_network::application::NetworkUseCases;
+use zendiloos_network::application::{NetworkPorts, NetworkUseCases};
 use zendiloos_notify::Notifier;
 use zendiloos_notify::channels::{ChannelPorts, Channels};
 use zendiloos_sharing::application::{FilesUseCases, SharingPorts, SharingUseCases};
@@ -287,12 +287,13 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         Some(path) => tracing::info!(path = %path.display(), "reading the network with ip"),
         None => tracing::warn!("ip not found: the network will not be shown"),
     }
-    let network = NetworkUseCases::new(
-        Arc::new(ip),
-        Arc::new(AgentNetwork::new(network_agent)),
-        audit.clone(),
-        Arc::new(SystemClock),
-    );
+    let network = NetworkUseCases::new(NetworkPorts {
+        source: Arc::new(ip),
+        configurator: Arc::new(AgentNetwork::new(network_agent)),
+        jobs: jobs.clone(),
+        audit: audit.clone(),
+        clock: Arc::new(SystemClock),
+    });
 
     let containers = Containers::new(ContainersPorts {
         engine: Arc::new(AgentDockerEngine::new(patient_agent)),

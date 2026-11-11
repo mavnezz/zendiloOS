@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import type { InterfaceSettingsInput, NetworkInfo, NetworkInterface } from '@/shared/api/types'
@@ -21,7 +21,7 @@ const { t } = useI18n()
 const actions = useNetworkActions()
 
 interface Form {
-  mode: 'dhcp' | 'static'
+  mode: 'dhcp' | 'static' | 'off'
   address: string
   prefix: string
   gateway: string
@@ -41,7 +41,13 @@ const form = ref<Form>({
 const failure = ref<string | null>(null)
 const saving = ref(false)
 
-// Starts from how the interface is set up now.
+/** Down or never set up: the dialog switches it on. */
+const switchingOn = computed(() => !!props.item && props.item.addresses.length === 0)
+/** Neither IPv4 nor IPv6: the interface is switched off. */
+const off = computed(() => form.value.mode === 'off' && form.value.ipv6 === 'off')
+
+// Starts from how the interface is set up now; one without any address
+// starts with DHCP and IPv6, to be switched on.
 watch(open, (isOpen) => {
   if (!isOpen || !props.item) return
   failure.value = null
@@ -51,47 +57,50 @@ watch(open, (isOpen) => {
     (r) => r.interface === item.name && !r.gateway.includes(':'),
   )
   const servers = (props.network?.name_servers ?? []).filter((s) => s !== '127.0.0.53')
+  const v6 = item.addresses.some((a) => a.address.includes(':'))
   form.value = {
     mode: v4 && !v4.dynamic ? 'static' : 'dhcp',
     address: v4?.address ?? '',
     prefix: String(v4?.prefix ?? 24),
     gateway: route?.gateway ?? '',
     // Without any IPv6 address, not even link-local, IPv6 is off.
-    ipv6: item.addresses.some((a) => a.address.includes(':')) ? 'automatic' : 'off',
+    ipv6: v6 || item.addresses.length === 0 ? 'automatic' : 'off',
     dns: v4 && !v4.dynamic ? servers.join(', ') : '',
   }
 })
 
-function body(): InterfaceSettingsInput {
-  const f = form.value
-  const dns = f.dns
-    .split(/[\s,;]+/)
-    .map((s) => s.trim())
-    .filter(Boolean)
+function ipv4(f: Form): InterfaceSettingsInput['ipv4'] {
+  if (f.mode === 'dhcp') return { mode: 'dhcp' }
+  if (f.mode === 'off') return { mode: 'off' }
   return {
-    ipv4:
-      f.mode === 'dhcp'
-        ? { mode: 'dhcp' }
-        : {
-            mode: 'static',
-            address: f.address.trim(),
-            prefix: Number(f.prefix),
-            gateway: f.gateway.trim() || null,
-          },
-    ipv6: f.ipv6,
-    dns,
+    mode: 'static',
+    address: f.address.trim(),
+    prefix: Number(f.prefix),
+    gateway: f.gateway.trim() || null,
   }
 }
 
-async function apply(): Promise<void> {
+function body(): InterfaceSettingsInput {
+  const f = form.value
+  // A card switched off has no name servers.
+  const dns = off.value
+    ? []
+    : f.dns
+        .split(/[\s,;]+/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+  return { ipv4: ipv4(f), ipv6: f.ipv6, dns }
+}
+
+async function send(settings: InterfaceSettingsInput): Promise<void> {
   const item = props.item
   if (!item) return
   failure.value = null
   saving.value = true
   try {
-    await actions.configure(item.name, body())
+    await actions.configure(item.name, settings)
     open.value = false
-    emit('applied', form.value.mode === 'static' ? form.value.address.trim() : null)
+    emit('applied', settings.ipv4.mode === 'static' ? settings.ipv4.address : null)
   } catch (problem) {
     failure.value = problemMessage(problem)
   } finally {
@@ -99,14 +108,21 @@ async function apply(): Promise<void> {
   }
 }
 
+const apply = () => send(body())
+const switchOff = () => send({ ipv4: { mode: 'off' }, ipv6: 'off', dns: [] })
+
 const select = 'h-9 w-full rounded-md border bg-background px-3 text-sm'
 </script>
 
-<!-- Changes one interface; the old settings return unless confirmed. -->
+<!-- Changes one interface, switches it on or off; the old settings return unless confirmed. -->
 <template>
   <ModalDialog
     v-model:open="open"
-    :title="t('network.change.title', { name: item?.name ?? '' })"
+    :title="
+      switchingOn
+        ? t('network.change.titleOn', { name: item?.name ?? '' })
+        : t('network.change.title', { name: item?.name ?? '' })
+    "
     :description="t('network.change.hint')"
     :close-label="t('desktop.close')"
   >
@@ -117,6 +133,7 @@ const select = 'h-9 w-full rounded-md border bg-background px-3 text-sm'
         <select id="net-mode" v-model="form.mode" :class="select">
           <option value="dhcp">{{ t('network.change.dhcp') }}</option>
           <option value="static">{{ t('network.change.static') }}</option>
+          <option value="off">{{ t('network.change.ipv4Off') }}</option>
         </select>
       </div>
       <template v-if="form.mode === 'static'">
@@ -135,7 +152,7 @@ const select = 'h-9 w-full rounded-md border bg-background px-3 text-sm'
           <Input id="net-gateway" v-model="form.gateway" placeholder="192.168.1.1" />
         </div>
       </template>
-      <div class="grid gap-1.5">
+      <div v-if="!off" class="grid gap-1.5">
         <Label for="net-dns">{{ t('network.nameServers') }}</Label>
         <Input id="net-dns" v-model="form.dns" :placeholder="t('network.change.dnsFromDhcp')" />
         <p class="text-xs text-muted-foreground">{{ t('network.change.dnsHint') }}</p>
@@ -147,7 +164,19 @@ const select = 'h-9 w-full rounded-md border bg-background px-3 text-sm'
           <option value="off">{{ t('network.change.ipv6Off') }}</option>
         </select>
       </div>
-      <div class="flex justify-end">
+      <p v-if="off" class="text-sm text-muted-foreground" role="status">
+        {{ t('network.change.switchedOff') }}
+      </p>
+      <div class="flex justify-end gap-2">
+        <Button
+          v-if="!switchingOn"
+          type="button"
+          variant="outline"
+          :disabled="saving"
+          @click="switchOff"
+        >
+          {{ t('network.change.switchOff') }}
+        </Button>
         <Button type="submit" :disabled="saving">{{ t('network.change.apply') }}</Button>
       </div>
     </form>

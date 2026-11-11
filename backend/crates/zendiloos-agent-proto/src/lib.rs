@@ -59,8 +59,10 @@ pub use firewall::{
 };
 pub use framing::{FrameError, read_message, write_message};
 pub use network::{
-    ConfirmWithin, InterfaceName, InvalidConfirmWithin, InvalidInterfaceName, InvalidNameServers,
-    InvalidPrefix, Ipv4Config, Ipv6Config, NameServers, NetworkConfig, PendingNetwork, Prefix,
+    ConfirmWithin, FilesDigest, Ifupdown, IfupdownFile, InterfaceName, InvalidConfirmWithin,
+    InvalidFilesDigest, InvalidInterfaceName, InvalidNameServers, InvalidPrefix, InvalidTakeoverConfigs,
+    Ipv4Config, Ipv6Config, NameServers, NetworkChange, NetworkConfig, PendingNetwork, Prefix,
+    TakeoverConfigs,
 };
 pub use packages::{
     InvalidReleasePackage, PackageReport, PackageRun, PackageRunState, PackageTask, ReleaseChannel,
@@ -494,14 +496,27 @@ pub enum Request {
     ProjectFiles {
         project: ProjectName,
     },
-    /// Whether systemd-networkd manages the network, and a change that
-    /// waits to be confirmed. Answers [`Response::NetworkState`].
+    /// Whether systemd-networkd manages the network, a change that waits
+    /// to be confirmed, and where it does not, what does. Answers
+    /// [`Response::NetworkState`].
     NetworkState {},
     /// Writes `config` as the interface's systemd-networkd file and applies
     /// it; unless [`Request::ConfirmNetwork`] comes within `confirm_within`,
     /// the old file returns (also after a restart). One change at a time.
     ApplyNetwork {
         config: NetworkConfig,
+        confirm_within: ConfirmWithin,
+    },
+    /// Takes the network over from ifupdown: `configs` written as
+    /// systemd-networkd files, ifupdown left with the loopback only,
+    /// systemd-networkd and systemd-resolved started. Refused unless
+    /// ifupdown's files are still those of `digest`. Unless
+    /// [`Request::ConfirmNetwork`] comes within `confirm_within`, ifupdown
+    /// returns exactly as it was (also after a restart). One change at a
+    /// time.
+    TakeOverNetwork {
+        configs: TakeoverConfigs,
+        digest: FilesDigest,
         confirm_within: ConfirmWithin,
     },
     /// Keeps the change that waits to be confirmed.
@@ -972,6 +987,7 @@ impl Request {
             Request::ProjectFiles { .. } => "project_files",
             Request::NetworkState {} => "network_state",
             Request::ApplyNetwork { .. } => "apply_network",
+            Request::TakeOverNetwork { .. } => "take_over_network",
             Request::ConfirmNetwork {} => "confirm_network",
             Request::SshState {} => "ssh_state",
             Request::StartPackages { .. } => "start_packages",
@@ -1159,6 +1175,13 @@ pub enum Response {
         /// systemd-networkd manages the network: it can be changed here.
         managed: bool,
         pending: Option<PendingNetwork>,
+        /// Not managed: NetworkManager runs.
+        #[serde(default)]
+        network_manager: bool,
+        /// Not managed: ifupdown's files, where `networking.service` is
+        /// enabled and `/etc/network/interfaces` is there.
+        #[serde(default)]
+        ifupdown: Option<Ifupdown>,
     },
     /// What `docker` printed, for zendiloosd to read.
     DockerOutput {

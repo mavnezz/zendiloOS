@@ -2324,7 +2324,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Keeps the change that waits for confirmation. Needs `system.manage`. */
+        /**
+         * Keeps the change that waits for confirmation, a takeover too. Needs
+         *     `system.manage`.
+         */
         post: operations["confirm_network"];
         delete?: never;
         options?: never;
@@ -2341,10 +2344,11 @@ export interface paths {
         };
         get?: never;
         /**
-         * Applies new settings to an interface at once. Unless they are confirmed
-         *     within two minutes (`POST /network/confirm`, from the new address if
-         *     it changed), the old settings return by themselves. Needs
-         *     `system.manage`.
+         * Applies new settings to an interface at once: one that is down or has
+         *     no settings of zendiloOS's yet is switched on, IPv4 and IPv6 off
+         *     switch it off. Unless they are confirmed within two minutes (`POST
+         *     /network/confirm`, from the new address if it changed), the old
+         *     settings return by themselves. Needs `system.manage`.
          */
         put: operations["configure_interface"];
         post?: never;
@@ -2368,6 +2372,31 @@ export interface paths {
         get: operations["network_setup"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/network/takeover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Lets zendiloOS manage the network where ifupdown does, as a job:
+         *     systemd-resolved installed from Debian if it is missing, then each
+         *     interface ifupdown brings up set up through systemd-networkd as `GET
+         *     /network/setup` says (DHCP keeps the address). Unless confirmed within
+         *     two minutes (`POST /network/confirm`), or should the NAS restart first,
+         *     ifupdown gets the network back exactly as it was. Needs
+         *     `system.manage`.
+         */
+        post: operations["take_over_network"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5656,6 +5685,9 @@ export interface components {
              * @description 1 to 32.
              */
             prefix: number;
+        } | {
+            /** @enum {string} */
+            mode: "off";
         };
         /** @enum {string} */
         Ipv6Input: "automatic" | "off";
@@ -5917,11 +5949,38 @@ export interface components {
             name: string;
             state: components["schemas"]["InterfaceState"];
         };
+        /**
+         * @description What manages the network.
+         * @enum {string}
+         */
+        NetworkManagerKind: "networkd" | "ifupdown" | "network_manager" | "unknown";
         /** @description Whether the network can be changed here, and a change that waits. */
         NetworkSetup: {
-            /** @description systemd-networkd manages the network; otherwise it is only shown. */
+            /**
+             * @description systemd-networkd manages the network; otherwise it is only shown,
+             *     or with ifupdown, taken over first.
+             */
             managed: boolean;
+            manager: components["schemas"]["NetworkManagerKind"];
             pending?: components["schemas"]["PendingNetworkChange"] | null;
+            takeover?: components["schemas"]["NetworkTakeover"] | null;
+        };
+        /** @description Taking the network over from ifupdown, as it would go now. */
+        NetworkTakeover: {
+            /** @description `networking.service` runs; otherwise ifupdown has nothing to give. */
+            ifupdown_running: boolean;
+            /** @description systemd-resolved is installed from Debian first. */
+            installs_resolved: boolean;
+            /**
+             * @description Each interface ifupdown brings up, as systemd-networkd would set it
+             *     up; the others stay down until set up here.
+             */
+            interfaces: components["schemas"]["PlannedInterface"][];
+            /**
+             * @description What would not be carried over (bonds, bridges, VLANs, wireless,
+             *     commands, search domains, …); while there is any, ifupdown stays.
+             */
+            refused: components["schemas"]["NotCarriedOver"][];
         };
         NewDockerProject: {
             /**
@@ -5990,6 +6049,12 @@ export interface components {
              */
             network: string;
             write: boolean;
+        };
+        /** @description Where ifupdown sets up something a takeover would not carry over. */
+        NotCarriedOver: {
+            /** @description A file below `/etc/network` and its line, `interfaces:12`. */
+            place: string;
+            reason: string;
         };
         /**
          * @description Something an administrator should know, as a code with parameters for
@@ -6133,12 +6198,18 @@ export interface components {
             settings: components["schemas"]["FirewallSettings"];
         };
         PendingNetworkChange: {
+            /** @description The interface whose settings changed; empty for a takeover. */
             interface: string;
             /**
              * Format: int64
              * @description When the old settings return unless confirmed, in Unix seconds.
              */
             revert_at: number;
+            /**
+             * @description zendiloOS took the network over from ifupdown: unless confirmed,
+             *     ifupdown gets it back exactly as it was.
+             */
+            takeover: boolean;
         };
         PendingWebServer: {
             /**
@@ -6210,6 +6281,30 @@ export interface components {
             serial?: string | null;
             /** Format: int64 */
             size_bytes: number;
+        };
+        PlannedInterface: {
+            dns: string[];
+            ipv4: components["schemas"]["PlannedIpv4"];
+            ipv6: components["schemas"]["Ipv6Input"];
+            name: string;
+        };
+        PlannedIpv4: {
+            /** Format: ipv4 */
+            keep?: string | null;
+            /** @enum {string} */
+            mode: "dhcp";
+        } | {
+            /** Format: ipv4 */
+            address: string;
+            /** Format: ipv4 */
+            gateway?: string | null;
+            /** @enum {string} */
+            mode: "static";
+            /** Format: int32 */
+            prefix: number;
+        } | {
+            /** @enum {string} */
+            mode: "off";
         };
         /** @description A ZFS pool; for pools zendiloOS created, also a volume. */
         Pool: {
@@ -13374,6 +13469,34 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["NetworkSetup"];
+                };
+            };
+        };
+    };
+    take_over_network: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `not_carried_over` (the detail names what and where), `change_pending`, `refused`: not ifupdown, ifupdown not running */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };

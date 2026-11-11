@@ -1661,9 +1661,33 @@ const en = {
     none: 'none',
     readOnly:
       'Shown as the system is set up. systemd-networkd does not manage the network here, so it is changed elsewhere.',
+    networkManager:
+      'Shown as the system is set up. NetworkManager manages the network here, so it is changed there.',
+    takeover: {
+      title: 'ifupdown manages the network here',
+      hint: 'Debian set the network up with ifupdown (/etc/network/interfaces), which zendiloOS does not change. zendiloOS can take it over: each interface ifupdown brings up gets the same settings through systemd-networkd, and DHCP asks for the address it has now. Confirm within two minutes, or ifupdown gets everything back as it was.',
+      interfaces: 'What zendiloOS sets up',
+      dhcp: 'DHCP',
+      dhcpKeeps: 'DHCP, keeping {address}',
+      via: 'via {gateway}',
+      ipv4Off: 'no IPv4',
+      ipv6Automatic: 'IPv6 automatically',
+      ipv6Off: 'IPv6 off',
+      dns: 'name servers {servers}',
+      others: 'Interfaces not listed stay down until you set them up here.',
+      refused:
+        'zendiloOS does not carry these over, so ifupdown keeps the network. Change them in /etc/network to let zendiloOS take over:',
+      notRunning:
+        'networking.service is not running: ifupdown did not bring the network up, so there is nothing to take over.',
+      resolved: 'systemd-resolved is installed from Debian first.',
+      button: 'Let zendiloOS manage the network',
+      working: 'Taking over …',
+      installing: 'Installing systemd-resolved …',
+    },
     change: {
       button: 'Change',
       title: 'Change {name}',
+      titleOn: 'Switch on {name}',
       hint: 'The new settings apply at once. Confirm them within two minutes, from the new address if it changes, or the old ones return.',
       dhcp: 'Automatically (DHCP)',
       static: 'Fixed address',
@@ -1671,13 +1695,18 @@ const en = {
       prefix: 'Prefix',
       dnsFromDhcp: 'From DHCP',
       dnsHint: 'Up to three, separated by commas; empty: those DHCP gives.',
+      ipv4Off: 'Off',
       ipv6Automatic: 'Automatically',
       ipv6Off: 'Off',
+      switchedOff: 'Without IPv4 and IPv6 the interface is switched off.',
+      switchOff: 'Switch off',
       apply: 'Apply',
     },
     pending: {
       title: 'New settings for {name} are active',
       hint: 'Confirm them, or the old settings return in {seconds} seconds.',
+      takeoverTitle: 'zendiloOS manages the network now',
+      takeoverHint: 'Confirm it, or ifupdown gets the network back as it was in {seconds} seconds.',
       elsewhere: 'The NAS has a new address. Confirm there:',
       confirm: 'Keep the new settings',
     },
@@ -2437,6 +2466,7 @@ const en = {
       certificates_issue: 'Issue certificate',
       vms_install: 'Install libvirt and QEMU',
       vms_create: 'Create virtual machine',
+      network_take_over: 'Let zendiloOS manage the network',
     },
     errors: {
       not_found: 'A file or folder no longer exists.',
@@ -2445,6 +2475,8 @@ const en = {
       invalid_operation: 'Not possible.',
       agent_failed: 'The system could not do it.',
       refused: 'The system refused for safety reasons.',
+      change_pending: 'Another change waits for confirmation.',
+      not_carried_over: 'ifupdown sets up something zendiloOS does not carry over.',
       partly_moved:
         'Moved in part: {example} stayed where it was, as it changed during the move or cannot be moved. What of it was copied is in the target too. | Moved in part: {count} entries stayed where they were, such as {example}, as they changed during the move or cannot be moved. What of them was copied is in the target too.',
       copied_not_moved:
@@ -3146,6 +3178,7 @@ const en = {
     password_locked: 'The password of this account cannot be changed here; ask an administrator.',
     delivery_failed: 'The message did not go out',
     change_pending: 'Another change waits for confirmation.',
+    not_carried_over: 'ifupdown sets up something zendiloOS does not carry over',
     not_installed: 'The SSH server is not installed.',
     port_in_use: 'Another program already listens on this port.',
     address_blocked: 'This address is blocked from the web interface.',

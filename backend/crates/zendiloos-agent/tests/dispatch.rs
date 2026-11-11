@@ -117,7 +117,11 @@ impl Host {
         let paths = Paths {
             accounts: AccountFiles { passwd: at("passwd"), group: at("group"), high_water: at("high-water") },
             host,
-            network: NetworkPaths { directory: at("network") },
+            network: NetworkPaths {
+                directory: at("network"),
+                ifupdown: at("etc-network"),
+                resolv_conf: at("resolv.conf"),
+            },
             time: TimePaths { servers: at("timesyncd.conf") },
             ssh: SshPaths { config: at("sshd_config.d/00-zendiloos.conf") },
             web: WebPaths { tls: at("nginx/tls.conf") },

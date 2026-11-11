@@ -67,6 +67,13 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 #   (systemd-run: umount, rmdir, this binary as `power-off-drive`, which
 #   writes to sysfs), all outside this sandbox, which only sees them;
 #   /run stays read-only here, so no mount of its own hides theirs.
+# - the network: an interface's settings go to /etc/systemd/network,
+#   which systemd-networkd reads again when asked over D-Bus (busctl);
+#   taking it over from ifupdown changes /etc/network/interfaces and
+#   /etc/resolv.conf (a record of them in /etc/network) and has systemd
+#   stop networking.service and start systemd-networkd and
+#   systemd-resolved: the files are in /etc, the services run outside
+#   this sandbox;
 # - the firewall: its rules go to /etc/zendiloos/firewall, are checked
 #   with `nft -c` in a transient unit and loaded by
 #   zendiloos-firewall.service, both in the host's network namespace,

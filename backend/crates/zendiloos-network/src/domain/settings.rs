@@ -1,14 +1,25 @@
 //! How an interface should be configured, checked before the agent writes
 //! it as a systemd-networkd file. Only where systemd-networkd manages the
-//! network; on a Debian with ifupdown or NetworkManager it is only shown.
+//! network; on a Debian with NetworkManager it is only shown, one with
+//! ifupdown can be taken over ([`super::ifupdown`]).
 
 use std::net::{IpAddr, Ipv4Addr};
 
 /// How an interface gets its IPv4 address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ipv4Setting {
-    Dhcp,
-    Static { address: Ipv4Addr, prefix: u8, gateway: Option<Ipv4Addr> },
+    /// From DHCP. `keep` is the address the interface has, asked for again
+    /// so it stays where the server agrees.
+    Dhcp {
+        keep: Option<Ipv4Addr>,
+    },
+    Static {
+        address: Ipv4Addr,
+        prefix: u8,
+        gateway: Option<Ipv4Addr>,
+    },
+    /// None; with IPv6 off too, the interface is switched off.
+    Off,
 }
 
 /// IPv6: from router advertisements (and DHCPv6 where they say so), or off.
@@ -45,6 +56,8 @@ pub enum InvalidSettings {
     TooManyDns,
     #[error("{0} cannot be a name server")]
     Dns(IpAddr),
+    #[error("an interface switched off has no name servers")]
+    DnsWhileOff,
 }
 
 /// Interface names as the kernel allows them, and nothing a file could
@@ -94,7 +107,15 @@ impl InterfaceSettings {
         if let Some(bad) = self.dns.iter().find(|ip| ip.is_unspecified() || ip.is_multicast()) {
             return Err(InvalidSettings::Dns(*bad));
         }
+        if self.switched_off() && !self.dns.is_empty() {
+            return Err(InvalidSettings::DnsWhileOff);
+        }
         Ok(self)
+    }
+
+    /// Neither IPv4 nor IPv6: the interface is down.
+    pub fn switched_off(&self) -> bool {
+        self.ipv4 == Ipv4Setting::Off && self.ipv6 == Ipv6Setting::Off
     }
 }
 
@@ -139,5 +160,18 @@ mod tests {
         let mut name = fixed("192.168.1.10", 24, None);
         name.interface = "eth0\n[Network]".into();
         assert_eq!(refused(name), InvalidSettings::Interface);
+    }
+
+    #[test]
+    fn an_interface_switched_off_has_nothing() {
+        let mut off = fixed("192.168.1.10", 24, None);
+        off.ipv4 = Ipv4Setting::Off;
+        assert!(!off.switched_off(), "IPv6 keeps it on");
+        assert!(off.clone().checked().is_ok());
+        off.ipv6 = Ipv6Setting::Off;
+        assert!(off.switched_off());
+        assert_eq!(off.clone().checked().unwrap_err(), InvalidSettings::DnsWhileOff);
+        off.dns.clear();
+        assert!(off.checked().is_ok());
     }
 }

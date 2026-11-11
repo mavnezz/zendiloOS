@@ -288,6 +288,9 @@ pub(crate) struct Harness {
     pub(crate) firewall: zendiloos_firewall::application::Firewall,
     /// libvirt pretended: KVM there, nothing installed at first.
     pub(crate) vm_host: Arc<zendiloos_vms::testing::FakeVmHost>,
+    /// The network's host, pretended: managed by systemd-networkd unless a
+    /// test gives it ifupdown.
+    pub(crate) network_host: Arc<zendiloos_network::testing::FakeConfigurator>,
 }
 
 /// The App Center's projects, from the Docker fakes, as zendiloosd's
@@ -540,6 +543,7 @@ impl Harness {
             audit: identity.audit.clone(),
             clock: identity.clock.clone(),
         });
+        let network_host = Arc::new(zendiloos_network::testing::FakeConfigurator::default());
         let use_cases = UseCases {
             vms,
             certificates,
@@ -550,12 +554,13 @@ impl Harness {
             storage,
             sharing,
             files,
-            network: NetworkUseCases::new(
-                Arc::new(FixedNetwork),
-                Arc::new(zendiloos_network::testing::FakeConfigurator::default()),
-                identity.audit.clone(),
-                identity.clock.clone(),
-            ),
+            network: NetworkUseCases::new(zendiloos_network::application::NetworkPorts {
+                source: Arc::new(FixedNetwork),
+                configurator: network_host.clone(),
+                jobs: jobs.clone(),
+                audit: identity.audit.clone(),
+                clock: identity.clock.clone(),
+            }),
             jobs: jobs.clone(),
             notifier: notifier.clone(),
             docker: zendiloos_apps::application::Docker::new(
@@ -617,6 +622,7 @@ impl Harness {
             firewall_facts,
             firewall,
             vm_host,
+            network_host,
         }
     }
 
@@ -1801,6 +1807,7 @@ fn openapi_documents_every_route() {
             "/api/v1/network/confirm",
             "/api/v1/network/interfaces/{name}",
             "/api/v1/network/setup",
+            "/api/v1/network/takeover",
             "/api/v1/notification-channels",
             "/api/v1/notification-channels/{id}",
             "/api/v1/notification-channels/{id}/test",

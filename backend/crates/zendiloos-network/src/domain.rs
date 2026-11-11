@@ -1,10 +1,12 @@
 //! Interfaces as the kernel reports them, and which of them matter to
 //! someone looking after a NAS.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 
+pub mod ifupdown;
 mod settings;
 
+pub use ifupdown::{IfupdownFile, Refusal, TakeoverPlan, takeover_plan};
 pub use settings::{
     InterfaceSettings, InvalidSettings, Ipv4Setting, Ipv6Setting, MAX_DNS, is_interface_name,
 };
@@ -147,6 +149,18 @@ impl Network {
     }
 }
 
+impl Network {
+    /// The IPv4 address DHCP gave `interface`, if it has one: asked for
+    /// again when its settings change, so it stays where the server agrees.
+    pub fn dynamic_address(&self, interface: &str) -> Option<Ipv4Addr> {
+        let interface = self.interfaces.iter().find(|i| i.name == interface)?;
+        interface.addresses.iter().find_map(|address| match address.ip {
+            IpAddr::V4(ip) if address.dynamic && address.scope == AddressScope::Global => Some(ip),
+            _ => None,
+        })
+    }
+}
+
 /// Name servers from a `resolv.conf`; `127.0.0.53` is systemd-resolved's
 /// stub, which says nothing about the real ones.
 pub fn name_servers(resolv_conf: &str) -> Vec<IpAddr> {
@@ -261,6 +275,23 @@ mod tests {
         let ips: Vec<String> = network.interfaces[0].addresses.iter().map(|a| a.ip.to_string()).collect();
         assert_eq!(ips, ["192.168.1.9", "2001:db8::1", "fe80::1"]);
         assert_eq!(network.default_routes[0].gateway.to_string(), "192.168.1.1");
+    }
+
+    #[test]
+    fn the_address_dhcp_gave_is_known() {
+        let address =
+            |ip: &str, scope, dynamic| Address { ip: ip.parse().unwrap(), prefix: 24, scope, dynamic };
+        let mut card = interface("enp2s0", InterfaceKind::Ethernet);
+        card.addresses = vec![
+            address("fe80::1", AddressScope::Link, false),
+            address("2001:db8::5", AddressScope::Global, true),
+            address("10.0.0.5", AddressScope::Global, false),
+            address("192.168.1.127", AddressScope::Global, true),
+        ];
+        let network = Network::new(vec![card, interface("enp3s0", InterfaceKind::Ethernet)], vec![], vec![]);
+        assert_eq!(network.dynamic_address("enp2s0"), Some("192.168.1.127".parse().unwrap()));
+        assert_eq!(network.dynamic_address("enp3s0"), None);
+        assert_eq!(network.dynamic_address("eth9"), None);
     }
 
     #[test]

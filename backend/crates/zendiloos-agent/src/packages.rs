@@ -189,15 +189,17 @@ fn tempfile_folder() -> Result<PathBuf, OperationError> {
     Ok(std::env::temp_dir().join(format!("zendiloos-release-{name}")))
 }
 
-/// Debian's package tools the runner calls, and where the kernels' modules
-/// lie: Debian's own, or stand-ins in tests.
+/// Debian's package tools the runner calls, where the kernels' modules lie
+/// and `/etc`: Debian's own, or stand-ins in tests.
 #[derive(Debug, Clone)]
 struct Debian {
     apt_get: PathBuf,
     dpkg: PathBuf,
     dpkg_deb: PathBuf,
     dpkg_query: PathBuf,
+    systemctl: PathBuf,
     modules: PathBuf,
+    etc: PathBuf,
 }
 
 impl Default for Debian {
@@ -207,7 +209,9 @@ impl Default for Debian {
             dpkg: "/usr/bin/dpkg".into(),
             dpkg_deb: "/usr/bin/dpkg-deb".into(),
             dpkg_query: "/usr/bin/dpkg-query".into(),
+            systemctl: "/usr/bin/systemctl".into(),
             modules: "/lib/modules".into(),
+            etc: "/etc".into(),
         }
     }
 }
@@ -326,6 +330,17 @@ impl Debian {
                 args.extend(VMS_PACKAGES);
                 self.apt(&args)
             }
+            PackageTask::InstallNetworkd => {
+                lists(&mut step)?;
+                step("install")?;
+                let there = self.installed("systemd-resolved");
+                self.apt(&["install", "--yes", "systemd-resolved"])?;
+                if !there {
+                    step("network")?;
+                    self.leave_resolution_as_it_was()?;
+                }
+                Ok(())
+            }
             PackageTask::Check => {
                 lists(&mut step)?;
                 *report = Some(self.host_report()?);
@@ -378,6 +393,30 @@ fn zfs_checked(report: &PackageReport) -> Result<(), String> {
 }
 
 impl Debian {
+    /// Whether dpkg has `package` installed.
+    fn installed(&self, package: &str) -> bool {
+        run_text(&self.dpkg_query, &["--show", "--showformat=${Status}", package])
+            .is_ok_and(|status| status.ends_with(" installed"))
+    }
+
+    /// Installing systemd-resolved switches name resolution to it at once:
+    /// its package enables and starts it and moves `/etc/resolv.conf` aside
+    /// (`.resolv.conf.systemd-resolved.bak`) for a link to its stub. While
+    /// ifupdown still manages the network nothing tells it the name
+    /// servers, so it goes back to how it was; taking the network over
+    /// switches it on.
+    fn leave_resolution_as_it_was(&self) -> Result<(), String> {
+        debian(&self.systemctl, &["disable", "--now", "systemd-resolved.service"])?;
+        let resolv_conf = self.etc.join("resolv.conf");
+        let moved = self.etc.join(".resolv.conf.systemd-resolved.bak");
+        let stub = fs::read_link(&resolv_conf)
+            .is_ok_and(|target| target.ends_with("run/systemd/resolve/stub-resolv.conf"));
+        if stub && fs::symlink_metadata(&moved).is_ok() {
+            fs::rename(&moved, &resolv_conf).map_err(|e| format!("{}: {e}", resolv_conf.display()))?;
+        }
+        Ok(())
+    }
+
     /// Copies the release out of the download folder, checks it and
     /// installs it.
     fn install_release(&self, paths: &HostPaths, install: &ReleaseInstall) -> Result<(), String> {
@@ -912,12 +951,15 @@ mod tests {
             "dpkg-deb",
             "case \"$3\" in Package) echo zendiloos ;; Version) echo 9.9.9 ;; Architecture) echo amd64 ;; esac",
         );
-        let dpkg_query = script("dpkg-query", "exit 1");
+        let dpkg_query = script("dpkg-query", "[ -e $R/resolved-installed ] && echo 'install ok installed'");
+        let systemctl = script("systemctl", "exit 0");
         let modules = root.join("modules");
         fs::create_dir_all(modules.join("6.12.57+deb13-amd64/updates/dkms")).unwrap();
         fs::write(modules.join("6.12.57+deb13-amd64/modules.dep"), "").unwrap();
         fs::write(modules.join("6.12.57+deb13-amd64/updates/dkms/zfs.ko.xz"), "").unwrap();
-        Debian { apt_get, dpkg, dpkg_deb, dpkg_query, modules }
+        let etc = root.join("etc");
+        fs::create_dir_all(&etc).unwrap();
+        Debian { apt_get, dpkg, dpkg_deb, dpkg_query, systemctl, modules, etc }
     }
 
     /// A NAS of fake tools in `root`, with the release 9.9.9 downloaded.
@@ -1069,6 +1111,31 @@ mod tests {
         let failed = run_with(&paths, &debian, "ab03", "install-acme", None, None).unwrap_err();
         assert!(failed.contains("apt-get update failed") && failed.contains("Unable to fetch"), "{failed}");
         assert_eq!(recorded(&paths, STATE_FILE).state, PackageRunState::Failed);
+    }
+
+    /// systemd-resolved comes for a takeover, and leaves name resolution as
+    /// it was: its package's switch to it (here as if done) is taken back.
+    #[test]
+    fn systemd_resolved_is_installed_and_leaves_the_network_as_it_was() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, debian) = host(root.path());
+        let etc = root.path().join("etc");
+        fs::write(etc.join(".resolv.conf.systemd-resolved.bak"), "nameserver 192.168.1.1\n").unwrap();
+        std::os::unix::fs::symlink("../run/systemd/resolve/stub-resolv.conf", etc.join("resolv.conf"))
+            .unwrap();
+        run_with(&paths, &debian, "ab04", "install-networkd", None, None).unwrap();
+        let calls = called(root.path());
+        assert!(calls.iter().any(|c| c.ends_with("install --yes systemd-resolved")), "{calls:?}");
+        assert!(calls.contains(&"systemctl disable --now systemd-resolved.service".to_owned()), "{calls:?}");
+        assert_eq!(fs::read_to_string(etc.join("resolv.conf")).unwrap(), "nameserver 192.168.1.1\n");
+        assert!(fs::symlink_metadata(etc.join(".resolv.conf.systemd-resolved.bak")).is_err());
+        assert_eq!(recorded(&paths, STATE_FILE).state, PackageRunState::Succeeded);
+
+        // Installed before, it is left as it is: it may be in use.
+        fs::write(root.path().join("resolved-installed"), "").unwrap();
+        fs::remove_file(root.path().join("debian.log")).unwrap();
+        run_with(&paths, &debian, "ab05", "install-networkd", None, None).unwrap();
+        assert!(!called(root.path()).iter().any(|c| c.starts_with("systemctl")), "{:?}", called(root.path()));
     }
 
     /// A key made with `minisign -G -W` (its secret one is gone), and

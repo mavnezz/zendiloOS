@@ -38,6 +38,14 @@ export function useNetworkActions() {
         await refresh()
       }
     },
+    /** Lets zendiloOS take the network over from ifupdown: a job. */
+    takeOver: async () => {
+      try {
+        return await unwrap(api.POST('/api/v1/network/takeover'))
+      } finally {
+        await refresh()
+      }
+    },
     confirm: async () => {
       try {
         await unwrap(api.POST('/api/v1/network/confirm'))
