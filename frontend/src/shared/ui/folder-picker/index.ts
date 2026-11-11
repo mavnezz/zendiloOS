@@ -1,2 +1,2 @@
 export { default as FolderPicker } from './FolderPicker.vue'
-export { listFolders, makeFolder, useShareList } from './folders'
+export { listEntries, listFolders, makeFolder, useShareList } from './folders'

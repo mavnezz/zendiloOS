@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChevronRight, Folder, FolderInput, LoaderCircle } from 'lucide-vue-next'
+import { ChevronRight, Disc3, Folder, FolderInput, LoaderCircle } from 'lucide-vue-next'
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -9,10 +9,14 @@ import { Button } from '@/shared/ui/button'
 import { ModalDialog } from '@/shared/ui/dialog'
 import { Input } from '@/shared/ui/input'
 
-import { listFolders, makeFolder, useShareList } from './folders'
+import { listEntries, listFolders, makeFolder, useShareList } from './folders'
 
-/** `value`: the folder picked before, `share/folder/…`; `writable`: only shares the app may write to. */
-const props = defineProps<{ value: string; writable?: boolean }>()
+/**
+ * `value`: the folder picked before, `share/folder/…`; `writable`: only
+ * shares the app may write to. With `files` (an ending such as `.iso`) a
+ * file of that kind is picked instead, and no folder is made.
+ */
+const props = defineProps<{ value: string; writable?: boolean; files?: string }>()
 const open = defineModel<boolean>('open', { default: false })
 const emit = defineEmits<{ pick: [path: string] }>()
 
@@ -23,9 +27,10 @@ const shares = computed(() =>
   (allShares.value ?? []).filter((share) => !props.writable || share.writable),
 )
 
-/** What is known of one folder: its folders once read. */
+/** What is known of one folder: its folders once read, and its files when picking one. */
 interface Known {
   names: string[] | null
+  files: string[]
   writable: boolean
   loading: boolean
   error: string | null
@@ -53,14 +58,17 @@ async function load(path: string): Promise<void> {
   const id = shareIds.value.get(share)
   if (id === undefined) return
   if (!known.has(path))
-    known.set(path, { names: null, writable: false, loading: false, error: null })
+    known.set(path, { names: null, files: [], writable: false, loading: false, error: null })
   // The reactive entry, so that what is read shows.
   const entry = known.get(path)!
   entry.loading = true
   entry.error = null
   try {
-    const read = await listFolders(id, folder)
+    const read = props.files
+      ? await listEntries(id, folder, props.files)
+      : { ...(await listFolders(id, folder)), files: [] }
     entry.names = read.names
+    entry.files = read.files
     entry.writable = read.writable
   } catch (problem) {
     entry.names = []
@@ -79,7 +87,7 @@ async function toggle(path: string): Promise<void> {
   if (!known.get(path)?.names) await load(path)
 }
 
-/** The rows shown: each share, and below an open folder its folders. */
+/** The rows shown: each share, and below an open folder its folders (and files). */
 interface Row {
   path: string
   name: string
@@ -87,15 +95,21 @@ interface Row {
   open: boolean
   /** Folders inside, as far as known. */
   more: boolean
+  file: boolean
 }
 const rows = computed<Row[]>(() => {
   const out: Row[] = []
   const add = (path: string, name: string, depth: number) => {
     const entry = known.get(path)
     const open = expanded.has(path)
-    out.push({ path, name, depth, open, more: !entry?.names || entry.names.length > 0 })
+    const more = !entry?.names || entry.names.length > 0 || entry.files.length > 0
+    out.push({ path, name, depth, open, more, file: false })
     if (!open) return
     for (const child of entry?.names ?? []) add(`${path}/${child}`, child, depth + 1)
+    for (const file of entry?.files ?? []) {
+      const at = `${path}/${file}`
+      out.push({ path: at, name: file, depth: depth + 1, open: false, more: false, file: true })
+    }
   }
   if (rootOpen.value) for (const share of shares.value ?? []) add(share.name, share.name, 1)
   return out
@@ -121,6 +135,14 @@ async function refresh(): Promise<void> {
   known.clear()
   for (const path of open) await load(path)
 }
+
+/** Picking a file: only a file shown in the tree counts. */
+const shownFiles = computed(
+  () => new Set(rows.value.filter((row) => row.file).map((row) => row.path)),
+)
+const canConfirm = computed(() =>
+  props.files ? shownFiles.value.has(selected.value) : Boolean(selected.value),
+)
 
 const canCreate = computed(() => {
   if (!selected.value || busy.value) return false
@@ -173,7 +195,7 @@ async function finishFolder(): Promise<void> {
 }
 
 function confirm(): void {
-  if (!selected.value) return
+  if (!canConfirm.value) return
   emit('pick', selected.value)
   open.value = false
 }
@@ -185,11 +207,12 @@ const indent = (depth: number) => ({ paddingLeft: `${depth * 1.25 + 0.25}rem` })
 <template>
   <ModalDialog
     v-model:open="open"
-    :title="t('folderPicker.pickFolder')"
+    :title="files ? t('folderPicker.pickFile') : t('folderPicker.pickFolder')"
     :close-label="t('desktop.close')"
   >
     <div class="flex gap-2">
       <Button
+        v-if="!files"
         type="button"
         variant="outline"
         size="sm"
@@ -245,9 +268,10 @@ const indent = (depth: number) => ({ paddingLeft: `${depth * 1.25 + 0.25}rem` })
             type="button"
             class="flex min-w-0 flex-1 items-center gap-2 self-stretch text-left"
             @click="selected = row.path"
-            @dblclick="toggle(row.path)"
+            @dblclick="row.file ? confirm() : toggle(row.path)"
           >
-            <FolderInput v-if="row.depth === 1" class="size-4 shrink-0 text-sky-500" />
+            <Disc3 v-if="row.file" class="size-4 shrink-0 text-muted-foreground" />
+            <FolderInput v-else-if="row.depth === 1" class="size-4 shrink-0 text-sky-500" />
             <Folder v-else class="size-4 shrink-0 fill-sky-400/80 text-sky-500" />
             <span class="truncate">{{ row.name }}</span>
           </button>
@@ -285,7 +309,7 @@ const indent = (depth: number) => ({ paddingLeft: `${depth * 1.25 + 0.25}rem` })
       <Button type="button" variant="secondary" @click="open = false">{{
         t('desktop.cancel')
       }}</Button>
-      <Button type="button" :disabled="!selected" @click="confirm">{{
+      <Button type="button" :disabled="!canConfirm" @click="confirm">{{
         t('folderPicker.confirm')
       }}</Button>
     </template>

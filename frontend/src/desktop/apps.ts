@@ -16,6 +16,8 @@ import {
   LayoutDashboard,
   LayoutGrid,
   LibraryBig,
+  MonitorCog,
+  MonitorPlay,
   Network,
   Palette,
   RefreshCw,
@@ -32,7 +34,7 @@ import { type Component, defineAsyncComponent } from 'vue'
 
 import type { Size } from './windowManager'
 
-export type AppId = 'settings' | 'files' | 'apps' | 'docker'
+export type AppId = 'settings' | 'files' | 'apps' | 'docker' | 'vms' | 'vm-console'
 
 /** A page inside an app: found by the launcher's search, opened directly. */
 export interface AppSection {
@@ -56,7 +58,9 @@ export interface AppDefinition {
   /** Accounts without it do not see the app. The server checks anyway. */
   permission: string
   /** Shown only once this is on the NAS (installed from the App Store). */
-  requires?: 'docker'
+  requires?: 'docker' | 'vms'
+  /** Opened by another app only, never listed: the console of a VM. */
+  hidden?: boolean
   /** Size of a newly opened window. */
   size: Size
   minimum: Size
@@ -231,6 +235,28 @@ export const APPS: AppDefinition[] = [
       { id: 'management', label: 'docker.sections.management', icon: Settings2 },
     ],
     component: defineAsyncComponent(() => import('@/features/docker/components/DockerApp.vue')),
+  },
+  {
+    id: 'vms',
+    icon: MonitorCog,
+    tile: 'bg-linear-to-br from-violet-400 to-indigo-600',
+    permission: 'vms.manage',
+    requires: 'vms',
+    size: { width: 1040, height: 700 },
+    minimum: { width: 360, height: 320 },
+    component: defineAsyncComponent(() => import('@/features/vms/components/VmsApp.vue')),
+  },
+  {
+    // One console window at a time; its page is the VM's id.
+    id: 'vm-console',
+    icon: MonitorPlay,
+    tile: 'bg-linear-to-br from-zinc-600 to-zinc-900',
+    permission: 'vms.manage',
+    requires: 'vms',
+    hidden: true,
+    size: { width: 1024, height: 720 },
+    minimum: { width: 480, height: 360 },
+    component: defineAsyncComponent(() => import('@/features/vms/components/VmConsoleWindow.vue')),
   },
 ]
 

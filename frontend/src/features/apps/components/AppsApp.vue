@@ -16,6 +16,7 @@ import InstalledSection from './InstalledSection.vue'
 import PluginsSection from './PluginsSection.vue'
 import SourcesSection from './SourcesSection.vue'
 import StoreSection from './StoreSection.vue'
+import VmsSection from './VmsSection.vue'
 
 const { t } = useI18n()
 const { data: catalog } = useCatalog()
@@ -76,10 +77,10 @@ const section = useWindowSection(() => [
   'plugins',
   'docker',
   'acme',
+  'vms',
 ])
-/** A plugin's own page belongs under Plugins in the navigation. */
 /** The plugins' own pages, shown under Plugins in the navigation. */
-const PLUGIN_PAGES = ['docker', 'acme']
+const PLUGIN_PAGES = ['docker', 'acme', 'vms']
 const shownSection = computed(() =>
   PLUGIN_PAGES.includes(section.value) ? 'plugins' : section.value,
 )
@@ -149,7 +150,8 @@ function open(app: { source_id: number; id: string }, install = false): void {
         {{ t('appStore.plugins.title') }}
       </Button>
       <DockerSection v-if="section === 'docker'" @store="section = 'all'" />
-      <AcmeSection v-else />
+      <AcmeSection v-else-if="section === 'acme'" />
+      <VmsSection v-else />
     </template>
     <PluginsSection v-else-if="section === 'plugins'" @open="(plugin) => (section = plugin)" />
     <InstalledSection v-else-if="section === 'installed'" @open="open" @store="section = 'all'" />

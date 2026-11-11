@@ -46,11 +46,24 @@ const docker = useQuery({
   enabled: computed(() => session.can('containers.manage')),
 })
 
+/** Whether virtual machines can run: the plugin installed and its storage set up. */
+const vms = useQuery({
+  queryKey: ['vms', 'plugin'],
+  queryFn: () => unwrap(api.GET('/api/v1/vms/plugin')),
+  enabled: computed(() => session.can('vms.manage')),
+})
+/** Whether what an app needs is on the NAS. */
+function present(app: AppDefinition): boolean {
+  if (app.requires === 'docker') return Boolean(docker.data.value?.installed)
+  if (app.requires === 'vms') return Boolean(vms.data.value?.installed && vms.data.value.storage)
+  return true
+}
 /** Only apps this account may use and the NAS has; the server enforces the same. */
 function usable(app: AppDefinition): boolean {
-  return session.can(app.permission) && (!app.requires || Boolean(docker.data.value?.installed))
+  return session.can(app.permission) && present(app)
 }
-const apps = computed(() => APPS.filter(usable))
+/** What the desktop lists: a VM's console opens from its app only. */
+const apps = computed(() => APPS.filter((app) => usable(app) && !app.hidden))
 
 const openWindows = computed(() =>
   windows.state.windows.flatMap((window) => {

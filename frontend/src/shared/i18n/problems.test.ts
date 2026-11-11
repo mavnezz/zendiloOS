@@ -32,6 +32,14 @@ const CODES = [
   'volume_busy',
   'containers_held',
   'plan_paused',
+  'kvm_missing',
+  'vms_not_installed',
+  'vms_installed',
+  'vms_not_set_up',
+  'vm_creating',
+  'vm_not_running',
+  'iso_denied',
+  'agent_failed',
 ]
 
 describe('problem messages', () => {
