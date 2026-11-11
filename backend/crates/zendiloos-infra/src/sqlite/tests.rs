@@ -100,6 +100,10 @@ async fn creates_a_private_database_and_applies_all_migrations() {
             "app_icons",
             "app_sources",
             "audit_log",
+            "backup_runs",
+            "backup_settings",
+            "backup_tasks",
+            "backup_transfers",
             "blocked_addresses",
             "certificates",
             "disk_inventory",
@@ -454,6 +458,7 @@ async fn the_vms_of_one_location_keep_their_disks_and_cards_where_they_were() {
     db.close().await;
 
     let (db, report) = open(&env).await;
+    // And the backup tasks' after it.
     assert_eq!(report.applied, [51, 52]);
     let cold = Location { pool: "cold".into(), volume: 2 };
     let tank = Location { pool: "tank".into(), volume: 1 };
