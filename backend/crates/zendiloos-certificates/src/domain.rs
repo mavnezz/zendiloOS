@@ -199,6 +199,7 @@ pub const DNS_PROVIDERS: &[DnsProvider] = &[
     },
     DnsProvider { api: "dns_duckdns", label: "Duck DNS", variables: &[var("DuckDNS_Token", true, true)] },
     DnsProvider { api: "dns_dynv6", label: "dynv6", variables: &[var("DYNV6_TOKEN", true, true)] },
+    DnsProvider { api: "dns_ipv64", label: "IPv64.net", variables: &[var("IPv64_Token", true, true)] },
 ];
 
 pub fn dns_provider(api: &str) -> Option<&'static DnsProvider> {

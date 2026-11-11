@@ -2217,7 +2217,7 @@ address (its domain kept in lowercase, and only characters acme.sh is
 handed); **challenges**, how the server is shown a name is ours: DNS-01
 through a DNS provider's API (a curated list of acme.sh's `dnsapi` scripts
 with their variables: IONOS, Cloudflare, Hetzner, deSEC, INWX, netcup, OVH,
-Gandi, Porkbun, Route 53, Hurricane Electric, Duck DNS, dynv6), or HTTP-01
+Gandi, Porkbun, Route 53, Hurricane Electric, Duck DNS, dynv6, IPv64.net), or HTTP-01
 through a file nginx serves on port 80; and **certificates**: names (a
 wildcard only with DNS), key (ECDSA P-256 by default, RSA 2048 or 4096),
 account, challenge, whether it renews itself, and what came of the last try
