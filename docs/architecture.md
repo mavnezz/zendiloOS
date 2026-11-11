@@ -87,6 +87,7 @@ The Debian package `zendiloos` (built with `just deb`) installs:
 | `/etc/zendiloos/apps/`, `/etc/zendiloos/projects/` | what the agent checked and runs, root's alone: apps installed the earlier way and administrators' Compose projects (4.9) |
 | `/etc/zendiloos/vms/`, `/etc/tmpfiles.d/zendiloos-vms.conf`, `/run/zendiloos-vms/` | virtual machines (4.13): each domain's XML as the agent defined it; the consoles' folder, made at every boot, with QEMU's VNC sockets; their disks and the image library on a pool (`/volume<N>/@vms`) |
 | `/etc/zendiloos/id-high-water` | the highest UID and GID the agent ever handed out (4.2) |
+| `/var/lib/zendiloos-backup/` | the backup plugin's SSH key pair (`id_ed25519`), root's alone (0700), made by a unit of its own; reaches a run's unit only as its credential (4.14) |
 | `/var/lib/zendiloos-acme/` | acme.sh's accounts, certificates and files for HTTP challenges, owned by the system user `zendiloos-acme`; a DNS provider's credentials only while it runs, in `/run/zendiloos-acme/` (4.11) |
 | `/run/zendiloos-removable/` | the places removable drives are mounted at, a folder each, named by the UUID of their file system |
 | `zendiloos-nfs-flush.service` | releases a share's NFS exports in the host's network namespace (3.3) |
@@ -138,7 +139,7 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 
 | Concept | In Zendiloos |
 |---|---|
-| Bounded context | one core crate each: `identity`, `system`, `storage`, `sharing`, `apps`, `containers`, `updates`, `network`, `certificates`, `firewall`, `vms` |
+| Bounded context | one core crate each: `identity`, `system`, `storage`, `sharing`, `apps`, `containers`, `updates`, `network`, `certificates`, `firewall`, `vms`, `backup` |
 | Domain layer | entities, value objects, aggregates, domain rules and errors; pure Rust, no I/O |
 | Application layer | use cases (commands and queries) and the **ports** they need, as traits |
 | Primary (driving) adapter | `zendiloos-api`: HTTP and WebSocket |
@@ -160,6 +161,7 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 | `zendiloos-certificates` | the ACME client plugin (acme.sh): accounts, challenges and certificates from Let's Encrypt, renewed daily; the web interface's ports and certificate, changed with confirmation (4.11) | kernel, jobs, notify |
 | `zendiloos-firewall` | the firewall: one ordered list of rules (interface, service or ports, source, allow or deny) and what happens when none matches, enforced by nftables for the NAS and the ports Docker publishes, changed with confirmation; services nobody reaches, told (4.12) | kernel, notify |
 | `zendiloos-vms` | virtual machines: the plugin (libvirt and QEMU installed, their storage in locations on one or more pools, the hardware check), VMs from an OS preset with their disks (each on its location), network cards (through the NAS, on a host bridge, directly on a card, on an internal network) and CD drives, made in a job and changed (hardware only while off), the image library (ISOs copied from a share or uploaded), what running VMs use, their state from libvirt and their consoles (4.13) | kernel, jobs |
+| `zendiloos-backup` | backup tasks: the plugin (rsync and the SSH client installed, the NAS's SSH key), tasks from a share to another share or a removable drive, to an rsync server (daemon or SSH with the host key pinned) or from one, mirrors and dated versions with retention, schedules and "when its drive is plugged in", runs as jobs with their log and transfer lists, restores (4.14) | kernel, jobs, notify |
 | `zendiloos-infra` | all secondary adapters, SQLite migrations | kernel, jobs, notify, contexts, agent-proto, exec; in tests also sim |
 | `zendiloos-api` | primary adapter: axum routes, DTOs, OpenAPI, auth middleware, WebSocket | kernel, jobs, notify, contexts |
 | `zendiloosd` | composition root (binary) | everything except agent |
@@ -189,6 +191,7 @@ placeholder crates.
       sharing · apps · containers          │
       updates · network                    │
       certificates · firewall · vms        │
+      backup                               │
                │                           │
                └─────────────┬─────────────┘
                              v
@@ -313,7 +316,8 @@ frontend/src/
   about windows. Enforced with an ESLint rule (`import-x/no-restricted-paths`).
 - The desktop's apps are the file explorer, the App Center, Docker,
   Virtual machines (once its plugin is set up, with a console window of
-  its own that only that app opens) and the control panel. Storage (pools, disks), the resource
+  its own that only that app opens), Backup (once its plugin is
+  installed, 4.14) and the control panel. Storage (pools, disks), the resource
   monitor and the logs (system log, audit log) are pages of the control
   panel, in its groups *Storage* and *Monitoring*, each shown to the
   accounts with the permission it needs (`storage.view`, `system.view`,
@@ -428,9 +432,9 @@ simple to audit.
   `zfs`, `sgdisk`, `wipefs`, `udevadm`, `umount`, `rmdir`, `rm`,
   `useradd`, `userdel`, `groupadd`, `groupdel`, `gpasswd`, `smbpasswd`,
   `testparm`, `exportfs`, `smbcontrol`, `sshd`, `docker`, `dockerd`,
-  `setsid`, `openssl`, `nginx`, `nft`, `virsh` (and, in transient units,
+  `setsid`, `openssl`, `nginx`, `nft`, `virsh`, `ssh-keygen`, `ssh-keyscan` (and, in transient units,
   `systemd-tmpfiles`, this binary as `copy-vm-iso` and `receive-vm-image`,
-  4.13, and `ip link
+  4.13, as `backup-unit`, which runs `rsync` and through it `ssh`, 4.14, and `ip link
   delete` for a network device zendiloOS made that goes, 6).
   `zendiloos-docker-bridges.service`, a unit of the package, runs
   `iptables` and `ip6tables` as this binary's `docker-bridges` (4.12).
@@ -607,6 +611,7 @@ bundle permissions, so the model can change in one place.
 | `files.write` (change files in own shares) | ✓ | ✓ | |
 | `containers.manage` | ✓ | | |
 | `vms.manage` (virtual machines, their plugin and consoles) | ✓ | | |
+| `backup.manage` (backup tasks, their plugin, log and restores) | ✓ | | |
 | `account.self` (own password, sessions, preferences) | ✓ | ✓ | ✓ |
 
 The frontend hides apps the user lacks the permission for; that is a
@@ -1369,6 +1374,13 @@ TLS is rustls with ring and the system's certificate authorities
   storage's.
   libvirtd and QEMU run outside, under libvirt's own confinement (AppArmor
   per VM, QEMU as `libvirt-qemu`).
+- Backup tasks (4.14) widen nothing of the system agent's sandbox: rsync
+  runs in transient units that see of the volumes and drives only the
+  roots they work on, write only the target's, reach the network only for
+  a server and have only the capabilities their work needs; the NAS's SSH
+  key reaches a unit as its credential, a daemon's password on its
+  standard input. Runs, restores and retention have four places of their
+  own.
 - Folder downloads are planned before the first byte (each entry once,
   its name and its folder's index, at most 100 000 entries and 32 MiB of
   names and link targets, both counted while each folder is read), one at a
@@ -2870,6 +2882,218 @@ default: guests shut down), moving a disk or the image library to
 another location, a host-only network (an internal network with an
 address of the NAS's), and a way for the NAS to reach VMs directly on a
 card (a macvlan of the host's own).
+
+### 4.14 Backup
+
+**What it is.** A fourth plugin of the App Center, *Backup*: rsync and the
+SSH client from Debian, installed by the package runner (task
+`install-backup`: `rsync openssh-client` without recommended packages)
+when an administrator asks; then a desktop app of that name for
+administrators. Its permission is a new one, `backup.manage` (4.3),
+rather than `shares.manage` or `storage.manage`: a backup reads whole
+shares whatever their rules say and a restore writes into them, which is
+an administrator's alone, and the app is shown by it. Its context is
+`zendiloos-backup` (migration 0052).
+
+**Tasks.** A task has a name, a source, a target, a mode, a schedule,
+filters and options, of three kinds as its places say:
+
+- *on this NAS*: a folder of a share to a folder of another share (on
+  another pool) or of a removable drive;
+- *to an rsync server*: a folder of a share to a folder on a server;
+- *from an rsync server* ("back up a server"): a server's folder into a
+  folder of a share or of a removable drive.
+
+A server is reached through an **rsync daemon** (`rsync://user@host:873/
+module/…`, a user and a password, unencrypted: the wizard says so) or
+**over SSH** (host, port, user), the encrypted way: the NAS makes its own
+key pair (ed25519, `ssh-keygen` in a unit of its own that may write only
+`/var/lib/zendiloos-backup`, 0700) the first time it is asked for, and
+shows the public key to put into the user's `authorized_keys`. The
+server's host key is fetched (`ssh-keyscan` in a unit with the network,
+as a dynamic user with no capability), shown with its fingerprint
+(SHA256, as `ssh-keygen -lf` prints it) to compare with the server's own,
+and pinned with the task; every connection checks it
+(`StrictHostKeyChecking=yes` against a `known_hosts` of that line alone,
+the system's ignored), and another key refuses the run with
+`host_key_changed`. The wizard's "Check the connection" lists the
+server's folder (`POST /backup/servers/check`). WebDAV, syncing between
+devices and a backup client for computers are later; cloud targets are
+below.
+
+**Modes, and how the target looks.** A task writes into one folder of its
+target, named after the task when it was made (`folder`; renaming the
+task keeps it), with a marker file `.zendiloos-backup`:
+
+```text
+<target>/<task>/.zendiloos-backup                 a backup of zendiloOS's
+<target>/<task>/current/                          mirror: the copy
+<target>/<task>/removed/2026-11-11_030000Z/       mirror, if kept: what that run deleted or replaced
+<target>/<task>/2026-11-11_030000Z/               versioned: a complete version
+<target>/<task>/2026-11-12_030000Z.incomplete/    versioned: a run under way, or cut off
+```
+
+- *Mirror*: an exact copy in `current/` (`--delete --delete-excluded`);
+  optionally what a run deletes or replaces goes to `removed/<stamp>/`
+  (`--backup --backup-dir`), kept for N days.
+- *Versioned*: each run a dated version, files unchanged since the newest
+  complete version hard links to it (`--link-dest`). Retention keeps the
+  newest N and those younger than N days (either keeps a version; neither
+  set keeps all; the newest is never removed), and runs after a run that
+  completed, also removing the folders of runs cut off before.
+
+A version is named after its run's start in UTC (`2026-11-11_030000Z`:
+the names sort as the times do and none comes twice when the clock goes
+back in autumn) and written as `<stamp>.incomplete`. On the NAS it takes
+its name by one rename (`RENAME_NOREPLACE`) once rsync completed, then the
+folder and the file system are written out (`fsync`, `syncfs`, so a drive
+pulled out after "done" keeps it). A server cannot rename: there the
+version is copied once more under its name as hard links of the
+incomplete one (`--link-dest`, no data travels), and the incomplete one
+removed. A run cut off therefore never leaves a version that looks
+complete; its folder keeps the suffix, and the next run takes it over on
+the NAS (renamed to its own stamp, so what it copied is not copied again)
+or links from it on a server; retention removes what is left. A target
+folder that holds anything but a backup of zendiloOS's (no marker, other
+entries) is never written: a mirror would delete what is there. On a
+drive whose file system has no hard links (FAT, exFAT, NTFS) only mirrors
+are offered and refused otherwise, by zendiloosd and by the unit.
+
+**Schedules.** Hourly at a minute, daily or weekly at a time, in the NAS's
+time zone (the kernel's calendar, daylight saving time included, as the
+volumes' backups plan); due once the latest time lies after the task was
+made, changed or last started, so a time missed while the NAS was off is
+made up once. "When this drive is plugged in" for a drive target: every
+minute zendiloosd looks at the drives (which mounts a drive plugged in);
+a drive mounted with another plugging in (`plugged_in`, as Storage tells
+it: udev's `USEC_INITIALIZED` of its disk and the boot) than the one the
+task last backed up for starts it once; a task made or changed while its
+drive is there starts from that plugging in, and a restart of the NAS
+counts as plugging in anew. A scheduled run to a drive that is not there
+waits for the drive if the task backs up when it is plugged in, and is
+logged and told as failed otherwise. One run per task at a time (in
+zendiloosd, and systemd refuses a second unit of the name); a time that
+comes while the task runs waits until it ended; while an update installs
+nothing starts and what is due stays due (4.10). "Back up now" and "Stop"
+(the unit stopped; the run logged as stopped, not told).
+
+**A run** is a job (`backup.run`), with rsync's progress
+(`--info=progress2`) as its percent, and logged: start, end, outcome
+(succeeded; partial when rsync could not read some files or found them
+gone, exit 23 or 24, the version complete but for them; failed; stopped;
+interrupted by a restart of zendiloosd), files and bytes transferred
+(`--info=stats2`), the version, the error; and its transfer list from
+rsync's itemized changes, the first 5000 entries kept, the count of all.
+Runs older than the log's days (90 unless set) are forgotten daily. A
+failure is told (`backup_failed`, an error), a partial run as a warning
+(`backup_partial`), a success when the task asks (`backup_succeeded`), in
+the routing group *Backup* (4.3). The audit log has `backup.install`,
+`backup.key`, `backup.task_create`, `backup.task_change`,
+`backup.task_delete`, `backup.run`, `backup.stop`, `backup.restore` and
+`backup.settings`.
+
+**Filters and options.** Exclude patterns as rsync reads them (shown as
+chips; `*.tmp`, `Thumbs.db`, `.DS_Store`, `@eaDir`, `.recycle`,
+`#recycle` and `$RECYCLE.BIN` by default), checked to be one line without
+the prefixes rsync reads as rules of their own; hidden files on or off
+(`--exclude=.*`); uploads under way always left out. A bandwidth limit
+(`--bwlimit`, KiB/s) as the settings' default or per task.
+
+**Restore.** A task, then a version (or the mirror's copy), then all or
+some of its folders and files (browsed one folder at a time,
+`rsync --list-only`), to where the source was or into another folder of
+a share (a server's backup always into a folder of the NAS), files that
+are there kept (`--ignore-existing`) or replaced; never `--delete`. What
+is restored into a share takes the folder's owner and the share's group
+(`--chown`), and its modes and ACLs are not copied, so the share's
+inherited ACL applies as to the explorer's copies (4.4); onto a drive as
+its file system takes it. A restore is a job (`backup.restore`), one per
+task at a time and not while the task runs.
+
+**Sandbox: rsync never runs in zendiloosd or the agent.** The system agent
+checks the places a request names (a share mounted at its root, a drive
+mounted at its place; paths of the protocol's types: share paths, server
+folders that never begin with `-`, host names and users that are no
+options, patterns, version names) and runs the work in a transient unit
+(`systemd-run --pipe`, this binary as `backup-unit`, one unit per task
+and kind: `zendiloos-backup-run-<task>`, `-restore-`, `-prune-`; a
+listing's of its own). The unit's sandbox: no new privileges,
+`ProtectSystem=strict`, `ProtectHome`, its own `/tmp`, devices, IPC and
+process view, `@system-service` system calls, 2 GiB of memory; of the
+volumes and drives only the roots it works on (every `/volume<N>` and
+`/run/zendiloos-removable` a read-only tmpfs, the source's root bound in
+read-only, the target's writable); the system's secrets hidden
+(`/etc/shadow`, `/etc/gshadow`, `/etc/ssh`, `/etc/samba`, `/etc/zendiloos`,
+zendiloOS's and Samba's state, the backup's key folder, Docker's and
+libvirt's state); the network only for a server (`PrivateNetwork=no`,
+IP, Unix and netlink sockets), none otherwise; and the capabilities the
+work needs: none for a server's listing or retention,
+`CAP_DAC_READ_SEARCH` to read whatever a source holds, and to write on the
+NAS as copied `CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER
+CAP_FSETID CAP_SETFCAP`. Within, the folders are opened beneath their
+roots by descriptor (`openat2` with `RESOLVE_BENEATH`, `NO_SYMLINKS`,
+`NO_MAGICLINKS`, `NO_XDEV`; missing ones of a target made the same way)
+and handed to rsync as `/proc/self/fd/<n>/`, so a folder swapped for a
+link between the check and the copy changes nothing. rsync copies links
+as links and never follows one; links that point outside the copied
+folder, and every absolute link, are left out (`--safe-links`); it stays
+on the source's file system (`--one-file-system`), skips devices and
+special files, and pulling, a server's links get the same treatment on
+the receiving side, so nothing is written outside the chosen folder
+(beyond rsync 3.4's own checks of what a server sends). Should the client
+hang up, the agent be asked to stop or the day run out, the agent stops
+the unit first; units left running when the agent starts are stopped.
+Runs and restores have four places of their own in the agent, so tasks
+never keep the long places or the volumes' backups waiting; zendiloosd
+waits a day and twenty minutes for them, the unit ten minutes less.
+
+**Secrets.** A daemon's password is stored with its task in the database
+(as the mail server's password, 4.3) and never sent back: the API says
+only that one is set; left out of a change it stays for the same daemon,
+port, user and module, and another server needs it typed again. It
+travels zendiloosd → agent (the socket) → unit (its standard input, one
+line of JSON) → a file in the unit's private `/tmp` (0600), which rsync
+reads (`--password-file`); it is on no command line, in no unit property
+and in no environment. The NAS's private key never leaves the NAS: root's
+in `/var/lib/zendiloos-backup` (hidden in every unit), it reaches only the
+run's unit as its credential (`LoadCredential=`, in
+`$CREDENTIALS_DIRECTORY`, root's and the unit's alone). `ssh` runs with
+`-F /dev/null`, `IdentitiesOnly`, `BatchMode`, no passwords and the pinned
+`known_hosts` only.
+
+**Ownership, ACLs and attributes.** On the NAS (to a share or an ext4
+drive) a backup keeps owners, groups, modes, hard links, ACLs and extended
+attributes (`-rlptgoHAX --numeric-ids`). To a server it keeps modes,
+times and hard links, and owners and groups where the server's user may
+set them (as root, or rsync's fake-super); ACLs and extended attributes
+stay on the NAS: rsync servers often lack the support or the rights, and
+a restore gives files the share's ACL anyway. From a server: modes,
+times, links within, hard links; its owners mean nothing here. On FAT,
+exFAT or NTFS: files, folders and times (`--modify-window=1`).
+
+**Shares and pools.** A target folder in a share stays in its share, with
+the share's rules: whoever may read the share reads everything backed up
+into it, whatever the source share's rules said; the wizard names who
+that is (`GET /backup/shares/{id}/readers`, as the volumes' backups do),
+and a target inside its source (or the other way round) is refused.
+
+**The app** has an overview (how the backups stand, the last and next
+run, the targets and whether they are there), the tasks as cards (name,
+state, last run, source, target, mode, schedule; "Back up now" or "Stop",
+and edit, check the connection, restore, log, delete), the restore, the
+log (every run, each with its transfer list) and the settings (days the
+log is kept, the default bandwidth limit). A task is made in a wizard on
+`StepDialog` (type, source and target, schedule and options, preview) and
+changed in tabs of the same parts; folders come from the folder picker.
+Deleting a task forgets it and its log; what it backed up stays.
+
+**Tested** by unit tests of the domain (tasks, schedules, retention,
+filters, paths), the agent's operations and the unit's work (against real
+rsync where the machine has it: versions with hard links, a run cut off
+taken over, a mirror's kept changes, retention by name only, restores,
+links planted in the source; and a fake rsync for daemons and SSH),
+feature tests of the API, the frontend's tests, and in the second test VM
+(`just vm-backup-test`, 7).
 
 ---
 
