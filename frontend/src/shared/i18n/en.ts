@@ -2101,6 +2101,7 @@ const en = {
       nvme: 'NVMe',
       usb: 'USB',
       virtio: 'Virtual',
+      mmc: 'eMMC or SD',
       other: 'Other',
     },
     media: {
@@ -2138,6 +2139,11 @@ const en = {
       nvme_spare_low: 'Spare capacity is low: {value} % (threshold {threshold} %).',
       nvme_worn_out: '{value} % of the rated endurance is used up.',
       nvme_media_errors: 'Media errors: {value}.',
+      emmc_worn_out:
+        'At least {value} % of its life is used up. Move the system to another disk in time.',
+      emmc_past_life:
+        'It is past the life it was made for and may fail any time. Move the system to another disk.',
+      emmc_reserve_low: '{value} % of the blocks that replace worn ones are used up.',
     },
     temperature: 'Temperature',
     powerOnHours: 'Hours powered on',
@@ -2279,6 +2285,20 @@ const en = {
       storedHint: 'Every disk the NAS has seen is kept here with what was noted about it.',
       forget: 'Remove {serial} from the list',
       lastSeen: 'Last seen',
+    },
+    emmc: {
+      title: 'eMMC wear',
+      hint: 'eMMC has no SMART; it estimates how much of its life it has used, in steps of ten percent, for each of its two kinds of memory.',
+      life: 'Memory {part}: {used}',
+      lifeLabel: 'Life used, memory {part}',
+      range: '{from} to {to} % of its life used',
+      pastLife: 'past its life',
+      reserve: 'Reserved blocks',
+      reserves: {
+        normal: 'Normal',
+        warning: '80 % used: a warning',
+        urgent: '90 % used: urgent',
+      },
     },
     nvmeHealth: 'NVMe health',
     wear: 'Endurance used: {percent} %',
@@ -3099,6 +3119,7 @@ const en = {
     disk_health: {
       title: 'Disk {disk} reports problems',
       body: '{model}: SMART health is {health}. Plan to replace it.',
+      bodyEmmc: '{model}: the eMMC’s wear is {health}. Move the system to another disk in time.',
     },
     removable_pulled: {
       title: '{drive} was pulled out without being ejected',

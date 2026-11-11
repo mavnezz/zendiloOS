@@ -24,6 +24,7 @@ mod console;
 mod docker;
 pub mod docker_bridges;
 mod durable;
+mod emmc;
 mod enclosure;
 mod files;
 mod firewall;

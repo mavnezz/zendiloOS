@@ -1,7 +1,9 @@
 //! Parsers for the output of storage tools, which the agent runs and
 //! zendiloosd interprets. Each is tested against output captured from real
-//! tools in `fixtures/`.
+//! tools in `fixtures/`, and an eMMC card's files against files laid out
+//! in the kernel's format.
 
+pub(crate) mod emmc;
 pub(crate) mod lsblk;
 pub(crate) mod mdstat;
 pub(crate) mod smartctl;

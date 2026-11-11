@@ -67,6 +67,28 @@ async function selfTest(action: () => Promise<void>): Promise<void> {
 const start = (kind: SelfTestKind) => selfTest(() => startSelfTest(props.name, kind))
 const abort = () => selfTest(() => abortSelfTest(props.name))
 
+/** An eMMC device's estimate of its life used, a step of ten percent, in words. */
+function lifeUsed(step: number): string {
+  if (step > 10) return t('storage.emmc.pastLife')
+  return t('storage.emmc.range', { from: (step - 1) * 10, to: step * 10 })
+}
+
+/** Its two estimates that the device gives: the memory of type A and of type B. */
+const emmcLife = computed(() => {
+  const wear = report.value?.emmc
+  if (!wear) return []
+  return (
+    [
+      ['A', wear.life_used_a],
+      ['B', wear.life_used_b],
+    ] as const
+  ).flatMap(([part, step]) =>
+    step == null
+      ? []
+      : [{ part, step, text: lifeUsed(step), share: Math.min(step * 10, 100) / 100 }],
+  )
+})
+
 function finding(item: SmartFinding): string {
   return t(`storage.finding.${item.code}`, {
     id: item.attribute_id ?? '',
@@ -152,7 +174,8 @@ function finding(item: SmartFinding): string {
         </ul>
         <p v-else class="text-sm text-muted-foreground">{{ t('storage.noFindings') }}</p>
 
-        <dl class="grid grid-cols-2 gap-3 @xl:grid-cols-4">
+        <!-- eMMC says nothing of temperature, hours or self-tests. -->
+        <dl v-if="report.protocol !== 'emmc'" class="grid grid-cols-2 gap-3 @xl:grid-cols-4">
           <div class="rounded-lg border p-3">
             <dt class="text-xs text-muted-foreground">{{ t('storage.temperature') }}</dt>
             <dd class="text-lg font-semibold tabular-nums">
@@ -227,6 +250,27 @@ function finding(item: SmartFinding): string {
               </Button>
             </div>
           </template>
+        </section>
+
+        <section v-if="report.emmc" class="grid gap-3" data-testid="emmc-wear">
+          <h4 class="font-medium">{{ t('storage.emmc.title') }}</h4>
+          <p class="text-sm text-muted-foreground">{{ t('storage.emmc.hint') }}</p>
+          <div v-for="estimate in emmcLife" :key="estimate.part" class="grid gap-1.5">
+            <p class="text-sm">
+              {{ t('storage.emmc.life', { part: estimate.part, used: estimate.text }) }}
+            </p>
+            <Meter
+              :value="estimate.share"
+              :label="t('storage.emmc.lifeLabel', { part: estimate.part })"
+            />
+          </div>
+          <dl
+            v-if="report.emmc.reserve"
+            class="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm"
+          >
+            <dt class="text-muted-foreground">{{ t('storage.emmc.reserve') }}</dt>
+            <dd>{{ t(`storage.emmc.reserves.${report.emmc.reserve}`) }}</dd>
+          </dl>
         </section>
 
         <section v-if="report.nvme" class="grid gap-3">

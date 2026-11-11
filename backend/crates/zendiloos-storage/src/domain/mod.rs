@@ -47,7 +47,7 @@ pub use self_test::{
     SelfTestPlan, self_test_plans,
 };
 pub use smart::{
-    Assessment, AtaAttribute, AttributeFailure, Finding, Health, NvmeHealth, RunningSelfTest, SelfTest,
-    SelfTestKind, SmartData, SmartProtocol, SmartReport,
+    Assessment, AtaAttribute, AttributeFailure, EMMC_WORN, EmmcWear, Finding, Health, NvmeHealth, PreEol,
+    RunningSelfTest, SelfTest, SelfTestKind, SmartData, SmartProtocol, SmartReport,
 };
 pub use volume::{DATA_FILESYSTEMS, Volume, volumes};

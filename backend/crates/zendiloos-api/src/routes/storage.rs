@@ -122,6 +122,8 @@ pub enum Transport {
     Nvme,
     Usb,
     Virtio,
+    /// eMMC or an SD card.
+    Mmc,
     Other,
 }
 
@@ -210,6 +212,7 @@ impl From<storage::Disk> for Disk {
                 storage::Transport::Nvme => Transport::Nvme,
                 storage::Transport::Usb => Transport::Usb,
                 storage::Transport::Virtio => Transport::Virtio,
+                storage::Transport::Mmc => Transport::Mmc,
                 storage::Transport::Other => Transport::Other,
             },
             media: match disk.media {
@@ -276,6 +279,8 @@ pub enum SmartProtocol {
     Ata,
     Nvme,
     Scsi,
+    /// Not SMART: what an eMMC device reports of its wear, in `emmc`.
+    Emmc,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -313,6 +318,12 @@ pub enum FindingCode {
     NvmeSpareLow,
     NvmeWornOut,
     NvmeMediaErrors,
+    /// An eMMC device used `value` percent of its life or more.
+    EmmcWornOut,
+    /// An eMMC device is past the life it was made for.
+    EmmcPastLife,
+    /// An eMMC device used `value` percent of its reserved blocks (80 or 90).
+    EmmcReserveLow,
 }
 
 /// A reason behind the health verdict.
@@ -350,6 +361,12 @@ impl From<storage::Finding> for Finding {
             }
             F::NvmeWornOut(percent) => (FindingCode::NvmeWornOut, None, Some(percent.into()), None),
             F::NvmeMediaErrors(count) => (FindingCode::NvmeMediaErrors, None, Some(count), None),
+            F::EmmcWornOut(percent) => (FindingCode::EmmcWornOut, None, Some(percent.into()), None),
+            F::EmmcPastLife => (FindingCode::EmmcPastLife, None, None, None),
+            F::EmmcReserveLow(pre_eol) => {
+                let percent = if pre_eol == storage::PreEol::Urgent { 90 } else { 80 };
+                (FindingCode::EmmcReserveLow, None, Some(percent), None)
+            }
         };
         let (attribute_id, attribute_name) = attribute.unzip();
         Self { code, severity, attribute_id, attribute_name, value, threshold }
@@ -383,6 +400,30 @@ pub struct NvmeHealth {
     pub bytes_written: u64,
 }
 
+/// How far an eMMC device's reserved blocks, which replace worn ones, are
+/// used.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EmmcReserve {
+    Normal,
+    /// 80 % of them used.
+    Warning,
+    /// 90 % of them used.
+    Urgent,
+}
+
+/// What an eMMC device of version 5.0 or later reports of its wear.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct EmmcWear {
+    /// The device's estimate of the share of its life used for its memory
+    /// of type A, in steps of ten percent: 1 is 0 to 10 % used, 10 is 90
+    /// to 100 %, 11 past its life; absent if it gives none.
+    pub life_used_a: Option<u8>,
+    /// The same for its memory of type B.
+    pub life_used_b: Option<u8>,
+    pub reserve: Option<EmmcReserve>,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SelfTest {
     pub passed: bool,
@@ -412,6 +453,8 @@ pub struct SmartReport {
     pub attributes: Vec<SmartAttribute>,
     /// NVMe only.
     pub nvme: Option<NvmeHealth>,
+    /// eMMC only.
+    pub emmc: Option<EmmcWear>,
     pub error_log_count: Option<u64>,
     pub last_self_test: Option<SelfTest>,
     /// A self-test the drive runs now.
@@ -447,6 +490,7 @@ impl SmartReport {
             power_cycles: None,
             attributes: Vec::new(),
             nvme: None,
+            emmc: None,
             error_log_count: None,
             last_self_test: None,
             running_self_test: None,
@@ -479,6 +523,7 @@ impl From<storage::SmartReport> for SmartReport {
                 storage::SmartProtocol::Ata => SmartProtocol::Ata,
                 storage::SmartProtocol::Nvme => SmartProtocol::Nvme,
                 storage::SmartProtocol::Scsi => SmartProtocol::Scsi,
+                storage::SmartProtocol::Emmc => SmartProtocol::Emmc,
             }),
             model: data.model,
             serial: data.serial,
@@ -515,6 +560,15 @@ impl From<storage::SmartReport> for SmartReport {
                 unsafe_shutdowns: n.unsafe_shutdowns,
                 bytes_read: n.data_units_read.saturating_mul(NVME_DATA_UNIT),
                 bytes_written: n.data_units_written.saturating_mul(NVME_DATA_UNIT),
+            }),
+            emmc: data.emmc.map(|wear| EmmcWear {
+                life_used_a: wear.life_used_a,
+                life_used_b: wear.life_used_b,
+                reserve: wear.pre_eol.map(|pre_eol| match pre_eol {
+                    storage::PreEol::Normal => EmmcReserve::Normal,
+                    storage::PreEol::Warning => EmmcReserve::Warning,
+                    storage::PreEol::Urgent => EmmcReserve::Urgent,
+                }),
             }),
             error_log_count: data.error_log_count,
             last_self_test: data.last_self_test.map(|t| SelfTest {
@@ -1914,6 +1968,43 @@ mod tests {
             to(RaidArray::from(array(true, 1, Some(storage::SyncOperation::Recovery))))["health"],
             "rebuilding"
         );
+    }
+
+    #[test]
+    fn an_emmc_device_shows_its_wear_and_what_it_means() {
+        let wear = storage::EmmcWear {
+            life_used_a: Some(9),
+            life_used_b: Some(2),
+            pre_eol: Some(storage::PreEol::Urgent),
+        };
+        let data = storage::SmartData {
+            protocol: storage::SmartProtocol::Emmc,
+            model: Some("DV4032".into()),
+            serial: None,
+            firmware: None,
+            passed: None,
+            temperature_celsius: None,
+            power_on_hours: None,
+            power_cycles: None,
+            attributes: vec![],
+            nvme: None,
+            emmc: Some(wear),
+            error_log_count: None,
+            last_self_test: None,
+            running_self_test: None,
+            self_test_minutes: None,
+            self_tests_supported: false,
+        };
+        let shown = to(SmartReport::from(storage::SmartReport::Available(Box::new(data))));
+        assert_eq!((shown["protocol"].clone(), shown["health"].clone()), (json!("emmc"), json!("failing")));
+        assert_eq!(shown["emmc"], json!({ "life_used_a": 9, "life_used_b": 2, "reserve": "urgent" }));
+        let findings: Vec<(Value, Value)> = shown["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|finding| (finding["code"].clone(), finding["value"].clone()))
+            .collect();
+        assert_eq!(findings, [(json!("emmc_worn_out"), json!(80)), (json!("emmc_reserve_low"), json!(90))]);
     }
 
     #[test]

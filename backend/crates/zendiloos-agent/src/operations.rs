@@ -16,6 +16,7 @@ use crate::acme::{Acme, AcmePaths};
 use crate::apps::Apps;
 use crate::config::Tools;
 use crate::docker::Docker;
+use crate::emmc::Emmc;
 use crate::enclosure::Enclosure;
 use crate::files::Files;
 use crate::firewall::{Firewall, FirewallPaths};
@@ -85,6 +86,7 @@ pub struct Operations {
     projects: Projects,
     removable: Removable,
     enclosure: Enclosure,
+    emmc: Emmc,
     vms: Vms,
     console_issue: std::path::PathBuf,
     role: Role,
@@ -135,6 +137,7 @@ impl Operations {
             ),
             removable: Removable::new(tools, paths.host.clone(), &paths.accounts)?,
             enclosure: Enclosure::new(&paths.host),
+            emmc: Emmc::new(&paths.host),
             vms: Vms::new(
                 VmTools {
                     virsh: Program::new(&tools.virsh)?,
@@ -210,6 +213,7 @@ impl Operations {
             Request::Machine {} => Ok(self.enclosure.machine()),
             Request::ReadBurst { device, millis } => self.enclosure.burst(device, *millis).await,
             Request::SmartData { device } => self.smart_data(device).await,
+            Request::EmmcHealth { device } => self.emmc.health(device),
             Request::ArrayStatus {} => array_status().await,
             Request::StartSelfTest { device, kind } => {
                 let argument = match kind {

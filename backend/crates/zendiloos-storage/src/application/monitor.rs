@@ -10,7 +10,8 @@ use crate::application::enclosure::EnclosureSlots;
 use crate::application::inventory::known_shared;
 use crate::application::ports::{BlockDeviceSource, DiskInventoryStore, SmartSource, ZfsSource};
 use crate::domain::{
-    self, DiskUsage, DiskVerdicts, Health, Pool, ScanKind, SmartReport, StorageEvent, VdevState,
+    self, DiskUsage, DiskVerdicts, Health, Pool, ScanKind, SmartProtocol, SmartReport, StorageEvent,
+    VdevState,
 };
 
 /// How often SMART is read from disks that hold data. Reading wakes no
@@ -80,6 +81,9 @@ impl StorageMonitor {
 
         let now = self.clock.now();
         let due = seen.smart_at.is_none_or(|at| now.duration_since(at) >= SMART_INTERVAL);
+        // Disks that report an eMMC's wear rather than SMART, which is told
+        // as such.
+        let mut emmc = Vec::new();
         if due {
             seen.smart_at = Some(now);
             let disks = domain::disks(&devices, &pools);
@@ -104,6 +108,9 @@ impl StorageMonitor {
                     continue;
                 };
                 let health = data.assess().health;
+                if data.protocol == SmartProtocol::Emmc {
+                    emmc.push(disk.name.clone());
+                }
                 let key = domain::health_key(disk, &shared);
                 let before =
                     self.health.lock().unwrap_or_else(PoisonError::into_inner).by_key.insert(key, health);
@@ -122,7 +129,9 @@ impl StorageMonitor {
         drop(seen);
 
         for event in events {
-            self.notifier.notify(notification(event)).await;
+            let worn_emmc = matches!(&event, StorageEvent::DiskHealth { disk, .. } if emmc.contains(disk));
+            let told = notification(event);
+            self.notifier.notify(if worn_emmc { told.with("source", "emmc") } else { told }).await;
         }
     }
 }
@@ -289,6 +298,7 @@ mod tests {
                 power_cycles: None,
                 attributes: Vec::new(),
                 nvme: None,
+                emmc: None,
                 error_log_count: None,
                 last_self_test: None,
                 running_self_test: None,
@@ -348,6 +358,125 @@ mod tests {
         let health = monitor.disk_health().await;
         let key = format!("{}@pci-0000:00:14.0-usb-0:2:1.0-scsi-0:0:0:1", crate::testing::DOCK_SERIAL);
         assert_eq!(health.by_key.get(&key), Some(&Health::Failing));
+    }
+
+    /// A board with its system on eMMC, which wears by `step`s of ten
+    /// percent as told.
+    #[derive(Default)]
+    struct Board {
+        step: std::sync::Mutex<u8>,
+        hours: std::sync::Mutex<i64>,
+    }
+
+    #[async_trait::async_trait]
+    impl BlockDeviceSource for Board {
+        async fn block_devices(&self, _: &RequestContext) -> Result<Vec<domain::BlockDevice>, PortError> {
+            let root = domain::BlockDevice {
+                name: "mmcblk0p2".into(),
+                kind: domain::DeviceKind::Partition,
+                mount_points: vec!["/".into()],
+                ..Dock::device("mmcblk0p2")
+            };
+            let emmc = domain::BlockDevice {
+                serial: Some("0x5a1c3b2e".into()),
+                transport: Some("mmc".into()),
+                rotational: false,
+                children: vec![root],
+                ..Dock::device("mmcblk0")
+            };
+            Ok(vec![emmc])
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ZfsSource for Board {
+        async fn pools(&self, _: &RequestContext) -> Result<Vec<Pool>, PortError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SmartSource for Board {
+        async fn smart_report(&self, _: &str, _: &RequestContext) -> Result<SmartReport, PortError> {
+            let step = *self.step.lock().unwrap();
+            let wear = domain::EmmcWear {
+                life_used_a: Some(1),
+                life_used_b: Some(step),
+                pre_eol: Some(domain::PreEol::Normal),
+            };
+            Ok(SmartReport::Available(Box::new(domain::SmartData {
+                protocol: domain::SmartProtocol::Emmc,
+                model: None,
+                serial: None,
+                firmware: None,
+                passed: None,
+                temperature_celsius: None,
+                power_on_hours: None,
+                power_cycles: None,
+                attributes: Vec::new(),
+                nvme: None,
+                emmc: Some(wear),
+                error_log_count: None,
+                last_self_test: None,
+                running_self_test: None,
+                self_test_minutes: None,
+                self_tests_supported: false,
+            })))
+        }
+
+        async fn start_self_test(
+            &self,
+            _: &str,
+            _: domain::SelfTestKind,
+            _: &RequestContext,
+        ) -> Result<(), PortError> {
+            Ok(())
+        }
+
+        async fn abort_self_test(&self, _: &str, _: &RequestContext) -> Result<(), PortError> {
+            Ok(())
+        }
+    }
+
+    impl Clock for Board {
+        fn now(&self) -> zendiloos_kernel::Timestamp {
+            zendiloos_kernel::Timestamp::from_unix_seconds(1_793_880_000 + *self.hours.lock().unwrap() * 3600)
+        }
+    }
+
+    /// The eMMC holding the system is watched as a disk's SMART is: told of
+    /// when it gets to 80 % of its life, and again when it is past it.
+    #[tokio::test]
+    async fn a_wearing_emmc_system_disk_is_told_of_as_it_crosses_its_thresholds() {
+        let jobs = Jobs::new(Arc::new(MemoryJobs::default()), Arc::new(FixedClock));
+        let (ports, _) = FakeStorage::ports(jobs, Arc::new(NoAudit), Arc::new(FixedClock));
+        let repository = Arc::new(MemoryNotifications::default());
+        let notifier = Notifier::new(repository.clone(), Arc::new(FixedClock));
+        let board = Arc::new(Board::default());
+        let monitor = StorageMonitor::new(
+            board.clone(),
+            board.clone(),
+            board.clone(),
+            ports.inventory,
+            EnclosureSlots::new(ports.enclosure, ports.catalog),
+            notifier,
+            board.clone(),
+        );
+
+        for step in [3, 8, 9, 10, 11] {
+            *board.step.lock().unwrap() = step;
+            monitor.check().await;
+            *board.hours.lock().unwrap() += 7;
+        }
+
+        let told: Vec<_> = repository
+            .all()
+            .into_iter()
+            .map(|n| (n.code, n.params["disk"].clone(), n.params["health"].clone()))
+            .collect();
+        let disk_health = |health: &str| ("disk_health".to_owned(), "mmcblk0".to_owned(), health.to_owned());
+        assert_eq!(told, [disk_health("warning"), disk_health("failing")]);
+        assert!(repository.all().iter().all(|n| n.params["source"] == "emmc"), "told as an eMMC's wear");
     }
 
     struct NoAudit;

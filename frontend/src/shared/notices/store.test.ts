@@ -178,4 +178,14 @@ describe('the wording of disk notices', () => {
     const placed = notice({ disk: 'sda', health: 'failing', slot: 'Bay 1', group: 'Front bays' })
     expect(wording(placed).title).toBe('Disk sda (Bay 1, Front bays) reports problems')
   })
+
+  it('tells of an eMMC’s wear as such, as the system has to move', async () => {
+    const { wording } = await import('./store')
+    const { i18n } = await import('@/shared/i18n')
+    i18n.global.locale.value = 'en'
+    const worn = notice({ disk: 'mmcblk0', model: 'DV4032', health: 'warning', source: 'emmc' })
+    expect(wording(worn).body).toContain('the eMMC’s wear is')
+    expect(wording(worn).body).toContain('Move the system to another disk')
+    expect(wording(notice({ disk: 'sda', health: 'warning' })).body).toContain('SMART health')
+  })
 })

@@ -278,6 +278,36 @@ describe('a disk’s self-test', () => {
     expect(abortSelfTest).toHaveBeenCalledWith('sda')
   })
 
+  it('shows the wear an eMMC device reports in place of SMART', () => {
+    disks.value = [sda({ name: 'sda', model: null, transport: 'mmc', media: 'solid_state' })]
+    report.value = available({
+      protocol: 'emmc',
+      health: 'warning',
+      self_tests_supported: false,
+      short_test_minutes: null,
+      long_test_minutes: null,
+      emmc: { life_used_a: 2, life_used_b: 9, reserve: 'warning' },
+      findings: [{ code: 'emmc_worn_out', severity: 'warning', value: 80 }],
+    })
+    const wrapper = mountDetail()
+    const wear = wrapper.get('[data-testid="emmc-wear"]').text()
+    expect(wear).toContain('Memory A: 10 to 20 % of its life used')
+    expect(wear).toContain('Memory B: 80 to 90 % of its life used')
+    expect(wear).toContain('80 % used: a warning')
+    expect(wrapper.text()).toContain('At least 80 % of its life is used up.')
+    expect(wrapper.text()).toContain('eMMC or SD')
+    expect(wrapper.text()).not.toContain(i18n.global.t('storage.powerOnHours'))
+    expect(wrapper.text()).toContain(i18n.global.t('storage.selfTest.unsupported'))
+
+    report.value = available({
+      protocol: 'emmc',
+      emmc: { life_used_a: 11, life_used_b: null, reserve: null },
+    })
+    expect(mountDetail().get('[data-testid="emmc-wear"]').text()).toContain(
+      'Memory A: past its life',
+    )
+  })
+
   it('says so when the disk cannot test itself', () => {
     report.value = available({ self_tests_supported: false })
 

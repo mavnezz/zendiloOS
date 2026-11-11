@@ -16,7 +16,7 @@ use zendiloos_storage::domain::{
 };
 
 use super::{WHAT, call, unexpected};
-use crate::storage::{lsblk, mdstat, smartctl, udev, zfs};
+use crate::storage::{emmc, lsblk, mdstat, smartctl, udev, zfs};
 
 /// The Storage context's sources, through the agent: it runs the tools,
 /// this side parses their output.
@@ -103,8 +103,25 @@ impl DiskLocator for AgentStorage {
 
 #[async_trait]
 impl SmartSource for AgentStorage {
+    /// smartctl's report; for an eMMC device, which has no SMART, what its
+    /// card reports of its wear.
     async fn smart_report(&self, disk: &str, context: &RequestContext) -> Result<SmartReport, PortError> {
         let device = DiskName::parse(disk).map_err(|e| PortError::new("SMART data", e))?;
+        if disk.starts_with("mmcblk") {
+            return match call(self.transport.as_ref(), Request::EmmcHealth { device }, context).await? {
+                Response::Emmc { kind, life_time, pre_eol_info, name, serial, fwrev } => {
+                    Ok(emmc::parse(&emmc::Card {
+                        kind: &kind,
+                        life_time: &life_time,
+                        pre_eol_info: &pre_eol_info,
+                        name: &name,
+                        serial: &serial,
+                        fwrev: &fwrev,
+                    }))
+                }
+                other => Err(unexpected(other)),
+            };
+        }
         match call(self.transport.as_ref(), Request::SmartData { device }, context).await? {
             Response::Smart { exit_status, smartctl_json } => {
                 smartctl::parse(exit_status, &smartctl_json).map_err(|e| PortError::new("SMART data", e))
@@ -572,6 +589,32 @@ mod tests {
         assert!(storage.abort_self_test("sda", &context).await.is_err());
         agent.answer(Response::BlockDevices { lsblk_json: "not json".into(), udev_db: String::new() });
         assert!(storage.block_devices(&context).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn an_emmc_device_is_asked_for_its_wear_rather_than_smart() {
+        let context = RequestContext::default();
+        let card = Response::Emmc {
+            kind: "MMC\n".into(),
+            life_time: "0x02 0x09\n".into(),
+            pre_eol_info: "0x01\n".into(),
+            name: "DV4032\n".into(),
+            serial: String::new(),
+            fwrev: String::new(),
+        };
+        let agent = Arc::new(Scripted::answering([card, Response::ShareUsage { zfs_list: String::new() }]));
+        let storage = AgentStorage::new(agent.clone());
+        let SmartReport::Available(data) = storage.smart_report("mmcblk0", &context).await.unwrap() else {
+            panic!("no wear");
+        };
+        assert_eq!(data.assess().health, Health::Warning, "80 % used");
+        assert!(matches!(&agent.asked()[0], Request::EmmcHealth { device } if device.as_str() == "mmcblk0"));
+        assert!(storage.smart_report("mmcblk0", &context).await.is_err(), "an answer of another kind");
+
+        // The simulated NAS has none: its card says nothing.
+        let simulated = AgentStorage::new(Arc::new(SimulatedAgent::new()));
+        let none = simulated.smart_report("mmcblk0", &context).await.unwrap();
+        assert!(matches!(none, SmartReport::Unsupported { .. }), "{none:?}");
     }
 
     #[test]

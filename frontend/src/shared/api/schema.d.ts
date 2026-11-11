@@ -5315,6 +5315,28 @@ export interface components {
              */
             power_off?: boolean;
         };
+        /**
+         * @description How far an eMMC device's reserved blocks, which replace worn ones, are
+         *     used.
+         * @enum {string}
+         */
+        EmmcReserve: "normal" | "warning" | "urgent";
+        /** @description What an eMMC device of version 5.0 or later reports of its wear. */
+        EmmcWear: {
+            /**
+             * Format: int32
+             * @description The device's estimate of the share of its life used for its memory
+             *     of type A, in steps of ten percent: 1 is 0 to 10 % used, 10 is 90
+             *     to 100 %, 11 past its life; absent if it gives none.
+             */
+            life_used_a?: number | null;
+            /**
+             * Format: int32
+             * @description The same for its memory of type B.
+             */
+            life_used_b?: number | null;
+            reserve?: components["schemas"]["EmmcReserve"] | null;
+        };
         EnableDockerRequest: {
             /** @description A pool zendiloOS created. */
             pool: string;
@@ -5593,7 +5615,7 @@ export interface components {
             value?: number | null;
         };
         /** @enum {string} */
-        FindingCode: "overall_failed" | "attribute_failing" | "attribute_failed_in_past" | "reallocated_sectors" | "pending_sectors" | "uncorrectable_sectors" | "error_log_entries" | "self_test_failed" | "nvme_critical_warning" | "nvme_spare_low" | "nvme_worn_out" | "nvme_media_errors";
+        FindingCode: "overall_failed" | "attribute_failing" | "attribute_failed_in_past" | "reallocated_sectors" | "pending_sectors" | "uncorrectable_sectors" | "error_log_entries" | "self_test_failed" | "nvme_critical_warning" | "nvme_spare_low" | "nvme_worn_out" | "nvme_media_errors" | "emmc_worn_out" | "emmc_past_life" | "emmc_reserve_low";
         /** @enum {string} */
         FirewallAction: "allow" | "deny";
         /**
@@ -7349,11 +7371,12 @@ export interface components {
             worst: number;
         };
         /** @enum {string} */
-        SmartProtocol: "ata" | "nvme" | "scsi";
+        SmartProtocol: "ata" | "nvme" | "scsi" | "emmc";
         /** @description SMART data of one disk with zendiloOS's assessment. */
         SmartReport: {
             /** @description ATA only. */
             attributes: components["schemas"]["SmartAttribute"][];
+            emmc?: components["schemas"]["EmmcWear"] | null;
             /** Format: int64 */
             error_log_count?: number | null;
             findings: components["schemas"]["Finding"][];
@@ -7637,7 +7660,7 @@ export interface components {
             target_share?: number | null;
         };
         /** @enum {string} */
-        Transport: "sata" | "sas" | "nvme" | "usb" | "virtio" | "other";
+        Transport: "sata" | "sas" | "nvme" | "usb" | "virtio" | "mmc" | "other";
         TwoFactorCodeRequest: {
             /**
              * Format: password
