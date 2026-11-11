@@ -17,7 +17,7 @@ zendiloos-logging.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 listenfd.workspace = true
-rustix = { workspace = true, features = ["thread", "process", "fs", "event", "mount", "system"] }
+rustix = { workspace = true, features = ["thread", "process", "fs", "event", "mount", "system", "pipe"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

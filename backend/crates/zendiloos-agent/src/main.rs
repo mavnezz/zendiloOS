@@ -9,8 +9,8 @@ use tokio::signal::unix::{SignalKind, signal};
 use zendiloos_agent::config::Config;
 use zendiloos_agent::{
     HostPaths, Operations, Server, VolumeJob, docker_bridges, lower_file_overrides, passwd, pin_project,
-    pin_shares, power_off_drive, run_iso_job, run_packages, run_volume_job, serve, unpin_project,
-    unpin_shares,
+    pin_shares, power_off_drive, run_iso_job, run_packages, run_upload_job, run_volume_job, serve,
+    unpin_project, unpin_shares,
 };
 use zendiloos_agent_proto::{AppName, DiskName, ProjectName, Role};
 
@@ -59,8 +59,11 @@ enum Command {
     SweepVolumes { job: String },
     /// Look for backups of Docker volumes in a folder of a share, to record them again (likewise)
     ScanVolumeBackups { job: String },
-    /// Copy an ISO from a share for a virtual machine (likewise)
+    /// Copy an ISO from a share into the library of virtual machines (likewise)
     CopyVmIso { job: String },
+    /// Receive an image uploaded into the library of virtual machines from
+    /// standard input, a pipe zendiloosd writes (likewise)
+    ReceiveVmImage { job: String },
     /// Let frames within the bridges zendiloOS made pass Docker's FORWARD
     /// chain, and nothing more (zendiloos-docker-bridges.service)
     DockerBridges,
@@ -125,6 +128,17 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         return Ok(());
     }
+    if let Some(Command::ReceiveVmImage { job }) = &cli.command {
+        let job = job.clone();
+        let done = tokio::task::spawn_blocking(move || {
+            run_upload_job(&job, &mut std::io::stdin().lock(), &mut std::io::stdout())
+        })
+        .await?;
+        if !done {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if let Some(Command::DockerBridges) = &cli.command {
         let directory = zendiloos_agent::NetworkPaths::default().directory;
         let report = docker_bridges::sync(&directory, &docker_bridges::Family::debian())
@@ -162,6 +176,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             | Command::SweepVolumes { .. }
             | Command::ScanVolumeBackups { .. }
             | Command::CopyVmIso { .. }
+            | Command::ReceiveVmImage { .. }
             | Command::DockerBridges => unreachable!("handled above"),
         };
         outcome.map_err(|error| anyhow::anyhow!("{name}: {error}"))?;

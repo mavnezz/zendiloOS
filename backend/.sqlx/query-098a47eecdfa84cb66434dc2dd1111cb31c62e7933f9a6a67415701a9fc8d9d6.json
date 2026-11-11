@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE vm_images SET bytes = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "098a47eecdfa84cb66434dc2dd1111cb31c62e7933f9a6a67415701a9fc8d9d6"
+}

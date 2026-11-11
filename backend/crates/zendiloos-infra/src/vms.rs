@@ -10,7 +10,7 @@ use zendiloos_network::application::DeviceUsers;
 use zendiloos_sharing::application::{FilesError, FilesUseCases};
 use zendiloos_sharing::domain::{FilePath, ShareId};
 use zendiloos_vms::application::{IsoError, IsoFiles, IsoSource, VmRepository};
-use zendiloos_vms::domain::{IsoChoice, Network};
+use zendiloos_vms::domain::IsoChoice;
 
 /// [`DeviceUsers`] from the VMs' records: a bridge is in use while a VM,
 /// running or not, is on it, also one still being made.
@@ -30,7 +30,7 @@ impl DeviceUsers for VmsOnBridges {
         let vms = self.vms.list().await?;
         Ok(vms
             .into_iter()
-            .filter(|vm| matches!(&vm.settings.network, Network::Bridge(bridge) if bridge == device))
+            .filter(|vm| vm.settings.bridges().any(|bridge| bridge == device))
             .map(|vm| vm.settings.name)
             .collect())
     }
@@ -88,7 +88,7 @@ impl IsoFiles for SharesForVms {
 
 #[cfg(test)]
 mod tests {
-    use zendiloos_vms::domain::{OsPreset, Vm, VmSettings};
+    use zendiloos_vms::domain::{Network, OsPreset, Vm, VmSettings};
     use zendiloos_vms::testing::MemoryVms;
 
     use super::*;
@@ -98,8 +98,11 @@ mod tests {
         let vms = Arc::new(MemoryVms::default());
         let vm = |id: &str, name: &str, network: Network| Vm {
             id: id.into(),
-            settings: VmSettings { network, ..VmSettings::preset(name, OsPreset::Linux) },
-            iso: None,
+            settings: {
+                let mut settings = VmSettings::preset(name, OsPreset::Linux);
+                settings.nics[0].network = network;
+                settings
+            },
             pool: "tank".into(),
             volume: 1,
             created_at: zendiloos_kernel::Timestamp::from_unix_seconds(0),

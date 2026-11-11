@@ -21,6 +21,7 @@ pub(crate) mod terminal;
 mod two_factor;
 mod updates;
 pub(crate) mod vm_console;
+mod vm_images;
 mod vms;
 
 use utoipa_axum::router::OpenApiRouter;

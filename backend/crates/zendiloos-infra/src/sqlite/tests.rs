@@ -71,8 +71,8 @@ async fn creates_a_private_database_and_applies_all_migrations() {
         OpenReport {
             created: true,
             schema_before: None,
-            schema_after: 49,
-            applied: (1..=49).collect(),
+            schema_after: 50,
+            applied: (1..=50).collect(),
             backup: None
         }
     );
@@ -144,6 +144,10 @@ async fn creates_a_private_database_and_applies_all_migrations() {
             "shares",
             "system_update_settings",
             "system_update_state",
+            "vm_disks",
+            "vm_drives",
+            "vm_images",
+            "vm_nics",
             "vms",
             "web_server"
         ]
@@ -162,8 +166,8 @@ async fn reopening_an_up_to_date_database_changes_nothing() {
         report,
         OpenReport {
             created: false,
-            schema_before: Some(49),
-            schema_after: 49,
+            schema_before: Some(50),
+            schema_after: 50,
             applied: vec![],
             backup: None
         }
@@ -306,4 +310,91 @@ async fn account_ids_are_never_reused() {
 
     assert_ne!(alice, bob, "the audit log would attribute alice's actions to bob");
     db.close().await;
+}
+
+/// The migrations of the package, up to `version`.
+fn migrations_up_to(version: i64) -> Vec<(String, String)> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    let mut files: Vec<(String, String)> = fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| {
+            name.split('_').next().and_then(|n| n.parse::<i64>().ok()).is_some_and(|n| n <= version)
+        })
+        .map(|name| {
+            let sql = fs::read_to_string(dir.join(&name)).unwrap();
+            (name, sql)
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+/// The VMs of the proof of concept: their ISO's copies become the library's
+/// images, of the same ids; their disk, card and a drive the devices.
+#[tokio::test]
+async fn the_vms_of_before_carry_on_with_their_isos_in_the_library() {
+    use zendiloos_vms::application::{VmImageRepository, VmRepository};
+    use zendiloos_vms::domain::{BootDevice, DiskBus, ImageOrigin, Network, NicModel};
+
+    let env = Env::new();
+    let before = migrations_up_to(49);
+    let pairs: Vec<(&str, &str)> = before.iter().map(|(name, sql)| (name.as_str(), sql.as_str())).collect();
+    let v49 = env.migrator("v49", &pairs).await;
+    let (db, _) = Database::open_with(&env.db(), &env.backups(), &v49, SystemTime::now()).await.unwrap();
+    for (id, name, os, bridge, share, path, created, ready) in [
+        ("0a1b2c3d4e5f", "web", "linux", None, Some("media"), Some("isos/debian.iso"), 1, 1),
+        ("00000000000b", "Büro-PC", "windows", Some("br0"), Some("media"), Some("win/Win11.iso"), 2, 1),
+        ("00000000000c", "lab", "linux", None, Some("other"), Some("DEBIAN.ISO"), 3, 1),
+        ("00000000000d", "plain", "other", None, None, None, 4, 1),
+        ("00000000000e", "half", "linux", None, Some("media"), Some("x.iso"), 5, 0),
+    ] {
+        sqlx::query(
+            "INSERT INTO vms (id, name, os, cpus, memory_mib, firmware, disk_gib, bridge, autostart, iso_share,
+                              iso_path, pool, volume, created_at, ready)
+             VALUES (?, ?, ?, 2, 2048, 'uefi', 20, ?, 0, ?, ?, 'tank', 1, ?, ?)",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(os)
+        .bind(bridge)
+        .bind(share)
+        .bind(path)
+        .bind(created)
+        .bind(ready)
+        .execute(db.pool())
+        .await
+        .unwrap();
+    }
+    db.close().await;
+
+    let (db, report) = open(&env).await;
+    assert!(report.applied.contains(&50), "{:?}", report.applied);
+    let images = super::SqliteVmImages::new(db.clone()).list().await.unwrap();
+    let names: Vec<(&str, &str)> =
+        images.iter().map(|image| (image.id.as_str(), image.name.as_str())).collect();
+    assert_eq!(
+        names,
+        [("0a1b2c3d4e5f", "debian.iso"), ("00000000000b", "Win11.iso"), ("00000000000c", "DEBIAN.ISO (2)")],
+        "one image per ISO a VM had, named after its file, numbered where names meet"
+    );
+    assert!(images.iter().all(|image| image.ready && image.bytes.is_none()));
+    assert_eq!(images[1].origin, ImageOrigin::Share { share: "media".into(), path: "win/Win11.iso".into() });
+
+    let vms = super::SqliteVms::new(db).list().await.unwrap();
+    assert_eq!(vms.len(), 5);
+    let web = &vms[0].settings;
+    assert_eq!((web.disks[0].slot, web.disks[0].size_gib, web.disks[0].bus), (0, 20, DiskBus::Virtio));
+    assert_eq!(web.nics[0].model, NicModel::Virtio);
+    assert_eq!(web.nics[0].mac, "52:54:00:3d:4e:5f");
+    assert_eq!(web.drives[0].image.as_deref(), Some("0a1b2c3d4e5f"));
+    assert_eq!(web.boot, [BootDevice::Drive(0), BootDevice::Disk(0)]);
+    let office = &vms[1].settings;
+    assert_eq!((office.disks[0].bus, office.nics[0].model), (DiskBus::Sata, NicModel::E1000e));
+    assert_eq!(office.nics[0].network, Network::Bridge("br0".into()));
+    let plain = &vms[3].settings;
+    assert_eq!(plain.drives[0].image, None, "an empty drive, for an image later");
+    assert_eq!(plain.boot, [BootDevice::Disk(0), BootDevice::Drive(0)]);
+    assert_eq!(vms[4].settings.drives[0].image, None, "a VM never made keeps no image");
 }

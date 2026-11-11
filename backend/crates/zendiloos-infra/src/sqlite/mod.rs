@@ -69,7 +69,7 @@ pub use shares::SqliteShares;
 pub use system_updates::SqliteSystemUpdates;
 pub use two_factor::SqliteTwoFactor;
 pub use update_settings::SqliteUpdateSettings;
-pub use vms::SqliteVms;
+pub use vms::{SqliteVmImages, SqliteVms};
 pub use volume_backups::SqliteVolumeBackups;
 
 static MIGRATOR: Migrator = sqlx::migrate!();

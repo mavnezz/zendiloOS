@@ -1,7 +1,8 @@
 //! Virtual machines against a fake host: `virsh`, `zfs`, `systemctl`,
 //! `systemd-run` and `busctl` (systemd-networkd's view of the host's links)
-//! replaced by scripts that record their arguments, the units, `/proc`,
-//! `/sys` and the consoles' folder in a temporary directory.
+//! replaced by scripts that record their arguments and keep what they made
+//! as files, the units, `/proc`, `/sys`, the volumes and the consoles'
+//! folder in a temporary directory.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -12,12 +13,14 @@ use tempfile::TempDir;
 use zendiloos_agent::config::Tools;
 use zendiloos_agent::{Erasable, ErasePolicy, HostPaths, Operations, Paths, VmPaths};
 use zendiloos_agent_proto::{
-    ErrorCode, InterfaceName, PoolName, Request, Response, Role, ShareLocation, ShareName, SharePath,
-    VmAction, VmCpus, VmDiskSize, VmFirmware, VmId, VmIsoSource, VmMemory, VmNetwork, VmOs, VmSpec,
-    VmStorage, VolumeNumber,
+    ErrorCode, InterfaceName, MacAddress, PoolName, Request, Response, Role, ShareLocation, ShareName,
+    SharePath, VM_IMAGE_UPLOAD_MAX, VmAction, VmBoot, VmCpus, VmDevices, VmDisk, VmDiskBus, VmDiskSize,
+    VmDiskSlot, VmDrive, VmDriveSlot, VmFirmware, VmId, VmImageFile, VmImageId, VmIsoSource, VmMemory,
+    VmNetwork, VmNic, VmNicModel, VmNicSlot, VmOs, VmSpec, VmStorage, VolumeNumber,
 };
 
 const ID: &str = "0a1b2c3d4e5f";
+const IMAGE: &str = "00000000000a";
 
 struct Host {
     _dir: TempDir,
@@ -35,8 +38,31 @@ impl Host {
         log.lines().map(|line| line.replace(&self.root.display().to_string(), "")).collect()
     }
 
+    /// The calls since `from`.
+    fn calls_since(&self, from: usize) -> Vec<String> {
+        self.calls().split_off(from)
+    }
+
     async fn run(&self, request: Request) -> Response {
         self.operations.execute(&request).await
+    }
+
+    /// What libvirt's fake says the domain does.
+    fn state(&self) -> String {
+        fs::read_to_string(self.path(&format!("state/zendiloos-{ID}"))).unwrap_or_default().trim().to_owned()
+    }
+
+    fn zvols(&self) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(self.path("state/zvols"))
+            .map(|entries| entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    fn put_image(&self, image: &str) {
+        fs::create_dir_all(self.path("volume1/@vms/isos")).unwrap();
+        fs::write(self.path(&format!("volume1/@vms/isos/{image}.iso")), "iso").unwrap();
     }
 }
 
@@ -54,7 +80,7 @@ fn script(root: &Path, name: &str, body: &str) -> PathBuf {
 fn host(installed: bool) -> Host {
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();
-    for sub in ["units", "iommu", "state", "volume1/media/isos"] {
+    for sub in ["units", "iommu", "state/zvols", "volume1/media/isos"] {
         fs::create_dir_all(root.join(sub)).unwrap();
     }
     fs::write(root.join("kvm"), "").unwrap();
@@ -63,20 +89,25 @@ fn host(installed: bool) -> Host {
     fs::write(root.join("meminfo"), "MemTotal:        2027168 kB\n").unwrap();
     fs::write(root.join("volume1/media/isos/debian.iso"), "iso").unwrap();
     let state = root.join("state");
-    // Domains defined are files in state/; zvols too.
+    // Domains defined are files in state/ holding what they do; zvols are
+    // files in state/zvols holding their size.
     let virsh = script(
         &root,
         "virsh",
         &format!(
             "state={state}\nshift 2\n\
              case \"$1\" in\n\
-             domstate) test -f \"$state/$2\" ;;\n\
-             define) name=$(sed -n 's/.*<name>\\(.*\\)<\\/name>.*/\\1/p' \"$3\"); touch \"$state/$name\" ;;\n\
+             domstate) test -f \"$state/$2\" && cat \"$state/$2\" ;;\n\
+             define) name=$(sed -n 's/.*<name>\\(.*\\)<\\/name>.*/\\1/p' \"$3\"); \
+                     [ -f \"$state/$name\" ] || echo 'shut off' > \"$state/$name\" ;;\n\
              undefine) eval last=\\${{$#}}; rm \"$state/$last\" ;;\n\
              list) printf ' Id   Name                     State\\n----------------------------------------\\n'\n\
-                   for f in \"$state\"/zendiloos-*; do [ -e \"$f\" ] && printf ' -    %s   shut off\\n' \"$(basename \"$f\")\"; done\n\
+                   for f in \"$state\"/zendiloos-*; do [ -e \"$f\" ] && printf ' -    %s   %s\\n' \"$(basename \"$f\")\" \"$(cat \"$f\")\"; done\n\
                    printf ' 3    win10                    running\\n' ;;\n\
-             start) [ -f \"$state/running\" ] && {{ echo 'error: Requested operation is not valid: domain is already active' >&2; exit 1; }}; touch \"$state/running\" ;;\n\
+             start) grep -q running \"$state/$2\" && {{ echo 'error: Requested operation is not valid: domain is already active' >&2; exit 1; }}; echo running > \"$state/$2\" ;;\n\
+             destroy) [ -f \"$state/$2\" ] && echo 'shut off' > \"$state/$2\" ;;\n\
+             shutdown) echo 'shut off' > \"$state/$4\" ;;\n\
+             domstats) printf \"Domain: 'win10'\\n  cpu.time=1\\n\\nDomain: 'zendiloos-{ID}'\\n  cpu.time=2\\n\" ;;\n\
              esac",
             state = state.display()
         ),
@@ -85,16 +116,18 @@ fn host(installed: bool) -> Host {
         &root,
         "zfs",
         &format!(
-            "state={state}\n\
+            "state={state}\neval last=\\${{$#}}\n\
              case \"$*\" in\n\
              *'-s local -d 0'*) echo 1 ;;\n\
              'get -H -o value zendiloos:volume tank') echo 1 ;;\n\
              'list -H -o name -d 1 tank') echo tank; if [ -f \"$state/vms\" ]; then echo tank/zendiloos.vms; fi ;;\n\
              'list -H -o name tank/zendiloos.vms') test -f \"$state/vms\" ;;\n\
-             'list -H -o name tank/zendiloos.vms/'*) test -f \"$state/zvol\" ;;\n\
+             'list -H -o name tank/zendiloos.vms/'*) test -f \"$state/zvols/${{last##*/}}\" ;;\n\
+             'get -H -p -o value volsize tank/zendiloos.vms/'*) cat \"$state/zvols/${{last##*/}}\" ;;\n\
+             'create -s -V '*) echo $(( ${{4%G}} * 1073741824 )) > \"$state/zvols/${{last##*/}}\" ;;\n\
              create*zendiloos.vms) touch \"$state/vms\" ;;\n\
-             'create -s -V'*) touch \"$state/zvol\" ;;\n\
-             'destroy tank/zendiloos.vms/'*) rm \"$state/zvol\" ;;\n\
+             'set volsize='*) v=${{2#volsize=}}; echo $(( ${{v%G}} * 1073741824 )) > \"$state/zvols/${{last##*/}}\" ;;\n\
+             'destroy tank/zendiloos.vms/'*) rm \"$state/zvols/${{last##*/}}\" ;;\n\
              esac",
             state = state.display()
         ),
@@ -102,9 +135,15 @@ fn host(installed: bool) -> Host {
     let systemd_run = script(
         &root,
         "systemd-run",
-        "case \"$*\" in\n\
-         *copy-vm-iso*) echo '{\"progress\":{\"step\":\"copying_iso\",\"percent\":40}}'; echo '{\"done\":{\"bytes\":3}}' ;;\n\
-         esac",
+        &format!(
+            "eval last=\\${{$#}}\n\
+             case \"$*\" in\n\
+             *copy-vm-iso*) echo '{{\"progress\":{{\"step\":\"copying_iso\",\"percent\":40}}}}'; echo '{{\"done\":{{\"bytes\":3}}}}' ;;\n\
+             *receive-vm-image*) cat > {root}/received; n=$(wc -c < {root}/received); echo \"{{\\\"done\\\":{{\\\"bytes\\\":$n}}}}\" ;;\n\
+             *'rm --force'*) rm -f \"$last\" ;;\n\
+             esac",
+            root = root.display()
+        ),
     );
     let busctl = script(
         &root,
@@ -128,6 +167,7 @@ fn host(installed: bool) -> Host {
         libvirtd: root.join("libvirtd"),
         qemu: root.join("qemu-system-x86_64"),
         systemd_tmpfiles: PathBuf::from("/usr/bin/systemd-tmpfiles"),
+        rm: PathBuf::from("/bin/rm"),
         ..Tools::default()
     };
     if installed {
@@ -153,6 +193,7 @@ fn host(installed: bool) -> Host {
             consoles: root.join("consoles"),
             tmpfiles: root.join("tmpfiles.d/zendiloos-vms.conf"),
             apparmor: root.join("apparmor/abstractions/libvirt-qemu.d/zendiloos-consoles"),
+            zvols: PathBuf::from("/dev/zvol"),
         },
         ..Paths::default()
     };
@@ -173,20 +214,63 @@ fn id() -> VmId {
     VmId::parse(ID).unwrap()
 }
 
-fn spec(network: VmNetwork, iso: bool, autostart: bool) -> VmSpec {
-    VmSpec {
-        id: id(),
-        os: VmOs::Linux,
-        cpus: VmCpus::new(1).unwrap(),
-        memory: VmMemory::new(256).unwrap(),
-        firmware: VmFirmware::Uefi,
-        disk: VmDiskSize::new(1).unwrap(),
-        network,
-        iso,
-        autostart,
-        pool: pool(),
-        volume: volume(),
+fn image() -> VmImageId {
+    VmImageId::parse(IMAGE).unwrap()
+}
+
+fn disk(slot: u8, gib: u32) -> VmDisk {
+    VmDisk {
+        slot: VmDiskSlot::new(slot).unwrap(),
+        size: VmDiskSize::new(gib).unwrap(),
+        bus: VmDiskBus::Virtio,
     }
+}
+
+fn nic(slot: u8, network: VmNetwork) -> VmNic {
+    VmNic {
+        slot: VmNicSlot::new(slot).unwrap(),
+        model: VmNicModel::Virtio,
+        network,
+        mac: MacAddress::parse(&format!("52:54:00:00:00:0{slot}")).unwrap(),
+    }
+}
+
+fn bridge(name: &str) -> VmNetwork {
+    VmNetwork::Bridge { bridge: InterfaceName::parse(name).unwrap() }
+}
+
+fn drive(slot: u8, image: Option<VmImageId>) -> VmDrive {
+    VmDrive { slot: VmDriveSlot::new(slot).unwrap(), image }
+}
+
+/// One disk of 1 GiB, a passt card and an empty drive, booted from the
+/// disk; or other devices.
+fn devices() -> VmDevices {
+    VmDevices {
+        disks: vec![disk(0, 1)],
+        nics: vec![nic(0, VmNetwork::User)],
+        drives: vec![drive(0, None)],
+        boot: vec![VmBoot::Disk(VmDiskSlot::new(0).unwrap())],
+    }
+}
+
+fn spec_with(devices: VmDevices, autostart: bool) -> VmSpec {
+    VmSpec::new(
+        id(),
+        VmOs::Linux,
+        VmCpus::new(1).unwrap(),
+        VmMemory::new(256).unwrap(),
+        VmFirmware::Uefi,
+        devices,
+        autostart,
+        pool(),
+        volume(),
+    )
+    .unwrap()
+}
+
+fn spec() -> VmSpec {
+    spec_with(devices(), false)
 }
 
 fn refused(response: Response, code: ErrorCode, says: &str) {
@@ -201,6 +285,8 @@ fn refused(response: Response, code: ErrorCode, says: &str) {
 
 async fn set_up(host: &Host) {
     assert_eq!(host.run(Request::EnableVms { pool: pool(), volume: volume() }).await, Response::Done);
+    // The dataset's mount, which the fake does not make.
+    fs::create_dir_all(host.path("volume1/@vms")).unwrap();
 }
 
 #[tokio::test]
@@ -267,25 +353,28 @@ async fn nothing_is_set_up_before_libvirt_is_installed() {
     refused(refusal, ErrorCode::Forbidden, "not installed");
     let Response::VmStates { virsh_list } = host.run(Request::VmStates {}).await else { panic!("no states") };
     assert!(virsh_list.is_empty());
+    let Response::VmStats { domstats } = host.run(Request::VmStats {}).await else { panic!("no stats") };
+    assert!(domstats.is_empty());
 }
 
 #[tokio::test]
-async fn a_vm_gets_a_sparse_zvol_and_a_domain_of_its_own() {
+async fn a_vm_gets_its_sparse_zvols_and_a_domain_of_its_own() {
     let host = host(true);
     let define = |spec: VmSpec| Request::DefineVm { spec };
-    refused(host.run(define(spec(VmNetwork::User, false, false))).await, ErrorCode::Forbidden, "not set up");
+    refused(host.run(define(spec())).await, ErrorCode::Forbidden, "not set up");
     set_up(&host).await;
 
+    let with_image = VmDevices { drives: vec![drive(0, Some(image()))], ..devices() };
     refused(
-        host.run(define(spec(VmNetwork::User, true, false))).await,
+        host.run(define(spec_with(with_image.clone(), false))).await,
         ErrorCode::Forbidden,
-        "ISO was not copied",
+        "not in the library",
     );
     // The host's links, asked of systemd-networkd: a card is no bridge,
     // nor is a link it does not know.
     for other in ["enp1s0", "br7"] {
-        let card = VmNetwork::Bridge { bridge: InterfaceName::parse(other).unwrap() };
-        refused(host.run(define(spec(card, false, false))).await, ErrorCode::Forbidden, "no bridge");
+        let card = VmDevices { nics: vec![nic(0, bridge(other))], ..devices() };
+        refused(host.run(define(spec_with(card, false))).await, ErrorCode::Forbidden, "no bridge");
     }
     assert!(!host.calls().iter().any(|call| call.starts_with("zfs create -s")), "nothing made for a refusal");
     let asked = host.calls();
@@ -297,24 +386,36 @@ async fn a_vm_gets_a_sparse_zvol_and_a_domain_of_its_own() {
         "{asked:?}"
     );
 
-    let bridge = VmNetwork::Bridge { bridge: InterfaceName::parse("br0").unwrap() };
-    assert_eq!(host.run(define(spec(bridge, false, true))).await, Response::Done);
+    host.put_image(IMAGE);
+    let two = VmDevices {
+        disks: vec![disk(0, 1), disk(1, 4)],
+        nics: vec![nic(0, VmNetwork::User), nic(1, bridge("br0"))],
+        ..with_image
+    };
+    assert_eq!(host.run(define(spec_with(two, true))).await, Response::Done);
     let calls = host.calls();
-    assert!(
-        calls.contains(&format!("zfs create -s -V 1G -o volmode=dev tank/zendiloos.vms/{ID}-disk0")),
-        "{calls:?}"
-    );
-    let file = format!("/domains/zendiloos-{ID}.xml");
-    assert!(calls.contains(&format!("virsh --connect qemu:///system define --validate {file}")), "{calls:?}");
+    for wanted in [
+        format!("zfs create -s -V 1G -o volmode=dev tank/zendiloos.vms/{ID}-disk0"),
+        format!("zfs create -s -V 4G -o volmode=dev tank/zendiloos.vms/{ID}-disk1"),
+        format!("virsh --connect qemu:///system define --validate /domains/zendiloos-{ID}.xml.new"),
+    ] {
+        assert!(calls.contains(&wanted), "{wanted}: {calls:?}");
+    }
     assert_eq!(calls.last().unwrap(), &format!("virsh --connect qemu:///system autostart zendiloos-{ID}"));
-    let xml = fs::read_to_string(host.path(&file[1..])).unwrap();
-    assert!(xml.contains(&format!("<source dev='/dev/zvol/tank/zendiloos.vms/{ID}-disk0'/>")), "{xml}");
-    assert!(
-        xml.contains("<source bridge='br0'/>") && xml.contains(&format!("consoles/{ID}.vnc'/>")),
-        "{xml}"
-    );
+    assert_eq!(host.zvols(), [format!("{ID}-disk0"), format!("{ID}-disk1")]);
+    let xml = fs::read_to_string(host.path(&format!("domains/zendiloos-{ID}.xml"))).unwrap();
+    assert!(!host.path(&format!("domains/zendiloos-{ID}.xml.new")).exists());
+    for part in [
+        format!("<source dev='/dev/zvol/tank/zendiloos.vms/{ID}-disk1'/>"),
+        format!("<source file='{}/volume1/@vms/isos/{IMAGE}.iso'/>", host.root.display()),
+        "<source bridge='br0'/>".into(),
+        "<mac address='52:54:00:00:00:01'/>".into(),
+        format!("consoles/{ID}.vnc'/>"),
+    ] {
+        assert!(xml.contains(&part), "{part} missing in {xml}");
+    }
 
-    refused(host.run(define(spec(VmNetwork::User, false, false))).await, ErrorCode::Conflict, "taken");
+    refused(host.run(define(spec())).await, ErrorCode::Conflict, "taken");
 
     assert_eq!(host.run(Request::SetVmAutostart { id: id(), autostart: false }).await, Response::Done);
     assert_eq!(
@@ -324,18 +425,147 @@ async fn a_vm_gets_a_sparse_zvol_and_a_domain_of_its_own() {
 }
 
 #[tokio::test]
-async fn an_iso_is_copied_by_a_unit_that_may_write_only_the_vms_folder() {
+async fn a_vm_that_is_off_changes_its_hardware_and_disks_only_grow() {
+    let host = host(true);
+    set_up(&host).await;
+    let two = VmDevices { disks: vec![disk(0, 1), disk(1, 4)], ..devices() };
+    assert_eq!(host.run(Request::DefineVm { spec: spec_with(two, false) }).await, Response::Done);
+    let slot = |n| VmDiskSlot::new(n).unwrap();
+
+    // disk0 grown, disk1 removed, disk2 added, and two cards.
+    let changed = VmDevices {
+        disks: vec![disk(0, 3), disk(2, 5)],
+        nics: vec![nic(0, VmNetwork::User), nic(1, bridge("br0"))],
+        boot: vec![VmBoot::Disk(slot(2)), VmBoot::Disk(slot(0))],
+        ..devices()
+    };
+    let from = host.calls().len();
+    let update = |devices: VmDevices, remove: Vec<VmDiskSlot>| Request::UpdateVm {
+        spec: spec_with(devices, false),
+        remove,
+    };
+    assert_eq!(host.run(update(changed.clone(), vec![slot(1)])).await, Response::Done);
+    let calls = host.calls_since(from);
+    let at = |wanted: &str| {
+        calls.iter().position(|call| call == wanted).unwrap_or_else(|| panic!("{wanted}: {calls:?}"))
+    };
+    let grown = at(&format!("zfs set volsize=3G tank/zendiloos.vms/{ID}-disk0"));
+    let made = at(&format!("zfs create -s -V 5G -o volmode=dev tank/zendiloos.vms/{ID}-disk2"));
+    let defined =
+        at(&format!("virsh --connect qemu:///system define --validate /domains/zendiloos-{ID}.xml.new"));
+    let disabled = at(&format!("virsh --connect qemu:///system autostart --disable zendiloos-{ID}"));
+    let removed = at(&format!("zfs destroy tank/zendiloos.vms/{ID}-disk1"));
+    assert!(grown < defined && made < defined && defined < disabled && disabled < removed, "{calls:?}");
+    assert_eq!(host.zvols(), [format!("{ID}-disk0"), format!("{ID}-disk2")]);
+    let xml = fs::read_to_string(host.path(&format!("domains/zendiloos-{ID}.xml"))).unwrap();
+    assert!(
+        xml.contains(&format!(
+            "{ID}-disk2'/>\n      <target dev='vdc' bus='virtio'/>\n      <boot order='1'/>"
+        )),
+        "{xml}"
+    );
+
+    // A disk never shrinks; nothing is touched then.
+    let from = host.calls().len();
+    let smaller = VmDevices { disks: vec![disk(0, 2), disk(2, 5)], ..changed.clone() };
+    refused(
+        host.run(update(smaller, vec![])).await,
+        ErrorCode::Forbidden,
+        "disk 0 has 3 GiB: a disk only grows",
+    );
+    assert!(
+        !host.calls_since(from).iter().any(|call| call.starts_with("zfs set") || call.contains(" define "))
+    );
+    refused(
+        host.run(update(changed.clone(), vec![slot(0)])).await,
+        ErrorCode::Forbidden,
+        "both kept and removed",
+    );
+
+    // Nor does its hardware change while it runs.
+    assert_eq!(host.run(Request::ControlVm { id: id(), action: VmAction::Start }).await, Response::Done);
+    let from = host.calls().len();
+    refused(host.run(update(changed, vec![])).await, ErrorCode::Forbidden, "not shut off");
+    assert!(!host.calls_since(from).iter().any(|call| call.starts_with("zfs ") || call.contains(" define ")));
+
+    let other = VmSpec::new(
+        VmId::parse("00000000000f").unwrap(),
+        VmOs::Linux,
+        VmCpus::new(1).unwrap(),
+        VmMemory::new(256).unwrap(),
+        VmFirmware::Uefi,
+        devices(),
+        false,
+        pool(),
+        volume(),
+    )
+    .unwrap();
+    refused(
+        host.run(Request::UpdateVm { spec: other, remove: vec![] }).await,
+        ErrorCode::Forbidden,
+        "no virtual machine",
+    );
+}
+
+#[tokio::test]
+async fn a_drives_medium_changes_while_the_vm_runs() {
+    let host = host(true);
+    set_up(&host).await;
+    host.put_image(IMAGE);
+    assert_eq!(host.run(Request::DefineVm { spec: spec() }).await, Response::Done);
+    let first = VmDriveSlot::new(0).unwrap();
+    let with =
+        |image: Option<VmImageId>| spec_with(VmDevices { drives: vec![drive(0, image)], ..devices() }, false);
+
+    // Off: only the definition changes.
+    let from = host.calls().len();
+    let insert = Request::ChangeVmMedia { spec: with(Some(image())), drive: first };
+    assert_eq!(host.run(insert.clone()).await, Response::Done);
+    let calls = host.calls_since(from);
+    assert!(calls.iter().any(|call| call.contains(" define --validate ")), "{calls:?}");
+    assert!(!calls.iter().any(|call| call.contains("change-media")), "{calls:?}");
+
+    assert_eq!(host.run(Request::ControlVm { id: id(), action: VmAction::Start }).await, Response::Done);
+    assert_eq!(host.state(), "running");
+    assert_eq!(host.run(insert).await, Response::Done);
+    let file = format!("/volume1/@vms/isos/{IMAGE}.iso");
+    assert_eq!(
+        host.calls().last().unwrap(),
+        &format!(
+            "virsh --connect qemu:///system change-media zendiloos-{ID} sdi {file} --update --live --force"
+        )
+    );
+    assert_eq!(host.run(Request::ChangeVmMedia { spec: with(None), drive: first }).await, Response::Done);
+    assert_eq!(
+        host.calls().last().unwrap(),
+        &format!("virsh --connect qemu:///system change-media zendiloos-{ID} sdi --eject --live --force")
+    );
+    let xml = fs::read_to_string(host.path(&format!("domains/zendiloos-{ID}.xml"))).unwrap();
+    assert!(!xml.contains(&file), "the definition follows: {xml}");
+
+    let missing = Request::ChangeVmMedia { spec: with(None), drive: VmDriveSlot::new(2).unwrap() };
+    refused(host.run(missing).await, ErrorCode::Forbidden, "no drive 2");
+    let gone = with(Some(VmImageId::parse("00000000000b").unwrap()));
+    refused(
+        host.run(Request::ChangeVmMedia { spec: gone, drive: first }).await,
+        ErrorCode::Forbidden,
+        "not in the library",
+    );
+}
+
+#[tokio::test]
+async fn an_iso_is_copied_into_the_library_by_a_unit_that_may_write_only_the_vms_folder() {
     let host = host(true);
     set_up(&host).await;
     let source = VmIsoSource {
         share: ShareLocation { volume: volume(), share: ShareName::parse("media").unwrap() },
         path: SharePath::parse("isos/debian.iso").unwrap(),
     };
-    let copy = Request::CopyVmIso { id: id(), volume: volume(), source };
-    assert_eq!(host.run(copy).await, Response::Done);
+    let copy = Request::CopyVmImage { image: image(), volume: volume(), source };
+    assert_eq!(host.run(copy).await, Response::VmImageStored { bytes: 3 });
     let call = host.calls().into_iter().find(|call| call.contains("copy-vm-iso")).expect("a unit");
     for part in [
-        &format!("--unit=zendiloos-vm-iso-{ID}.service") as &str,
+        &format!("--unit=zendiloos-vm-iso-{IMAGE}.service") as &str,
         "--property=ReadWritePaths=/volume1/@vms ",
         "--property=CapabilityBoundingSet=CAP_DAC_READ_SEARCH ",
         "--property=ProtectSystem=strict",
@@ -347,21 +577,86 @@ async fn an_iso_is_copied_by_a_unit_that_may_write_only_the_vms_folder() {
 }
 
 #[tokio::test]
+async fn the_library_lists_its_images_and_removes_them_in_a_unit() {
+    let host = host(true);
+    set_up(&host).await;
+    let listed = || async { host.run(Request::VmImages { volume: volume() }).await };
+    assert_eq!(listed().await, Response::VmImages { files: vec![] });
+    host.put_image(IMAGE);
+    let isos = host.path("volume1/@vms/isos");
+    fs::write(isos.join("notes.txt"), "x").unwrap();
+    fs::write(isos.join(".00000000000c.iso.part"), "x").unwrap();
+    symlink(host.path("volume1/media/isos/debian.iso"), isos.join("00000000000b.iso")).unwrap();
+    assert_eq!(listed().await, Response::VmImages { files: vec![VmImageFile { image: image(), bytes: 3 }] });
+
+    assert_eq!(host.run(Request::DeleteVmImage { image: image(), volume: volume() }).await, Response::Done);
+    let rm = host.calls().into_iter().find(|call| call.contains("rm --force")).expect("removed in a unit");
+    assert!(
+        rm.contains("--property=ReadWritePaths=/volume1/@vms ")
+            && rm.contains("--property=CapabilityBoundingSet= ")
+            && rm.ends_with(&format!("-- /volume1/@vms/isos/{IMAGE}.iso")),
+        "{rm}"
+    );
+    assert!(!isos.join(format!("{IMAGE}.iso")).exists());
+    // Gone already is no failure.
+    assert_eq!(host.run(Request::DeleteVmImage { image: image(), volume: volume() }).await, Response::Done);
+    let elsewhere = Request::VmImages { volume: VolumeNumber::new(2).unwrap() };
+    refused(host.run(elsewhere).await, ErrorCode::Forbidden, "not 2");
+}
+
+#[tokio::test]
+async fn an_upload_goes_through_a_pipe_into_a_unit_without_capabilities() {
+    let host = host(true);
+    set_up(&host).await;
+    let open = |bytes| Request::OpenVmImageUpload { image: image(), volume: volume(), bytes };
+    let (response, pipe) = host.operations.execute_with_file(&open(5)).await;
+    assert_eq!(response, Response::VmImageUpload {});
+    let mut pipe = fs::File::from(pipe.expect("the pipe's writing end comes along"));
+    let (twice, none) = host.operations.execute_with_file(&open(5)).await;
+    refused(twice, ErrorCode::Conflict, "taken");
+    assert!(none.is_none());
+    pipe.write_all(b"hello").unwrap();
+    drop(pipe);
+    let finish = Request::FinishVmImageUpload { image: image() };
+    assert_eq!(host.run(finish.clone()).await, Response::VmImageStored { bytes: 5 });
+    assert_eq!(fs::read(host.path("received")).unwrap(), b"hello");
+    let call = host.calls().into_iter().find(|call| call.contains("receive-vm-image")).expect("a unit");
+    for part in [
+        &format!("--unit=zendiloos-vm-upload-{IMAGE}.service") as &str,
+        "--pipe",
+        "--property=ReadWritePaths=/volume1/@vms ",
+        "--property=CapabilityBoundingSet= ",
+        "--property=ProtectSystem=strict",
+        "/usr/libexec/zendiloos/zendiloos-agent receive-vm-image ",
+    ] {
+        assert!(call.contains(part), "{part} missing in {call}");
+    }
+    refused(host.run(finish).await, ErrorCode::Forbidden, "no upload");
+
+    for bytes in [0, VM_IMAGE_UPLOAD_MAX + 1] {
+        let (refusal, pipe) = host.operations.execute_with_file(&open(bytes)).await;
+        refused(refusal, ErrorCode::Forbidden, "1 byte to 32 GiB");
+        assert!(pipe.is_none());
+    }
+    // An image of that name is in the library already.
+    host.put_image(IMAGE);
+    refused(host.operations.execute_with_file(&open(5)).await.0, ErrorCode::Conflict, "taken");
+}
+
+#[tokio::test]
 async fn vms_are_started_and_stopped_only_by_their_domain() {
     let host = host(true);
     set_up(&host).await;
     let control = |action| Request::ControlVm { id: id(), action };
     refused(host.run(control(VmAction::Start)).await, ErrorCode::Forbidden, "no virtual machine");
-    assert_eq!(
-        host.run(Request::DefineVm { spec: spec(VmNetwork::User, false, false) }).await,
-        Response::Done
-    );
+    assert_eq!(host.run(Request::DefineVm { spec: spec() }).await, Response::Done);
 
     for (action, args) in [
         (VmAction::Start, "start"),
         (VmAction::Shutdown, "shutdown --mode acpi"),
         (VmAction::Reboot, "reboot --mode acpi"),
         (VmAction::ForceOff, "destroy"),
+        (VmAction::Start, "start"),
     ] {
         assert_eq!(host.run(control(action)).await, Response::Done, "{action:?}");
         assert_eq!(
@@ -373,19 +668,24 @@ async fn vms_are_started_and_stopped_only_by_their_domain() {
     refused(host.run(control(VmAction::Start)).await, ErrorCode::Forbidden, "domain is already active");
 
     let Response::VmStates { virsh_list } = host.run(Request::VmStates {}).await else { panic!("no states") };
-    assert!(virsh_list.contains(&format!("zendiloos-{ID}   shut off")), "{virsh_list}");
+    assert!(virsh_list.contains(&format!("zendiloos-{ID}   running")), "{virsh_list}");
+    // One look at all, and only zendiloOS's domains in the answer.
+    let Response::VmStats { domstats } = host.run(Request::VmStats {}).await else { panic!("no stats") };
+    assert_eq!(domstats, format!("Domain: 'zendiloos-{ID}'\n  cpu.time=2\n"));
+    assert_eq!(
+        host.calls().last().unwrap(),
+        "virsh --connect qemu:///system domstats --list-active --nowait --cpu-total --balloon --interface"
+    );
 }
 
 #[tokio::test]
-async fn deleting_a_vm_removes_its_domain_disk_iso_and_xml() {
+async fn deleting_a_vm_removes_its_domain_disks_and_xml_but_not_the_library() {
     let host = host(true);
     set_up(&host).await;
-    assert_eq!(
-        host.run(Request::DefineVm { spec: spec(VmNetwork::User, false, false) }).await,
-        Response::Done
-    );
-    fs::create_dir_all(host.path("volume1/@vms/isos")).unwrap();
-    fs::write(host.path(&format!("volume1/@vms/isos/{ID}.iso")), "iso").unwrap();
+    host.put_image(IMAGE);
+    let two =
+        VmDevices { disks: vec![disk(0, 1), disk(3, 1)], drives: vec![drive(0, Some(image()))], ..devices() };
+    assert_eq!(host.run(Request::DefineVm { spec: spec_with(two, false) }).await, Response::Done);
 
     assert_eq!(
         host.run(Request::DeleteVm { id: id(), pool: pool(), volume: volume() }).await,
@@ -403,12 +703,10 @@ async fn deleting_a_vm_removes_its_domain_disk_iso_and_xml() {
     ));
     assert!(at(&format!("virsh --connect qemu:///system destroy zendiloos-{ID}")) < undefine);
     assert!(undefine < at(&format!("zfs destroy tank/zendiloos.vms/{ID}-disk0")));
-    let rm = calls.iter().find(|call| call.contains("rm --force")).expect("the ISO removed");
-    assert!(
-        rm.contains("--property=ReadWritePaths=/volume1/@vms ")
-            && rm.ends_with(&format!("-- /volume1/@vms/isos/{ID}.iso")),
-        "{rm}"
-    );
+    assert!(undefine < at(&format!("zfs destroy tank/zendiloos.vms/{ID}-disk3")));
+    assert!(host.zvols().is_empty());
+    assert!(!calls.iter().any(|call| call.contains("rm --force")), "the library's images stay");
+    assert!(host.path(&format!("volume1/@vms/isos/{IMAGE}.iso")).exists());
     assert!(!host.path(&format!("domains/zendiloos-{ID}.xml")).exists());
 
     // Gone already is no failure: a VM whose creation failed goes too.
@@ -458,8 +756,8 @@ async fn the_console_is_handed_over_connected_and_never_through_a_link() {
 async fn a_bridge_systemd_networkd_does_not_describe_is_taken() {
     let host = host(true);
     set_up(&host).await;
-    let bridge = VmNetwork::Bridge { bridge: InterfaceName::parse("vms0").unwrap() };
-    assert_eq!(host.run(Request::DefineVm { spec: spec(bridge, false, false) }).await, Response::Done);
+    let card = VmDevices { nics: vec![nic(0, bridge("vms0"))], ..devices() };
+    assert_eq!(host.run(Request::DefineVm { spec: spec_with(card, false) }).await, Response::Done);
     let xml = fs::read_to_string(host.path(&format!("domains/zendiloos-{ID}.xml"))).unwrap();
     assert!(xml.contains("<source bridge='vms0'/>"), "{xml}");
 }

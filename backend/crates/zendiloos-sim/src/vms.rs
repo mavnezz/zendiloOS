@@ -8,13 +8,19 @@ use std::io::{Read, Write};
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 
-use zendiloos_agent_proto::{ErrorCode, Request, Response, VmAction, VmId, VmNetwork, VmStorage};
+use zendiloos_agent_proto::{
+    ErrorCode, Request, Response, VM_IMAGE_UPLOAD_MAX, VmAction, VmId, VmImageFile, VmImageId, VmNetwork,
+    VmSpec, VmStorage,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Power {
     Off,
     Running,
 }
+
+/// An upload being read: the bytes that came once the pipe closed.
+pub(crate) type Receiving = std::thread::JoinHandle<u64>;
 
 #[derive(Debug, Default)]
 pub(crate) struct SimVms {
@@ -24,6 +30,12 @@ pub(crate) struct SimVms {
     domains: BTreeMap<VmId, Power>,
     /// Domain ids since libvirt started, as `virsh list` numbers them.
     started: u32,
+    /// The library's images and their sizes.
+    images: BTreeMap<VmImageId, u64>,
+    /// Uploads under way: what was announced, and the thread reading.
+    pub(crate) uploads: BTreeMap<VmImageId, (u64, Receiving)>,
+    /// Looks at the counters, for CPU time that grows.
+    looks: u64,
 }
 
 fn error(code: ErrorCode, message: &str) -> Response {
@@ -55,28 +67,66 @@ impl SimVms {
                     Response::Done
                 }
             },
-            Request::CopyVmIso { volume, .. } | Request::DeleteVm { volume, .. }
+            Request::CopyVmImage { volume, .. }
+            | Request::DeleteVm { volume, .. }
+            | Request::VmImages { volume }
+            | Request::DeleteVmImage { volume, .. }
                 if self.storage.as_ref().is_none_or(|storage| storage.volume != *volume) =>
             {
                 error(ErrorCode::Forbidden, "refused: the virtual machines' storage is not set up there")
             }
-            Request::CopyVmIso { .. } => Response::Done,
-            Request::DefineVm { .. } if !self.installed => not_installed(),
+            // A small ISO, copied at once.
+            Request::CopyVmImage { image, .. } => {
+                self.images.insert(image.clone(), 4096);
+                Response::VmImageStored { bytes: 4096 }
+            }
+            Request::VmImages { .. } => Response::VmImages {
+                files: self
+                    .images
+                    .iter()
+                    .map(|(image, bytes)| VmImageFile { image: image.clone(), bytes: *bytes })
+                    .collect(),
+            },
+            Request::DeleteVmImage { image, .. } => {
+                self.images.remove(image);
+                Response::Done
+            }
+            Request::OpenVmImageUpload { .. } | Request::FinishVmImageUpload { .. } => {
+                error(ErrorCode::InvalidRequest, "an upload goes with its pipe")
+            }
+            Request::DefineVm { .. } | Request::UpdateVm { .. } | Request::ChangeVmMedia { .. }
+                if !self.installed =>
+            {
+                not_installed()
+            }
             Request::DefineVm { spec } => {
                 if self.domains.contains_key(&spec.id) {
                     error(ErrorCode::Conflict, "the name is already taken")
-                } else if let VmNetwork::Bridge { bridge } = &spec.network
-                    && bridge.as_str() != "br0"
-                {
-                    error(
-                        ErrorCode::Forbidden,
-                        &format!("refused: {} is no bridge of this machine", bridge.as_str()),
-                    )
+                } else if let Some(refusal) = self.refuse_devices(spec) {
+                    refusal
                 } else {
                     self.domains.insert(spec.id.clone(), Power::Off);
                     Response::Done
                 }
             }
+            Request::UpdateVm { spec, .. } => match self.domains.get(&spec.id) {
+                None => missing(&spec.id),
+                Some(Power::Running) => error(
+                    ErrorCode::Forbidden,
+                    "refused: the virtual machine is not shut off: its hardware changes only while it is off",
+                ),
+                Some(Power::Off) => self.refuse_devices(spec).unwrap_or(Response::Done),
+            },
+            Request::ChangeVmMedia { spec, drive } => {
+                if !self.domains.contains_key(&spec.id) {
+                    missing(&spec.id)
+                } else if spec.drive(*drive).is_none() {
+                    error(ErrorCode::Forbidden, &format!("refused: there is no drive {}", drive.get()))
+                } else {
+                    self.refuse_devices(spec).unwrap_or(Response::Done)
+                }
+            }
+            Request::VmStats {} => Response::VmStats { domstats: self.domstats() },
             Request::SetVmAutostart { id, .. } => {
                 if self.domains.contains_key(id) {
                     Response::Done
@@ -131,6 +181,106 @@ impl SimVms {
             }
             _ => return None,
         })
+    }
+
+    /// Why the devices could not be defined: an image not in the library,
+    /// a bridge the simulated host does not have (it has `br0`).
+    fn refuse_devices(&self, spec: &VmSpec) -> Option<Response> {
+        if let Some(image) = spec.images().find(|image| !self.images.contains_key(*image)) {
+            return Some(error(
+                ErrorCode::Forbidden,
+                &format!("refused: the image {} is not in the library", image.as_str()),
+            ));
+        }
+        spec.nics().iter().find_map(|nic| match &nic.network {
+            VmNetwork::Bridge { bridge } if bridge.as_str() != "br0" => Some(error(
+                ErrorCode::Forbidden,
+                &format!("refused: {} is no bridge of this machine", bridge.as_str()),
+            )),
+            _ => None,
+        })
+    }
+
+    /// `virsh domstats` of the running domains: CPU time that grows by a
+    /// second's worth of one vCPU at each look, a guest using half of 1 GiB,
+    /// and network counters that grow too.
+    fn domstats(&mut self) -> String {
+        self.looks += 1;
+        let mut text = String::new();
+        for (id, power) in &self.domains {
+            if *power != Power::Running {
+                continue;
+            }
+            let n = self.looks;
+            text.push_str(&format!(
+                "Domain: '{}'
+  state.state=1
+  cpu.time={}
+  balloon.current=1048576
+                   balloon.maximum=1048576
+  balloon.available=1000000
+  balloon.usable=500000
+                   balloon.rss=600000
+  net.count=1
+  net.0.name=vnet0
+  net.0.rx.bytes={}
+                   net.0.tx.bytes={}
+
+",
+                id.domain(),
+                n * 1_000_000_000,
+                n * 1_000_000,
+                n * 250_000
+            ));
+        }
+        text
+    }
+
+    /// An upload as the agent takes it: a pipe whose reading end a thread
+    /// drains, counting.
+    pub(crate) fn open_upload(&mut self, image: &VmImageId, bytes: u64) -> (Response, Option<OwnedFd>) {
+        if self.storage.is_none() {
+            return (
+                error(ErrorCode::Forbidden, "refused: the virtual machines' storage is not set up"),
+                None,
+            );
+        }
+        if bytes == 0 || bytes > VM_IMAGE_UPLOAD_MAX {
+            return (error(ErrorCode::Forbidden, "refused: an uploaded image has 1 byte to 32 GiB"), None);
+        }
+        if self.images.contains_key(image) || self.uploads.contains_key(image) {
+            return (error(ErrorCode::Conflict, "the name is already taken"), None);
+        }
+        let (mut reader, writer) = match std::io::pipe() {
+            Ok(pipe) => pipe,
+            Err(e) => return (error(ErrorCode::Failed, &format!("no pipe: {e}")), None),
+        };
+        let thread = std::thread::spawn(move || {
+            let mut sink = [0u8; 64 * 1024];
+            let mut received = 0u64;
+            while let Ok(read) = reader.read(&mut sink) {
+                if read == 0 {
+                    break;
+                }
+                received += read as u64;
+            }
+            received
+        });
+        self.uploads.insert(image.clone(), (bytes, thread));
+        (Response::VmImageUpload {}, Some(OwnedFd::from(writer)))
+    }
+
+    /// What an upload whose thread ended stored.
+    pub(crate) fn finish_upload(&mut self, image: &VmImageId, announced: u64, received: u64) -> Response {
+        if received == announced {
+            self.images.insert(image.clone(), received);
+            Response::VmImageStored { bytes: received }
+        } else {
+            error(
+                ErrorCode::Forbidden,
+                &format!("refused: the upload ended after {received} of {announced} bytes"),
+            )
+        }
     }
 
     /// The console of a running VM, as the agent answers: one side of a

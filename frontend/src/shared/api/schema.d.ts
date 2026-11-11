@@ -3799,12 +3799,79 @@ export interface paths {
         get: operations["list_vms"];
         put?: never;
         /**
-         * Makes a VM, as a job: the ISO copied from its share (which the
-         *     administrator must be able to read), a sparse disk, the domain defined.
-         *     Needs `vms.manage`.
+         * Makes a VM, as a job: its sparse disks made, the domain defined, the
+         *     library's images in its drives. Needs `vms.manage`.
          */
         post: operations["create_vm"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/images": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The library, oldest first, with the VMs each image is in. Needs
+         *     `vms.manage`.
+         */
+        get: operations["list_vm_images"];
+        put?: never;
+        /**
+         * Adds an ISO from a share to the library, as a job: the file, which the
+         *     administrator must be able to read, copied into the VMs' storage (its
+         *     blocks cloned where the pool can). Needs `vms.manage`.
+         */
+        post: operations["import_vm_image"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/images/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Uploads an ISO into the library: the request body, unchanged, of the
+         *     length `Content-Length` says, at most the plugin's
+         *     `image_upload_max_bytes`. It goes through a pipe into a unit of the
+         *     agent's, which names it only once it came whole. Needs `vms.manage`.
+         */
+        post: operations["upload_vm_image"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/images/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Renames an image; its file stays as it is. Needs `vms.manage`. */
+        put: operations["rename_vm_image"];
+        post?: never;
+        /**
+         * Removes an image from the library. Refused while a VM has it in a
+         *     drive, the VMs named. Needs `vms.manage`.
+         */
+        delete: operations["delete_vm_image"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3876,7 +3943,12 @@ export interface paths {
         };
         /** One VM. Needs `vms.manage`. */
         get: operations["get_vm"];
-        put?: never;
+        /**
+         * Changes a VM, its domain defined anew from its settings. Its name,
+         *     autostart and the images in its drives change while it runs (a medium
+         *     at once); anything else only while it is shut off. Needs `vms.manage`.
+         */
+        put: operations["update_vm"];
         post?: never;
         delete?: never;
         options?: never;
@@ -3911,8 +3983,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Removes the VM: powered off, undefined, its disk and its ISO's copy
-         *     destroyed. Needs `vms.manage`.
+         * Removes the VM: powered off, undefined, its disks destroyed; the images
+         *     it had stay in the library. Needs `vms.manage`.
          */
         post: operations["delete_vm"];
         delete?: never;
@@ -4796,16 +4868,20 @@ export interface components {
         };
         CreateVmRequest: {
             autostart?: boolean;
+            /** @description The devices it boots from, first first. */
+            boot: components["schemas"]["VmBootDevice"][];
             /** Format: int32 */
             cpus: number;
-            /** Format: int32 */
-            disk_gib: number;
+            /** @description 1 to 8. */
+            disks: components["schemas"]["VmDisk"][];
+            /** @description Up to 3, with images of the library or empty. */
+            drives: components["schemas"]["VmDrive"][];
             firmware: components["schemas"]["VmFirmware"];
-            iso?: components["schemas"]["VmIsoChoice"] | null;
             /** Format: int32 */
             memory_mib: number;
             name: string;
-            network: components["schemas"]["VmNetwork"];
+            /** @description Up to 4. */
+            nics: components["schemas"]["VmNicChoice"][];
             os: components["schemas"]["VmOs"];
         };
         /** @description A VM recorded, and the job that makes it. */
@@ -5636,6 +5712,19 @@ export interface components {
              */
             share_id: number;
         };
+        ImportVmImageRequest: {
+            /** @description What it is called; its file's name if none. */
+            name?: string | null;
+            /** @description In the share: `isos/debian-13.1.0-amd64-netinst.iso`. */
+            path: string;
+            /** Format: int64 */
+            share_id: number;
+        };
+        /** @description An image recorded, and the job that copies it. */
+        ImportedVmImage: {
+            image: components["schemas"]["VmImage"];
+            job: components["schemas"]["Job"];
+        };
         /**
          * @description An app installed the earlier way, with a dataset and an account of its
          *     own: it is started, stopped and removed, no longer installed or
@@ -5903,6 +5992,10 @@ export interface components {
             /** @enum {string} */
             type: "notification";
         } | {
+            data: components["schemas"]["VmStats"];
+            /** @enum {string} */
+            type: "vm_stats";
+        } | {
             message: string;
             /** @enum {string} */
             type: "error";
@@ -5918,7 +6011,7 @@ export interface components {
             type: "unsubscribe";
         };
         /** @enum {string} */
-        LiveTopic: "metrics" | "jobs" | "notifications";
+        LiveTopic: "metrics" | "jobs" | "notifications" | "vm_stats";
         LocateRequest: {
             /**
              * Format: int32
@@ -6764,6 +6857,9 @@ export interface components {
             name: string;
             path: string;
         };
+        RenameVmImageRequest: {
+            name: string;
+        };
         RenewRecoveryCodesRequest: {
             /**
              * Format: password
@@ -7578,6 +7674,27 @@ export interface components {
              */
             shared?: boolean | null;
         };
+        /** @description A VM's settings as they are to be: all of them, its system aside. */
+        UpdateVmRequest: {
+            autostart: boolean;
+            boot: components["schemas"]["VmBootDevice"][];
+            /** @description The VM's name, typed again: needed when a disk is removed. */
+            confirm?: string | null;
+            /** Format: int32 */
+            cpus: number;
+            /**
+             * @description A disk of a slot it had keeps its data and only grows; one left out
+             *     is destroyed.
+             */
+            disks: components["schemas"]["VmDisk"][];
+            drives: components["schemas"]["VmDrive"][];
+            firmware: components["schemas"]["VmFirmware"];
+            /** Format: int32 */
+            memory_mib: number;
+            name: string;
+            /** @description A card of a slot it had keeps its MAC address. */
+            nics: components["schemas"]["VmNicChoice"][];
+        };
         UpdatesOverview: {
             /**
              * Format: int64
@@ -7646,20 +7763,21 @@ export interface components {
         VdevState: "online" | "degraded" | "faulted" | "offline" | "removed" | "unavailable" | "suspended" | "unknown";
         VirtualMachine: {
             autostart: boolean;
+            /** @description The devices it boots from, first first. */
+            boot: components["schemas"]["VmBootDevice"][];
             /** Format: int32 */
             cpus: number;
             /** Format: int64 */
             created_at: number;
-            /** Format: int32 */
-            disk_gib: number;
+            disks: components["schemas"]["VmDisk"][];
+            drives: components["schemas"]["VmDrive"][];
             firmware: components["schemas"]["VmFirmware"];
             /** @description Twelve hexadecimal digits. */
             id: string;
-            iso?: components["schemas"]["VmIsoOrigin"] | null;
             /** Format: int32 */
             memory_mib: number;
             name: string;
-            network: components["schemas"]["VmNetwork"];
+            nics: components["schemas"]["VmNic"][];
             os: components["schemas"]["VmOs"];
             pool: string;
             state: components["schemas"]["VmPowerState"];
@@ -7668,6 +7786,35 @@ export interface components {
         };
         VmAutostartRequest: {
             autostart: boolean;
+        };
+        /** @description A device a VM boots from. */
+        VmBootDevice: {
+            kind: components["schemas"]["VmBootKind"];
+            /** Format: int32 */
+            slot: number;
+        };
+        /** @enum {string} */
+        VmBootKind: "disk" | "drive";
+        /** @description A disk: a sparse zvol in its slot, 0 to 7. */
+        VmDisk: {
+            bus: components["schemas"]["VmDiskBus"];
+            /** Format: int32 */
+            size_gib: number;
+            /** Format: int32 */
+            slot: number;
+        };
+        /**
+         * @description How a disk is attached: virtio (Linux), SATA (systems without virtio
+         *     drivers).
+         * @enum {string}
+         */
+        VmDiskBus: "virtio" | "sata";
+        /** @description A CD drive in its slot, 0 to 2, with an image of the library or empty. */
+        VmDrive: {
+            /** @description An image's id; none: empty. */
+            image?: string | null;
+            /** Format: int32 */
+            slot: number;
         };
         /** @enum {string} */
         VmFirmware: "uefi" | "bios";
@@ -7686,19 +7833,61 @@ export interface components {
             /** @description `/dev/kvm` is there: the kernel can run VMs with the CPU's help. */
             kvm: boolean;
         };
-        /** @description An ISO in a share, picked as the VM's installation medium. */
-        VmIsoChoice: {
-            /** @description In the share: `isos/debian-13.1.0-amd64-netinst.iso`. */
-            path: string;
+        /** @description An ISO of the library, kept once for as many VMs as want it. */
+        VmImage: {
             /** Format: int64 */
-            share_id: number;
+            added_at: number;
+            /**
+             * Format: int64
+             * @description None while it is not known: an ISO a VM had before the library,
+             *     until the library is looked at.
+             */
+            bytes?: number | null;
+            /** @description Twelve hexadecimal digits. */
+            id: string;
+            name: string;
+            origin: components["schemas"]["VmImageOrigin"];
+            /** @description In the library: false while it is being copied or uploaded. */
+            ready: boolean;
+            /** @description The VMs that have it in a drive; it stays while there are any. */
+            used_by: string[];
         };
-        /** @description Where a VM's ISO was copied from. */
-        VmIsoOrigin: {
+        /** @description Where an image came from. */
+        VmImageOrigin: {
+            /** @enum {string} */
+            kind: "share";
             path: string;
             share: string;
+        } | {
+            file: string;
+            /** @enum {string} */
+            kind: "upload";
         };
-        /** @description How a VM reaches the network. */
+        /**
+         * @description A running VM's load. What libvirt cannot tell is none: the CPU on the
+         *     first look, the network for a card through passt (it has no device on
+         *     the host to count).
+         */
+        VmLoad: {
+            /**
+             * Format: float
+             * @description Busy share of its vCPUs, 0 to 100.
+             */
+            cpu_percent?: number | null;
+            id: string;
+            /**
+             * Format: int64
+             * @description What it was given.
+             */
+            memory_bytes: number;
+            /** Format: int64 */
+            memory_used_bytes?: number | null;
+            /** Format: int64 */
+            received_bytes_per_second?: number | null;
+            /** Format: int64 */
+            sent_bytes_per_second?: number | null;
+        };
+        /** @description How a network card reaches the network. */
         VmNetwork: {
             /** @enum {string} */
             kind: "user";
@@ -7707,6 +7896,26 @@ export interface components {
             /** @enum {string} */
             kind: "bridge";
         };
+        /** @description A network card, with the MAC address zendiloOS gave it. */
+        VmNic: {
+            mac: string;
+            model: components["schemas"]["VmNicModel"];
+            network: components["schemas"]["VmNetwork"];
+            /** Format: int32 */
+            slot: number;
+        };
+        /** @description A network card as asked for, in its slot, 0 to 3. */
+        VmNicChoice: {
+            model: components["schemas"]["VmNicModel"];
+            network: components["schemas"]["VmNetwork"];
+            /** Format: int32 */
+            slot: number;
+        };
+        /**
+         * @description The network card a VM sees: virtio, or an e1000e every system knows.
+         * @enum {string}
+         */
+        VmNicModel: "virtio" | "e1000e";
         /** @enum {string} */
         VmOs: "linux" | "windows" | "other";
         /**
@@ -7722,6 +7931,11 @@ export interface components {
              */
             cores: number;
             hardware: components["schemas"]["VmHardware"];
+            /**
+             * Format: int64
+             * @description The largest image a browser uploads into the library.
+             */
+            image_upload_max_bytes: number;
             installed: boolean;
             /** Format: int64 */
             memory_bytes: number;
@@ -7734,6 +7948,32 @@ export interface components {
          * @enum {string}
          */
         VmPowerState: "running" | "paused" | "shutting_down" | "shut_off" | "crashed" | "suspended" | "creating" | "unknown";
+        /** @description What the virtual machines use now. */
+        VmStats: {
+            /**
+             * Format: int64
+             * @description Unix time in seconds.
+             */
+            at: number;
+            /**
+             * Format: float
+             * @description The share of the machine's threads the VMs keep busy, 0 to 100.
+             */
+            cpu_percent: number;
+            /** Format: int32 */
+            host_cores: number;
+            /** Format: int64 */
+            host_memory_bytes: number;
+            /**
+             * Format: int64
+             * @description What the running VMs were given, against the machine's memory.
+             */
+            memory_assigned_bytes: number;
+            running: number;
+            total: number;
+            /** @description Each running VM's load. */
+            vms: components["schemas"]["VmLoad"][];
+        };
         /** @description A pool zendiloOS made, by its name and volume. */
         VmStoragePlace: {
             pool: string;
@@ -16864,8 +17104,219 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `invalid_input`: more than the machine has, an unknown bridge, no .iso; `iso_denied` */
+            /** @description `invalid_input`: more than the machine has, an unknown bridge or image, devices that break the rules */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_vm_images: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VmImage"][];
+                };
+            };
+        };
+    };
+    import_vm_image: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportVmImageRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportedVmImage"];
+                };
+            };
+            /** @description `not_found`: no such file */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `vms_not_installed`, `vms_not_set_up`, `name_taken` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`: no .iso, no name; `iso_denied` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    upload_vm_image: {
+        parameters: {
+            query: {
+                /** @description What the image is called: the file's name, as a rule. */
+                name: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": number[];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VmImage"];
+                };
+            };
+            /** @description `bad_request`: no length, or the upload did not complete */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `vms_not_set_up`, `name_taken`; `refused`: no room on the pool */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`: no name, larger than allowed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    rename_vm_image: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenameVmImageRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VmImage"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `name_taken` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_vm_image: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `image_in_use`: the VMs that have it, in `detail`; `refused`: still being added */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -16984,6 +17435,58 @@ export interface operations {
             };
             /** @description `not_found` */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_vm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateVmRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VirtualMachine"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `vm_running`: hardware changes while it is not shut off; `vm_creating`; `name_taken`; `refused` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`: a disk shrunk, more than the machine has; `confirmation_mismatch`: a disk removed without the name */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

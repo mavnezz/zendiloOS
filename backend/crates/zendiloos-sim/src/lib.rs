@@ -840,14 +840,38 @@ impl AgentTransport for SimulatedAgent {
             Request::OpenTerminal { .. } => {
                 error(ErrorCode::InvalidRequest, "a terminal is opened with its descriptor")
             }
+            Request::FinishVmImageUpload { image } => {
+                let upload = self.vms.lock().unwrap_or_else(PoisonError::into_inner).uploads.remove(image);
+                match upload {
+                    None => error(
+                        ErrorCode::Forbidden,
+                        &format!("refused: no upload of image {} is under way", image.as_str()),
+                    ),
+                    Some((announced, thread)) => {
+                        // The pipe is closed before the end is asked for: the
+                        // thread has read it all, or is about to.
+                        let received = thread.join().unwrap_or(0);
+                        self.vms
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .finish_upload(image, announced, received)
+                    }
+                }
+            }
             Request::VmHost {}
             | Request::EnableVms { .. }
-            | Request::CopyVmIso { .. }
+            | Request::CopyVmImage { .. }
+            | Request::VmImages { .. }
+            | Request::DeleteVmImage { .. }
+            | Request::OpenVmImageUpload { .. }
             | Request::DefineVm { .. }
+            | Request::UpdateVm { .. }
+            | Request::ChangeVmMedia { .. }
             | Request::SetVmAutostart { .. }
             | Request::ControlVm { .. }
             | Request::DeleteVm { .. }
             | Request::VmStates {}
+            | Request::VmStats {}
             | Request::OpenVmConsole { .. } => {
                 self.vms.lock().unwrap_or_else(PoisonError::into_inner).handle(&request).unwrap_or_else(
                     || error(ErrorCode::InvalidRequest, "not a request about virtual machines"),
@@ -1251,6 +1275,12 @@ impl AgentTransport for SimulatedAgent {
             }
             Request::OpenVmConsole { ref id } => {
                 let opened = self.vms.lock().unwrap_or_else(PoisonError::into_inner).console(id);
+                self.received.lock().unwrap_or_else(PoisonError::into_inner).push(request);
+                Ok(opened)
+            }
+            Request::OpenVmImageUpload { ref image, bytes, .. } => {
+                let opened =
+                    self.vms.lock().unwrap_or_else(PoisonError::into_inner).open_upload(image, bytes);
                 self.received.lock().unwrap_or_else(PoisonError::into_inner).push(request);
                 Ok(opened)
             }
