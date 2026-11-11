@@ -33,7 +33,7 @@ zendiloos (0.4.0) unstable; urgency=medium
     administrators see every account's personal folder in the explorer.
   * Fixes and hardening throughout.
 
- -- zendiloOS <julian@stuch.info>  Tue, 10 Nov 2026 12:43:05 +0000
+ -- zendiloOS <github.com@stuch.me>  Tue, 10 Nov 2026 12:43:05 +0000
 
 zendiloos (0.3.0) unstable; urgency=medium
 
@@ -63,7 +63,7 @@ zendiloos (0.3.0) unstable; urgency=medium
   * Moves between volumes remove only what was copied and written out.
   * Fixes and hardening throughout.
 
- -- zendiloOS <julian@stuch.info>  Mon, 09 Nov 2026 14:32:05 +0000
+ -- zendiloOS <github.com@stuch.me>  Mon, 09 Nov 2026 14:32:05 +0000
 
 zendiloos (0.2.0) unstable; urgency=medium
 
@@ -87,7 +87,7 @@ zendiloos (0.2.0) unstable; urgency=medium
   * Storage, the resource monitor and the logs move into the control panel.
   * Fixes and hardening from three rounds of audits.
 
- -- zendiloOS <julian@stuch.info>  Sun, 08 Nov 2026 11:13:07 +0000
+ -- zendiloOS <github.com@stuch.me>  Sun, 08 Nov 2026 11:13:07 +0000
 
 zendiloos (0.1.1) unstable; urgency=medium
 
@@ -95,10 +95,10 @@ zendiloos (0.1.1) unstable; urgency=medium
     socket as a permission, more device kinds, generated secrets as asked.
   * README with screenshots; Renovate follows the catalog's checks.
 
- -- zendiloOS <julian@stuch.info>  Fri, 06 Nov 2026 21:30:00 +0100
+ -- zendiloOS <github.com@stuch.me>  Fri, 06 Nov 2026 21:30:00 +0100
 
 zendiloos (0.1.0) unstable; urgency=medium
 
   * Initial package: management service, privileged agent, web interface.
 
- -- zendiloOS <julian@stuch.info>  Thu, 05 Nov 2026 12:00:00 +0100
+ -- zendiloOS <github.com@stuch.me>  Thu, 05 Nov 2026 12:00:00 +0100
