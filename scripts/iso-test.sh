@@ -10,6 +10,9 @@
 #      which QEMU's NAT makes 10.0.2.2, an address of the own network), and
 #      a ZFS pool is made on the second disk: ZFS was built for the
 #      installed kernel
+#   4. systemd-networkd manages the network (the ISO handed it over from
+#      ifupdown), so zendiloOS can change it, and names resolve through
+#      systemd-resolved: apt finds Debian's mirror when looking for updates
 #
 # Usage: scripts/iso-test.sh [ISO]   (the newest dist/zendiloos-*.iso)
 #   ZENDILOOS_ISO_TEST_REUSE=1  skips the installation and starts the
@@ -129,6 +132,29 @@ state=$(call GET "/jobs/$job" | jq -r '.state + " " + (.error_detail // "")')
 fi
 call GET /storage/pools | jq -e '.[] | select(.name == "tank" and .state == "online")' >/dev/null \
     || fail "the pool is not online: $(call GET /storage/pools | jq -c .)"
+
+say "4. systemd-networkd manages the network, and names resolve"
+setup=$(call GET /network/setup)
+echo "  the network's manager: $(jq -r .manager <<<"$setup"), managed: $(jq -r .managed <<<"$setup")"
+jq -e '.managed == true and .manager == "networkd"' <<<"$setup" >/dev/null \
+    || fail "systemd-networkd does not manage the network: $setup"
+network=$(call GET /network)
+card=$(jq -r '.default_routes[0].interface // empty' <<<"$network")
+[[ -n $card ]] || fail "no default route: $network"
+echo "  $card: $(jq -r --arg card "$card" '[.interfaces[] | select(.name == $card) | .addresses[] | select(.scope == "global") | .address] | join(", ")' <<<"$network")," \
+    "name servers $(jq -r '.name_servers | join(", ")' <<<"$network")"
+jq -e '.name_servers | length > 0' <<<"$network" >/dev/null || fail "no name servers: $network"
+status() {
+    curl -sk -o /dev/null -w '%{http_code}' -b "$work/jar" -X "$1" -H "Origin: $base" \
+        -H "X-CSRF-Token: $(cat "$work/csrf")" "$api$2"
+}
+# The daily check may be under way already, a while after zendiloosd started.
+wait_for "a look for updates to start" "[[ \$(status POST /system/updates/check) == 202 ]]" 900
+wait_for "the look for updates" "call GET /system/updates | jq -e '.phase == \"idle\" and .checked_at != null'" 900
+updates=$(call GET /system/updates)
+jq -e '.packages_error == null' <<<"$updates" >/dev/null \
+    || fail "apt could not reach Debian's mirror (name resolution?): $(jq -r .packages_error <<<"$updates")"
+echo "  apt reached Debian's mirror: $(jq '.packages | length' <<<"$updates") packages to update"
 rm -rf "$work"
 
 say "The ISO installs a working zendiloOS (the machine stays in $dir until the next run)"

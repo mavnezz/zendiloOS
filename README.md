@@ -71,7 +71,10 @@ sudo apt install ./zendiloos_<version>_amd64.deb   # from a release
 ```
 
 ZFS comes from Debian's `contrib` and is built for your kernel. The setup code
-is on the console and in `/var/lib/zendiloos/setup-code`.
+is on the console and in `/var/lib/zendiloos/setup-code`. Where Debian's
+installer set the network up with ifupdown, Control panel → **Network**
+offers to let zendiloOS manage it (the ISO does that by itself); it waits
+for your confirmation and gives ifupdown everything back if none comes.
 
 ### Update
 

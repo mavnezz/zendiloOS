@@ -20,7 +20,7 @@ test:
     cargo test --workspace --locked
 
 # Everything CI checks; the tests run measured, against the coverage thresholds
-check: version-check release-notes-test lint deny coverage-backend sqlx-check api-check web-check
+check: version-check release-notes-test iso-network-test lint deny coverage-backend sqlx-check api-check web-check
 
 # The crates carry the version of the newest entry in debian/changelog
 # (Debian's ~ for a test release is Cargo's -)
@@ -152,6 +152,11 @@ iso:
 # Installs from the newest ISO in dist/ into a fresh QEMU machine, unattended
 iso-test:
     scripts/iso-test.sh
+
+# The ISO's switch from ifupdown to systemd-networkd (packaging/iso/network.sh)
+# against what Debian's installer writes, in a directory of its own
+iso-network-test:
+    scripts/iso-network-test.sh
 
 # Makes the key pair releases are signed with (docs/releases.md): the public
 # key goes into the repository, the secret one into a GitHub secret

@@ -2,7 +2,8 @@
 # Builds the installation ISO (docs/releases.md, "Installation ISO"): Debian
 # 13's netinst image, checked against its pinned SHA512, with an entry
 # "Install zendiloOS" first in both boot menus (BIOS and UEFI), the answers
-# in packaging/iso/preseed.cfg and the package to install at the end. The
+# in packaging/iso/preseed.cfg, the package to install at the end and
+# packaging/iso/network.sh, which hands the network to systemd-networkd. The
 # image is not rebuilt: xorriso replaces those few files and keeps Debian's
 # boot records as they are.
 #
@@ -88,6 +89,7 @@ declare -A files=(
     [./isolinux/gtk.cfg]="$work/gtk.cfg"
     [./boot/grub/grub.cfg]="$work/grub.cfg"
     [./zendiloos/preseed.cfg]="$root/packaging/iso/preseed.cfg"
+    [./zendiloos/network.sh]="$root/packaging/iso/network.sh"
     [./zendiloos/$name]="$package"
 )
 for path in "${!files[@]}"; do

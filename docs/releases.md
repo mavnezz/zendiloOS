@@ -137,7 +137,11 @@ installed kernel (no ZFS module is shipped, see architecture 4.10); at the
 end the release's package is installed from the ISO, and the setup is left
 open (architecture 4.5): no setup code, the console shows the address of
 the web interface, and whoever opens it first from the own network creates
-the administrator.
+the administrator. Last, `packaging/iso/network.sh` hands the network
+Debian's installer set up with ifupdown to systemd-networkd and
+systemd-resolved, so zendiloOS can change it from the first boot
+(architecture 6, "Network"); what it does not understand stays with
+ifupdown, which zendiloOS then offers to take over.
 
 Each release carries it as `zendiloos-amd64-netinst.iso`, listed in the
 signed `SHA256SUMS`, so the newest stable one is always
@@ -145,8 +149,11 @@ signed `SHA256SUMS`, so the newest stable one is always
 
 Locally: `just iso` builds one for the newest package in `dist/`;
 `just iso-test` installs from it into a fresh QEMU machine, unattended, and
-checks that zendiloOS answers, takes its setup and makes a ZFS pool. A
-newer Debian point release is taken by changing `packaging/iso/netinst.env`.
+checks that zendiloOS answers, takes its setup, makes a ZFS pool, that
+systemd-networkd manages the network and that names resolve (apt reaches
+Debian's mirror). `just iso-network-test` (part of `just check`) runs the
+network's switch against what Debian's installer writes. A newer Debian
+point release is taken by changing `packaging/iso/netinst.env`.
 
 ## The repository must stay public
 
