@@ -7,6 +7,7 @@ import type { VmFirmware, VmOs, VmPlugin } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
 import { useJobsStore } from '@/shared/jobs/store'
 import { cn } from '@/shared/lib/utils'
+import { useOpenApp } from '@/shared/lib/window-section'
 import { formatBytes } from '@/shared/lib/format'
 import { Alert } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
@@ -50,6 +51,13 @@ const CHOSEN = 'border-primary bg-primary/5 dark:bg-primary/10'
 const { t } = useI18n()
 const actions = useVmActions()
 const jobs = useJobsStore()
+const openApp = useOpenApp()
+
+/** Bridges are made on the control panel's Network page. */
+function toNetwork(): void {
+  open.value = false
+  openApp?.('settings', 'network')
+}
 const { data: shares } = useShareList()
 
 const step = ref(0)
@@ -333,9 +341,12 @@ const reviewRows = computed(() => [
               }}</span>
             </label>
           </div>
-          <p v-if="!plugin.bridges.length" class="text-xs text-muted-foreground">
-            {{ t('vms.wizard.noBridge') }}
-          </p>
+          <div v-if="!plugin.bridges.length" class="grid justify-items-start gap-2">
+            <p class="text-xs text-muted-foreground">{{ t('vms.wizard.noBridge') }}</p>
+            <Button v-if="openApp" type="button" size="sm" variant="outline" @click="toNetwork">
+              {{ t('vms.wizard.toNetwork') }}
+            </Button>
+          </div>
         </fieldset>
         <div class="flex items-center gap-3">
           <Switch id="vm-autostart" v-model="form.autostart" />

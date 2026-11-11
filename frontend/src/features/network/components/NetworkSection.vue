@@ -1,9 +1,16 @@
 <script setup lang="ts">
-import { Cable, LoaderCircle, Network, Pencil, Wifi } from 'lucide-vue-next'
+import { Cable, LoaderCircle, Network, Pencil, Plus, Trash2, Users, Wifi } from 'lucide-vue-next'
+import {
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuPortal,
+  DropdownMenuRoot,
+  DropdownMenuTrigger,
+} from 'reka-ui'
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import type { NetworkInterface, PlannedInterface } from '@/shared/api/types'
+import type { NetworkDevice, NetworkInterface, PlannedInterface } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
 import { useJobsStore } from '@/shared/jobs/store'
 import { cn } from '@/shared/lib/utils'
@@ -12,7 +19,10 @@ import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
 
 import { useNetwork, useNetworkActions, useNetworkSetup } from '../api'
+import { type DeviceKind, composition, describeSettings } from '../lib/devices'
+import DeviceDialog from './DeviceDialog.vue'
 import InterfaceDialog from './InterfaceDialog.vue'
+import RemoveDeviceDialog from './RemoveDeviceDialog.vue'
 
 const i18n = useI18n()
 const { t } = i18n
@@ -33,6 +43,36 @@ const changeable = (item: NetworkInterface) =>
 
 const editing = ref<NetworkInterface | null>(null)
 const dialogOpen = ref(false)
+
+/** The bridges, bonds and VLANs zendiloOS made: these change and go. */
+const devices = computed(() => setup.value?.devices ?? [])
+const madeHere = (item: NetworkInterface) => devices.value.find((d) => d.name === item.name)
+const canAdd = computed(
+  () => setup.value?.managed === true && props.canManage && !setup.value.pending,
+)
+const ADDABLE: DeviceKind[] = ['bridge', 'bond', 'vlan']
+const deviceKind = ref<DeviceKind | null>(null)
+const deviceEditing = ref<NetworkDevice | null>(null)
+const deviceOpen = ref(false)
+const removing = ref<NetworkDevice | null>(null)
+const removeOpen = ref(false)
+
+function add(kind: DeviceKind): void {
+  deviceKind.value = kind
+  deviceEditing.value = null
+  deviceOpen.value = true
+}
+
+function changeMembers(device: NetworkDevice): void {
+  deviceKind.value = null
+  deviceEditing.value = device
+  deviceOpen.value = true
+}
+
+function remove(device: NetworkDevice): void {
+  removing.value = device
+  removeOpen.value = true
+}
 /** The static address just applied: the NAS is confirmed from there. */
 const newAddress = ref<string | null>(null)
 const failure = ref<string | null>(null)
@@ -115,27 +155,24 @@ function icon(item: NetworkInterface) {
 }
 
 /** How the takeover sets an interface up, in a line. */
-function planned(item: PlannedInterface): string {
-  const parts: string[] = []
-  const ipv4 = item.ipv4
-  if (ipv4.mode === 'dhcp') {
-    parts.push(
-      ipv4.keep
-        ? t('network.takeover.dhcpKeeps', { address: ipv4.keep })
-        : t('network.takeover.dhcp'),
-    )
-  } else if (ipv4.mode === 'static') {
-    parts.push(`${ipv4.address}/${ipv4.prefix}`)
-    if (ipv4.gateway) parts.push(t('network.takeover.via', { gateway: ipv4.gateway }))
-  } else {
-    parts.push(t('network.takeover.ipv4Off'))
-  }
-  parts.push(
-    item.ipv6 === 'automatic' ? t('network.takeover.ipv6Automatic') : t('network.takeover.ipv6Off'),
-  )
-  if (item.dns.length) parts.push(t('network.takeover.dns', { servers: item.dns.join(', ') }))
-  return parts.join(' · ')
-}
+const planned = (item: PlannedInterface) => describeSettings(item, t)
+
+/** What the pending change is, in its title and hint. */
+const pendingTitle = computed(() => {
+  const pending = setup.value?.pending
+  if (!pending) return ''
+  if (pending.takeover) return t('network.pending.takeoverTitle')
+  if (pending.device)
+    return t(`network.pending.deviceTitle.${pending.device}`, { name: pending.interface })
+  return t('network.pending.title', { name: pending.interface })
+})
+const pendingHint = computed(() => {
+  const pending = setup.value?.pending
+  const seconds = secondsLeft.value
+  if (pending?.takeover) return t('network.pending.takeoverHint', { seconds })
+  if (pending?.device) return t('network.pending.deviceHint', { seconds })
+  return t('network.pending.hint', { seconds })
+})
 
 /** Link-local addresses only matter to experts; they come last anyway. */
 const shown = (item: NetworkInterface) => item.addresses.filter((a) => a.scope !== 'link')
@@ -152,20 +189,8 @@ const linkLocal = (item: NetworkInterface) => item.addresses.filter((a) => a.sco
       class="grid gap-2 rounded-xl border border-amber-500/50 bg-amber-500/10 p-4 text-sm"
       role="status"
     >
-      <p class="font-medium">
-        {{
-          setup.pending.takeover
-            ? t('network.pending.takeoverTitle')
-            : t('network.pending.title', { name: setup.pending.interface })
-        }}
-      </p>
-      <p>
-        {{
-          setup.pending.takeover
-            ? t('network.pending.takeoverHint', { seconds: secondsLeft })
-            : t('network.pending.hint', { seconds: secondsLeft })
-        }}
-      </p>
+      <p class="font-medium">{{ pendingTitle }}</p>
+      <p>{{ pendingHint }}</p>
       <p v-if="elsewhere">
         {{ t('network.pending.elsewhere') }}
         <a class="font-medium underline" :href="`https://${newAddress}/`"
@@ -228,6 +253,30 @@ const linkLocal = (item: NetworkInterface) => item.addresses.filter((a) => a.sco
         </div>
       </section>
 
+      <div v-if="canAdd" class="flex justify-end">
+        <DropdownMenuRoot :modal="false">
+          <DropdownMenuTrigger as-child>
+            <Button size="sm" variant="outline"><Plus />{{ t('network.add.button') }}</Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuPortal>
+            <DropdownMenuContent
+              align="end"
+              :side-offset="4"
+              class="z-[1100] min-w-40 rounded-xl border bg-popover p-1 text-popover-foreground shadow-lg"
+            >
+              <DropdownMenuItem
+                v-for="addable in ADDABLE"
+                :key="addable"
+                class="flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-none select-none data-[highlighted]:bg-accent"
+                @select="add(addable)"
+              >
+                {{ t(`network.add.${addable}`) }}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenuPortal>
+        </DropdownMenuRoot>
+      </div>
+
       <dl class="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
         <dt class="text-muted-foreground">{{ t('network.gateway') }}</dt>
         <dd>
@@ -257,9 +306,30 @@ const linkLocal = (item: NetworkInterface) => item.addresses.filter((a) => a.sco
               <h3 class="truncate font-medium">{{ item.name }}</h3>
               <p class="truncate text-xs text-muted-foreground">
                 {{ kind(item) }}<template v-if="item.mac"> · {{ item.mac }}</template> · MTU
-                {{ item.mtu }}
+                {{ item.mtu
+                }}<template v-if="madeHere(item)"> · {{ t('network.devices.madeHere') }}</template>
               </p>
             </div>
+            <Button
+              v-if="canAdd && madeHere(item) && madeHere(item)?.kind !== 'vlan'"
+              variant="ghost"
+              size="icon"
+              :title="t('network.devices.change')"
+              :aria-label="t('network.devices.change')"
+              @click="changeMembers(madeHere(item)!)"
+            >
+              <Users />
+            </Button>
+            <Button
+              v-if="canAdd && madeHere(item)"
+              variant="ghost"
+              size="icon"
+              :title="t('network.devices.remove')"
+              :aria-label="t('network.devices.remove')"
+              @click="remove(madeHere(item)!)"
+            >
+              <Trash2 />
+            </Button>
             <Button
               v-if="changeable(item)"
               variant="ghost"
@@ -283,6 +353,12 @@ const linkLocal = (item: NetworkInterface) => item.addresses.filter((a) => a.sco
               {{ t(`network.states.${item.state}`) }}
             </Badge>
           </header>
+          <p
+            v-if="network && composition(item, network, devices, t)"
+            class="text-sm text-muted-foreground"
+          >
+            {{ composition(item, network, devices, t) }}
+          </p>
           <p v-if="item.member_of" class="text-sm text-muted-foreground">
             {{ t('network.memberOf', { name: item.member_of }) }}
           </p>
@@ -312,6 +388,14 @@ const linkLocal = (item: NetworkInterface) => item.addresses.filter((a) => a.sco
         {{ t('network.readOnly') }}
       </p>
     </template>
+    <DeviceDialog
+      v-model:open="deviceOpen"
+      :kind="deviceKind"
+      :editing="deviceEditing"
+      :network="network ?? null"
+      :devices="devices"
+    />
+    <RemoveDeviceDialog v-model:open="removeOpen" :device="removing" />
     <InterfaceDialog
       v-model:open="dialogOpen"
       :item="editing"

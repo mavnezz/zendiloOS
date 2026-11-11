@@ -11,7 +11,7 @@ import {
   type,
 } from '@/shared/test-support/mount'
 import { called, on, problem, reset } from '@/shared/test-support/server'
-import type { NetworkInfo, NetworkSetup } from '@/shared/api/types'
+import type { DevicePlan, NetworkInfo, NetworkSetup } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
 import { useJobsStore } from '@/shared/jobs/store'
 
@@ -69,13 +69,20 @@ const network: NetworkInfo = {
   name_servers: ['127.0.0.53', '192.168.1.1'],
 }
 
-const managed: NetworkSetup = { managed: true, manager: 'networkd', pending: null, takeover: null }
+const managed: NetworkSetup = {
+  managed: true,
+  manager: 'networkd',
+  pending: null,
+  takeover: null,
+  devices: [],
+}
 
 /** What the owner's NAS shows: ifupdown with DHCP on its first port. */
 const ifupdown: NetworkSetup = {
   managed: false,
   manager: 'ifupdown',
   pending: null,
+  devices: [],
   takeover: {
     interfaces: [
       { name: 'eth0', ipv4: { mode: 'dhcp', keep: '192.168.1.20' }, ipv6: 'automatic', dns: [] },
@@ -112,6 +119,37 @@ function takeoverJob(state: 'running' | 'succeeded' | 'failed', step: string | n
     finished_at: state === 'running' ? null : 2,
     output: [],
   }
+}
+
+/** Opens a reka menu the way a pointer does, and picks `item`. */
+async function menu(label: string, item: string): Promise<void> {
+  const trigger = button(label)
+  for (const kind of ['pointerdown', 'pointerup', 'click'])
+    trigger.dispatchEvent(new MouseEvent(kind, { bubbles: true, button: 0 }))
+  await settle()
+  const entry = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) =>
+    element.textContent?.includes(item),
+  )
+  if (!entry) throw new Error(`no menu item ${item}`)
+  entry.click()
+  await settle()
+}
+
+/** Ticks a member in the dialog. */
+function check(name: string): void {
+  const label = [...document.querySelectorAll('[role="dialog"] fieldset label')].find((l) =>
+    l.textContent?.includes(name),
+  )
+  const box = label?.querySelector('input')
+  if (!box) throw new Error(`no member ${name}`)
+  box.checked = true
+  box.dispatchEvent(new Event('change'))
+}
+
+/** Waits for the plan the dialog asks for a moment after a change. */
+async function planned(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 350))
+  await settle()
 }
 
 beforeEach(() => {
@@ -327,6 +365,213 @@ describe('the network', () => {
       ipv6: 'off',
       dns: [],
     })
+  })
+
+  it('adds a bridge over a card, saying first what becomes of it', async () => {
+    const plan: DevicePlan = {
+      device: null,
+      interfaces: [
+        {
+          interface: 'br0',
+          becomes: {
+            fate: 'settings',
+            settings: { ipv4: { mode: 'dhcp', keep: '192.168.1.20' }, ipv6: 'automatic', dns: [] },
+          },
+        },
+        {
+          interface: 'eth0',
+          becomes: { fate: 'member', device: 'br0', moved: true, dropped: false },
+        },
+      ],
+    }
+    on('POST', '/api/v1/network/devices/plan', plan)
+    on('POST', '/api/v1/network/devices', waiting(null))
+    await mountApp(NetworkSection, { props: { canManage: true } })
+    await menu(t('network.add.button'), t('network.add.bridge'))
+    expect(page()).toContain(t('network.device.titles.bridge'))
+    expect((document.querySelector('#device-name') as HTMLInputElement).value).toBe('br0')
+    // Free wired cards only: no Wi-Fi, nothing of Docker's.
+    const offered = [...document.querySelectorAll('[role="dialog"] fieldset label')].map((l) =>
+      l.textContent?.trim(),
+    )
+    expect(offered).toHaveLength(2)
+    expect(page()).toContain(t('network.device.noMembersBridge'))
+    check('eth0')
+    await planned()
+    expect(called('POST', '/api/v1/network/devices/plan').at(-1)?.body).toEqual({
+      action: 'make',
+      device: { kind: 'bridge', name: 'br0', members: ['eth0'], stp: false },
+    })
+    expect(page()).toContain(t('network.plan.moves', { device: 'br0' }))
+    expect(page()).toContain(t('network.takeover.dhcpKeeps', { address: '192.168.1.20' }))
+    expect(page()).toContain(t('network.device.firewallHint'))
+
+    on(
+      'GET',
+      '/api/v1/network/setup',
+      waiting({
+        interface: 'br0',
+        takeover: false,
+        device: 'made',
+        revert_at: Date.now() / 1000 + 120,
+      }),
+    )
+    await submit('[role="dialog"] form')
+    expect(called('POST', '/api/v1/network/devices')[0]?.body).toEqual({
+      kind: 'bridge',
+      name: 'br0',
+      members: ['eth0'],
+      stp: false,
+    })
+    expect(page()).toContain(t('network.pending.deviceTitle.made', { name: 'br0' }))
+    expect(page()).toContain(t('network.pending.deviceHint', { seconds: 120 }).slice(0, 20))
+  })
+
+  it('explains a bond’s modes and says what is wrong with a choice', async () => {
+    on(
+      'POST',
+      '/api/v1/network/devices/plan',
+      problem(422, 'invalid_input', 'a bond needs at least one member'),
+    )
+    await mountApp(NetworkSection, { props: { canManage: true } })
+    await menu(t('network.add.button'), t('network.add.bond'))
+    expect((document.querySelector('#device-name') as HTMLInputElement).value).toBe('bond0')
+    expect(page()).toContain(t('network.devices.modeHints.active_backup'))
+    await type('#device-mode', 'lacp')
+    expect(page()).toContain(t('network.devices.modeHints.lacp'))
+    await planned()
+    expect(page()).toContain('a bond needs at least one member')
+    const make = document.querySelector<HTMLButtonElement>('[role="dialog"] button[type="submit"]')
+    expect(make?.disabled).toBe(true)
+    expect(called('POST', '/api/v1/network/devices/plan').at(-1)?.body).toEqual({
+      action: 'make',
+      device: { kind: 'bond', name: 'bond0', members: [], mode: 'lacp' },
+    })
+  })
+
+  it('adds a VLAN named after its parent and id, with settings of its own', async () => {
+    on('POST', '/api/v1/network/devices/plan', {
+      device: null,
+      interfaces: [
+        { interface: 'eth0', becomes: { fate: 'parent', vlan: 'eth0.20', carries: true } },
+      ],
+    })
+    on('POST', '/api/v1/network/devices', problem(409, 'change_pending'))
+    await mountApp(NetworkSection, { props: { canManage: true } })
+    await menu(t('network.add.button'), t('network.add.vlan'))
+    expect((document.querySelector('#device-name') as HTMLInputElement).value).toBe('eth0.10')
+    await type('#device-id', '20')
+    expect((document.querySelector('#device-name') as HTMLInputElement).value).toBe('eth0.20')
+    await type('#device-ipv4', 'static')
+    await type('#device-address', '10.20.0.2')
+    await type('#device-gateway', '10.20.0.1')
+    await planned()
+    expect(page()).toContain(t('network.plan.carries', { vlan: 'eth0.20' }))
+    await submit('[role="dialog"] form')
+    expect(called('POST', '/api/v1/network/devices')[0]?.body).toEqual({
+      kind: 'vlan',
+      name: 'eth0.20',
+      parent: 'eth0',
+      id: 20,
+      settings: {
+        ipv4: { mode: 'static', address: '10.20.0.2', prefix: 24, gateway: '10.20.0.1' },
+        ipv6: 'off',
+        dns: [],
+      },
+    })
+    expect(page()).toContain(t('errors.change_pending'))
+  })
+
+  it('changes the members of a bridge made here and keeps one a VM is on', async () => {
+    const bridged: NetworkInfo = {
+      ...network,
+      interfaces: [
+        { ...network.interfaces[0]!, member_of: 'br0', addresses: [] },
+        ...network.interfaces.slice(1),
+        {
+          name: 'br0',
+          kind: 'bridge',
+          state: 'up',
+          mac: '52:54:00:12:34:56',
+          mtu: 1500,
+          member_of: null,
+          addresses: [{ address: '192.168.1.20', prefix: 24, scope: 'global', dynamic: true }],
+        },
+      ],
+    }
+    const br0 = {
+      name: 'br0',
+      kind: 'bridge' as const,
+      members: ['eth0'],
+      parent: null,
+      vlan_id: null,
+      mode: null,
+      stp: false,
+      mac: '52:54:00:12:34:56',
+    }
+    on('GET', '/api/v1/network', bridged)
+    on('GET', '/api/v1/network/setup', { ...managed, devices: [br0] })
+    on('POST', '/api/v1/network/devices/plan', {
+      device: br0,
+      interfaces: [
+        {
+          interface: 'eth1',
+          becomes: { fate: 'member', device: 'br0', moved: false, dropped: true },
+        },
+      ],
+    })
+    on('PUT', '/api/v1/network/devices/br0', waiting(null))
+    await mountApp(NetworkSection, { props: { canManage: true } })
+    expect(page()).toContain(t('network.devices.members', { members: 'eth0' }))
+    expect(page()).toContain(t('network.devices.madeHere'))
+    expect(page()).toContain(t('network.memberOf', { name: 'br0' }))
+
+    await press(t('network.devices.change'))
+    expect(page()).toContain(t('network.device.titles.change', { name: 'br0' }))
+    check('eth1')
+    await planned()
+    expect(page()).toContain(t('network.plan.drops', { device: 'br0' }))
+    await submit('[role="dialog"] form')
+    expect(called('PUT', '/api/v1/network/devices/br0')[0]?.body).toEqual({
+      members: ['eth0', 'eth1'],
+      mode: null,
+      stp: false,
+    })
+
+    on('POST', '/api/v1/network/devices/plan', problem(409, 'device_in_use', 'web'))
+    await press(t('network.devices.remove'))
+    expect(page()).toContain(`${t('errors.device_in_use')} (web)`)
+    expect(button(t('network.device.remove')).disabled).toBe(true)
+    await press(t('desktop.close'))
+
+    on('POST', '/api/v1/network/devices/plan', {
+      device: null,
+      interfaces: [
+        {
+          interface: 'eth0',
+          becomes: {
+            fate: 'settings',
+            settings: { ipv4: { mode: 'dhcp', keep: '192.168.1.20' }, ipv6: 'automatic', dns: [] },
+          },
+        },
+        { interface: 'eth1', becomes: { fate: 'switched_off' } },
+      ],
+    })
+    on('DELETE', '/api/v1/network/devices/br0', problem(409, 'change_pending'))
+    await press(t('network.devices.remove'))
+    expect(page()).toContain(t('network.plan.switchedOff'))
+    await click(t('network.device.remove'))
+    expect(called('DELETE', '/api/v1/network/devices/br0')).toHaveLength(1)
+    expect(page()).toContain(t('errors.change_pending'))
+    on('DELETE', '/api/v1/network/devices/br0', waiting(null))
+    await click(t('network.device.remove'))
+    expect(called('DELETE', '/api/v1/network/devices/br0')).toHaveLength(2)
+  })
+
+  it('offers no devices to those who may only look', async () => {
+    await mountApp(NetworkSection, { props: { canManage: false } })
+    expect(document.querySelector(`button[aria-label="${t('network.add.button')}"]`)).toBeNull()
+    expect(page()).not.toContain(t('network.add.button'))
   })
 
   it('says when the network cannot be read', async () => {

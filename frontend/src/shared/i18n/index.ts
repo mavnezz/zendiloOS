@@ -82,6 +82,7 @@ const KNOWN_PROBLEMS = [
   'disk_present',
   'delivery_failed',
   'change_pending',
+  'device_in_use',
   'not_installed',
   'port_in_use',
   'address_blocked',
@@ -195,6 +196,8 @@ export function problemMessage(error: unknown): string {
     'not_carried_over',
     // The running containers that use the volume.
     'volume_in_use',
+    // The VMs on a bridge.
+    'device_in_use',
     // The containers a backup or restore keeps stopped.
     'containers_held',
     // libvirt's or apt's words.
