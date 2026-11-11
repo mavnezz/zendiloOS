@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM vm_locations WHERE pool = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "f0e5d91368a81ee8e1ff9a9a766f2638c70b85a45cc947e1d2f0c97583b3dbe6"
+}

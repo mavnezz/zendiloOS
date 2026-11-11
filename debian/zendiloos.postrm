@@ -6,6 +6,8 @@ case "$1" in
         # The firewall's rules go with the package; nothing would keep them.
         if command -v nft >/dev/null 2>&1; then
             nft delete table inet zendiloos_firewall 2>/dev/null || true
+            # And what keeps the NAS off its internal networks for VMs.
+            nft delete table bridge zendiloos_internal 2>/dev/null || true
         fi
         # So does what lets frames within its bridges pass Docker's
         # FORWARD chain: Docker's tables as Docker made them.
@@ -21,7 +23,7 @@ case "$1" in
     purge)
         # Generated at installation; the database in /var/lib/zendiloos is
         # kept, since it holds the administrators' work.
-        rm -rf /etc/zendiloos/tls /etc/zendiloos/nginx /etc/zendiloos/firewall
+        rm -rf /etc/zendiloos/tls /etc/zendiloos/nginx /etc/zendiloos/firewall /etc/zendiloos/network
         ;;
 esac
 

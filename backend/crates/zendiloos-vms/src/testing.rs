@@ -10,10 +10,10 @@ use zendiloos_jobs::testing::{FixedClock, MemoryJobs};
 use zendiloos_kernel::{Actor, AuditEntry, AuditLog, PortError, RequestContext};
 
 use crate::application::{
-    ConsoleSession, HostError, HostFacts, IsoError, IsoFiles, IsoSource, Steps, StoragePlace, VmHost, VmIds,
-    VmImageRepository, VmRepository, Vms, VmsPorts,
+    ConsoleSession, DatasetUsage, HostError, HostFacts, IsoError, IsoFiles, IsoSource, Steps, VmHost, VmIds,
+    VmImageRepository, VmLocationRepository, VmPool, VmRepository, Vms, VmsPorts, ZvolUsage,
 };
-use crate::domain::{HostLimits, IsoChoice, PowerState, Vm, VmAction, VmCounters, VmImage};
+use crate::domain::{HostLimits, IsoChoice, Location, PowerState, Vm, VmAction, VmCounters, VmImage};
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -82,6 +82,42 @@ impl VmRepository for MemoryVms {
     }
 }
 
+/// The locations, in the order added.
+#[derive(Default)]
+pub struct MemoryLocations(Mutex<Vec<Location>>);
+
+#[async_trait]
+impl VmLocationRepository for MemoryLocations {
+    async fn list(&self) -> Result<Vec<Location>, PortError> {
+        Ok(lock(&self.0).clone())
+    }
+
+    async fn add(&self, location: &Location) -> Result<(), PortError> {
+        let mut locations = lock(&self.0);
+        if !locations.iter().any(|other| other.pool == location.pool) {
+            locations.push(location.clone());
+        }
+        Ok(())
+    }
+
+    async fn remove(&self, pool: &str) -> Result<bool, PortError> {
+        let mut locations = lock(&self.0);
+        let before = locations.len();
+        locations.retain(|location| location.pool != pool);
+        Ok(locations.len() < before)
+    }
+}
+
+/// The pool `tank`, volume 1.
+pub fn tank() -> Location {
+    Location { pool: "tank".into(), volume: 1 }
+}
+
+/// The pool `cold`, volume 2.
+pub fn cold() -> Location {
+    Location { pool: "cold".into(), volume: 2 }
+}
+
 #[derive(Default)]
 pub struct MemoryImages {
     images: Mutex<Vec<VmImage>>,
@@ -146,8 +182,9 @@ impl VmImageRepository for MemoryImages {
 }
 
 /// libvirt and the storage pretended: KVM there, nothing installed at
-/// first, the pools `tank` (volume 1) and `cold` (2), a bridge `br0`, two
-/// threads and 2 GiB.
+/// first, the pools `tank` (volume 1) and `cold` (2), a bridge `br0`, an
+/// internal network `vmnet0`, the cards `enp1s0` and `bond0`, two threads
+/// and 2 GiB. Each zvol holds a quarter of its size.
 pub struct FakeVmHost {
     pub facts: Mutex<HostFacts>,
     pub domains: Mutex<BTreeMap<String, PowerState>>,
@@ -160,6 +197,10 @@ pub struct FakeVmHost {
     pub calls: Mutex<Vec<String>>,
     /// The next definition fails with this.
     pub fail_define: Mutex<Option<String>>,
+    /// The next definition waits for this to be notified first.
+    pub hold_define: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    /// The VMs' zvols, `<pool>/<id>-disk<N>`, and their sizes.
+    pub zvols: Mutex<BTreeMap<String, u64>>,
     /// Uploads under way: what is written, and the bytes announced.
     uploads: Mutex<BTreeMap<String, (std::path::PathBuf, u64)>>,
 }
@@ -172,14 +213,23 @@ impl Default for FakeVmHost {
                 cpu_virtualization: Some("vmx".into()),
                 iommu: false,
                 installed: false,
-                limits: HostLimits { cores: 2, memory_bytes: 2 << 30, bridges: vec!["br0".into()] },
-                storage: None,
+                limits: HostLimits {
+                    cores: 2,
+                    memory_bytes: 2 << 30,
+                    bridges: vec!["br0".into()],
+                    internal: vec!["vmnet0".into()],
+                    cards: vec!["enp1s0".into(), "bond0".into()],
+                    locations: Vec::new(),
+                },
+                locations: Vec::new(),
             }),
             domains: Mutex::default(),
             files: Mutex::default(),
             looks: AtomicU64::new(0),
             calls: Mutex::default(),
             fail_define: Mutex::default(),
+            hold_define: Mutex::default(),
+            zvols: Mutex::default(),
             uploads: Mutex::default(),
         }
     }
@@ -192,9 +242,29 @@ impl FakeVmHost {
         {
             let mut facts = lock(&host.facts);
             facts.installed = true;
-            facts.storage = Some(StoragePlace { pool: "tank".into(), volume: 1 });
+            facts.locations = vec![tank()];
         }
         host
+    }
+
+    /// Ready, with a second location on `cold`.
+    pub fn two_locations() -> Self {
+        let host = Self::ready();
+        lock(&host.facts).locations.push(cold());
+        host
+    }
+
+    pub fn zvols(&self) -> Vec<String> {
+        lock(&self.zvols).keys().cloned().collect()
+    }
+
+    fn make_disks(&self, vm: &Vm) {
+        let mut zvols = lock(&self.zvols);
+        for disk in &vm.settings.disks {
+            let size =
+                zvols.entry(format!("{}/{}-disk{}", disk.location.pool, vm.id, disk.slot)).or_default();
+            *size = (*size).max(u64::from(disk.size_gib) << 30);
+        }
     }
 
     pub fn calls(&self) -> Vec<String> {
@@ -216,11 +286,14 @@ impl VmHost for FakeVmHost {
         Ok(lock(&self.facts).clone())
     }
 
-    async fn pools(&self, _: &RequestContext) -> Result<Vec<StoragePlace>, PortError> {
-        Ok(vec![
-            StoragePlace { pool: "tank".into(), volume: 1 },
-            StoragePlace { pool: "cold".into(), volume: 2 },
-        ])
+    async fn pools(&self, _: &RequestContext) -> Result<Vec<VmPool>, PortError> {
+        let pool = |location: Location| VmPool {
+            location,
+            health: "online".into(),
+            used_bytes: 10 << 30,
+            available_bytes: 90 << 30,
+        };
+        Ok(vec![pool(tank()), pool(cold())])
     }
 
     async fn install(&self, _: &RequestContext) -> Result<(), HostError> {
@@ -229,17 +302,59 @@ impl VmHost for FakeVmHost {
         Ok(())
     }
 
-    async fn set_up(&self, place: &StoragePlace, _: &RequestContext) -> Result<(), HostError> {
-        self.call(format!("set_up {}", place.pool));
-        lock(&self.facts).storage = Some(place.clone());
+    async fn add_location(&self, place: &Location, _: &RequestContext) -> Result<(), HostError> {
+        self.call(format!("add_location {}", place.pool));
+        let mut facts = lock(&self.facts);
+        if !facts.locations.contains(place) {
+            facts.locations.push(place.clone());
+            facts.locations.sort_by_key(|location| location.volume);
+        }
         Ok(())
+    }
+
+    async fn remove_location(&self, place: &Location, _: &RequestContext) -> Result<(), HostError> {
+        self.call(format!("remove_location {}", place.pool));
+        if lock(&self.zvols).keys().any(|zvol| zvol.starts_with(&format!("{}/", place.pool))) {
+            return Err(HostError::Refused(format!("{} holds a disk of a virtual machine", place.pool)));
+        }
+        lock(&self.facts).locations.retain(|location| location != place);
+        Ok(())
+    }
+
+    async fn storage_usage(&self, _: &RequestContext) -> Result<Vec<DatasetUsage>, PortError> {
+        let zvols = lock(&self.zvols).clone();
+        Ok(lock(&self.facts)
+            .locations
+            .iter()
+            .map(|location| {
+                let zvols: Vec<ZvolUsage> = zvols
+                    .iter()
+                    .filter_map(|(zvol, size)| {
+                        let name = zvol.strip_prefix(&format!("{}/", location.pool))?;
+                        Some(ZvolUsage {
+                            name: name.to_owned(),
+                            used_bytes: size / 4,
+                            referenced_bytes: size / 8,
+                            volsize_bytes: *size,
+                        })
+                    })
+                    .collect();
+                DatasetUsage {
+                    pool: location.pool.clone(),
+                    used_bytes: 4096 + zvols.iter().map(|zvol| zvol.used_bytes).sum::<u64>(),
+                    files_bytes: 4096,
+                    available_bytes: 90 << 30,
+                    zvols,
+                }
+            })
+            .collect())
     }
 
     /// A path containing `broken` fails halfway.
     async fn copy_image(
         &self,
         image: &str,
-        _: &StoragePlace,
+        _: &Location,
         iso: &IsoSource,
         steps: &dyn Steps,
         _: &RequestContext,
@@ -256,7 +371,7 @@ impl VmHost for FakeVmHost {
 
     async fn image_files(
         &self,
-        _: &StoragePlace,
+        _: &Location,
         _: &RequestContext,
     ) -> Result<BTreeMap<String, u64>, PortError> {
         Ok(lock(&self.files).clone())
@@ -299,26 +414,41 @@ impl VmHost for FakeVmHost {
         Ok(bytes)
     }
 
-    async fn define(&self, vm: &Vm, _: &RequestContext) -> Result<(), HostError> {
-        self.call(format!("define {}", vm.id));
+    async fn define(&self, vm: &Vm, library: u16, _: &RequestContext) -> Result<(), HostError> {
+        self.call(format!("define {} {library}", vm.id));
+        let held = lock(&self.hold_define).take();
+        if let Some(held) = held {
+            held.notified().await;
+        }
         if let Some(reason) = lock(&self.fail_define).take() {
             return Err(HostError::Failed(reason));
         }
+        self.make_disks(vm);
         lock(&self.domains).insert(vm.id.clone(), PowerState::ShutOff);
         Ok(())
     }
 
-    async fn update(&self, vm: &Vm, removed: &[u8], _: &RequestContext) -> Result<(), HostError> {
-        let removed: Vec<String> = removed.iter().map(u8::to_string).collect();
-        self.call(format!("update {} [{}]", vm.id, removed.join(",")).trim_end().to_owned());
+    async fn update(
+        &self,
+        vm: &Vm,
+        library: u16,
+        removed: &[u8],
+        _: &RequestContext,
+    ) -> Result<(), HostError> {
+        let removed_text: Vec<String> = removed.iter().map(u8::to_string).collect();
+        self.call(format!("update {} {library} [{}]", vm.id, removed_text.join(",")).trim_end().to_owned());
         match lock(&self.domains).get(&vm.id) {
-            Some(PowerState::ShutOff) => Ok(()),
-            Some(_) => Err(HostError::Refused("the virtual machine is not shut off".into())),
-            None => Err(HostError::Refused("no such domain".into())),
+            Some(PowerState::ShutOff) => {}
+            Some(_) => return Err(HostError::Refused("the virtual machine is not shut off".into())),
+            None => return Err(HostError::Refused("no such domain".into())),
         }
+        self.make_disks(vm);
+        lock(&self.zvols)
+            .retain(|zvol, _| !removed.iter().any(|slot| zvol.ends_with(&format!("/{}-disk{slot}", vm.id))));
+        Ok(())
     }
 
-    async fn change_media(&self, vm: &Vm, drive: u8, _: &RequestContext) -> Result<(), HostError> {
+    async fn change_media(&self, vm: &Vm, _: u16, drive: u8, _: &RequestContext) -> Result<(), HostError> {
         let image = vm.settings.drives.iter().find(|d| d.slot == drive).and_then(|d| d.image.clone());
         self.call(format!("media {} {drive} {}", vm.id, image.as_deref().unwrap_or("eject")));
         Ok(())
@@ -353,6 +483,7 @@ impl VmHost for FakeVmHost {
     async fn remove(&self, vm: &Vm, _: &RequestContext) -> Result<(), HostError> {
         self.call(format!("remove {}", vm.id));
         lock(&self.domains).remove(&vm.id);
+        lock(&self.zvols).retain(|zvol, _| !zvol.contains(&format!("/{}-disk", vm.id)));
         Ok(())
     }
 
@@ -446,6 +577,7 @@ pub struct TestVms {
     pub host: Arc<FakeVmHost>,
     pub repository: Arc<MemoryVms>,
     pub images: Arc<MemoryImages>,
+    pub locations: Arc<MemoryLocations>,
     pub jobs: Jobs,
     pub audit: Arc<MemoryAudit>,
 }
@@ -459,11 +591,13 @@ impl TestVms {
         let host = Arc::new(host);
         let repository = Arc::new(MemoryVms::default());
         let images = Arc::new(images);
+        let locations = Arc::new(MemoryLocations::default());
         let audit = Arc::new(MemoryAudit::default());
         let jobs = Jobs::new(Arc::new(MemoryJobs::default()), Arc::new(FixedClock));
         let vms = Vms::new(VmsPorts {
             repository: repository.clone(),
             images: images.clone(),
+            locations: locations.clone(),
             host: host.clone(),
             isos: Arc::new(FakeIsos),
             ids: Arc::new(CountingIds::default()),
@@ -471,6 +605,6 @@ impl TestVms {
             audit: audit.clone(),
             clock: Arc::new(FixedClock),
         });
-        Self { vms, host, repository, images, jobs, audit }
+        Self { vms, host, repository, images, locations, jobs, audit }
     }
 }

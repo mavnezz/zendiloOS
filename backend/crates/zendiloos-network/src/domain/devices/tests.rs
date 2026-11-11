@@ -553,3 +553,48 @@ fn a_member_in_a_bond_in_a_bridge_stays_where_it_is() {
     assert!(edit.links[0].keep_up);
     assert_eq!(edit.effects[0].becomes, Becomes::Settings(dhcp("bond0", Some("192.168.1.20"))));
 }
+
+/// Internal networks: bridges of zendiloOS's without members and without
+/// an address of the NAS's; one with an address or a card is none.
+#[test]
+fn internal_networks_are_bridges_without_members_or_addresses() {
+    let off = |name: &str| {
+        file(
+            &format!("05-zendiloos-{name}.network"),
+            &format!("[Match]\nName={name}\n\n[Network]\nDHCP=no\nIPv6AcceptRA=no\nLinkLocalAddressing=no\n"),
+        )
+    };
+    let netdev = |name: &str, members: &str| {
+        file(
+            &format!("05-zendiloos-{name}.netdev"),
+            &format!("{members}[NetDev]\nName={name}\nKind=bridge\n"),
+        )
+    };
+    let configuration = Configuration::read(&[
+        netdev("vmnet0", ""),
+        off("vmnet0"),
+        netdev("host0", ""),
+        file("05-zendiloos-host0.network", "[Match]\nName=host0\n\n[Network]\nAddress=10.9.0.1/24\n"),
+        netdev("ra0", ""),
+        file("05-zendiloos-ra0.network", "[Match]\nName=ra0\n\n[Network]\nDHCP=no\nIPv6AcceptRA=yes\n"),
+        netdev("br0", "# Members: enp2s0\n"),
+        off("br0"),
+        file("05-zendiloos-enp2s0.network", "[Match]\nName=enp2s0\n\n[Network]\nBridge=br0\n"),
+        netdev("bare", ""),
+        file("05-zendiloos-bond0.netdev", "[NetDev]\nName=bond0\nKind=bond\n\n[Bond]\nMode=active-backup\n"),
+        off("bond0"),
+    ]);
+    assert_eq!(configuration.internal_networks(), ["vmnet0"]);
+    // As planned for a bridge made without members: one.
+    let planning = Planning { network: &network(), configuration: &Configuration::default() };
+    let edit = planning
+        .make(NewDevice {
+            name: "lab".into(),
+            kind: DeviceKind::Bridge { stp: false },
+            members: vec![],
+            settings: None,
+        })
+        .unwrap();
+    let made = Configuration { devices: edit.devices, links: edit.links };
+    assert_eq!(made.internal_networks(), ["lab"]);
+}

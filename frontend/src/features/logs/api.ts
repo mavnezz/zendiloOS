@@ -30,18 +30,3 @@ export function useJournal(
     getNextPageParam: (page) => page.older ?? undefined,
   })
 }
-
-/** The audit log, newest first; more pages load older records. */
-export function useAuditLog() {
-  return useInfiniteQuery({
-    queryKey: ['logs', 'audit'],
-    queryFn: ({ pageParam }) =>
-      unwrap(
-        api.GET('/api/v1/logs/audit', {
-          params: { query: { limit: PAGE, before: pageParam ?? undefined } },
-        }),
-      ),
-    initialPageParam: null as number | null,
-    getNextPageParam: (page) => page.older ?? undefined,
-  })
-}

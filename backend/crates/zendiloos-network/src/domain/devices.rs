@@ -268,6 +268,26 @@ impl Configuration {
         self.devices.iter().find(|device| device.name == name)
     }
 
+    /// The internal networks for VMs: bridges zendiloOS made without
+    /// members whose own file gives the NAS no address on them (neither
+    /// IPv4 nor IPv6), by name. The agent keeps the NAS off these (its
+    /// `bridge` table drops what goes between it and them), so VMs on one
+    /// reach each other only.
+    pub fn internal_networks(&self) -> Vec<String> {
+        self.devices
+            .iter()
+            .filter(|device| matches!(device.kind, DeviceKind::Bridge { .. }) && device.members.is_empty())
+            .filter(|device| {
+                self.link(&device.name).is_some_and(|link| {
+                    link.port_of.is_none()
+                        && link.settings.ipv4 == Ipv4Setting::Off
+                        && link.settings.ipv6 == Ipv6Setting::Off
+                })
+            })
+            .map(|device| device.name.clone())
+            .collect()
+    }
+
     pub fn link(&self, interface: &str) -> Option<&LinkFile> {
         self.links.iter().find(|link| link.settings.interface == interface)
     }

@@ -98,11 +98,17 @@ async fn the_plugin_says_what_the_machine_offers_and_needs_kvm() {
     assert_eq!(plugin.body["hardware"], json!({ "kvm": true, "cpu_virtualization": "vmx", "iommu": false }));
     assert_eq!((plugin.body["installed"].as_bool(), plugin.body["cores"].as_u64()), (Some(false), Some(2)));
     assert_eq!(plugin.body["storage"], Value::Null);
-    assert_eq!(
-        plugin.body["pools"],
-        json!([{ "pool": "tank", "volume": 1 }, { "pool": "cold", "volume": 2 }])
-    );
+    let pools: Vec<(&str, &str)> = plugin.body["pools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pool| (pool["pool"].as_str().unwrap(), pool["health"].as_str().unwrap()))
+        .collect();
+    assert_eq!(pools, [("tank", "online"), ("cold", "online")]);
     assert_eq!(plugin.body["bridges"], json!(["br0"]));
+    assert_eq!(plugin.body["internal_networks"], json!(["vmnet0"]));
+    assert_eq!(plugin.body["cards"], json!(["enp1s0", "bond0"]));
+    assert_eq!(plugin.body["locations"], json!([]));
     let early = send(&h, &admin, Method::POST, "/api/v1/vms/plugin/storage", json!({ "pool": "tank" })).await;
     assert_problem(&early, StatusCode::CONFLICT, "vms_not_installed");
     assert_problem(
@@ -119,6 +125,7 @@ async fn the_plugin_says_what_the_machine_offers_and_needs_kvm() {
     ready(&h, &admin).await;
     let plugin = read(&h, &admin, "/api/v1/vms/plugin").await;
     assert_eq!(plugin.body["storage"], json!({ "pool": "tank", "volume": 1 }));
+    assert_eq!(plugin.body["locations"], json!([{ "pool": "tank", "volume": 1 }]));
     assert!(plugin.body["installed"].as_bool().unwrap());
     let again = send(&h, &admin, Method::POST, "/api/v1/vms/plugin/install", Value::Null).await;
     assert_problem(&again, StatusCode::CONFLICT, "vms_installed");
@@ -463,4 +470,126 @@ async fn the_console_relays_rfb_over_a_websocket_of_the_same_origin() {
         "echoed by the fake"
     );
     assert!(h.vm_host.calls().contains(&format!("console {id}")));
+}
+
+/// Locations: a second one added, a VM with a disk on each, what each holds
+/// listed, a disk that would move refused, and a location removed only once
+/// empty with its pool's name typed again.
+#[tokio::test]
+async fn disks_go_on_locations_which_go_only_once_empty() {
+    let h = Harness::new();
+    let user = h.sign_in("bob", Role::User).await;
+    assert_problem(&read(&h, &user, "/api/v1/vms/locations").await, StatusCode::FORBIDDEN, "forbidden");
+    let admin = h.sign_in("alice", Role::Admin).await;
+    ready(&h, &admin).await;
+    let added = send(&h, &admin, Method::POST, "/api/v1/vms/locations", json!({ "pool": "cold" })).await;
+    assert_eq!(added.status, StatusCode::OK, "{:?}", added.body);
+    assert_eq!(
+        added.body["locations"],
+        json!([{ "pool": "tank", "volume": 1 }, { "pool": "cold", "volume": 2 }])
+    );
+    assert_eq!(added.body["storage"], json!({ "pool": "tank", "volume": 1 }), "the library stays");
+    let nowhere = send(&h, &admin, Method::POST, "/api/v1/vms/locations", json!({ "pool": "lost" })).await;
+    assert_problem(&nowhere, StatusCode::NOT_FOUND, "not_found");
+
+    let mut new = small("two");
+    new["disks"] = json!([{ "slot": 0, "size_gib": 1, "bus": "virtio" },
+                          { "slot": 1, "size_gib": 4, "bus": "sata", "pool": "cold" }]);
+    let created = send(&h, &admin, Method::POST, "/api/v1/vms", new).await;
+    assert_eq!(created.status, StatusCode::ACCEPTED, "{:?}", created.body);
+    finished(&h, &created.body["job"]).await;
+    let id = created.body["vm"]["id"].as_str().unwrap().to_owned();
+    let vm = read(&h, &admin, &format!("/api/v1/vms/{id}")).await.body;
+    assert_eq!(vm["disks"][0]["pool"], "tank");
+    assert_eq!((vm["disks"][1]["pool"].as_str(), vm["disks"][1]["volume"].as_u64()), (Some("cold"), Some(2)));
+    let mut lost = small("lost");
+    lost["disks"][0]["pool"] = json!("lost");
+    assert_problem(
+        &send(&h, &admin, Method::POST, "/api/v1/vms", lost).await,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid_input",
+    );
+
+    let listed = read(&h, &admin, "/api/v1/vms/locations").await;
+    assert_eq!(listed.status, StatusCode::OK);
+    let cold = &listed.body[1];
+    assert_eq!(
+        (cold["pool"].as_str(), cold["library"].as_bool(), cold["health"].as_str()),
+        (Some("cold"), Some(false), Some("online"))
+    );
+    assert_eq!(
+        cold["vms"],
+        json!([{ "id": id, "name": "two", "disks": [1], "used_bytes": 1u64 << 30,
+                                      "referenced_bytes": 1u64 << 29, "size_bytes": 4u64 << 30 }])
+    );
+    assert!(listed.body[0]["library"].as_bool().unwrap() && cold["used_bytes"].as_u64().is_some());
+
+    // As GET shows the disks, back in a change: kept where they are; moved: refused.
+    let same = send(&h, &admin, Method::PUT, &format!("/api/v1/vms/{id}"), change_of(&vm)).await;
+    assert_eq!(same.status, StatusCode::OK, "{:?}", same.body);
+    let mut moved = change_of(&vm);
+    moved["disks"][1]["pool"] = json!("tank");
+    let refused = send(&h, &admin, Method::PUT, &format!("/api/v1/vms/{id}"), moved).await;
+    assert_problem(&refused, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+
+    let remove = |confirm: &str| json!({ "confirm": confirm });
+    let wrong = send(&h, &admin, Method::POST, "/api/v1/vms/locations/cold/delete", remove("tank")).await;
+    assert_problem(&wrong, StatusCode::UNPROCESSABLE_ENTITY, "confirmation_mismatch");
+    let used = send(&h, &admin, Method::POST, "/api/v1/vms/locations/cold/delete", remove("cold")).await;
+    assert_problem(&used, StatusCode::CONFLICT, "location_in_use");
+    assert_eq!(used.body["detail"], "two");
+    let library = send(&h, &admin, Method::POST, "/api/v1/vms/locations/tank/delete", remove("tank")).await;
+    assert_problem(&library, StatusCode::CONFLICT, "location_in_use");
+    assert_eq!(library.body["detail"], "two, the image library");
+    let none = send(&h, &admin, Method::POST, "/api/v1/vms/locations/lost/delete", remove("lost")).await;
+    assert_problem(&none, StatusCode::NOT_FOUND, "not_found");
+
+    send(&h, &admin, Method::POST, &format!("/api/v1/vms/{id}/delete"), json!({ "confirm": "two" })).await;
+    let gone = send(&h, &admin, Method::POST, "/api/v1/vms/locations/cold/delete", remove("cold")).await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT, "{:?}", gone.body);
+    let listed = read(&h, &admin, "/api/v1/vms/locations").await;
+    assert_eq!(listed.body.as_array().unwrap().len(), 1);
+
+    // Only the VMs' entries of the audit log, searched.
+    let log = read(&h, &admin, "/api/v1/logs/audit?prefix=vms.&search=COLD").await;
+    let actions: Vec<&str> =
+        log.body["entries"].as_array().unwrap().iter().map(|e| e["action"].as_str().unwrap()).collect();
+    assert_eq!(
+        actions,
+        ["vms.location_remove", "vms.location_add"],
+        "refusals before the host are not done: {:?}",
+        log.body
+    );
+    let long = read(&h, &admin, &format!("/api/v1/logs/audit?search={}", "x".repeat(101))).await;
+    assert_problem(&long, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+}
+
+/// Cards directly on a card and on an internal network; one on an internal
+/// network the machine has not is refused.
+#[tokio::test]
+async fn cards_go_directly_on_a_card_and_on_internal_networks() {
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    ready(&h, &admin).await;
+    let mut new = small("net");
+    new["nics"] = json!([{ "slot": 0, "model": "virtio", "network": { "kind": "direct", "card": "enp1s0" } },
+                         { "slot": 1, "model": "e1000e", "network": { "kind": "internal", "network": "vmnet0" } }]);
+    let created = send(&h, &admin, Method::POST, "/api/v1/vms", new.clone()).await;
+    assert_eq!(created.status, StatusCode::ACCEPTED, "{:?}", created.body);
+    assert_eq!(created.body["vm"]["nics"][0]["network"], json!({ "kind": "direct", "card": "enp1s0" }));
+    assert_eq!(created.body["vm"]["nics"][1]["network"], json!({ "kind": "internal", "network": "vmnet0" }));
+    let mut wrong = new.clone();
+    wrong["name"] = json!("wrong");
+    wrong["nics"] =
+        json!([{ "slot": 0, "model": "virtio", "network": { "kind": "internal", "network": "br0" } }]);
+    assert_problem(
+        &send(&h, &admin, Method::POST, "/api/v1/vms", wrong.clone()).await,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid_input",
+    );
+    wrong["nics"] = json!([{ "slot": 0, "model": "virtio", "network": { "kind": "direct", "card": "enp1s0", "mode": "vepa" } }]);
+    assert_eq!(
+        send(&h, &admin, Method::POST, "/api/v1/vms", wrong).await.status,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
 }

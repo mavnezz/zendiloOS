@@ -1,0 +1,35 @@
+[Unit]
+Description=zendiloOS: the NAS keeps itself off its internal networks for VMs
+Documentation=https://github.com/mavnezz/zendiloOS
+# An internal network is a bridge zendiloOS made without members or an
+# address of the NAS's. Linux would still answer ARP and take packets for
+# its other addresses on it, so a table of zendiloOS's in nftables' bridge
+# family drops every frame such a bridge hands up to the NAS and every one
+# the NAS would send onto it; frames between the VMs pass
+# (docs/architecture.md, 4.13). In force before the network comes up, as
+# the firewall is: early, after Debian's own nftables.service (whose
+# /etc/nftables.conf flushes everything) and again whenever that restarts
+# or reloads. The agent writes the file and has it loaded again after
+# every change of the network's devices.
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target shutdown.target
+After=local-fs.target nftables.service
+PartOf=nftables.service
+ReloadPropagatedFrom=nftables.service
+Conflicts=shutdown.target
+ConditionPathExists=/etc/zendiloos/network/internal-networks.nft
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The file replaces the table bridge zendiloos_internal, and only it, in
+# one transaction. Stopping leaves the rules as they are; removing the
+# package takes them.
+ExecStart=/usr/sbin/nft -f /etc/zendiloos/network/internal-networks.nft
+ExecReload=/usr/sbin/nft -f /etc/zendiloos/network/internal-networks.nft
+ProtectSystem=full
+ProtectHome=yes
+
+[Install]
+WantedBy=sysinit.target

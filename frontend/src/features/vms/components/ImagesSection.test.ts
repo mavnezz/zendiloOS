@@ -19,10 +19,15 @@ const PLUGIN: VmPlugin = {
   hardware: { kvm: true, cpu_virtualization: 'vmx', iommu: false },
   installed: true,
   storage: { pool: 'tank', volume: 1 },
-  pools: [{ pool: 'tank', volume: 1 }],
+  locations: [{ pool: 'tank', volume: 1 }],
+  pools: [
+    { pool: 'tank', volume: 1, health: 'online', used_bytes: 1 << 30, available_bytes: 99 << 30 },
+  ],
   cores: 4,
   memory_bytes: 8 * 1024 ** 3,
   bridges: [],
+  internal_networks: ['vmnet0'],
+  cards: ['enp1s0', 'bond0'],
   image_upload_max_bytes: 1000,
 }
 

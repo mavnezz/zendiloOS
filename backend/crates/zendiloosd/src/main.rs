@@ -47,7 +47,7 @@ use zendiloos_infra::sqlite::{
     SqliteCertificates, SqliteChannels, SqliteDiskInventory, SqliteEjectedDrives, SqliteEnclosure,
     SqliteFirewall, SqliteGroups, SqliteInstalledApps, SqliteJobs, SqliteNotifications, SqlitePreferences,
     SqliteProjects, SqliteSecurity, SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares,
-    SqliteSystemUpdates, SqliteTwoFactor, SqliteUpdateSettings, SqliteVmImages, SqliteVms,
+    SqliteSystemUpdates, SqliteTwoFactor, SqliteUpdateSettings, SqliteVmImages, SqliteVmLocations, SqliteVms,
     SqliteVolumeBackups,
 };
 use zendiloos_infra::updates::{GitHubReleases, installed_notes};
@@ -291,7 +291,8 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let network = NetworkUseCases::new(NetworkPorts {
         source: Arc::new(ip),
         configurator: Arc::new(AgentNetwork::new(network_agent)),
-        // A bridge a VM is on stays: the VMs' records say which.
+        // A bridge, internal network or card a VM is on stays: the VMs'
+        // records say which.
         users: Arc::new(zendiloos_infra::vms::VmsOnBridges::new(Arc::new(SqliteVms::new(database.clone())))),
         jobs: jobs.clone(),
         audit: audit.clone(),
@@ -371,8 +372,10 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let vms = Vms::new(VmsPorts {
         repository: Arc::new(SqliteVms::new(database.clone())),
         images: Arc::new(SqliteVmImages::new(database.clone())),
-        // The bridges VMs may go on, as zendiloosd reads the host's network.
-        host: Arc::new(AgentVms::new(agent.clone(), network.get_network.clone())),
+        locations: Arc::new(SqliteVmLocations::new(database.clone())),
+        // The bridges, internal networks and cards VMs may go on, as
+        // zendiloosd reads the host's network and zendiloOS's files.
+        host: Arc::new(AgentVms::new(agent.clone(), network.clone())),
         isos: Arc::new(zendiloos_infra::vms::SharesForVms::new(files.clone())),
         ids: Arc::new(RandomVmIds),
         jobs: jobs.clone(),

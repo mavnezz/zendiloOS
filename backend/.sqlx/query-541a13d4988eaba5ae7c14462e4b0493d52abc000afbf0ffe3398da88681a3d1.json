@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", at, actor, client_ip, action, target, outcome, request_id, details\n               FROM audit_log WHERE (?1 IS NULL OR id < ?1) AND (?3 IS NULL OR action = ?3)\n                   AND (?4 IS NULL OR substr(action, 1, length(?4)) = ?4)\n               ORDER BY id DESC LIMIT ?2",
+  "query": "SELECT id AS \"id!\", at, actor, client_ip, action, target, outcome, request_id, details\n               FROM audit_log WHERE (?1 IS NULL OR id < ?1) AND (?3 IS NULL OR action = ?3)\n                   AND (?4 IS NULL OR substr(action, 1, length(?4)) = ?4)\n                   AND (?5 IS NULL OR instr(lower(coalesce(actor, '') || ' ' || action || ' '\n                        || coalesce(target, '') || ' ' || coalesce(client_ip, '') || ' '\n                        || coalesce(details, '')), lower(?5)) > 0)\n               ORDER BY id DESC LIMIT ?2",
   "describe": {
     "columns": [
       {
@@ -104,7 +104,7 @@
       }
     ],
     "parameters": {
-      "Right": 4
+      "Right": 5
     },
     "nullable": [
       false,
@@ -118,5 +118,5 @@
       true
     ]
   },
-  "hash": "088d0d710af1e2227e64e4c67e6df01483e8f085a166b4717b97b7e4c8750341"
+  "hash": "541a13d4988eaba5ae7c14462e4b0493d52abc000afbf0ffe3398da88681a3d1"
 }

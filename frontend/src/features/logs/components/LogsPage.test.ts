@@ -113,7 +113,7 @@ describe('the logs', () => {
     expect(page()).toContain('tank')
     expect(page()).toContain('brand.new')
     expect(page()).toContain('unheard')
-    await click(new RegExp(t('logs.older')))
+    await click(new RegExp(`^${t('logs.olderPage')}`))
     expect(called('GET', '/api/v1/logs/audit').at(-1)?.query).toMatchObject({ before: '2' })
     await click(/Refresh/)
   })

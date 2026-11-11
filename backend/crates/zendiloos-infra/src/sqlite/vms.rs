@@ -1,15 +1,16 @@
-//! The virtual machines' settings, with their disks, network cards and CD
-//! drives; and the image library.
+//! The virtual machines' settings, with their disks (each on its location),
+//! network cards and CD drives; the locations of their storage; and the
+//! image library.
 
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use sqlx::{Sqlite, Transaction};
 use zendiloos_kernel::{PortError, Timestamp};
-use zendiloos_vms::application::{VmImageRepository, VmRepository};
+use zendiloos_vms::application::{VmImageRepository, VmLocationRepository, VmRepository};
 use zendiloos_vms::domain::{
-    BootDevice, Disk, DiskBus, Drive, Firmware, ImageOrigin, Network, Nic, NicModel, OsPreset, Vm, VmImage,
-    VmSettings,
+    BootDevice, Disk, DiskBus, Drive, Firmware, ImageOrigin, Location, Network, Nic, NicModel, OsPreset, Vm,
+    VmImage, VmSettings,
 };
 
 use super::Database;
@@ -50,8 +51,6 @@ struct Row {
     firmware: String,
     autostart: bool,
     boot: String,
-    pool: String,
-    volume: i64,
     created_at: i64,
     ready: bool,
 }
@@ -61,13 +60,16 @@ struct DiskRow {
     slot: i64,
     size_gib: i64,
     bus: String,
+    pool: String,
+    volume: i64,
 }
 
 struct NicRow {
     vm: String,
     slot: i64,
     model: String,
-    bridge: Option<String>,
+    network: String,
+    device: Option<String>,
     mac: String,
 }
 
@@ -98,6 +100,11 @@ impl Devices {
                 size_gib: u32::try_from(row.size_gib)
                     .map_err(|_| stored(format!("disk size of {}", row.vm)))?,
                 bus: DiskBus::parse(&row.bus).ok_or_else(|| stored(format!("bus {}", row.bus)))?,
+                location: Location {
+                    volume: u16::try_from(row.volume)
+                        .map_err(|_| stored(format!("volume of a disk of {}", row.vm)))?,
+                    pool: row.pool,
+                },
             };
             devices.disks.entry(row.vm).or_default().push(disk);
         }
@@ -105,7 +112,8 @@ impl Devices {
             let nic = Nic {
                 slot: slot(row.slot, &row.vm)?,
                 model: NicModel::parse(&row.model).ok_or_else(|| stored(format!("model {}", row.model)))?,
-                network: row.bridge.map_or(Network::User, Network::Bridge),
+                network: Network::of(&row.network, row.device)
+                    .ok_or_else(|| stored(format!("network {} of {}", row.network, row.vm)))?,
                 mac: row.mac,
             };
             devices.nics.entry(row.vm).or_default().push(nic);
@@ -138,8 +146,6 @@ impl Devices {
                 boot,
                 autostart: row.autostart,
             },
-            pool: row.pool,
-            volume: u16::try_from(row.volume).map_err(|_| number(row.volume, "volume"))?,
             created_at: Timestamp::from_unix_seconds(row.created_at),
             ready: row.ready,
             id: row.id,
@@ -157,7 +163,7 @@ impl SqliteVms {
         let pool = self.db.pool();
         let disks = sqlx::query_as!(
             DiskRow,
-            r#"SELECT vm AS "vm!", slot, size_gib, bus FROM vm_disks
+            r#"SELECT vm AS "vm!", slot, size_gib, bus, pool, volume FROM vm_disks
                WHERE ?1 IS NULL OR vm = ?1 ORDER BY vm, slot"#,
             id
         )
@@ -166,7 +172,7 @@ impl SqliteVms {
         .map_err(db_error)?;
         let nics = sqlx::query_as!(
             NicRow,
-            r#"SELECT vm AS "vm!", slot, model, bridge, mac FROM vm_nics
+            r#"SELECT vm AS "vm!", slot, model, network, device, mac FROM vm_nics
                WHERE ?1 IS NULL OR vm = ?1 ORDER BY vm, slot"#,
             id
         )
@@ -193,28 +199,29 @@ impl SqliteVms {
         sqlx::query!("DELETE FROM vm_drives WHERE vm = ?", id).execute(&mut **transaction).await?;
         for disk in &vm.settings.disks {
             let (slot, size, bus) = (i64::from(disk.slot), i64::from(disk.size_gib), disk.bus.as_str());
+            let volume = i64::from(disk.location.volume);
             sqlx::query!(
-                "INSERT INTO vm_disks (vm, slot, size_gib, bus) VALUES (?, ?, ?, ?)",
+                "INSERT INTO vm_disks (vm, slot, size_gib, bus, pool, volume) VALUES (?, ?, ?, ?, ?, ?)",
                 id,
                 slot,
                 size,
-                bus
+                bus,
+                disk.location.pool,
+                volume
             )
             .execute(&mut **transaction)
             .await?;
         }
         for nic in &vm.settings.nics {
             let (slot, model) = (i64::from(nic.slot), nic.model.as_str());
-            let bridge = match &nic.network {
-                Network::User => None,
-                Network::Bridge(bridge) => Some(bridge.as_str()),
-            };
+            let (network, device) = (nic.network.kind(), nic.network.device());
             sqlx::query!(
-                "INSERT INTO vm_nics (vm, slot, model, bridge, mac) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO vm_nics (vm, slot, model, network, device, mac) VALUES (?, ?, ?, ?, ?, ?)",
                 id,
                 slot,
                 model,
-                bridge,
+                network,
+                device,
                 nic.mac
             )
             .execute(&mut **transaction)
@@ -236,7 +243,7 @@ impl VmRepository for SqliteVms {
         let rows = sqlx::query_as!(
             Row,
             r#"SELECT id AS "id!", name, os, cpus, memory_mib, firmware, autostart AS "autostart: bool", boot,
-                      pool, volume, created_at, ready AS "ready: bool"
+                      created_at, ready AS "ready: bool"
                FROM vms ORDER BY created_at, id"#
         )
         .fetch_all(self.db.pool())
@@ -250,7 +257,7 @@ impl VmRepository for SqliteVms {
         let row = sqlx::query_as!(
             Row,
             r#"SELECT id AS "id!", name, os, cpus, memory_mib, firmware, autostart AS "autostart: bool", boot,
-                      pool, volume, created_at, ready AS "ready: bool"
+                      created_at, ready AS "ready: bool"
                FROM vms WHERE id = ?"#,
             id
         )
@@ -267,12 +274,11 @@ impl VmRepository for SqliteVms {
         let (os, firmware) = (settings.os.as_str(), settings.firmware.as_str());
         let (cpus, memory) = (i64::from(settings.cpus), i64::from(settings.memory_mib));
         let boot = boot_text(&settings.boot);
-        let (volume, created_at) = (i64::from(vm.volume), vm.created_at.unix_seconds());
+        let created_at = vm.created_at.unix_seconds();
         let mut transaction = self.db.pool().begin().await.map_err(db_error)?;
         let done = sqlx::query!(
-            "INSERT INTO vms (id, name, os, cpus, memory_mib, firmware, autostart, boot, pool, volume, created_at,
-                              ready)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            "INSERT INTO vms (id, name, os, cpus, memory_mib, firmware, autostart, boot, created_at, ready)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
             vm.id,
             settings.name,
             os,
@@ -281,8 +287,6 @@ impl VmRepository for SqliteVms {
             firmware,
             settings.autostart,
             boot,
-            vm.pool,
-            volume,
             created_at,
             vm.ready
         )
@@ -344,6 +348,57 @@ impl VmRepository for SqliteVms {
 
     async fn delete(&self, id: &str) -> Result<bool, PortError> {
         let done = sqlx::query!("DELETE FROM vms WHERE id = ?", id)
+            .execute(self.db.pool())
+            .await
+            .map_err(db_error)?;
+        Ok(done.rows_affected() == 1)
+    }
+}
+
+/// [`VmLocationRepository`] on the `vm_locations` table.
+#[derive(Debug, Clone)]
+pub struct SqliteVmLocations {
+    db: Database,
+}
+
+impl SqliteVmLocations {
+    pub fn new(db: Database) -> Self {
+        Self { db }
+    }
+}
+
+#[async_trait]
+impl VmLocationRepository for SqliteVmLocations {
+    async fn list(&self) -> Result<Vec<Location>, PortError> {
+        let rows = sqlx::query!(r#"SELECT pool AS "pool!", volume FROM vm_locations ORDER BY position"#)
+            .fetch_all(self.db.pool())
+            .await
+            .map_err(db_error)?;
+        rows.into_iter()
+            .map(|row| {
+                let volume = u16::try_from(row.volume)
+                    .map_err(|_| stored(format!("volume of location {}", row.pool)))?;
+                Ok(Location { pool: row.pool, volume })
+            })
+            .collect()
+    }
+
+    async fn add(&self, location: &Location) -> Result<(), PortError> {
+        let volume = i64::from(location.volume);
+        sqlx::query!(
+            "INSERT INTO vm_locations (pool, volume, position)
+             VALUES (?, ?, (SELECT coalesce(max(position), 0) + 1 FROM vm_locations)) ON CONFLICT DO NOTHING",
+            location.pool,
+            volume
+        )
+        .execute(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn remove(&self, pool: &str) -> Result<bool, PortError> {
+        let done = sqlx::query!("DELETE FROM vm_locations WHERE pool = ?", pool)
             .execute(self.db.pool())
             .await
             .map_err(db_error)?;
@@ -514,15 +569,14 @@ mod tests {
             }],
             ..VmSettings::preset(name, OsPreset::Windows)
         };
-        settings.disks.push(Disk { slot: 3, size_gib: 100, bus: DiskBus::Virtio });
-        Vm {
-            id: id.into(),
-            settings,
-            pool: "tank".into(),
-            volume: 1,
-            created_at: Timestamp::from_unix_seconds(1_700_000_000),
-            ready: false,
-        }
+        settings.disks[0].location = Location { pool: "tank".into(), volume: 1 };
+        settings.disks.push(Disk {
+            slot: 3,
+            size_gib: 100,
+            bus: DiskBus::Virtio,
+            location: Location { pool: "cold".into(), volume: 2 },
+        });
+        Vm { id: id.into(), settings, created_at: Timestamp::from_unix_seconds(1_700_000_000), ready: false }
     }
 
     #[tokio::test]
@@ -557,7 +611,13 @@ mod tests {
         let mut changed = found.clone();
         changed.settings.name = "Büro".into();
         changed.settings.cpus = 4;
-        changed.settings.disks = vec![Disk { slot: 1, size_gib: 8, bus: DiskBus::Sata }];
+        changed.settings.disks = vec![Disk {
+            slot: 1,
+            size_gib: 8,
+            bus: DiskBus::Sata,
+            location: Location { pool: "cold".into(), volume: 2 },
+        }];
+        changed.settings.nics[0].network = Network::Direct("enp2s0".into());
         changed.settings.drives = vec![];
         changed.settings.boot = vec![BootDevice::Disk(1)];
         assert!(vms.update(&changed).await.unwrap());
@@ -567,9 +627,35 @@ mod tests {
         assert!(!vms.update(&taken).await.unwrap());
         assert!(!vms.update(&vm("00000000000f", "nobody")).await.unwrap(), "no such VM");
 
+        let mut internal = vms.find("00000000000d").await.unwrap().unwrap();
+        internal.settings.nics[0].network = Network::Internal("vmnet0".into());
+        assert!(vms.update(&internal).await.unwrap());
+        assert_eq!(vms.find("00000000000d").await.unwrap(), Some(internal));
+
         assert!(vms.delete("0a1b2c3d4e5f").await.unwrap());
         assert!(!vms.delete("0a1b2c3d4e5f").await.unwrap());
         assert!(vms.list().await.unwrap().iter().all(|vm| vm.id != "0a1b2c3d4e5f"));
+    }
+
+    #[tokio::test]
+    async fn locations_are_kept_in_the_order_they_were_added() {
+        let (_dir, db) = temporary_database().await;
+        let locations = SqliteVmLocations::new(db);
+        assert!(locations.list().await.unwrap().is_empty());
+        let (tank, cold) =
+            (Location { pool: "tank".into(), volume: 1 }, Location { pool: "cold".into(), volume: 2 });
+        locations.add(&cold).await.unwrap();
+        locations.add(&tank).await.unwrap();
+        locations.add(&cold).await.unwrap();
+        assert_eq!(
+            locations.list().await.unwrap(),
+            [cold.clone(), tank.clone()],
+            "once each, the first first"
+        );
+        assert!(locations.remove("cold").await.unwrap());
+        assert!(!locations.remove("cold").await.unwrap());
+        locations.add(&cold).await.unwrap();
+        assert_eq!(locations.list().await.unwrap(), [tank, cold]);
     }
 
     #[tokio::test]

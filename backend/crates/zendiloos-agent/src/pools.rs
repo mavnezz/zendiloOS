@@ -711,11 +711,11 @@ impl Pools {
         Ok(())
     }
 
-    /// Puts the virtual machines' storage on the pool: the dataset
-    /// `<pool>/zendiloos.vms` (its zvols are the VMs' disks, its folder
-    /// holds the copies of their ISOs), its mount unit, and a drop-in so
-    /// libvirt starts only with it mounted. Refused while it is on another
-    /// pool.
+    /// Puts a location of the virtual machines' storage on the pool: the
+    /// dataset `<pool>/zendiloos.vms` (its zvols are VMs' disks, its folder
+    /// holds the image library on the first location), its mount unit, and
+    /// libvirt's drop-in, so libvirt starts only with every location
+    /// mounted. Several pools may hold one each.
     pub(crate) async fn enable_vms(
         &self,
         pool: &PoolName,
@@ -726,14 +726,6 @@ impl Pools {
         let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_managed(pool, Some(volume)).await?;
         let unit = crate::vms::vms_unit_name(volume);
-        let elsewhere = fs::read_dir(&self.paths.units)
-            .map_err(|e| OperationError::Read(self.paths.units.clone(), e))?
-            .filter_map(Result::ok)
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .any(|name| name.ends_with("-\\x40vms.mount") && name != unit);
-        if elsewhere {
-            return Err(refused("the virtual machines' storage is on another pool already".into()));
-        }
         let dataset = format!("{}/{VMS_DATASET}", pool.as_str());
         let existing = output(&self.zfs, &["list", "-H", "-o", "name", "-d", "1", pool.as_str()]).await?;
         if !existing.lines().any(|line| line == dataset) {
@@ -769,14 +761,102 @@ impl Pools {
             pool = pool.as_str(),
         );
         self.install_unit(&unit, &content).await?;
-        let drop_in = self.paths.units.join("libvirtd.service.d");
-        fs::create_dir_all(&drop_in).map_err(|e| OperationError::Write(drop_in.clone(), e))?;
-        let requires = format!(
-            "# Written by zendiloOS: the virtual machines' storage is on a pool; without it, libvirt waits.\n\
-             [Unit]\nRequiresMountsFor={root}\n"
-        );
-        write_file(&drop_in.join("zendiloos.conf"), &requires)?;
+        self.libvirt_waits_for(&crate::vms::vms_locations(&self.paths))?;
         run(&self.systemctl, &["daemon-reload"]).await
+    }
+
+    /// libvirt's drop-in: it starts only with every location mounted
+    /// (`RequiresMountsFor=`, one line each); without a location it goes.
+    fn libvirt_waits_for(
+        &self,
+        locations: &[zendiloos_agent_proto::VmStorage],
+    ) -> Result<(), OperationError> {
+        use zendiloos_agent_proto::VMS_DIRECTORY;
+
+        let drop_in = self.paths.units.join("libvirtd.service.d");
+        let file = drop_in.join("zendiloos.conf");
+        if locations.is_empty() {
+            return match fs::remove_file(&file) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    Err(OperationError::Write(file, error))
+                }
+                _ => Ok(()),
+            };
+        }
+        fs::create_dir_all(&drop_in).map_err(|e| OperationError::Write(drop_in.clone(), e))?;
+        let mut requires =
+            "# Written by zendiloOS: the virtual machines' storage is on pools; without them, \
+                            libvirt waits.\n[Unit]\n"
+                .to_owned();
+        for location in locations {
+            requires
+                .push_str(&format!("RequiresMountsFor=/volume{}/{VMS_DIRECTORY}\n", location.volume.get()));
+        }
+        write_file(&file, &requires)
+    }
+
+    /// Removes a location of the virtual machines' storage, refused while
+    /// its dataset holds a zvol (a VM's disk) or its library an image.
+    /// libvirt stops waiting for it first, so stopping its mount never
+    /// stops libvirt; then it is unmounted (a mount in use stays, and so
+    /// does everything), its dataset destroyed, and its unit removed. A
+    /// step that fails puts back what was done before it.
+    pub(crate) async fn disable_vms(
+        &self,
+        pool: &PoolName,
+        volume: VolumeNumber,
+    ) -> Result<Response, OperationError> {
+        use zendiloos_agent_proto::{VM_IMAGES_DIRECTORY, VMS_DATASET, VMS_DIRECTORY, VmImageId};
+
+        let _serial = crate::waiting::lock(&self.serial).await?;
+        self.require_managed(pool, Some(volume)).await?;
+        let locations = crate::vms::vms_locations(&self.paths);
+        if !locations.iter().any(|location| &location.pool == pool && location.volume == volume) {
+            return Err(refused(format!(
+                "there is no location of the virtual machines' storage on {}",
+                pool.as_str()
+            )));
+        }
+        let dataset = format!("{}/{VMS_DATASET}", pool.as_str());
+        let zvols = output(&self.zfs, &["list", "-H", "-o", "name", "-t", "volume", "-r", &dataset]).await?;
+        if let Some(zvol) = zvols.lines().find(|line| !line.trim().is_empty()) {
+            return Err(refused(format!("{} holds the disk {zvol} of a virtual machine", pool.as_str())));
+        }
+        let library = self
+            .paths
+            .volumes
+            .join(format!("volume{}", volume.get()))
+            .join(VMS_DIRECTORY)
+            .join(VM_IMAGES_DIRECTORY);
+        if let Ok(entries) = fs::read_dir(&library) {
+            let images = entries
+                .flatten()
+                .filter(|entry| VmImageId::of_file_name(&entry.file_name().to_string_lossy()).is_some())
+                .count();
+            if images > 0 {
+                return Err(refused(format!("the image library on {} holds {images} images", pool.as_str())));
+            }
+        }
+        let unit = crate::vms::vms_unit_name(volume);
+        let others: Vec<_> = locations.iter().filter(|location| location.volume != volume).cloned().collect();
+        self.libvirt_waits_for(&others)?;
+        run(&self.systemctl, &["daemon-reload"]).await?;
+        let back = |error: OperationError| async {
+            if let Err(again) = self.libvirt_waits_for(&locations) {
+                tracing::error!(%again, "vms: libvirt does not wait for every location again");
+            }
+            let _ = run(&self.systemctl, &["daemon-reload"]).await;
+            error
+        };
+        if let Err(error) = run(&self.systemctl, &["stop", &unit]).await {
+            return Err(back(error).await);
+        }
+        if let Err(error) = run(&self.zfs, &["destroy", &dataset]).await {
+            self.mount_again(&[unit.as_str()]).await;
+            return Err(back(error).await);
+        }
+        self.remove_unit(&unit).await?;
+        Ok(Response::Done)
     }
 
     /// Moves Docker's data from one pool to another: stopped, copied with

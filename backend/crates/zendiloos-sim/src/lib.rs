@@ -860,6 +860,8 @@ impl AgentTransport for SimulatedAgent {
             }
             Request::VmHost {}
             | Request::EnableVms { .. }
+            | Request::DisableVms { .. }
+            | Request::VmStorageUsage {}
             | Request::CopyVmImage { .. }
             | Request::VmImages { .. }
             | Request::DeleteVmImage { .. }
@@ -1278,9 +1280,9 @@ impl AgentTransport for SimulatedAgent {
                 self.received.lock().unwrap_or_else(PoisonError::into_inner).push(request);
                 Ok(opened)
             }
-            Request::OpenVmImageUpload { ref image, bytes, .. } => {
+            Request::OpenVmImageUpload { ref image, volume, bytes } => {
                 let opened =
-                    self.vms.lock().unwrap_or_else(PoisonError::into_inner).open_upload(image, bytes);
+                    self.vms.lock().unwrap_or_else(PoisonError::into_inner).open_upload(image, volume, bytes);
                 self.received.lock().unwrap_or_else(PoisonError::into_inner).push(request);
                 Ok(opened)
             }

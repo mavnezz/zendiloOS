@@ -9,10 +9,14 @@
 //! `/etc/zendiloos/vms/zendiloos-<id>.xml`; a change defines it anew from
 //! the whole spec, so nothing is ever edited in place.
 //!
-//! A VM's disks are sparse zvols `<pool>/zendiloos.vms/<id>-disk<N>`
-//! (`volmode=dev`: no partitions of them show up on the host); they grow
+//! The VMs' storage is in one or more locations, each the dataset
+//! `<pool>/zendiloos.vms` of a pool zendiloOS made, mounted by its own unit
+//! at `/volume<N>/@vms`. A VM's disks are sparse zvols
+//! `<pool>/zendiloos.vms/<id>-disk<N>` (`volmode=dev`: no partitions of them
+//! show up on the host), each on the location it was made on; they grow
 //! and are added or removed only while it is shut off. Its CD drives hold
-//! images of the library, `/volume<N>/@vms/isos/<image>.iso`, copied there
+//! images of the library, `/volume<N>/@vms/isos/<image>.iso` on the first
+//! location (zendiloosd says which volume that is), copied there
 //! from a share by a unit of its own (`copy-vm-iso`, see [`crate::vm_iso`])
 //! or uploaded through a pipe into one (`receive-vm-image`, see
 //! [`crate::vm_upload`]): QEMU never sees a share, and libvirt, which hands
@@ -34,8 +38,8 @@ use std::time::{Duration, Instant};
 
 use zendiloos_agent_proto::{
     InterfaceName, PoolName, Response, VM_CONSOLES, VM_IMAGE_UPLOAD_MAX, VM_IMAGES_DIRECTORY, VMS_DATASET,
-    VMS_DIRECTORY, VmAction, VmBoot, VmDiskBus, VmDiskSlot, VmDriveSlot, VmFirmware, VmId, VmImageFile,
-    VmImageId, VmIsoSource, VmNetwork, VmNicModel, VmOs, VmSpec, VmStorage, VolumeNumber,
+    VMS_DIRECTORY, VmAction, VmBoot, VmDisk, VmDiskBus, VmDiskSlot, VmDriveSlot, VmFirmware, VmId,
+    VmImageFile, VmImageId, VmIsoSource, VmNetwork, VmNicModel, VmOs, VmSpec, VmStorage, VolumeNumber,
 };
 use zendiloos_exec::{ExecError, Limits, Program, Surroundings};
 
@@ -94,6 +98,12 @@ pub struct VmPaths {
     pub apparmor: PathBuf,
     /// Where the zvols' devices are: `/dev/zvol`.
     pub zvols: PathBuf,
+    /// systemd-networkd's folder with zendiloOS's files, which say which
+    /// bridges are internal networks.
+    pub network: PathBuf,
+    /// The rules that keep the NAS off them, as the network's changes
+    /// write them ([`crate::internal_networks`]).
+    pub internal: PathBuf,
 }
 
 impl Default for VmPaths {
@@ -108,6 +118,8 @@ impl Default for VmPaths {
             tmpfiles: PathBuf::from("/etc/tmpfiles.d/zendiloos-vms.conf"),
             apparmor: PathBuf::from("/etc/apparmor.d/abstractions/libvirt-qemu.d/zendiloos-consoles"),
             zvols: PathBuf::from("/dev/zvol"),
+            network: PathBuf::from("/etc/systemd/network"),
+            internal: PathBuf::from(crate::network::INTERNAL_NETWORKS),
         }
     }
 }
@@ -168,11 +180,13 @@ pub(crate) fn vms_root(host: &HostPaths, volume: VolumeNumber) -> PathBuf {
     host.volumes.join(format!("volume{}", volume.get())).join(VMS_DIRECTORY)
 }
 
-/// Where the VMs' dataset is: the mount unit that names it. More than one
-/// (a hand's work) counts as none, so nothing goes to the wrong pool.
-pub(crate) fn vms_storage(host: &HostPaths) -> Option<VmStorage> {
-    let entries = fs::read_dir(&host.units).ok()?;
-    let mut found = Vec::new();
+/// The locations of the VMs' storage: each mount unit of a volume's
+/// `@vms` that names `<pool>/zendiloos.vms`, by volume. Two that name one
+/// pool (a hand's work) count as none of that pool, so nothing goes to the
+/// wrong place.
+pub(crate) fn vms_locations(host: &HostPaths) -> Vec<VmStorage> {
+    let Ok(entries) = fs::read_dir(&host.units) else { return Vec::new() };
+    let mut found: Vec<VmStorage> = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         let Some(number) = name.strip_prefix("volume").and_then(|rest| rest.strip_suffix("-\\x40vms.mount"))
@@ -194,7 +208,14 @@ pub(crate) fn vms_storage(host: &HostPaths) -> Option<VmStorage> {
             found.push(VmStorage { pool, volume });
         }
     }
-    if found.len() == 1 { found.pop() } else { None }
+    let twice: Vec<PoolName> = found
+        .iter()
+        .filter(|location| found.iter().filter(|other| other.pool == location.pool).count() > 1)
+        .map(|location| location.pool.clone())
+        .collect();
+    found.retain(|location| !twice.contains(&location.pool));
+    found.sort_by_key(|location| location.volume.get());
+    found
 }
 
 /// What a disk of a VM becomes on an update.
@@ -249,6 +270,53 @@ impl Vms {
         }
     }
 
+    /// A card a VM goes on directly (macvtap) is a wired card or a bond of
+    /// the host's, as systemd-networkd describes the link: of the type
+    /// `ether` with no kind (a card; a `veth` or a VLAN has one), or of the
+    /// kind `bond`. Anything else, or a link it does not know, is refused;
+    /// one it knows but does not describe is taken as it is, as libvirt
+    /// refuses to put macvtap on what cannot carry it.
+    async fn check_card(&self, card: &InterfaceName) -> Result<(), OperationError> {
+        let no_card = || refused(format!("{} is no wired card or bond of this machine", card.as_str()));
+        let Some((index, _)) = crate::network::networkd_link(&self.tools.busctl, card).await else {
+            return Err(no_card());
+        };
+        match crate::network::networkd_kind(&self.tools.busctl, index).await {
+            Some((kind, kind_of_type)) => {
+                let wired = kind.is_none() && kind_of_type.as_deref() == Some("ether");
+                if wired || kind.as_deref() == Some("bond") { Ok(()) } else { Err(no_card()) }
+            }
+            None => {
+                tracing::warn!(card = card.as_str(), "vms: systemd-networkd did not describe the card");
+                Ok(())
+            }
+        }
+    }
+
+    /// An internal network is a bridge of the host's, one zendiloOS made
+    /// without members or an address, and the NAS keeps itself off it now
+    /// ([`crate::internal_networks`]): otherwise a VM on it could reach
+    /// the NAS.
+    async fn check_internal(&self, bridge: &InterfaceName) -> Result<(), OperationError> {
+        self.check_bridge(bridge).await?;
+        let kept_off = crate::internal_networks::keeps_off(
+            &self.tools.systemctl,
+            &self.paths.network,
+            &self.paths.internal,
+            bridge,
+        )
+        .await;
+        if kept_off {
+            Ok(())
+        } else {
+            Err(refused(format!(
+                "{} is no internal network the NAS keeps itself off: a bridge zendiloOS made without members \
+                 or an address",
+                bridge.as_str()
+            )))
+        }
+    }
+
     /// What the machine offers VMs.
     pub(crate) fn host_facts(&self) -> Result<Response, OperationError> {
         let mut cpuinfo = String::new();
@@ -265,7 +333,7 @@ impl Vms {
             installed: self.installed(),
             cores,
             memory_bytes: memory_bytes(&meminfo),
-            storage: vms_storage(&self.host),
+            locations: vms_locations(&self.host),
         })
     }
 
@@ -596,26 +664,41 @@ impl Vms {
 
     // The VMs.
 
-    /// The VMs' storage, which must be on `volume`.
+    /// The location of the VMs' storage on `volume`.
     fn storage_on(&self, volume: VolumeNumber) -> Result<VmStorage, OperationError> {
-        match vms_storage(&self.host) {
-            Some(storage) if storage.volume == volume => Ok(storage),
-            Some(storage) => Err(refused(format!(
-                "the virtual machines' storage is on volume {}, not {}",
-                storage.volume.get(),
-                volume.get()
-            ))),
-            None => Err(refused("the virtual machines' storage is not set up")),
+        let locations = vms_locations(&self.host);
+        if locations.is_empty() {
+            return Err(refused("the virtual machines' storage is not set up"));
         }
+        locations.into_iter().find(|location| location.volume == volume).ok_or_else(|| {
+            refused(format!("no location of the virtual machines' storage is on volume {}", volume.get()))
+        })
     }
 
-    /// The storage of a VM on `pool` and `volume`, whose dataset is there.
-    async fn storage_of(&self, pool: &PoolName, volume: VolumeNumber) -> Result<VmStorage, OperationError> {
-        let storage = self.storage_on(volume)?;
-        if &storage.pool != pool {
-            return Err(refused(format!("the virtual machines' storage is not on pool {}", pool.as_str())));
+    /// `location` is one of the VMs' storage, its pool on its volume.
+    fn location(&self, location: &VmStorage) -> Result<(), OperationError> {
+        let found = self.storage_on(location.volume)?;
+        if found.pool != location.pool {
+            return Err(refused(format!(
+                "the virtual machines' storage on volume {} is not on pool {}",
+                location.volume.get(),
+                location.pool.as_str()
+            )));
         }
-        Ok(storage)
+        Ok(())
+    }
+
+    /// Every location a VM's disks are on is one of the storage's, with its
+    /// dataset there.
+    async fn locations_of(&self, spec: &VmSpec) -> Result<(), OperationError> {
+        for location in spec.locations() {
+            self.location(location)?;
+            let dataset = Self::dataset(&location.pool);
+            if !self.exists(&dataset).await? {
+                return Err(refused(format!("there is no dataset {dataset}")));
+            }
+        }
+        Ok(())
     }
 
     fn dataset(pool: &PoolName) -> String {
@@ -624,6 +707,24 @@ impl Vms {
 
     fn zvol(pool: &PoolName, id: &VmId, slot: VmDiskSlot) -> String {
         format!("{}/{}", Self::dataset(pool), id.disk(slot))
+    }
+
+    /// A disk's zvol, on its location.
+    fn disk_zvol(spec: &VmSpec, disk: &VmDisk) -> String {
+        Self::zvol(&disk.location.pool, &spec.id, disk.slot)
+    }
+
+    /// The zvols of the VM's disk in `slot` on every location there is,
+    /// those that are there.
+    async fn zvols_in(&self, id: &VmId, slot: VmDiskSlot) -> Result<Vec<String>, OperationError> {
+        let mut found = Vec::new();
+        for location in vms_locations(&self.host) {
+            let zvol = Self::zvol(&location.pool, id, slot);
+            if self.exists(&zvol).await? {
+                found.push(zvol);
+            }
+        }
+        Ok(found)
     }
 
     fn domain_file(&self, id: &VmId) -> PathBuf {
@@ -678,64 +779,73 @@ impl Vms {
         Ok(output.status.success())
     }
 
-    /// The images the drives hold are in the library, and the bridges the
-    /// cards go on are the host's.
+    /// The images the drives hold are in the library, the bridges the cards
+    /// go on are the host's, the cards they go on directly are its wired
+    /// cards or bonds, and the internal networks are kept off the NAS.
     async fn check_devices(&self, spec: &VmSpec) -> Result<(), OperationError> {
+        if spec.images().next().is_some() {
+            self.storage_on(spec.library)?;
+        }
         for image in spec.images() {
-            let file = self.image_file(spec.volume, image);
+            let file = self.image_file(spec.library, image);
             if !fs::symlink_metadata(&file).is_ok_and(|meta| meta.is_file()) {
                 return Err(refused(format!("the image {} is not in the library", image.as_str())));
             }
         }
         let mut asked = BTreeSet::new();
         for nic in spec.nics() {
-            if let VmNetwork::Bridge { bridge } = &nic.network
-                && asked.insert(bridge.as_str())
-            {
-                self.check_bridge(bridge).await?;
+            match &nic.network {
+                VmNetwork::User => {}
+                VmNetwork::Bridge { bridge } if asked.insert(("bridge", bridge.as_str())) => {
+                    self.check_bridge(bridge).await?;
+                }
+                VmNetwork::Direct { card } if asked.insert(("direct", card.as_str())) => {
+                    self.check_card(card).await?;
+                }
+                VmNetwork::Internal { bridge } if asked.insert(("internal", bridge.as_str())) => {
+                    self.check_internal(bridge).await?;
+                }
+                VmNetwork::Bridge { .. } | VmNetwork::Direct { .. } | VmNetwork::Internal { .. } => {}
             }
         }
         Ok(())
     }
 
-    async fn make_disk(&self, spec: &VmSpec, slot: VmDiskSlot, gib: u32) -> Result<(), OperationError> {
-        let zvol = Self::zvol(&spec.pool, &spec.id, slot);
-        let size = format!("{gib}G");
+    async fn make_disk(&self, spec: &VmSpec, disk: &VmDisk) -> Result<(), OperationError> {
+        let zvol = Self::disk_zvol(spec, disk);
+        let size = format!("{}G", disk.size.gib());
         run(&self.tools.zfs, &["create", "-s", "-V", &size, "-o", "volmode=dev", &zvol], SLOW).await
     }
 
-    async fn destroy_disks(&self, spec: &VmSpec, slots: &[VmDiskSlot]) {
-        for slot in slots {
-            let _ = run(&self.tools.zfs, &["destroy", &Self::zvol(&spec.pool, &spec.id, *slot)], SLOW).await;
+    async fn destroy_disks(&self, zvols: &[String]) {
+        for zvol in zvols {
+            let _ = run(&self.tools.zfs, &["destroy", zvol], SLOW).await;
         }
     }
 
-    /// Makes a new VM's disks and defines its domain.
+    /// Makes a new VM's disks, each on its location, and defines its domain.
     pub(crate) async fn define(&self, spec: &VmSpec) -> Result<Response, OperationError> {
         let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_installed()?;
-        self.storage_of(&spec.pool, spec.volume).await?;
-        let parent = Self::dataset(&spec.pool);
-        if !self.exists(&parent).await? {
-            return Err(refused(format!("there is no dataset {parent}")));
-        }
+        self.locations_of(spec).await?;
         if self.defined(&spec.id).await? {
             return Err(OperationError::Conflict);
         }
         self.check_devices(spec).await?;
         let mut made = Vec::new();
         for disk in spec.disks() {
-            if self.exists(&Self::zvol(&spec.pool, &spec.id, disk.slot)).await? {
+            let zvol = Self::disk_zvol(spec, disk);
+            if self.exists(&zvol).await? {
                 continue;
             }
-            if let Err(error) = self.make_disk(spec, disk.slot, disk.size.gib()).await {
-                self.destroy_disks(spec, &made).await;
+            if let Err(error) = self.make_disk(spec, disk).await {
+                self.destroy_disks(&made).await;
                 return Err(error);
             }
-            made.push(disk.slot);
+            made.push(zvol);
         }
         if let Err(error) = self.define_domain(spec, false).await {
-            self.destroy_disks(spec, &made).await;
+            self.destroy_disks(&made).await;
             return Err(error);
         }
         Ok(Response::Done)
@@ -751,7 +861,7 @@ impl Vms {
     ) -> Result<Response, OperationError> {
         let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_installed()?;
-        self.storage_of(&spec.pool, spec.volume).await?;
+        self.locations_of(spec).await?;
         match self.domain_state(&spec.id).await? {
             None => return Err(refused(format!("there is no virtual machine {}", spec.id.as_str()))),
             Some(state) if state != "shut off" => {
@@ -767,8 +877,18 @@ impl Vms {
         self.check_devices(spec).await?;
         let mut plan = Vec::new();
         for disk in spec.disks() {
-            let zvol = Self::zvol(&spec.pool, &spec.id, disk.slot);
-            let step = match self.volsize(&zvol).await? {
+            let zvol = Self::disk_zvol(spec, disk);
+            let size = self.volsize(&zvol).await?;
+            // A disk stays on the location it was made on.
+            if size.is_none()
+                && let Some(elsewhere) = self.zvols_in(&spec.id, disk.slot).await?.first()
+            {
+                return Err(refused(format!(
+                    "disk {} lies on {elsewhere}: a disk stays where it was made",
+                    disk.slot.get()
+                )));
+            }
+            let step = match size {
                 None => DiskPlan::Make,
                 Some(size) if size < disk.size.bytes() => DiskPlan::Grow,
                 Some(size) if size > disk.size.bytes() => {
@@ -784,29 +904,26 @@ impl Vms {
         }
         let mut made = Vec::new();
         for (disk, step) in plan {
-            let zvol = Self::zvol(&spec.pool, &spec.id, disk.slot);
+            let zvol = Self::disk_zvol(spec, disk);
             let done = match step {
                 DiskPlan::Keep => Ok(()),
-                DiskPlan::Make => {
-                    self.make_disk(spec, disk.slot, disk.size.gib()).await.map(|()| made.push(disk.slot))
-                }
+                DiskPlan::Make => self.make_disk(spec, disk).await.map(|()| made.push(zvol.clone())),
                 DiskPlan::Grow => {
                     let size = format!("volsize={}G", disk.size.gib());
                     run(&self.tools.zfs, &["set", &size, &zvol], SLOW).await
                 }
             };
             if let Err(error) = done {
-                self.destroy_disks(spec, &made).await;
+                self.destroy_disks(&made).await;
                 return Err(error);
             }
         }
         if let Err(error) = self.define_domain(spec, true).await {
-            self.destroy_disks(spec, &made).await;
+            self.destroy_disks(&made).await;
             return Err(error);
         }
         for slot in remove {
-            let zvol = Self::zvol(&spec.pool, &spec.id, *slot);
-            if self.exists(&zvol).await? {
+            for zvol in self.zvols_in(&spec.id, *slot).await? {
                 run(&self.tools.zfs, &["destroy", &zvol], SLOW).await?;
             }
         }
@@ -822,7 +939,7 @@ impl Vms {
     ) -> Result<Response, OperationError> {
         let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_installed()?;
-        self.storage_of(&spec.pool, spec.volume).await?;
+        self.locations_of(spec).await?;
         let Some(state) = self.domain_state(&spec.id).await? else {
             return Err(refused(format!("there is no virtual machine {}", spec.id.as_str())));
         };
@@ -837,7 +954,7 @@ impl Vms {
         let file = drive
             .image
             .as_ref()
-            .map(|image| self.image_file(spec.volume, image).to_string_lossy().into_owned());
+            .map(|image| self.image_file(spec.library, image).to_string_lossy().into_owned());
         let mut args = vec!["change-media", domain.as_str(), target.as_str()];
         match &file {
             Some(file) => args.extend([file.as_str(), "--update"]),
@@ -860,8 +977,8 @@ impl Vms {
         let console = self.paths.consoles.join(format!("{}.vnc", spec.id.as_str()));
         let uuid = if existing { Some(self.domain_uuid(&spec.id).await?) } else { None };
         let places = Places {
-            zvols: self.paths.zvols.join(Self::dataset(&spec.pool)),
-            images: self.images_folder(spec.volume),
+            zvols: self.paths.zvols.clone(),
+            images: self.images_folder(spec.library),
             console,
             uuid,
         };
@@ -927,17 +1044,14 @@ impl Vms {
         Err(refused(complaint))
     }
 
-    /// Powers the VM off, undefines it, destroys its disks and removes its
-    /// XML; the library's images stay. What is gone already is no failure,
-    /// so a VM whose creation failed halfway goes too.
-    pub(crate) async fn delete(
-        &self,
-        id: &VmId,
-        pool: &PoolName,
-        volume: VolumeNumber,
-    ) -> Result<Response, OperationError> {
+    /// Powers the VM off, undefines it, destroys its disks on every location
+    /// and removes its XML; the library's images stay. What is gone already
+    /// is no failure, so a VM whose creation failed halfway goes too.
+    pub(crate) async fn delete(&self, id: &VmId) -> Result<Response, OperationError> {
         let _serial = crate::waiting::lock(&self.serial).await?;
-        self.storage_of(pool, volume).await?;
+        if vms_locations(&self.host).is_empty() {
+            return Err(refused("the virtual machines' storage is not set up"));
+        }
         let domain = id.domain();
         if self.installed() && self.defined(id).await? {
             // Not running is fine; anything else shows in undefine.
@@ -946,8 +1060,7 @@ impl Vms {
             run(&self.tools.virsh, &virsh(&undefine), QUICK).await?;
         }
         for slot in (0..).map_while(|slot| VmDiskSlot::new(slot).ok()) {
-            let zvol = Self::zvol(pool, id, slot);
-            if self.exists(&zvol).await? {
+            for zvol in self.zvols_in(id, slot).await? {
                 run(&self.tools.zfs, &["destroy", &zvol], SLOW).await?;
             }
         }
@@ -985,6 +1098,30 @@ impl Vms {
             zendiloos_exec::run(&self.tools.virsh, virsh(&args), QUICK).await?.success(&self.tools.virsh)?;
         let text = String::from_utf8(output.stdout).map_err(|_| OperationError::NotUtf8)?;
         Ok(Response::VmStats { domstats: own_domains(&text) })
+    }
+
+    /// What every location's dataset and the zvols on it hold, for
+    /// zendiloosd to read: `zfs list` of the locations' datasets alone.
+    pub(crate) async fn storage_usage(&self) -> Result<Response, OperationError> {
+        let datasets: Vec<String> =
+            vms_locations(&self.host).iter().map(|location| Self::dataset(&location.pool)).collect();
+        if datasets.is_empty() {
+            return Ok(Response::VmStorageUsage { zfs_list: String::new() });
+        }
+        let mut args = vec![
+            "list",
+            "-H",
+            "-p",
+            "-r",
+            "-t",
+            "filesystem,volume",
+            "-o",
+            "name,type,used,usedbydataset,referenced,available,volsize",
+        ];
+        args.extend(datasets.iter().map(String::as_str));
+        let output = zendiloos_exec::run(&self.tools.zfs, args, QUICK).await?.success(&self.tools.zfs)?;
+        let zfs_list = String::from_utf8(output.stdout).map_err(|_| OperationError::NotUtf8)?;
+        Ok(Response::VmStorageUsage { zfs_list })
     }
 
     /// Connects to the VM's console. The socket is opened without following
@@ -1163,9 +1300,9 @@ fn escape(text: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// Where a domain's files are: the folder of its zvols' devices
-/// (`/dev/zvol/<pool>/zendiloos.vms`), the library's folder, and its
-/// console's socket.
+/// Where a domain's files are: the folder of the zvols' devices
+/// (`/dev/zvol`, below which each disk is `<pool>/zendiloos.vms/<id>-disk<N>`
+/// on its location), the library's folder, and its console's socket.
 pub(crate) struct Places {
     pub zvols: PathBuf,
     pub images: PathBuf,
@@ -1243,7 +1380,7 @@ pub(crate) fn domain_xml(spec: &VmSpec, places: &Places) -> String {
     let mut disks = spec.disks().to_vec();
     disks.sort_by_key(|disk| disk.slot);
     for disk in disks {
-        let source = places.zvols.join(spec.id.disk(disk.slot));
+        let source = places.zvols.join(Vms::disk_zvol(spec, &disk));
         let bus = match disk.bus {
             VmDiskBus::Virtio => "virtio",
             VmDiskBus::Sata => "sata",
@@ -1293,10 +1430,19 @@ pub(crate) fn domain_xml(spec: &VmSpec, places: &Places) -> String {
                 "    <interface type='user'>\n      <mac address='{mac}'/>\n      <backend type='passt'/>\n      \
                  <model type='{model}'/>\n    </interface>\n"
             ),
-            VmNetwork::Bridge { bridge } => format!(
+            // A bridge of the host's, or an internal network: libvirt puts
+            // the VM's tap on it.
+            VmNetwork::Bridge { bridge } | VmNetwork::Internal { bridge } => format!(
                 "    <interface type='bridge'>\n      <mac address='{mac}'/>\n      <source bridge='{}'/>\n      \
                  <model type='{model}'/>\n    </interface>\n",
                 escape(bridge.as_str())
+            ),
+            // macvtap on the card, in bridge mode: on the card's LAN
+            // without a bridge; the NAS and the VM do not reach each other.
+            VmNetwork::Direct { card } => format!(
+                "    <interface type='direct'>\n      <mac address='{mac}'/>\n      \
+                 <source dev='{}' mode='bridge'/>\n      <model type='{model}'/>\n    </interface>\n",
+                escape(card.as_str())
             ),
         });
     }
@@ -1338,8 +1484,17 @@ mod tests {
 
     use super::*;
 
+    fn tank() -> VmStorage {
+        VmStorage { pool: PoolName::parse("tank").unwrap(), volume: VolumeNumber::new(1).unwrap() }
+    }
+
     fn disk(slot: u8, gib: u32, bus: VmDiskBus) -> VmDisk {
-        VmDisk { slot: VmDiskSlot::new(slot).unwrap(), size: VmDiskSize::new(gib).unwrap(), bus }
+        VmDisk {
+            slot: VmDiskSlot::new(slot).unwrap(),
+            size: VmDiskSize::new(gib).unwrap(),
+            bus,
+            location: tank(),
+        }
     }
 
     fn nic(slot: u8, model: VmNicModel, network: VmNetwork) -> VmNic {
@@ -1367,7 +1522,6 @@ mod tests {
             firmware,
             devices,
             false,
-            PoolName::parse("tank").unwrap(),
             VolumeNumber::new(1).unwrap(),
         )
         .unwrap()
@@ -1388,7 +1542,7 @@ mod tests {
 
     fn xml(spec: &VmSpec) -> String {
         let places = Places {
-            zvols: PathBuf::from("/dev/zvol/tank/zendiloos.vms"),
+            zvols: PathBuf::from("/dev/zvol"),
             images: PathBuf::from("/volume1/@vms/isos"),
             console: PathBuf::from("/run/zendiloos-vms/0a1b2c3d4e5f.vnc"),
             uuid: None,
@@ -1400,7 +1554,7 @@ mod tests {
     fn a_domain_defined_again_keeps_its_uuid() {
         let spec = spec(VmOs::Linux, VmFirmware::Uefi, linux());
         let mut places = Places {
-            zvols: PathBuf::from("/dev/zvol/tank/zendiloos.vms"),
+            zvols: PathBuf::from("/dev/zvol"),
             images: PathBuf::from("/volume1/@vms/isos"),
             console: PathBuf::from("/run/zendiloos-vms/0a1b2c3d4e5f.vnc"),
             uuid: Some("8b45cec4-586f-4885-973a-9e24c63b82fe".to_owned()),
@@ -1444,6 +1598,71 @@ mod tests {
             assert!(!xml.contains(absent), "{absent} in\n{xml}");
         }
         assert_eq!(xml.matches("<disk ").count(), 2);
+    }
+
+    /// A card on an internal network is on its bridge, as any other; one
+    /// directly on a card is macvtap in bridge mode, without a bridge.
+    #[test]
+    fn internal_and_direct_cards() {
+        let devices = VmDevices {
+            nics: vec![
+                nic(
+                    0,
+                    VmNicModel::Virtio,
+                    VmNetwork::Internal { bridge: InterfaceName::parse("vmnet0").unwrap() },
+                ),
+                nic(
+                    1,
+                    VmNicModel::E1000e,
+                    VmNetwork::Direct { card: InterfaceName::parse("enp2s0").unwrap() },
+                ),
+            ],
+            ..linux()
+        };
+        let xml = xml(&spec(VmOs::Linux, VmFirmware::Uefi, devices));
+        assert!(xml.contains(
+            "<interface type='bridge'>\n      <mac address='52:54:00:00:00:00'/>\n      <source bridge='vmnet0'/>\n      \
+             <model type='virtio'/>\n    </interface>"
+        ), "{xml}");
+        assert!(
+            xml.contains(
+                "<interface type='direct'>\n      <mac address='52:54:00:00:00:01'/>\n      \
+             <source dev='enp2s0' mode='bridge'/>\n      <model type='e1000e'/>\n    </interface>"
+            ),
+            "{xml}"
+        );
+        for absent in
+            ["type='network'", "filterref", "mode='vepa'", "mode='passthrough'", "<target dev='macvtap"]
+        {
+            assert!(!xml.contains(absent), "{absent} in\n{xml}");
+        }
+    }
+
+    /// Each disk is on its location: its zvol below that pool's dataset.
+    #[test]
+    fn disks_on_two_locations() {
+        let cold =
+            VmStorage { pool: PoolName::parse("cold").unwrap(), volume: VolumeNumber::new(2).unwrap() };
+        let devices = VmDevices {
+            disks: vec![
+                disk(0, 20, VmDiskBus::Virtio),
+                VmDisk { location: cold, ..disk(1, 100, VmDiskBus::Sata) },
+            ],
+            ..linux()
+        };
+        let xml = xml(&spec(VmOs::Linux, VmFirmware::Uefi, devices));
+        assert!(
+            xml.contains(
+                "<source dev='/dev/zvol/tank/zendiloos.vms/0a1b2c3d4e5f-disk0'/>\n      <target dev='vda'"
+            ),
+            "{xml}"
+        );
+        assert!(
+            xml.contains(
+                "<source dev='/dev/zvol/cold/zendiloos.vms/0a1b2c3d4e5f-disk1'/>\n      <target dev='sdb'"
+            ),
+            "{xml}"
+        );
     }
 
     #[test]
@@ -1542,21 +1761,26 @@ mod tests {
     }
 
     #[test]
-    fn the_storage_is_where_its_one_mount_unit_says() {
+    fn the_locations_are_where_their_mount_units_say() {
         let units = tempfile::tempdir().unwrap();
         let host = HostPaths { units: units.path().to_owned(), ..HostPaths::default() };
-        assert_eq!(vms_storage(&host), None);
+        assert!(vms_locations(&host).is_empty());
+        let cold =
+            VmStorage { pool: PoolName::parse("cold").unwrap(), volume: VolumeNumber::new(2).unwrap() };
         fs::write(
             units.path().join("volume2-\\x40vms.mount"),
             "[Mount]\nWhat=cold/zendiloos.vms\nWhere=/volume2/@vms\n",
         )
         .unwrap();
-        assert_eq!(
-            vms_storage(&host),
-            Some(VmStorage { pool: PoolName::parse("cold").unwrap(), volume: VolumeNumber::new(2).unwrap() })
-        );
+        assert_eq!(vms_locations(&host), std::slice::from_ref(&cold));
         fs::write(units.path().join("volume1-\\x40vms.mount"), "[Mount]\nWhat=tank/zendiloos.vms\n").unwrap();
-        assert_eq!(vms_storage(&host), None, "two are none");
+        assert_eq!(vms_locations(&host), [tank(), cold.clone()], "by volume");
+        // A unit naming a pool another names already is a hand's work: neither counts.
+        fs::write(units.path().join("volume3-\\x40vms.mount"), "[Mount]\nWhat=cold/zendiloos.vms\n").unwrap();
+        // Nor does one naming anything else, or a volume out of bounds.
+        fs::write(units.path().join("volume4-\\x40vms.mount"), "[Mount]\nWhat=tank/other\n").unwrap();
+        fs::write(units.path().join("volume0-\\x40vms.mount"), "[Mount]\nWhat=zero/zendiloos.vms\n").unwrap();
+        assert_eq!(vms_locations(&host), [tank()]);
     }
 
     #[test]

@@ -9,8 +9,8 @@ use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 
 use zendiloos_agent_proto::{
-    ErrorCode, Request, Response, VM_IMAGE_UPLOAD_MAX, VmAction, VmId, VmImageFile, VmImageId, VmNetwork,
-    VmSpec, VmStorage,
+    ErrorCode, Request, Response, VM_IMAGE_UPLOAD_MAX, VMS_DATASET, VmAction, VmDiskSlot, VmId, VmImageFile,
+    VmImageId, VmNetwork, VmSpec, VmStorage, VolumeNumber,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,12 +26,17 @@ pub(crate) type Receiving = std::thread::JoinHandle<u64>;
 pub(crate) struct SimVms {
     /// libvirt and QEMU installed (the plugin's run of apt).
     pub(crate) installed: bool,
-    storage: Option<VmStorage>,
+    /// The locations of the VMs' storage.
+    locations: Vec<VmStorage>,
+    /// The VMs' zvols, `<pool>/zendiloos.vms/<id>-disk<N>`, and their sizes.
+    zvols: BTreeMap<String, u64>,
     domains: BTreeMap<VmId, Power>,
     /// Domain ids since libvirt started, as `virsh list` numbers them.
     started: u32,
-    /// The library's images and their sizes.
-    images: BTreeMap<VmImageId, u64>,
+    /// The library's images, the volume each is on and its size.
+    images: BTreeMap<VmImageId, (VolumeNumber, u64)>,
+    /// Where each upload under way goes.
+    upload_volumes: BTreeMap<VmImageId, VolumeNumber>,
     /// Uploads under way: what was announced, and the thread reading.
     pub(crate) uploads: BTreeMap<VmImageId, (u64, Receiving)>,
     /// Looks at the counters, for CPU time that grows.
@@ -54,37 +59,45 @@ impl SimVms {
                 installed: self.installed,
                 cores: 8,
                 memory_bytes: 16 << 30,
-                storage: self.storage.clone(),
+                locations: self.locations.clone(),
             },
             Request::EnableVms { .. } if !self.installed => not_installed(),
-            Request::EnableVms { pool, volume } => match &self.storage {
-                Some(storage) if storage.volume != *volume => error(
-                    ErrorCode::Forbidden,
-                    "refused: the virtual machines' storage is on another pool already",
-                ),
-                _ => {
-                    self.storage = Some(VmStorage { pool: pool.clone(), volume: *volume });
-                    Response::Done
+            Request::EnableVms { pool, volume } => {
+                let location = VmStorage { pool: pool.clone(), volume: *volume };
+                if !self.locations.contains(&location) {
+                    if self.locations.iter().any(|other| other.pool == *pool || other.volume == *volume) {
+                        return Some(error(ErrorCode::Forbidden, "refused: the pool is not volume it says"));
+                    }
+                    self.locations.push(location);
+                    self.locations.sort_by_key(|location| location.volume.get());
                 }
-            },
+                Response::Done
+            }
+            Request::DisableVms { pool, volume } => {
+                self.disable(&VmStorage { pool: pool.clone(), volume: *volume })
+            }
+            Request::VmStorageUsage {} => Response::VmStorageUsage { zfs_list: self.usage() },
+            Request::DeleteVm { .. } if self.locations.is_empty() => {
+                error(ErrorCode::Forbidden, "refused: the virtual machines' storage is not set up")
+            }
             Request::CopyVmImage { volume, .. }
-            | Request::DeleteVm { volume, .. }
             | Request::VmImages { volume }
             | Request::DeleteVmImage { volume, .. }
-                if self.storage.as_ref().is_none_or(|storage| storage.volume != *volume) =>
+                if !self.on(*volume) =>
             {
                 error(ErrorCode::Forbidden, "refused: the virtual machines' storage is not set up there")
             }
             // A small ISO, copied at once.
-            Request::CopyVmImage { image, .. } => {
-                self.images.insert(image.clone(), 4096);
+            Request::CopyVmImage { image, volume, .. } => {
+                self.images.insert(image.clone(), (*volume, 4096));
                 Response::VmImageStored { bytes: 4096 }
             }
-            Request::VmImages { .. } => Response::VmImages {
+            Request::VmImages { volume } => Response::VmImages {
                 files: self
                     .images
                     .iter()
-                    .map(|(image, bytes)| VmImageFile { image: image.clone(), bytes: *bytes })
+                    .filter(|(_, (on, _))| on == volume)
+                    .map(|(image, (_, bytes))| VmImageFile { image: image.clone(), bytes: *bytes })
                     .collect(),
             },
             Request::DeleteVmImage { image, .. } => {
@@ -106,16 +119,26 @@ impl SimVms {
                     refusal
                 } else {
                     self.domains.insert(spec.id.clone(), Power::Off);
+                    self.make_disks(spec);
                     Response::Done
                 }
             }
-            Request::UpdateVm { spec, .. } => match self.domains.get(&spec.id) {
+            Request::UpdateVm { spec, remove } => match self.domains.get(&spec.id) {
                 None => missing(&spec.id),
                 Some(Power::Running) => error(
                     ErrorCode::Forbidden,
                     "refused: the virtual machine is not shut off: its hardware changes only while it is off",
                 ),
-                Some(Power::Off) => self.refuse_devices(spec).unwrap_or(Response::Done),
+                Some(Power::Off) => match self.refuse_devices(spec) {
+                    Some(refusal) => refusal,
+                    None => {
+                        self.make_disks(spec);
+                        for slot in remove {
+                            self.remove_disks(&spec.id, Some(*slot));
+                        }
+                        Response::Done
+                    }
+                },
             },
             Request::ChangeVmMedia { spec, drive } => {
                 if !self.domains.contains_key(&spec.id) {
@@ -158,8 +181,9 @@ impl SimVms {
                     (VmAction::Reboot, Power::Running) => Response::Done,
                 }
             }
-            Request::DeleteVm { id, .. } => {
+            Request::DeleteVm { id } => {
                 self.domains.remove(id);
+                self.remove_disks(id, None);
                 Response::Done
             }
             Request::VmStates {} => {
@@ -183,9 +207,97 @@ impl SimVms {
         })
     }
 
-    /// Why the devices could not be defined: an image not in the library,
-    /// a bridge the simulated host does not have (it has `br0`).
+    /// Whether a location is on `volume`.
+    fn on(&self, volume: VolumeNumber) -> bool {
+        self.locations.iter().any(|location| location.volume == volume)
+    }
+
+    /// A location removed, once nothing is on it.
+    fn disable(&mut self, location: &VmStorage) -> Response {
+        if !self.locations.contains(location) {
+            return error(
+                ErrorCode::Forbidden,
+                "refused: there is no location of the virtual machines' storage there",
+            );
+        }
+        let prefix = format!("{}/{VMS_DATASET}/", location.pool.as_str());
+        if let Some(zvol) = self.zvols.keys().find(|zvol| zvol.starts_with(&prefix)) {
+            return error(
+                ErrorCode::Forbidden,
+                &format!("refused: it holds the disk {zvol} of a virtual machine"),
+            );
+        }
+        if self.images.values().any(|(volume, _)| *volume == location.volume) {
+            return error(ErrorCode::Forbidden, "refused: its image library holds images");
+        }
+        self.locations.retain(|other| other != location);
+        Response::Done
+    }
+
+    /// The disks `spec` has and the host not yet, made; those smaller grown.
+    fn make_disks(&mut self, spec: &VmSpec) {
+        for disk in spec.disks() {
+            let zvol = format!("{}/{VMS_DATASET}/{}", disk.location.pool.as_str(), spec.id.disk(disk.slot));
+            let size = self.zvols.entry(zvol).or_default();
+            *size = (*size).max(disk.size.bytes());
+        }
+    }
+
+    /// The VM's disks in `slot` on every location, or all of them.
+    fn remove_disks(&mut self, id: &VmId, slot: Option<VmDiskSlot>) {
+        let name = slot.map(|slot| id.disk(slot));
+        self.zvols.retain(|zvol, _| {
+            let disk = zvol.rsplit('/').next().unwrap_or_default();
+            !(disk.starts_with(&format!("{}-disk", id.as_str()))
+                && name.as_deref().is_none_or(|name| name == disk))
+        });
+    }
+
+    /// `zfs list` of the locations and their zvols: a sparse zvol holds a
+    /// quarter of its size, the library what its images have.
+    fn usage(&self) -> String {
+        let mut text = String::new();
+        for location in &self.locations {
+            let dataset = format!("{}/{VMS_DATASET}", location.pool.as_str());
+            let images: u64 = self
+                .images
+                .values()
+                .filter(|(volume, _)| *volume == location.volume)
+                .map(|(_, bytes)| bytes)
+                .sum();
+            let zvols: Vec<(&String, &u64)> =
+                self.zvols.iter().filter(|(zvol, _)| zvol.starts_with(&format!("{dataset}/"))).collect();
+            let used = images + zvols.iter().map(|(_, size)| *size / 4).sum::<u64>();
+            text.push_str(&format!(
+                "{dataset}\tfilesystem\t{used}\t{images}\t{images}\t{}\t-\n",
+                400_u64 << 30
+            ));
+            for (zvol, size) in zvols {
+                let held = size / 4;
+                text.push_str(&format!(
+                    "{zvol}\tvolume\t{held}\t{held}\t{held}\t{}\t{size}\n",
+                    400_u64 << 30
+                ));
+            }
+        }
+        text
+    }
+
+    /// Why the devices could not be defined: a location the storage does
+    /// not have, an image not in the library, a bridge the simulated host
+    /// does not have (it has `br0`), a card it does not have for a VM to
+    /// go on directly (`enp1s0`, `enp2s0`, `bond0`), or an internal network
+    /// it does not have (`vmnet0`).
     fn refuse_devices(&self, spec: &VmSpec) -> Option<Response> {
+        if let Some(disk) = spec.disks().iter().find(|disk| !self.locations.contains(&disk.location)) {
+            return Some(error(
+                ErrorCode::Forbidden,
+                &format!(
+                    "refused: no location of the virtual machines' storage is on pool {}",
+                    disk.location.pool.as_str()
+                ),
+            ));
+        }
         if let Some(image) = spec.images().find(|image| !self.images.contains_key(*image)) {
             return Some(error(
                 ErrorCode::Forbidden,
@@ -196,6 +308,16 @@ impl SimVms {
             VmNetwork::Bridge { bridge } if bridge.as_str() != "br0" => Some(error(
                 ErrorCode::Forbidden,
                 &format!("refused: {} is no bridge of this machine", bridge.as_str()),
+            )),
+            VmNetwork::Direct { card } if !["enp1s0", "enp2s0", "bond0"].contains(&card.as_str()) => {
+                Some(error(
+                    ErrorCode::Forbidden,
+                    &format!("refused: {} is no wired card or bond of this machine", card.as_str()),
+                ))
+            }
+            VmNetwork::Internal { bridge } if bridge.as_str() != "vmnet0" => Some(error(
+                ErrorCode::Forbidden,
+                &format!("refused: {} is no internal network the NAS keeps itself off", bridge.as_str()),
             )),
             _ => None,
         })
@@ -238,8 +360,13 @@ impl SimVms {
 
     /// An upload as the agent takes it: a pipe whose reading end a thread
     /// drains, counting.
-    pub(crate) fn open_upload(&mut self, image: &VmImageId, bytes: u64) -> (Response, Option<OwnedFd>) {
-        if self.storage.is_none() {
+    pub(crate) fn open_upload(
+        &mut self,
+        image: &VmImageId,
+        volume: VolumeNumber,
+        bytes: u64,
+    ) -> (Response, Option<OwnedFd>) {
+        if !self.on(volume) {
             return (
                 error(ErrorCode::Forbidden, "refused: the virtual machines' storage is not set up"),
                 None,
@@ -255,6 +382,7 @@ impl SimVms {
             Ok(pipe) => pipe,
             Err(e) => return (error(ErrorCode::Failed, &format!("no pipe: {e}")), None),
         };
+        self.upload_volumes.insert(image.clone(), volume);
         let thread = std::thread::spawn(move || {
             let mut sink = [0u8; 64 * 1024];
             let mut received = 0u64;
@@ -272,8 +400,9 @@ impl SimVms {
 
     /// What an upload whose thread ended stored.
     pub(crate) fn finish_upload(&mut self, image: &VmImageId, announced: u64, received: u64) -> Response {
-        if received == announced {
-            self.images.insert(image.clone(), received);
+        let volume = self.upload_volumes.remove(image);
+        if let (Some(volume), true) = (volume, received == announced) {
+            self.images.insert(image.clone(), (volume, received));
             Response::VmImageStored { bytes: received }
         } else {
             error(

@@ -10,8 +10,8 @@ use zendiloos_storage::domain::{Occupant, VolumeNumber};
 use super::Database;
 
 /// Storage's [`VolumeOccupants`]: the shares and installed apps made on a
-/// volume, the personal folders' place, and Docker's data as the host has
-/// it.
+/// volume, the personal folders' place, a location of the virtual
+/// machines' storage, and Docker's data as the host has it.
 pub struct Occupants {
     db: Database,
     docker: Arc<dyn DockerHost>,
@@ -48,12 +48,19 @@ impl VolumeOccupants for Occupants {
             .fetch_optional(pool)
             .await
             .map_err(db_error)?;
+        let vms = sqlx::query_scalar!("SELECT pool FROM vm_locations WHERE volume = ?", number)
+            .fetch_optional(pool)
+            .await
+            .map_err(db_error)?;
         let docker = self.docker.state(context).await?.data_root.as_deref().and_then(docker_volume);
 
         let mut occupants: Vec<Occupant> = shares.into_iter().map(Occupant::Share).collect();
         occupants.extend(apps.into_iter().map(Occupant::App));
         if homes == Some(number) {
             occupants.push(Occupant::Homes);
+        }
+        if vms.is_some() {
+            occupants.push(Occupant::VirtualMachines);
         }
         if docker == Some(volume.get()) {
             occupants.push(Occupant::Docker);
@@ -123,6 +130,16 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
+        // The VMs' storage on both pools: each is refused on its own.
+        for (vms_pool, volume, position) in [("tank", 1, 1), ("cold", 2, 2)] {
+            sqlx::query("INSERT INTO vm_locations (pool, volume, position) VALUES (?, ?, ?)")
+                .bind(vms_pool)
+                .bind(volume)
+                .bind(position)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
         let occupants = Occupants::new(db.clone(), Arc::new(Docker(Some("/volume1/@docker"))));
         let context = RequestContext::default();
 
@@ -134,11 +151,12 @@ mod tests {
                 Occupant::Share("photos".into()),
                 Occupant::App("immich".into()),
                 Occupant::Homes,
+                Occupant::VirtualMachines,
                 Occupant::Docker,
             ]
         );
         let second = occupants.on_volume(VolumeNumber::new(2).unwrap(), &context).await.unwrap();
-        assert_eq!(second, [Occupant::Share("backup".into())]);
+        assert_eq!(second, [Occupant::Share("backup".into()), Occupant::VirtualMachines]);
         let elsewhere = Occupants::new(db, Arc::new(Docker(Some("/var/lib/docker"))));
         let third = elsewhere.on_volume(VolumeNumber::new(3).unwrap(), &context).await.unwrap();
         assert!(third.is_empty());

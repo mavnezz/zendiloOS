@@ -185,14 +185,71 @@ pub enum Network {
     User,
     /// A bridge the machine has: the VM is on the LAN as a machine of its own.
     Bridge(String),
+    /// macvtap on a wired card or bond of the machine's: on the card's LAN
+    /// without a bridge, and the NAS and the VM do not reach each other.
+    Direct(String),
+    /// An internal network, a bridge zendiloOS made without members or an
+    /// address of the NAS's: VMs on it reach each other, not the LAN or the
+    /// NAS.
+    Internal(String),
 }
 
-/// A disk: a sparse zvol of `size_gib`, in its slot (0 to 7) for good.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl Network {
+    /// The kind, as the API and the records name it.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Bridge(_) => "bridge",
+            Self::Direct(_) => "direct",
+            Self::Internal(_) => "internal",
+        }
+    }
+
+    /// The bridge, card or internal network it is on; none for passt.
+    pub fn device(&self) -> Option<&str> {
+        match self {
+            Self::User => None,
+            Self::Bridge(name) | Self::Direct(name) | Self::Internal(name) => Some(name),
+        }
+    }
+
+    /// A network of `kind` on `device` (none for passt), as kept.
+    pub fn of(kind: &str, device: Option<String>) -> Option<Self> {
+        match (kind, device) {
+            ("user", None) => Some(Self::User),
+            ("bridge", Some(name)) => Some(Self::Bridge(name)),
+            ("direct", Some(name)) => Some(Self::Direct(name)),
+            ("internal", Some(name)) => Some(Self::Internal(name)),
+            _ => None,
+        }
+    }
+}
+
+/// A location of the VMs' storage: the dataset `<pool>/zendiloos.vms` on a
+/// pool zendiloOS made, mounted at `/volume<N>/@vms`. A pool holds one at
+/// most, so the pool names it; the first holds the image library.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Location {
+    pub pool: String,
+    pub volume: u16,
+}
+
+impl Location {
+    /// A location asked for by its pool, its volume not known yet; an
+    /// empty name asks for the first (or, for a disk a VM has, its own).
+    pub fn named(pool: &str) -> Self {
+        Self { pool: pool.trim().to_owned(), volume: 0 }
+    }
+}
+
+/// A disk: a sparse zvol of `size_gib`, in its slot (0 to 7) for good, on
+/// the location it was made on.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Disk {
     pub slot: u8,
     pub size_gib: u32,
     pub bus: DiskBus,
+    pub location: Location,
 }
 
 /// A network card in its slot (0 to 3). Its MAC address is given once,
@@ -245,8 +302,16 @@ pub struct HostLimits {
     /// Threads.
     pub cores: u32,
     pub memory_bytes: u64,
-    /// Its own Linux bridges.
+    /// Its own Linux bridges, internal networks aside.
     pub bridges: Vec<String>,
+    /// The internal networks: bridges zendiloOS made without members or an
+    /// address of the NAS's.
+    pub internal: Vec<String>,
+    /// Its wired cards and bonds a VM may go on directly, in no bridge or
+    /// bond.
+    pub cards: Vec<String>,
+    /// The locations of the VMs' storage there are, the first first.
+    pub locations: Vec<Location>,
 }
 
 /// What an administrator chose for a VM.
@@ -294,7 +359,12 @@ impl VmSettings {
             cpus: defaults.cpus,
             memory_mib: defaults.memory_mib,
             firmware: defaults.firmware,
-            disks: vec![Disk { slot: 0, size_gib: defaults.disk_gib, bus: defaults.disk_bus }],
+            disks: vec![Disk {
+                slot: 0,
+                size_gib: defaults.disk_gib,
+                bus: defaults.disk_bus,
+                location: Location::named(""),
+            }],
             nics: vec![Nic {
                 slot: 0,
                 model: defaults.nic_model,
@@ -312,12 +382,58 @@ impl VmSettings {
         self.drives.iter().filter_map(|drive| drive.image.as_deref())
     }
 
-    /// The bridges its cards are on.
-    pub fn bridges(&self) -> impl Iterator<Item = &str> {
-        self.nics.iter().filter_map(|nic| match &nic.network {
-            Network::Bridge(bridge) => Some(bridge.as_str()),
-            Network::User => None,
-        })
+    /// The devices of the host's its cards are on: bridges, internal
+    /// networks and the cards it is on directly.
+    pub fn devices(&self) -> impl Iterator<Item = &str> {
+        self.nics.iter().filter_map(|nic| nic.network.device())
+    }
+
+    /// Its disks, cards and drives in the order of their slots, as they
+    /// are kept and shown whatever order a client sent.
+    pub fn sort_devices(&mut self) {
+        self.disks.sort_by_key(|disk| disk.slot);
+        self.nics.sort_by_key(|nic| nic.slot);
+        self.drives.sort_by_key(|drive| drive.slot);
+    }
+
+    /// Whether a disk of it is on the location of `pool`.
+    pub fn on_pool(&self, pool: &str) -> bool {
+        self.disks.iter().any(|disk| disk.location.pool == pool)
+    }
+
+    /// Puts each disk on its location: one named by its pool among
+    /// `locations` (the first, the library's, when none is named), and a
+    /// disk it had `before` on its own, which it never leaves. Refused for
+    /// a pool without a location, or a disk moved.
+    pub fn place_disks(
+        &mut self,
+        before: Option<&VmSettings>,
+        locations: &[Location],
+    ) -> Result<(), Invalid> {
+        for disk in &mut self.disks {
+            let had = before.and_then(|before| before.disks.iter().find(|old| old.slot == disk.slot));
+            let asked = disk.location.pool.trim().to_owned();
+            disk.location = match (had, asked.as_str()) {
+                (Some(had), "") => had.location.clone(),
+                (Some(had), pool) if had.location.pool == pool => had.location.clone(),
+                (Some(had), _) => {
+                    return Err(invalid(format!(
+                        "disk {} stays on {}: a disk stays where it was made",
+                        disk.slot, had.location.pool
+                    )));
+                }
+                (None, "") => locations
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| invalid("the virtual machines' storage is not set up"))?,
+                (None, pool) => locations
+                    .iter()
+                    .find(|location| location.pool == pool)
+                    .cloned()
+                    .ok_or_else(|| invalid(format!("{pool} holds no storage of the virtual machines")))?,
+            };
+        }
+        Ok(())
     }
 
     /// Checks the settings against the machine, the names other VMs have
@@ -325,8 +441,10 @@ impl VmSettings {
     /// ready, and gives back the name as kept. A VM may have as many
     /// virtual CPUs as the machine has threads and as much memory as it has
     /// in all: it shares them with the NAS and other VMs, which the
-    /// administrator weighs. Changing a VM (`before`), its disks only grow,
-    /// and a card it had on a bridge the machine no longer has may stay.
+    /// administrator weighs. Each disk is on one of the locations, a disk
+    /// it had `before` on its own. Changing a VM, its disks only grow, and
+    /// a card it had on a bridge, internal network or card the machine no
+    /// longer has may stay.
     pub fn check(
         &self,
         host: &HostLimits,
@@ -348,7 +466,7 @@ impl VmSettings {
                 "a virtual machine has {MEMORY_MIN_MIB} to {total_mib} MiB of memory here"
             )));
         }
-        self.check_disks(before)?;
+        self.check_disks(host, before)?;
         self.check_nics(host, before)?;
         self.check_drives(images)?;
         let exists = |device: &BootDevice| match device {
@@ -361,7 +479,7 @@ impl VmSettings {
         Ok(name)
     }
 
-    fn check_disks(&self, before: Option<&VmSettings>) -> Result<(), Invalid> {
+    fn check_disks(&self, host: &HostLimits, before: Option<&VmSettings>) -> Result<(), Invalid> {
         if self.disks.is_empty() || self.disks.len() > DISKS_MAX {
             return Err(invalid(format!("a virtual machine has 1 to {DISKS_MAX} disks")));
         }
@@ -380,6 +498,22 @@ impl VmSettings {
             {
                 return Err(invalid(format!("disk {} has {} GiB and only grows", disk.slot, had.size_gib)));
             }
+            match had {
+                Some(had) if had.location != disk.location => {
+                    return Err(invalid(format!(
+                        "disk {} stays on {}: a disk stays where it was made",
+                        disk.slot, had.location.pool
+                    )));
+                }
+                Some(_) => {}
+                None if !host.locations.contains(&disk.location) => {
+                    return Err(invalid(format!(
+                        "{} holds no storage of the virtual machines",
+                        if disk.location.pool.is_empty() { "disk's pool" } else { &disk.location.pool }
+                    )));
+                }
+                None => {}
+            }
         }
         Ok(())
     }
@@ -394,12 +528,22 @@ impl VmSettings {
             return Err(invalid("each network card has a slot of its own, 0 to 3"));
         }
         for nic in &self.nics {
-            let Network::Bridge(bridge) = &nic.network else { continue };
             let kept = before.is_some_and(|before| {
                 before.nics.iter().any(|old| old.slot == nic.slot && old.network == nic.network)
             });
-            if !kept && !host.bridges.contains(bridge) {
-                return Err(invalid(format!("{bridge} is no bridge of this machine")));
+            let (there, what) = match &nic.network {
+                Network::User => continue,
+                Network::Bridge(bridge) => (&host.bridges, format!("{bridge} is no bridge of this machine")),
+                Network::Internal(bridge) => {
+                    (&host.internal, format!("{bridge} is no internal network of this machine"))
+                }
+                Network::Direct(card) => {
+                    (&host.cards, format!("{card} is no wired card or bond of this machine"))
+                }
+            };
+            let device = nic.network.device().unwrap_or_default();
+            if !kept && !there.iter().any(|name| name == device) {
+                return Err(invalid(what));
             }
         }
         let given: Vec<&Nic> = self.nics.iter().filter(|nic| !nic.mac.is_empty()).collect();
@@ -549,10 +693,8 @@ pub struct Vm {
     /// Twelve lowercase hexadecimal digits; libvirt's domain is
     /// `zendiloos-<id>`.
     pub id: String,
+    /// Its disks each on their location.
     pub settings: VmSettings,
-    /// The pool its disks are on, with the VMs' storage.
-    pub pool: String,
-    pub volume: u16,
     pub created_at: Timestamp,
     /// Defined in libvirt: false while it is being made.
     pub ready: bool,
@@ -749,15 +891,30 @@ impl VmStatsSample {
 mod tests {
     use super::*;
 
+    fn tank() -> Location {
+        Location { pool: "tank".into(), volume: 1 }
+    }
+
+    fn cold() -> Location {
+        Location { pool: "cold".into(), volume: 2 }
+    }
+
     fn host() -> HostLimits {
-        HostLimits { cores: 2, memory_bytes: 2 << 30, bridges: vec!["br0".into()] }
+        HostLimits {
+            cores: 2,
+            memory_bytes: 2 << 30,
+            bridges: vec!["br0".into()],
+            internal: vec!["vmnet0".into()],
+            cards: vec!["enp1s0".into(), "bond0".into()],
+            locations: vec![tank(), cold()],
+        }
     }
 
     fn small() -> VmSettings {
         VmSettings {
             cpus: 1,
             memory_mib: 256,
-            disks: vec![Disk { slot: 0, size_gib: 1, bus: DiskBus::Virtio }],
+            disks: vec![Disk { slot: 0, size_gib: 1, bus: DiskBus::Virtio, location: tank() }],
             ..VmSettings::preset("test", OsPreset::Linux)
         }
     }
@@ -829,7 +986,7 @@ mod tests {
 
     #[test]
     fn disks_have_slots_of_their_own_and_sizes_within_bounds() {
-        let disk = |slot, size_gib| Disk { slot, size_gib, bus: DiskBus::Sata };
+        let disk = |slot, size_gib| Disk { slot, size_gib, bus: DiskBus::Sata, location: tank() };
         let with = |disks: Vec<Disk>| VmSettings { disks, ..small() };
         too(with(vec![]), "1 to 8 disks");
         too(with((0..9).map(|slot| disk(slot, 1)).collect()), "1 to 8 disks");
@@ -910,21 +1067,24 @@ mod tests {
             VmSettings { drives: vec![], boot: vec![BootDevice::Disk(0)], ..before.clone() },
             VmSettings { boot: vec![BootDevice::Disk(0), BootDevice::Drive(0)], ..before.clone() },
             VmSettings { nics: vec![], ..before.clone() },
-            VmSettings { disks: vec![Disk { slot: 0, size_gib: 2, bus: DiskBus::Virtio }], ..before.clone() },
+            VmSettings {
+                disks: vec![Disk { slot: 0, size_gib: 2, bus: DiskBus::Virtio, location: tank() }],
+                ..before.clone()
+            },
         ] {
             assert!(changed.hardware_differs(&before), "{changed:?}");
         }
         let grown = VmSettings {
             disks: vec![
-                Disk { slot: 0, size_gib: 2, bus: DiskBus::Virtio },
-                Disk { slot: 3, size_gib: 5, bus: DiskBus::Sata },
+                Disk { slot: 0, size_gib: 2, bus: DiskBus::Virtio, location: tank() },
+                Disk { slot: 3, size_gib: 5, bus: DiskBus::Sata, location: tank() },
             ],
             ..before.clone()
         };
         assert!(grown.check(&host(), &[], &[], Some(&before)).is_ok());
         assert!(grown.removed_disks(&before).is_empty());
         let shrunk = VmSettings {
-            disks: vec![Disk { slot: 3, size_gib: 4, bus: DiskBus::Sata }],
+            disks: vec![Disk { slot: 3, size_gib: 4, bus: DiskBus::Sata, location: tank() }],
             boot: vec![BootDevice::Disk(3)],
             ..before.clone()
         };
@@ -1013,5 +1173,87 @@ mod tests {
         let b = VmLoad { cpu_percent: Some(100.0), ..first };
         assert_eq!(VmStatsSample::host_cpu_percent(&[(2, &a), (1, &b)], 4), 50.0);
         assert_eq!(VmStatsSample::host_cpu_percent(&[], 0), 0.0);
+    }
+
+    #[test]
+    fn each_disk_lies_on_a_location_and_stays_there() {
+        let on = |slot, location: Location| Disk { slot, size_gib: 1, bus: DiskBus::Virtio, location };
+        let locations = [tank(), cold()];
+        // None named: the first, the library's; a pool named: its location.
+        let mut new = VmSettings {
+            disks: vec![on(0, Location::named("")), on(1, Location::named(" cold "))],
+            ..small()
+        };
+        new.place_disks(None, &locations).unwrap();
+        assert_eq!(new.disks[0].location, tank());
+        assert_eq!(new.disks[1].location, cold());
+        assert!(new.check(&host(), &[], &[], None).is_ok());
+        assert!(new.on_pool("cold") && !new.on_pool("other"));
+        let mut lost = VmSettings { disks: vec![on(0, Location::named("other"))], ..small() };
+        let error = lost.place_disks(None, &locations).unwrap_err();
+        assert!(error.0.contains("other holds no storage"), "{error}");
+        let mut nowhere = VmSettings { disks: vec![on(0, Location::named(""))], ..small() };
+        assert!(nowhere.place_disks(None, &[]).unwrap_err().0.contains("not set up"));
+
+        // Changed: a disk it had keeps its location, named or not; a new one
+        // goes where it is asked.
+        let mut changed = VmSettings {
+            disks: vec![
+                on(0, Location::named("")),
+                on(1, Location::named("cold")),
+                on(2, Location::named("cold")),
+            ],
+            ..small()
+        };
+        changed.place_disks(Some(&new), &locations).unwrap();
+        assert_eq!(
+            changed.disks.iter().map(|d| d.location.pool.as_str()).collect::<Vec<_>>(),
+            ["tank", "cold", "cold"]
+        );
+        assert!(changed.check(&host(), &[], &[], Some(&new)).is_ok());
+        let mut moved = VmSettings { disks: vec![on(0, Location::named("cold"))], ..small() };
+        let error = moved.place_disks(Some(&new), &locations).unwrap_err();
+        assert!(error.0.contains("disk 0 stays on tank"), "{error}");
+        // Moved past place_disks (a hand-made request): check refuses it too.
+        let shifted = VmSettings { disks: vec![on(0, cold())], ..small() };
+        assert!(shifted.check(&host(), &[], &[], Some(&new)).unwrap_err().0.contains("stays on tank"));
+        // A location gone since keeps the disk on it; a new disk goes on none but those there are.
+        let gone = Location { pool: "old".into(), volume: 3 };
+        let before = VmSettings { disks: vec![on(0, gone.clone())], ..small() };
+        assert!(before.check(&host(), &[], &[], Some(&before)).is_ok());
+        assert!(before.check(&host(), &[], &[], None).unwrap_err().0.contains("old holds no storage"));
+    }
+
+    #[test]
+    fn cards_go_through_the_nas_on_a_bridge_directly_or_on_an_internal_network() {
+        let nic = |slot, network| Nic { slot, model: NicModel::Virtio, network, mac: String::new() };
+        let with = |nics: Vec<Nic>| VmSettings { nics, ..small() };
+        let all = with(vec![
+            nic(0, Network::User),
+            nic(1, Network::Bridge("br0".into())),
+            nic(2, Network::Direct("enp1s0".into())),
+            nic(3, Network::Internal("vmnet0".into())),
+        ]);
+        assert!(all.check(&host(), &[], &[], None).is_ok());
+        assert_eq!(all.devices().collect::<Vec<_>>(), ["br0", "enp1s0", "vmnet0"]);
+        too(with(vec![nic(0, Network::Direct("br0".into()))]), "br0 is no wired card or bond");
+        too(with(vec![nic(0, Network::Direct("enp9s0".into()))]), "no wired card or bond");
+        too(with(vec![nic(0, Network::Internal("br0".into()))]), "br0 is no internal network");
+        too(with(vec![nic(0, Network::Bridge("vmnet0".into()))]), "vmnet0 is no bridge");
+        // What the machine no longer has stays with the card that was on it.
+        let gone =
+            with(vec![nic(1, Network::Direct("enp7s0".into())), nic(2, Network::Internal("lab".into()))]);
+        assert!(gone.check(&host(), &[], &[], Some(&gone)).is_ok());
+        for network in [
+            Network::User,
+            Network::Bridge("br0".into()),
+            Network::Direct("bond0".into()),
+            Network::Internal("vmnet0".into()),
+        ] {
+            assert_eq!(Network::of(network.kind(), network.device().map(str::to_owned)), Some(network));
+        }
+        assert_eq!(Network::of("user", Some("br0".into())), None);
+        assert_eq!(Network::of("direct", None), None);
+        assert_eq!(Network::of("vepa", Some("enp1s0".into())), None);
     }
 }

@@ -75,6 +75,7 @@ const managed: NetworkSetup = {
   pending: null,
   takeover: null,
   devices: [],
+  internal: [],
 }
 
 /** What the owner's NAS shows: ifupdown with DHCP on its first port. */
@@ -83,6 +84,7 @@ const ifupdown: NetworkSetup = {
   manager: 'ifupdown',
   pending: null,
   devices: [],
+  internal: [],
   takeover: {
     interfaces: [
       { name: 'eth0', ipv4: { mode: 'dhcp', keep: '192.168.1.20' }, ipv6: 'automatic', dns: [] },

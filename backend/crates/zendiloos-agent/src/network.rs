@@ -24,7 +24,9 @@
 //! or the machine restart first, when the agent starts. So a setting that
 //! cuts the NAS off its network undoes itself. After each change and its
 //! undoing, `zendiloos-docker-bridges.service` brings Docker's FORWARD
-//! chain up to date with the bridges zendiloOS made ([`crate::docker_bridges`]).
+//! chain up to date with the bridges zendiloOS made ([`crate::docker_bridges`]),
+//! and the NAS keeps itself off the internal networks for VMs among them
+//! ([`crate::internal_networks`]).
 
 use std::fs;
 use std::path::PathBuf;
@@ -78,6 +80,9 @@ pub struct NetworkPaths {
     pub ifupdown: PathBuf,
     /// `/etc/resolv.conf`.
     pub resolv_conf: PathBuf,
+    /// What the NAS keeps off its internal networks for VMs:
+    /// `/etc/zendiloos/network/internal-networks.nft`.
+    pub internal: PathBuf,
 }
 
 impl Default for NetworkPaths {
@@ -86,9 +91,13 @@ impl Default for NetworkPaths {
             directory: PathBuf::from("/etc/systemd/network"),
             ifupdown: PathBuf::from("/etc/network"),
             resolv_conf: PathBuf::from("/etc/resolv.conf"),
+            internal: PathBuf::from(INTERNAL_NETWORKS),
         }
     }
 }
+
+/// The rules that keep the NAS off its internal networks.
+pub(crate) const INTERNAL_NETWORKS: &str = "/etc/zendiloos/network/internal-networks.nft";
 
 #[derive(Debug)]
 struct Pending {
@@ -427,10 +436,18 @@ impl Network {
     }
 
     /// Brings Docker's FORWARD chain up to date with the bridges zendiloOS
-    /// made. Failures are logged: Docker may not be there.
+    /// made, and the rules that keep the NAS off the internal networks
+    /// among them. Failures are logged: Docker may not be there, and a card
+    /// goes on an internal network only while its rules are in force.
     async fn sync_docker(&self) {
         if let Err(error) = self.systemctl(&["start", DOCKER_BRIDGES]).await {
             tracing::warn!(%error, "network: Docker's chain was not brought up to date with the bridges");
+        }
+        let internal =
+            crate::internal_networks::sync(&self.systemctl, &self.paths.directory, &self.paths.internal)
+                .await;
+        if let Err(error) = internal {
+            tracing::error!(%error, "network: the rules for the internal networks were not put in force");
         }
     }
 

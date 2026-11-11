@@ -11,6 +11,7 @@ import type {
   VmDiskBus,
   VmFirmware,
   VmImage,
+  VmNetwork,
   VmNicModel,
   VmOs,
   VmPlugin,
@@ -76,13 +77,20 @@ export interface DiskForm {
   slot: number
   sizeGib: number
   bus: VmDiskBus
+  /** The pool of the location it lies on; `null`: the first, the library's. */
+  pool: string | null
 }
+
+/** How a card reaches the network. */
+export type NetworkKind = 'user' | 'bridge' | 'direct' | 'internal'
+export const NETWORK_KINDS: NetworkKind[] = ['user', 'bridge', 'direct', 'internal']
 
 export interface NicForm {
   slot: number
   model: VmNicModel
-  /** `null`: through the NAS (passt); otherwise the bridge. */
-  bridge: string | null
+  kind: NetworkKind
+  /** The bridge, card or internal network; `null` through the NAS, or none chosen yet. */
+  device: string | null
 }
 
 export interface DriveForm {
@@ -132,8 +140,8 @@ export function presetForm(os: VmOs, plugin: VmPlugin | undefined, name = ''): V
     cpus: Math.min(preset.cpus, most.cpus),
     memoryMib: Math.max(MEMORY_MIN_MIB, Math.min(preset.memory_mib, half)),
     firmware: preset.firmware,
-    disks: [{ slot: 0, sizeGib: preset.disk_gib, bus: preset.bus }],
-    nics: [{ slot: 0, model: preset.model, bridge: null }],
+    disks: [{ slot: 0, sizeGib: preset.disk_gib, bus: preset.bus, pool: null }],
+    nics: [{ slot: 0, model: preset.model, kind: 'user', device: null }],
     drives: [{ slot: 0, image: null }],
     boot: [
       { kind: 'drive', slot: 0 },
@@ -177,7 +185,7 @@ export function addDisk(form: VmForm): VmForm {
   const slot = freeSlot(form.disks, DISKS_MAX)
   if (slot === null) return form
   const bus = form.disks[0]?.bus ?? PRESETS[form.os].bus
-  return { ...form, disks: [...form.disks, { slot, sizeGib: NEW_DISK_GIB, bus }] }
+  return { ...form, disks: [...form.disks, { slot, sizeGib: NEW_DISK_GIB, bus, pool: null }] }
 }
 
 export function removeDisk(form: VmForm, slot: number): VmForm {
@@ -191,7 +199,10 @@ export function removeDisk(form: VmForm, slot: number): VmForm {
 export function addNic(form: VmForm): VmForm {
   const slot = freeSlot(form.nics, NICS_MAX)
   if (slot === null) return form
-  return { ...form, nics: [...form.nics, { slot, model: PRESETS[form.os].model, bridge: null }] }
+  return {
+    ...form,
+    nics: [...form.nics, { slot, model: PRESETS[form.os].model, kind: 'user', device: null }],
+  }
 }
 
 export function removeNic(form: VmForm, slot: number): VmForm {
@@ -253,7 +264,41 @@ export function toggleBoot(form: VmForm, entry: BootEntry): VmForm {
 }
 
 export type FormProblem =
-  'name' | 'nameTaken' | 'cpus' | 'memory' | 'disk' | 'diskShrunk' | 'boot' | 'image'
+  'name' | 'nameTaken' | 'cpus' | 'memory' | 'disk' | 'diskShrunk' | 'boot' | 'image' | 'network'
+
+/**
+ * What a card of `kind` may go on: the machine's bridges, internal networks
+ * or cards, and the one it is on (which may have gone since).
+ */
+export function networkChoices(
+  plugin: VmPlugin | undefined,
+  kind: NetworkKind,
+  current: string | null = null,
+): string[] {
+  const offered =
+    kind === 'bridge'
+      ? (plugin?.bridges ?? [])
+      : kind === 'direct'
+        ? (plugin?.cards ?? [])
+        : kind === 'internal'
+          ? (plugin?.internal_networks ?? [])
+          : []
+  return current && kind !== 'user' && !offered.includes(current) ? [...offered, current] : offered
+}
+
+/** A card on another kind of network: on the first of its kind there is. */
+export function withNetworkKind(
+  nic: NicForm,
+  kind: NetworkKind,
+  plugin: VmPlugin | undefined,
+): NicForm {
+  if (kind === nic.kind) return nic
+  return {
+    ...nic,
+    kind,
+    device: kind === 'user' ? null : (networkChoices(plugin, kind)[0] ?? null),
+  }
+}
 
 /**
  * What breaks a rule, by the step it belongs to: names first, then
@@ -297,6 +342,7 @@ export function problems(
   const ready = new Set(images.filter((image) => image.ready).map((image) => image.id))
   if (form.drives.some((drive) => drive.image !== null && !ready.has(drive.image)))
     found.push('image')
+  if (form.nics.some((nic) => nic.kind !== 'user' && !nic.device)) found.push('network')
   return found
 }
 
@@ -310,19 +356,47 @@ export const STEP_PROBLEMS: FormProblem[][] = [
   ['name', 'nameTaken'],
   ['cpus', 'memory'],
   ['disk', 'boot', 'image'],
-  [],
+  ['network'],
 ]
+
+/** A card's network as the server takes it. */
+export function network(nic: Pick<NicForm, 'kind' | 'device'>): VmNetwork {
+  const device = nic.device ?? ''
+  switch (nic.kind) {
+    case 'bridge':
+      return { kind: 'bridge', bridge: device }
+    case 'direct':
+      return { kind: 'direct', card: device }
+    case 'internal':
+      return { kind: 'internal', network: device }
+    default:
+      return { kind: 'user' }
+  }
+}
+
+/** The kind and device of a card's network, as the form has them. */
+export function fromNetwork(network: VmNetwork): Pick<NicForm, 'kind' | 'device'> {
+  switch (network.kind) {
+    case 'bridge':
+      return { kind: 'bridge', device: network.bridge }
+    case 'direct':
+      return { kind: 'direct', device: network.card }
+    case 'internal':
+      return { kind: 'internal', device: network.network }
+    default:
+      return { kind: 'user', device: null }
+  }
+}
 
 function devices(form: VmForm) {
   return {
-    disks: form.disks.map((disk) => ({ slot: disk.slot, size_gib: disk.sizeGib, bus: disk.bus })),
-    nics: form.nics.map((nic) => ({
-      slot: nic.slot,
-      model: nic.model,
-      network: nic.bridge
-        ? { kind: 'bridge' as const, bridge: nic.bridge }
-        : { kind: 'user' as const },
+    disks: form.disks.map((disk) => ({
+      slot: disk.slot,
+      size_gib: disk.sizeGib,
+      bus: disk.bus,
+      pool: disk.pool,
     })),
+    nics: form.nics.map((nic) => ({ slot: nic.slot, model: nic.model, network: network(nic) })),
     drives: form.drives.map((drive) => ({ slot: drive.slot, image: drive.image })),
     boot: form.boot.map((entry) => ({ kind: entry.kind, slot: entry.slot })),
   }
@@ -362,12 +436,13 @@ export function fromVm(vm: VirtualMachine): VmForm {
     cpus: vm.cpus,
     memoryMib: vm.memory_mib,
     firmware: vm.firmware,
-    disks: vm.disks.map((disk) => ({ slot: disk.slot, sizeGib: disk.size_gib, bus: disk.bus })),
-    nics: vm.nics.map((nic) => ({
-      slot: nic.slot,
-      model: nic.model,
-      bridge: nic.network.kind === 'bridge' ? nic.network.bridge : null,
+    disks: vm.disks.map((disk) => ({
+      slot: disk.slot,
+      sizeGib: disk.size_gib,
+      bus: disk.bus,
+      pool: disk.pool,
     })),
+    nics: vm.nics.map((nic) => ({ slot: nic.slot, model: nic.model, ...fromNetwork(nic.network) })),
     drives: vm.drives.map((drive) => ({ slot: drive.slot, image: drive.image ?? null })),
     boot: vm.boot.map((entry) => ({ kind: entry.kind, slot: entry.slot })),
     autostart: vm.autostart,

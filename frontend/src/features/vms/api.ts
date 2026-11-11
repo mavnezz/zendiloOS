@@ -46,6 +46,71 @@ export function useVmImages(enabled: () => boolean = () => true) {
   })
 }
 
+/** The locations of the VMs' storage with what lies on them, the library's first. */
+export function useVmLocations(enabled: () => boolean = () => true) {
+  return useQuery({
+    queryKey: ['vms', 'locations'],
+    queryFn: () => unwrap(api.GET('/api/v1/vms/locations')),
+    enabled: computed(enabled),
+    refetchInterval: 30_000,
+  })
+}
+
+/** Locations added and removed; each reads the plugin and the locations again. */
+export function useLocationActions() {
+  const client = useQueryClient()
+  async function refreshing<T>(request: Promise<T>): Promise<T> {
+    try {
+      return await request
+    } finally {
+      await client.invalidateQueries({ queryKey: ['vms'] })
+    }
+  }
+  return {
+    add: (pool: string) =>
+      refreshing(unwrap(api.POST('/api/v1/vms/locations', { body: { pool } }))),
+    remove: (pool: string, confirm: string) =>
+      refreshing(
+        unwrap(
+          api.POST('/api/v1/vms/locations/{pool}/delete', {
+            params: { path: { pool } },
+            body: { confirm },
+          }),
+        ),
+      ),
+  }
+}
+
+/**
+ * Internal networks, made and removed through the network's own API: a
+ * bridge without members, kept at once (it carries no address, so nothing
+ * the browser reaches the NAS by changes; the confirmation proves that
+ * anyway, as the Network page's does). Each reads the plugin again.
+ */
+export function useInternalNetworks() {
+  const client = useQueryClient()
+  async function keep<T>(request: Promise<T>): Promise<T> {
+    try {
+      const done = await request
+      await unwrap(api.POST('/api/v1/network/confirm'))
+      return done
+    } finally {
+      await client.invalidateQueries({ queryKey: ['vms'] })
+      await client.invalidateQueries({ queryKey: ['network'] })
+    }
+  }
+  return {
+    add: (name: string) =>
+      keep(
+        unwrap(
+          api.POST('/api/v1/network/devices', { body: { kind: 'bridge', name, members: [] } }),
+        ),
+      ),
+    remove: (name: string) =>
+      keep(unwrap(api.DELETE('/api/v1/network/devices/{name}', { params: { path: { name } } }))),
+  }
+}
+
 /** Changes to VMs; each reads the list again. */
 export function useVmActions() {
   const client = useQueryClient()

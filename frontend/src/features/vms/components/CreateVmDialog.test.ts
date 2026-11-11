@@ -23,10 +23,18 @@ const PLUGIN: VmPlugin = {
   hardware: { kvm: true, cpu_virtualization: 'vmx', iommu: false },
   installed: true,
   storage: { pool: 'tank', volume: 1 },
-  pools: [{ pool: 'tank', volume: 1 }],
+  locations: [
+    { pool: 'tank', volume: 1 },
+    { pool: 'cold', volume: 2 },
+  ],
+  pools: [
+    { pool: 'tank', volume: 1, health: 'online', used_bytes: 1 << 30, available_bytes: 99 << 30 },
+  ],
   cores: 2,
   memory_bytes: 2 * 1024 ** 3,
   bridges: ['br0'],
+  internal_networks: ['vmnet0'],
+  cards: ['enp1s0', 'bond0'],
   image_upload_max_bytes: 32 * 1024 ** 3,
 }
 
@@ -151,6 +159,9 @@ describe('the wizard for a new VM', () => {
     expect(button(t('vms.wizard.next')).disabled).toBe(true)
     await type('#vm-disk-1-size', '4')
     await type('#vm-disk-1-bus', 'sata')
+    // A new disk goes on the first location unless another is chosen.
+    expect(document.querySelector<HTMLSelectElement>('#vm-disk-0-pool')!.value).toBe('tank')
+    await type('#vm-disk-1-pool', 'cold')
     await type('#vm-drive-0', DEBIAN.id)
     // Booted from the drive, then the first disk; the second boots too, last.
     document.querySelector<HTMLButtonElement>('[data-boot="disk:1"] [role="switch"]')!.click()
@@ -161,7 +172,8 @@ describe('the wizard for a new VM', () => {
     expect(page()).toContain('256 MiB')
     expect(page()).toContain('1 GiB, 4 GiB')
     expect(page()).toContain('debian-13.iso')
-    await type('#vm-nic-0-network', 'br0')
+    await type('#vm-nic-0-network', 'bridge')
+    expect(document.querySelector<HTMLSelectElement>('#vm-nic-0-device')!.value).toBe('br0')
     await click(t('vms.devices.addNic'))
     await type('#vm-nic-1-model', 'e1000e')
     await submit('#vm-wizard')
@@ -172,8 +184,8 @@ describe('the wizard for a new VM', () => {
       memory_mib: 256,
       firmware: 'uefi',
       disks: [
-        { slot: 0, size_gib: 1, bus: 'virtio' },
-        { slot: 1, size_gib: 4, bus: 'sata' },
+        { slot: 0, size_gib: 1, bus: 'virtio', pool: null },
+        { slot: 1, size_gib: 4, bus: 'sata', pool: 'cold' },
       ],
       nics: [
         { slot: 0, model: 'virtio', network: { kind: 'bridge', bridge: 'br0' } },
@@ -189,6 +201,24 @@ describe('the wizard for a new VM', () => {
     })
     expect(useJobsStore().list.map((job) => job.id)).toContain(7)
     expect(wrapper.emitted('created')).toHaveLength(1)
+  })
+
+  it('puts cards directly on a card and on an internal network', async () => {
+    on('POST', '/api/v1/vms', { vm: {}, job: JOB })
+    await mountWizard()
+    await type('#vm-name', 'net')
+    for (let step = 0; step < 3; step++) await next()
+    await type('#vm-nic-0-network', 'internal')
+    expect(document.querySelector<HTMLSelectElement>('#vm-nic-0-device')!.value).toBe('vmnet0')
+    await click(t('vms.devices.addNic'))
+    await type('#vm-nic-1-network', 'direct')
+    await type('#vm-nic-1-device', 'bond0')
+    expect(page()).toContain(t('vms.networks.means.direct'))
+    await submit('#vm-wizard')
+    expect((called('POST', '/api/v1/vms')[0]?.body as { nics: unknown }).nics).toEqual([
+      { slot: 0, model: 'virtio', network: { kind: 'internal', network: 'vmnet0' } },
+      { slot: 1, model: 'virtio', network: { kind: 'direct', card: 'bond0' } },
+    ])
   })
 
   it('leads to the library while it has no image', async () => {
@@ -224,8 +254,12 @@ describe('the wizard for a new VM', () => {
     await type('#vm-name', 'box')
     for (let step = 0; step < 3; step++) await next()
     expect(page()).toContain(t('vms.wizard.noBridge'))
-    const networks = [...document.querySelectorAll<HTMLOptionElement>('#vm-nic-0-network option')]
-    expect(networks.map((option) => option.value)).toEqual([''])
+    // On a bridge there is none to choose, and the wizard says so before creating.
+    await type('#vm-nic-0-network', 'bridge')
+    const bridges = [...document.querySelectorAll<HTMLOptionElement>('#vm-nic-0-device option')]
+    expect(bridges.map((option) => option.value)).toEqual([''])
+    expect(page()).toContain(t('vms.wizard.invalid.network'))
+    expect(button(t('vms.wizard.submit')).disabled).toBe(true)
     await click(t('vms.wizard.toNetwork'))
     expect(openApp).toHaveBeenCalledWith('settings', 'network')
   })

@@ -34,6 +34,8 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(restart_vm))
         .routes(routes!(set_vm_autostart))
         .routes(routes!(delete_vm))
+        .routes(routes!(list_vm_locations, add_vm_location))
+        .routes(routes!(remove_vm_location))
         .merge(super::vm_images::routes())
 }
 
@@ -42,6 +44,9 @@ impl From<VmsError> for ApiError {
         let rejected = |status, code, detail| ApiError::Rejected { status, code, detail };
         match error {
             VmsError::NotFound | VmsError::PoolNotFound => ApiError::NotFound,
+            VmsError::LocationInUse(users) => {
+                rejected(StatusCode::CONFLICT, "location_in_use", Some(users.join(", ")))
+            }
             VmsError::Invalid(e) => ApiError::InvalidInput(e.0),
             VmsError::NoKvm => rejected(StatusCode::CONFLICT, "kvm_missing", None),
             VmsError::NotInstalled => rejected(StatusCode::CONFLICT, "vms_not_installed", None),
@@ -78,15 +83,38 @@ pub struct VmHardware {
     pub iommu: bool,
 }
 
-/// A pool zendiloOS made, by its name and volume.
+/// A location of the VMs' storage, or a pool zendiloOS made, by its name
+/// and volume.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct VmStoragePlace {
     pub pool: String,
     pub volume: u16,
 }
 
-fn place(place: vms::StoragePlace) -> VmStoragePlace {
+fn place(place: domain::Location) -> VmStoragePlace {
     VmStoragePlace { pool: place.pool, volume: place.volume }
+}
+
+/// A pool zendiloOS made, where a location of the VMs' storage can go.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct VmPoolInfo {
+    pub pool: String,
+    pub volume: u16,
+    /// ZFS's word: `online`, `degraded`, `faulted`, …
+    pub health: String,
+    /// Space as files see it.
+    pub used_bytes: u64,
+    pub available_bytes: u64,
+}
+
+fn pool_dto(pool: vms::VmPool) -> VmPoolInfo {
+    VmPoolInfo {
+        pool: pool.location.pool,
+        volume: pool.location.volume,
+        health: pool.health,
+        used_bytes: pool.used_bytes,
+        available_bytes: pool.available_bytes,
+    }
 }
 
 /// The plugin: the hardware check, whether libvirt and QEMU are installed,
@@ -95,19 +123,31 @@ fn place(place: vms::StoragePlace) -> VmStoragePlace {
 pub struct VmPlugin {
     pub hardware: VmHardware,
     pub installed: bool,
+    /// The first location, which holds the image library; none before the
+    /// storage is set up.
     pub storage: Option<VmStoragePlace>,
-    /// Where the storage can go.
-    pub pools: Vec<VmStoragePlace>,
+    /// Every location of the VMs' storage, the first first.
+    pub locations: Vec<VmStoragePlace>,
+    /// Where a location can go.
+    pub pools: Vec<VmPoolInfo>,
     /// Threads and memory of the machine.
     pub cores: u32,
     pub memory_bytes: u64,
-    /// Linux bridges of the machine's own, for VMs on the LAN.
+    /// Linux bridges of the machine's own, for VMs on the LAN; internal
+    /// networks aside.
     pub bridges: Vec<String>,
+    /// Internal networks: bridges zendiloOS made without members or an
+    /// address of the NAS's, on which VMs reach each other only.
+    pub internal_networks: Vec<String>,
+    /// Wired cards and bonds in no bridge or bond, for a card directly on
+    /// one (macvtap).
+    pub cards: Vec<String>,
     /// The largest image a browser uploads into the library.
     pub image_upload_max_bytes: u64,
 }
 
 fn plugin_dto(plugin: vms::VmPlugin) -> VmPlugin {
+    let storage = plugin.library().cloned().map(place);
     let facts = plugin.facts;
     VmPlugin {
         hardware: VmHardware {
@@ -116,11 +156,14 @@ fn plugin_dto(plugin: vms::VmPlugin) -> VmPlugin {
             iommu: facts.iommu,
         },
         installed: facts.installed,
-        storage: facts.storage.map(place),
-        pools: plugin.pools.into_iter().map(place).collect(),
+        storage,
+        locations: plugin.locations.into_iter().map(place).collect(),
+        pools: plugin.pools.into_iter().map(pool_dto).collect(),
         cores: facts.limits.cores,
         memory_bytes: facts.limits.memory_bytes,
         bridges: facts.limits.bridges,
+        internal_networks: facts.limits.internal,
+        cards: facts.limits.cards,
         image_upload_max_bytes: domain::IMAGE_UPLOAD_MAX,
     }
 }
@@ -160,22 +203,48 @@ pub enum VmNicModel {
 
 /// How a network card reaches the network.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VmNetwork {
     /// passt: out to the LAN and the internet from the NAS's address;
     /// nothing reaches the VM.
     User,
     /// A bridge of the machine's: the VM is on the LAN as a machine of its own.
     Bridge { bridge: String },
+    /// Directly on a wired card or bond (macvtap): on its LAN without a
+    /// bridge; the NAS and the VM do not reach each other.
+    Direct { card: String },
+    /// An internal network: VMs on it reach each other, not the LAN or the
+    /// NAS.
+    Internal { network: String },
 }
 
-/// A disk: a sparse zvol in its slot, 0 to 7.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
+/// A disk: a sparse zvol in its slot, 0 to 7, on its location.
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct VmDisk {
     pub slot: u8,
     pub size_gib: u32,
     pub bus: VmDiskBus,
+    /// The location it lies on: its pool and volume.
+    pub pool: String,
+    pub volume: u16,
+}
+
+/// A disk as asked for, in its slot, 0 to 7.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VmDiskChoice {
+    pub slot: u8,
+    pub size_gib: u32,
+    pub bus: VmDiskBus,
+    /// The pool of the location it goes on; none: the first location, the
+    /// library's, for a new disk, and its own for one the VM has, which
+    /// never moves.
+    #[serde(default)]
+    pub pool: Option<String>,
+    /// As the VM's disks are shown; the pool decides.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub volume: Option<u16>,
 }
 
 /// A network card as asked for, in its slot, 0 to 3.
@@ -250,8 +319,6 @@ pub struct VirtualMachine {
     /// The devices it boots from, first first.
     pub boot: Vec<VmBootDevice>,
     pub autostart: bool,
-    pub pool: String,
-    pub volume: u16,
     pub created_at: i64,
     pub state: VmPowerState,
 }
@@ -282,6 +349,8 @@ fn network_dto(network: domain::Network) -> VmNetwork {
     match network {
         domain::Network::User => VmNetwork::User,
         domain::Network::Bridge(bridge) => VmNetwork::Bridge { bridge },
+        domain::Network::Direct(card) => VmNetwork::Direct { card },
+        domain::Network::Internal(network) => VmNetwork::Internal { network },
     }
 }
 
@@ -308,6 +377,8 @@ fn vm_dto(view: vms::VmView) -> VirtualMachine {
                     domain::DiskBus::Virtio => VmDiskBus::Virtio,
                     domain::DiskBus::Sata => VmDiskBus::Sata,
                 },
+                pool: disk.location.pool,
+                volume: disk.location.volume,
             })
             .collect(),
         nics: settings
@@ -337,14 +408,13 @@ fn vm_dto(view: vms::VmView) -> VirtualMachine {
             })
             .collect(),
         autostart: settings.autostart,
-        pool: vm.pool,
-        volume: vm.volume,
         created_at: vm.created_at.unix_seconds(),
         state: state_dto(view.state),
     }
 }
 
-fn disks(disks: Vec<VmDisk>) -> Vec<domain::Disk> {
+/// The disks asked for; where each goes the use case decides from its pool.
+fn disks(disks: Vec<VmDiskChoice>) -> Vec<domain::Disk> {
     disks
         .into_iter()
         .map(|disk| domain::Disk {
@@ -354,6 +424,7 @@ fn disks(disks: Vec<VmDisk>) -> Vec<domain::Disk> {
                 VmDiskBus::Virtio => domain::DiskBus::Virtio,
                 VmDiskBus::Sata => domain::DiskBus::Sata,
             },
+            location: domain::Location::named(disk.pool.as_deref().unwrap_or_default()),
         })
         .collect()
 }
@@ -370,6 +441,8 @@ fn nics(nics: Vec<VmNicChoice>) -> Vec<domain::Nic> {
             network: match nic.network {
                 VmNetwork::User => domain::Network::User,
                 VmNetwork::Bridge { bridge } => domain::Network::Bridge(bridge),
+                VmNetwork::Direct { card } => domain::Network::Direct(card),
+                VmNetwork::Internal { network } => domain::Network::Internal(network),
             },
             mac: String::new(),
         })
@@ -480,7 +553,7 @@ pub struct CreateVmRequest {
     pub memory_mib: u32,
     pub firmware: VmFirmware,
     /// 1 to 8.
-    pub disks: Vec<VmDisk>,
+    pub disks: Vec<VmDiskChoice>,
     /// Up to 4.
     pub nics: Vec<VmNicChoice>,
     /// Up to 3, with images of the library or empty.
@@ -509,7 +582,7 @@ pub struct CreatedVm {
     responses(
         (status = ACCEPTED, body = CreatedVm),
         (status = CONFLICT, body = Problem, description = "`vms_not_installed`, `vms_not_set_up`, `name_taken`"),
-        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`: more than the machine has, an unknown bridge or image, devices that break the rules"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`: more than the machine has, an unknown bridge, internal network, card, pool or image, devices that break the rules"),
     )
 )]
 async fn create_vm(
@@ -566,9 +639,9 @@ pub struct UpdateVmRequest {
     pub cpus: u16,
     pub memory_mib: u32,
     pub firmware: VmFirmware,
-    /// A disk of a slot it had keeps its data and only grows; one left out
-    /// is destroyed.
-    pub disks: Vec<VmDisk>,
+    /// A disk of a slot it had keeps its data and its location and only
+    /// grows; one left out is destroyed.
+    pub disks: Vec<VmDiskChoice>,
     /// A card of a slot it had keeps its MAC address.
     pub nics: Vec<VmNicChoice>,
     pub drives: Vec<VmDrive>,
@@ -593,7 +666,7 @@ pub struct UpdateVmRequest {
         (status = OK, body = VirtualMachine),
         (status = NOT_FOUND, body = Problem, description = "`not_found`"),
         (status = CONFLICT, body = Problem, description = "`vm_running`: hardware changes while it is not shut off; `vm_creating`; `name_taken`; `refused`"),
-        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`: a disk shrunk, more than the machine has; `confirmation_mismatch`: a disk removed without the name"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`: a disk shrunk or moved to another location, more than the machine has; `confirmation_mismatch`: a disk removed without the name"),
     )
 )]
 async fn update_vm(
@@ -781,5 +854,143 @@ async fn delete_vm(
 ) -> Result<StatusCode, ApiError> {
     auth.require(Permission::VmsManage)?;
     state.vms.delete(&id, &request.confirm, &auth.0.actor(), &client).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// A VM's disks on a location, and what they take there.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct VmOnLocation {
+    pub id: String,
+    pub name: String,
+    /// The slots of its disks there.
+    pub disks: Vec<u8>,
+    /// What its zvols there take of the pool (snapshots included) and what
+    /// they hold now; none while ZFS cannot be asked.
+    pub used_bytes: Option<u64>,
+    pub referenced_bytes: Option<u64>,
+    /// Their sizes added up.
+    pub size_bytes: u64,
+}
+
+/// A location of the VMs' storage: the dataset `<pool>/zendiloos.vms`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct VmLocation {
+    pub pool: String,
+    pub volume: u16,
+    /// The first: the image library is here.
+    pub library: bool,
+    /// The pool's health; none while it cannot be read.
+    pub health: Option<String>,
+    /// The pool's space as files see it, all of it.
+    pub pool_used_bytes: Option<u64>,
+    pub available_bytes: Option<u64>,
+    /// What the dataset holds, zvols and images, and of it the library's
+    /// files; none while ZFS cannot be asked.
+    pub used_bytes: Option<u64>,
+    pub images_bytes: Option<u64>,
+    /// The library's images here.
+    pub images: usize,
+    pub vms: Vec<VmOnLocation>,
+}
+
+fn location_dto(view: vms::LocationView) -> VmLocation {
+    VmLocation {
+        pool: view.location.pool,
+        volume: view.location.volume,
+        library: view.library,
+        health: view.pool.as_ref().map(|pool| pool.health.clone()),
+        pool_used_bytes: view.pool.as_ref().map(|pool| pool.used_bytes),
+        available_bytes: view
+            .usage
+            .as_ref()
+            .map(|usage| usage.available_bytes)
+            .or(view.pool.as_ref().map(|pool| pool.available_bytes)),
+        used_bytes: view.usage.as_ref().map(|usage| usage.used_bytes),
+        images_bytes: view.usage.as_ref().map(|usage| usage.files_bytes),
+        images: view.images,
+        vms: view
+            .vms
+            .into_iter()
+            .map(|vm| VmOnLocation {
+                id: vm.id,
+                name: vm.name,
+                disks: vm.disks,
+                used_bytes: vm.used_bytes,
+                referenced_bytes: vm.referenced_bytes,
+                size_bytes: vm.size_bytes,
+            })
+            .collect(),
+    }
+}
+
+/// The locations of the VMs' storage, the library's first, with their
+/// pools and what lies on them. Needs `vms.manage`.
+#[utoipa::path(get, path = "/vms/locations", tag = "vms", security(("session" = [])), responses((status = OK, body = [VmLocation])))]
+async fn list_vm_locations(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+) -> Result<Json<Vec<VmLocation>>, ApiError> {
+    auth.require(Permission::VmsManage)?;
+    Ok(Json(state.vms.locations(&client).await?.into_iter().map(location_dto).collect()))
+}
+
+/// Puts one more location of the VMs' storage on a pool zendiloOS made:
+/// `<pool>/zendiloos.vms`, mounted at `/volume<N>/@vms`. Needs `vms.manage`.
+#[utoipa::path(
+    post,
+    path = "/vms/locations",
+    tag = "vms",
+    security(("session" = [])),
+    request_body = VmStorageRequest,
+    responses(
+        (status = OK, body = VmPlugin),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`: no such pool"),
+        (status = CONFLICT, body = Problem, description = "`vms_not_installed`; `refused`: the host's reason"),
+    )
+)]
+async fn add_vm_location(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    ApiJson(request): ApiJson<VmStorageRequest>,
+) -> Result<Json<VmPlugin>, ApiError> {
+    auth.require(Permission::VmsManage)?;
+    Ok(Json(plugin_dto(state.vms.add_location(&request.pool, &auth.0.actor(), &client).await?)))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveVmLocationRequest {
+    /// The pool's name, typed again.
+    pub confirm: String,
+}
+
+/// Removes a location of the VMs' storage: its dataset destroyed. Refused
+/// while a VM has a disk there or the library images, and for the
+/// library's location while there are others. Needs `vms.manage`.
+#[utoipa::path(
+    post,
+    path = "/vms/locations/{pool}/delete",
+    tag = "vms",
+    security(("session" = [])),
+    params(("pool" = String, Path)),
+    request_body = RemoveVmLocationRequest,
+    responses(
+        (status = NO_CONTENT),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`"),
+        (status = CONFLICT, body = Problem, description = "`location_in_use`: the detail names the VMs, or the image library; `refused`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`confirmation_mismatch`"),
+    )
+)]
+async fn remove_vm_location(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    Path(pool): Path<String>,
+    ApiJson(request): ApiJson<RemoveVmLocationRequest>,
+) -> Result<StatusCode, ApiError> {
+    auth.require(Permission::VmsManage)?;
+    state.vms.remove_location(&pool, &request.confirm, &auth.0.actor(), &client).await?;
     Ok(StatusCode::NO_CONTENT)
 }

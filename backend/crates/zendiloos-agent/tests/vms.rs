@@ -52,9 +52,12 @@ impl Host {
         fs::read_to_string(self.path(&format!("state/zendiloos-{ID}"))).unwrap_or_default().trim().to_owned()
     }
 
+    /// The zvols there are, by name: `tank/zendiloos.vms/<id>-disk0`.
     fn zvols(&self) -> Vec<String> {
         let mut names: Vec<String> = fs::read_dir(self.path("state/zvols"))
-            .map(|entries| entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+            .map(|entries| {
+                entries.flatten().map(|e| e.file_name().to_string_lossy().replace('+', "/")).collect()
+            })
             .unwrap_or_default();
         names.sort();
         names
@@ -74,13 +77,16 @@ fn script(root: &Path, name: &str, body: &str) -> PathBuf {
     path
 }
 
-/// The pool `tank` (volume 1), zendiloOS's; libvirt and QEMU installed
-/// unless `installed` is false. systemd-networkd knows the host's links: a
-/// bridge `br0`, a card `enp1s0`, and a bridge `vms0` it does not describe.
+/// The pools `tank` (volume 1) and `cold` (volume 2), zendiloOS's; libvirt
+/// and QEMU installed unless `installed` is false. systemd-networkd knows
+/// the host's links: a bridge `br0`, a card `enp1s0`, a bridge `vms0` it
+/// does not describe, a bond `bond0`, a VLAN `enp1s0.10`, a `veth` and the
+/// internal network `vmnet0`, which zendiloOS's files make a bridge
+/// without members or an address.
 fn host(installed: bool) -> Host {
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();
-    for sub in ["units", "iommu", "state/zvols", "volume1/media/isos"] {
+    for sub in ["units", "iommu", "state/zvols", "volume1/media/isos", "network"] {
         fs::create_dir_all(root.join(sub)).unwrap();
     }
     fs::write(root.join("kvm"), "").unwrap();
@@ -116,22 +122,30 @@ fn host(installed: bool) -> Host {
             state = state.display()
         ),
     );
+    // Datasets are files state/vms.<pool>; zvols files in state/zvols
+    // named by the zvol with + for /, holding their size.
     let zfs = script(
         &root,
         "zfs",
         &format!(
-            "state={state}\neval last=\\${{$#}}\n\
+            "state={state}\neval last=\\${{$#}}\nzv=\"$state/zvols/$(echo \"$last\" | tr / +)\"\n\
              case \"$*\" in\n\
              *'-s local -d 0'*) echo 1 ;;\n\
              'get -H -o value zendiloos:volume tank') echo 1 ;;\n\
-             'list -H -o name -d 1 tank') echo tank; if [ -f \"$state/vms\" ]; then echo tank/zendiloos.vms; fi ;;\n\
-             'list -H -o name tank/zendiloos.vms') test -f \"$state/vms\" ;;\n\
-             'list -H -o name tank/zendiloos.vms/'*) test -f \"$state/zvols/${{last##*/}}\" ;;\n\
-             'get -H -p -o value volsize tank/zendiloos.vms/'*) cat \"$state/zvols/${{last##*/}}\" ;;\n\
-             'create -s -V '*) echo $(( ${{4%G}} * 1073741824 )) > \"$state/zvols/${{last##*/}}\" ;;\n\
-             create*zendiloos.vms) touch \"$state/vms\" ;;\n\
-             'set volsize='*) v=${{2#volsize=}}; echo $(( ${{v%G}} * 1073741824 )) > \"$state/zvols/${{last##*/}}\" ;;\n\
-             'destroy tank/zendiloos.vms/'*) rm \"$state/zvols/${{last##*/}}\" ;;\n\
+             'get -H -o value zendiloos:volume cold') echo 2 ;;\n\
+             'list -H -o name -d 1 '*) echo \"$last\"; if [ -f \"$state/vms.$last\" ]; then echo \"$last/zendiloos.vms\"; fi ;;\n\
+             'list -H -o name -t volume -r '*) for f in \"$state/zvols/${{last%%/*}}+\"*; do [ -e \"$f\" ] && basename \"$f\" | tr + /; done; true ;;\n\
+             'list -H -o name '*/zendiloos.vms) test -f \"$state/vms.${{last%%/*}}\" ;;\n\
+             'list -H -o name '*/zendiloos.vms/*) test -f \"$zv\" ;;\n\
+             'list -H -p -r -t filesystem,volume '*) for d in \"$@\"; do case \"$d\" in */zendiloos.vms) \
+                 printf '%s\\tfilesystem\\t4096\\t1024\\t1024\\t1000000\\t-\\n' \"$d\"; \
+                 for f in \"$state/zvols/${{d%%/*}}+\"*; do [ -e \"$f\" ] && printf '%s\\tvolume\\t2048\\t2048\\t2048\\t1000000\\t%s\\n' \"$(basename \"$f\" | tr + /)\" \"$(cat \"$f\")\"; done ;; esac; done ;;\n\
+             'get -H -p -o value volsize '*) cat \"$zv\" ;;\n\
+             'create -s -V '*) echo $(( ${{4%G}} * 1073741824 )) > \"$zv\" ;;\n\
+             create*zendiloos.vms) touch \"$state/vms.${{last%%/*}}\" ;;\n\
+             'set volsize='*) v=${{2#volsize=}}; echo $(( ${{v%G}} * 1073741824 )) > \"$zv\" ;;\n\
+             'destroy '*/zendiloos.vms/*) rm \"$zv\" ;;\n\
+             'destroy '*/zendiloos.vms) rm \"$state/vms.${{last%%/*}}\" ;;\n\
              esac",
             state = state.display()
         ),
@@ -149,18 +163,45 @@ fn host(installed: bool) -> Host {
             root = root.display()
         ),
     );
+    let link = |index: u8, kind: Option<&str>, kind_of_type: &str| {
+        let kind = kind.map(|kind| format!(",\\\"Kind\\\":\\\"{kind}\\\"")).unwrap_or_default();
+        format!(
+            "*'DescribeLink i {index}') echo '{{\"type\":\"s\",\"data\":[\"{{\\\"Index\\\":{index}{kind},\\\"Type\\\":\\\"{kind_of_type}\\\"}}\"]}}' ;;\n"
+        )
+    };
     let busctl = script(
         &root,
         "busctl",
-        "case \"$*\" in\n\
-         *'GetLinkByName s br0') echo 'io 5 \"/org/freedesktop/network1/link/_35\"' ;;\n\
-         *'GetLinkByName s enp1s0') echo 'io 2 \"/org/freedesktop/network1/link/_32\"' ;;\n\
-         *'GetLinkByName s vms0') echo 'io 6 \"/org/freedesktop/network1/link/_36\"' ;;\n\
-         *'DescribeLink i 5') echo '{\"type\":\"s\",\"data\":[\"{\\\"Index\\\":5,\\\"Kind\\\":\\\"bridge\\\",\\\"Type\\\":\\\"bridge\\\"}\"]}' ;;\n\
-         *'DescribeLink i 2') echo '{\"type\":\"s\",\"data\":[\"{\\\"Index\\\":2,\\\"Type\\\":\\\"ether\\\"}\"]}' ;;\n\
-         *) exit 1 ;;\n\
-         esac",
+        &format!(
+            "case \"$*\" in\n\
+             *'GetLinkByName s br0') echo 'io 5 \"/org/freedesktop/network1/link/_35\"' ;;\n\
+             *'GetLinkByName s enp1s0') echo 'io 2 \"/org/freedesktop/network1/link/_32\"' ;;\n\
+             *'GetLinkByName s vms0') echo 'io 6 \"/org/freedesktop/network1/link/_36\"' ;;\n\
+             *'GetLinkByName s bond0') echo 'io 7 \"/org/freedesktop/network1/link/_37\"' ;;\n\
+             *'GetLinkByName s enp1s0.10') echo 'io 8 \"/org/freedesktop/network1/link/_38\"' ;;\n\
+             *'GetLinkByName s veth1a2b') echo 'io 9 \"/org/freedesktop/network1/link/_39\"' ;;\n\
+             *'GetLinkByName s vmnet0') echo 'io 10 \"/org/freedesktop/network1/link/_310\"' ;;\n\
+             {}{}{}{}{}{}\
+             *) exit 1 ;;\n\
+             esac",
+            link(5, Some("bridge"), "bridge"),
+            link(2, None, "ether"),
+            link(7, Some("bond"), "ether"),
+            link(8, Some("vlan"), "ether"),
+            link(9, Some("veth"), "ether"),
+            link(10, Some("bridge"), "bridge"),
+        ),
     );
+    // vmnet0: a bridge of zendiloOS's without members or an address.
+    fs::write(root.join("network/05-zendiloos-vmnet0.netdev"), "[NetDev]\nName=vmnet0\nKind=bridge\n")
+        .unwrap();
+    fs::write(
+        root.join("network/05-zendiloos-vmnet0.network"),
+        "[Match]\nName=vmnet0\n\n[Network]\nDHCP=no\nIPv6AcceptRA=no\nLinkLocalAddressing=no\n",
+    )
+    .unwrap();
+    fs::write(root.join("network/05-zendiloos-br0.netdev"), "[NetDev]\nName=br0\nKind=bridge\n").unwrap();
+    fs::write(root.join("network/05-zendiloos-enp1s0.network"), "[Network]\nBridge=br0\n").unwrap();
     let mut tools = Tools {
         virsh,
         busctl,
@@ -198,6 +239,8 @@ fn host(installed: bool) -> Host {
             tmpfiles: root.join("tmpfiles.d/zendiloos-vms.conf"),
             apparmor: root.join("apparmor/abstractions/libvirt-qemu.d/zendiloos-consoles"),
             zvols: PathBuf::from("/dev/zvol"),
+            network: root.join("network"),
+            internal: root.join("internal-networks.nft"),
         },
         ..Paths::default()
     };
@@ -214,6 +257,15 @@ fn volume() -> VolumeNumber {
     VolumeNumber::new(1).unwrap()
 }
 
+fn tank() -> VmStorage {
+    VmStorage { pool: pool(), volume: volume() }
+}
+
+/// The second location.
+fn cold() -> VmStorage {
+    VmStorage { pool: PoolName::parse("cold").unwrap(), volume: VolumeNumber::new(2).unwrap() }
+}
+
 fn id() -> VmId {
     VmId::parse(ID).unwrap()
 }
@@ -223,10 +275,15 @@ fn image() -> VmImageId {
 }
 
 fn disk(slot: u8, gib: u32) -> VmDisk {
+    disk_on(slot, gib, tank())
+}
+
+fn disk_on(slot: u8, gib: u32, location: VmStorage) -> VmDisk {
     VmDisk {
         slot: VmDiskSlot::new(slot).unwrap(),
         size: VmDiskSize::new(gib).unwrap(),
         bus: VmDiskBus::Virtio,
+        location,
     }
 }
 
@@ -267,7 +324,6 @@ fn spec_with(devices: VmDevices, autostart: bool) -> VmSpec {
         VmFirmware::Uefi,
         devices,
         autostart,
-        pool(),
         volume(),
     )
     .unwrap()
@@ -293,10 +349,20 @@ async fn set_up(host: &Host) {
     fs::create_dir_all(host.path("volume1/@vms")).unwrap();
 }
 
+/// The second location, on `cold`.
+async fn add_cold(host: &Host) {
+    let location = cold();
+    assert_eq!(
+        host.run(Request::EnableVms { pool: location.pool, volume: location.volume }).await,
+        Response::Done
+    );
+    fs::create_dir_all(host.path("volume2/@vms")).unwrap();
+}
+
 #[tokio::test]
 async fn the_machine_says_what_it_offers() {
     let host = host(true);
-    let Response::VmHost { kvm, cpu_virtualization, iommu, installed, cores, memory_bytes, storage } =
+    let Response::VmHost { kvm, cpu_virtualization, iommu, installed, cores, memory_bytes, locations } =
         host.run(Request::VmHost {}).await
     else {
         panic!("no facts")
@@ -304,11 +370,12 @@ async fn the_machine_says_what_it_offers() {
     assert!(kvm && installed && !iommu);
     assert_eq!(cpu_virtualization.as_deref(), Some("vmx"));
     assert_eq!((cores, memory_bytes), (2, 2_027_168 * 1024));
-    assert_eq!(storage, None);
+    assert!(locations.is_empty());
 
+    add_cold(&host).await;
     set_up(&host).await;
-    let Response::VmHost { storage, .. } = host.run(Request::VmHost {}).await else { panic!("no facts") };
-    assert_eq!(storage, Some(VmStorage { pool: pool(), volume: volume() }));
+    let Response::VmHost { locations, .. } = host.run(Request::VmHost {}).await else { panic!("no facts") };
+    assert_eq!(locations, [tank(), cold()], "by volume");
 }
 
 #[tokio::test]
@@ -344,10 +411,98 @@ async fn the_storage_goes_on_a_pool_and_libvirt_follows_it() {
     // A pool with the VMs on it is not destroyed.
     let destroy = host.run(Request::DestroyPool { name: pool(), volume: volume() }).await;
     refused(destroy, ErrorCode::Forbidden, "virtual machines' storage lies on this pool");
-    // Nor does the storage go to a second pool.
-    fs::write(host.path("units/volume2-\\x40vms.mount"), "[Mount]\nWhat=cold/zendiloos.vms\n").unwrap();
-    let again = host.run(Request::EnableVms { pool: pool(), volume: volume() }).await;
-    refused(again, ErrorCode::Forbidden, "on another pool");
+
+    // A second location, on another pool: libvirt waits for both, and
+    // neither pool is destroyed.
+    add_cold(&host).await;
+    let drop_in = fs::read_to_string(host.path("units/libvirtd.service.d/zendiloos.conf")).unwrap();
+    assert!(
+        drop_in.contains("RequiresMountsFor=/volume1/@vms\nRequiresMountsFor=/volume2/@vms\n"),
+        "{drop_in}"
+    );
+    let unit = fs::read_to_string(host.path("units/volume2-\\x40vms.mount")).unwrap();
+    assert!(unit.contains("What=cold/zendiloos.vms\nWhere=/volume2/@vms\n"), "{unit}");
+    for location in [tank(), cold()] {
+        let destroy = host.run(Request::DestroyPool { name: location.pool, volume: location.volume }).await;
+        refused(destroy, ErrorCode::Forbidden, "virtual machines' storage lies on this pool");
+    }
+    // Set up again is no failure.
+    assert_eq!(host.run(Request::EnableVms { pool: pool(), volume: volume() }).await, Response::Done);
+    // A pool not zendiloOS's holds none.
+    let foreign =
+        Request::EnableVms { pool: PoolName::parse("other").unwrap(), volume: VolumeNumber::new(3).unwrap() };
+    assert!(matches!(host.run(foreign).await, Response::Error { .. }));
+    // Two units naming one pool are a hand's work: neither counts.
+    fs::write(host.path("units/volume4-\\x40vms.mount"), "[Mount]\nWhat=cold/zendiloos.vms\n").unwrap();
+    let Response::VmHost { locations, .. } = host.run(Request::VmHost {}).await else { panic!("no facts") };
+    assert_eq!(locations, [tank()]);
+}
+
+#[tokio::test]
+async fn a_location_goes_only_once_empty_and_libvirt_stops_waiting_for_it_first() {
+    let host = host(true);
+    set_up(&host).await;
+    add_cold(&host).await;
+    let remove = |location: VmStorage| Request::DisableVms { pool: location.pool, volume: location.volume };
+
+    // A VM's disk on it keeps it.
+    let on_cold = VmDevices { disks: vec![disk_on(0, 1, cold())], ..devices() };
+    assert_eq!(host.run(Request::DefineVm { spec: spec_with(on_cold, false) }).await, Response::Done);
+    let from = host.calls().len();
+    refused(host.run(remove(cold())).await, ErrorCode::Forbidden, &format!("cold/zendiloos.vms/{ID}-disk0"));
+    assert!(!host.calls_since(from).iter().any(|call| call.contains("stop ") || call.contains("destroy")));
+    assert_eq!(host.run(Request::DeleteVm { id: id() }).await, Response::Done);
+
+    // So does an image in its library.
+    fs::create_dir_all(host.path("volume2/@vms/isos")).unwrap();
+    fs::write(host.path(&format!("volume2/@vms/isos/{IMAGE}.iso")), "iso").unwrap();
+    refused(host.run(remove(cold())).await, ErrorCode::Forbidden, "holds 1 images");
+    fs::remove_file(host.path(&format!("volume2/@vms/isos/{IMAGE}.iso"))).unwrap();
+    // A file the library left half written is none.
+    fs::write(host.path(&format!("volume2/@vms/isos/.{IMAGE}.iso.part")), "is").unwrap();
+
+    let from = host.calls().len();
+    assert_eq!(host.run(remove(cold())).await, Response::Done);
+    let calls = host.calls_since(from);
+    let at = |wanted: &str| {
+        calls.iter().position(|call| call == wanted).unwrap_or_else(|| panic!("{wanted}: {calls:?}"))
+    };
+    let reloaded = at("systemctl daemon-reload");
+    let stopped = at("systemctl stop volume2-\\x40vms.mount");
+    let destroyed = at("zfs destroy cold/zendiloos.vms");
+    let disabled = at("systemctl disable --now volume2-\\x40vms.mount");
+    assert!(reloaded < stopped && stopped < destroyed && destroyed < disabled, "{calls:?}");
+    assert!(!host.path("units/volume2-\\x40vms.mount").exists());
+    let drop_in = fs::read_to_string(host.path("units/libvirtd.service.d/zendiloos.conf")).unwrap();
+    assert!(
+        drop_in.contains("RequiresMountsFor=/volume1/@vms\n") && !drop_in.contains("volume2"),
+        "{drop_in}"
+    );
+    refused(host.run(remove(cold())).await, ErrorCode::Forbidden, "no location");
+
+    // The last one too, and libvirt waits for none.
+    assert_eq!(host.run(remove(tank())).await, Response::Done);
+    assert!(!host.path("units/libvirtd.service.d/zendiloos.conf").exists());
+    let Response::VmHost { locations, .. } = host.run(Request::VmHost {}).await else { panic!("no facts") };
+    assert!(locations.is_empty());
+}
+
+#[tokio::test]
+async fn a_busy_location_stays_with_libvirt_waiting_for_it() {
+    let host = host(true);
+    set_up(&host).await;
+    add_cold(&host).await;
+    // The mount is in use: systemctl fails to stop it.
+    let systemctl = host.path("systemctl");
+    let text = fs::read_to_string(&systemctl).unwrap();
+    fs::write(&systemctl, format!("{text}\ncase \"$*\" in 'stop volume2-'*) exit 1 ;; esac\n")).unwrap();
+    let location = cold();
+    let refusal = host.run(Request::DisableVms { pool: location.pool, volume: location.volume }).await;
+    assert!(matches!(refusal, Response::Error { .. }), "{refusal:?}");
+    assert!(host.path("units/volume2-\\x40vms.mount").exists());
+    assert!(host.zvols().is_empty() && host.path("state/vms.cold").exists(), "nothing destroyed");
+    let drop_in = fs::read_to_string(host.path("units/libvirtd.service.d/zendiloos.conf")).unwrap();
+    assert!(drop_in.contains("RequiresMountsFor=/volume2/@vms"), "waits for it again: {drop_in}");
 }
 
 #[tokio::test]
@@ -406,7 +561,10 @@ async fn a_vm_gets_its_sparse_zvols_and_a_domain_of_its_own() {
         assert!(calls.contains(&wanted), "{wanted}: {calls:?}");
     }
     assert_eq!(calls.last().unwrap(), &format!("virsh --connect qemu:///system autostart zendiloos-{ID}"));
-    assert_eq!(host.zvols(), [format!("{ID}-disk0"), format!("{ID}-disk1")]);
+    assert_eq!(
+        host.zvols(),
+        [format!("tank/zendiloos.vms/{ID}-disk0"), format!("tank/zendiloos.vms/{ID}-disk1")]
+    );
     let xml = fs::read_to_string(host.path(&format!("domains/zendiloos-{ID}.xml"))).unwrap();
     assert!(!host.path(&format!("domains/zendiloos-{ID}.xml.new")).exists());
     for part in [
@@ -460,7 +618,10 @@ async fn a_vm_that_is_off_changes_its_hardware_and_disks_only_grow() {
     let disabled = at(&format!("virsh --connect qemu:///system autostart --disable zendiloos-{ID}"));
     let removed = at(&format!("zfs destroy tank/zendiloos.vms/{ID}-disk1"));
     assert!(grown < defined && made < defined && defined < disabled && disabled < removed, "{calls:?}");
-    assert_eq!(host.zvols(), [format!("{ID}-disk0"), format!("{ID}-disk2")]);
+    assert_eq!(
+        host.zvols(),
+        [format!("tank/zendiloos.vms/{ID}-disk0"), format!("tank/zendiloos.vms/{ID}-disk2")]
+    );
     let xml = fs::read_to_string(host.path(&format!("domains/zendiloos-{ID}.xml"))).unwrap();
     assert!(
         xml.contains(&format!(
@@ -490,7 +651,11 @@ async fn a_vm_that_is_off_changes_its_hardware_and_disks_only_grow() {
     assert_eq!(host.run(Request::ControlVm { id: id(), action: VmAction::Start }).await, Response::Done);
     let from = host.calls().len();
     refused(host.run(update(changed, vec![])).await, ErrorCode::Forbidden, "not shut off");
-    assert!(!host.calls_since(from).iter().any(|call| call.starts_with("zfs ") || call.contains(" define ")));
+    let changing = |call: &String| {
+        ["zfs create", "zfs set", "zfs destroy"].iter().any(|start| call.starts_with(start))
+            || call.contains(" define ")
+    };
+    assert!(!host.calls_since(from).iter().any(changing));
 
     let other = VmSpec::new(
         VmId::parse("00000000000f").unwrap(),
@@ -500,7 +665,6 @@ async fn a_vm_that_is_off_changes_its_hardware_and_disks_only_grow() {
         VmFirmware::Uefi,
         devices(),
         false,
-        pool(),
         volume(),
     )
     .unwrap();
@@ -605,7 +769,7 @@ async fn the_library_lists_its_images_and_removes_them_in_a_unit() {
     // Gone already is no failure.
     assert_eq!(host.run(Request::DeleteVmImage { image: image(), volume: volume() }).await, Response::Done);
     let elsewhere = Request::VmImages { volume: VolumeNumber::new(2).unwrap() };
-    refused(host.run(elsewhere).await, ErrorCode::Forbidden, "not 2");
+    refused(host.run(elsewhere).await, ErrorCode::Forbidden, "on volume 2");
 }
 
 #[tokio::test]
@@ -691,10 +855,7 @@ async fn deleting_a_vm_removes_its_domain_disks_and_xml_but_not_the_library() {
         VmDevices { disks: vec![disk(0, 1), disk(3, 1)], drives: vec![drive(0, Some(image()))], ..devices() };
     assert_eq!(host.run(Request::DefineVm { spec: spec_with(two, false) }).await, Response::Done);
 
-    assert_eq!(
-        host.run(Request::DeleteVm { id: id(), pool: pool(), volume: volume() }).await,
-        Response::Done
-    );
+    assert_eq!(host.run(Request::DeleteVm { id: id() }).await, Response::Done);
     let calls = host.calls();
     let at = |prefix: &str| {
         calls
@@ -714,12 +875,10 @@ async fn deleting_a_vm_removes_its_domain_disks_and_xml_but_not_the_library() {
     assert!(!host.path(&format!("domains/zendiloos-{ID}.xml")).exists());
 
     // Gone already is no failure: a VM whose creation failed goes too.
-    assert_eq!(
-        host.run(Request::DeleteVm { id: id(), pool: pool(), volume: volume() }).await,
-        Response::Done
-    );
-    let foreign = Request::DeleteVm { id: id(), pool: PoolName::parse("cold").unwrap(), volume: volume() };
-    refused(host.run(foreign).await, ErrorCode::Forbidden, "not on pool cold");
+    assert_eq!(host.run(Request::DeleteVm { id: id() }).await, Response::Done);
+    // Without storage there is nothing to delete from.
+    let bare = self::host(true);
+    refused(bare.run(Request::DeleteVm { id: id() }).await, ErrorCode::Forbidden, "not set up");
 }
 
 #[tokio::test]
@@ -764,4 +923,180 @@ async fn a_bridge_systemd_networkd_does_not_describe_is_taken() {
     assert_eq!(host.run(Request::DefineVm { spec: spec_with(card, false) }).await, Response::Done);
     let xml = fs::read_to_string(host.path(&format!("domains/zendiloos-{ID}.xml"))).unwrap();
     assert!(xml.contains("<source bridge='vms0'/>"), "{xml}");
+}
+
+/// A VM's disks on two locations: each zvol on its pool, each found by the
+/// domain there; deleted from both, and what they hold told per location.
+#[tokio::test]
+async fn disks_lie_on_the_locations_they_were_made_on() {
+    let host = host(true);
+    set_up(&host).await;
+    let two = VmDevices { disks: vec![disk(0, 1), disk_on(1, 2, cold())], ..devices() };
+    // Not before the second location is there.
+    refused(
+        host.run(Request::DefineVm { spec: spec_with(two.clone(), false) }).await,
+        ErrorCode::Forbidden,
+        "no location of the virtual machines' storage is on volume 2",
+    );
+    add_cold(&host).await;
+    let elsewhere = VmDevices {
+        disks: vec![disk_on(
+            1,
+            2,
+            VmStorage { pool: PoolName::parse("tank").unwrap(), volume: VolumeNumber::new(2).unwrap() },
+        )],
+        boot: vec![VmBoot::Disk(VmDiskSlot::new(1).unwrap())],
+        ..devices()
+    };
+    refused(
+        host.run(Request::DefineVm { spec: spec_with(elsewhere, false) }).await,
+        ErrorCode::Forbidden,
+        "is not on pool tank",
+    );
+    assert_eq!(host.run(Request::DefineVm { spec: spec_with(two.clone(), false) }).await, Response::Done);
+    assert_eq!(
+        host.zvols(),
+        [format!("cold/zendiloos.vms/{ID}-disk1"), format!("tank/zendiloos.vms/{ID}-disk0")]
+    );
+    let xml = fs::read_to_string(host.path(&format!("domains/zendiloos-{ID}.xml"))).unwrap();
+    assert!(xml.contains(&format!("<source dev='/dev/zvol/tank/zendiloos.vms/{ID}-disk0'/>")), "{xml}");
+    assert!(xml.contains(&format!("<source dev='/dev/zvol/cold/zendiloos.vms/{ID}-disk1'/>")), "{xml}");
+
+    // What each location and its zvols hold, in one look.
+    let Response::VmStorageUsage { zfs_list } = host.run(Request::VmStorageUsage {}).await else {
+        panic!("no usage")
+    };
+    assert!(zfs_list.contains("tank/zendiloos.vms\tfilesystem"), "{zfs_list}");
+    assert!(zfs_list.contains(&format!("cold/zendiloos.vms/{ID}-disk1\tvolume\t2048")), "{zfs_list}");
+    let looked = host.calls().into_iter().rfind(|call| call.starts_with("zfs list -H -p -r")).unwrap();
+    assert_eq!(
+        looked,
+        "zfs list -H -p -r -t filesystem,volume -o name,type,used,usedbydataset,referenced,available,volsize \
+         tank/zendiloos.vms cold/zendiloos.vms"
+    );
+
+    // A disk stays where it was made: moved, it is refused; grown, it grows there.
+    let slot = |n| VmDiskSlot::new(n).unwrap();
+    let moved = VmDevices { disks: vec![disk(0, 1), disk(1, 2)], ..devices() };
+    refused(
+        host.run(Request::UpdateVm { spec: spec_with(moved, false), remove: vec![] }).await,
+        ErrorCode::Forbidden,
+        &format!("disk 1 lies on cold/zendiloos.vms/{ID}-disk1"),
+    );
+    let grown = VmDevices { disks: vec![disk(0, 1), disk_on(1, 3, cold())], ..devices() };
+    assert_eq!(
+        host.run(Request::UpdateVm { spec: spec_with(grown, false), remove: vec![] }).await,
+        Response::Done
+    );
+    assert!(host.calls().contains(&format!("zfs set volsize=3G cold/zendiloos.vms/{ID}-disk1")));
+    // Removed: destroyed on its own location.
+    let one = VmDevices { disks: vec![disk(0, 1)], ..devices() };
+    assert_eq!(
+        host.run(Request::UpdateVm { spec: spec_with(one, false), remove: vec![slot(1)] }).await,
+        Response::Done
+    );
+    assert!(host.calls().contains(&format!("zfs destroy cold/zendiloos.vms/{ID}-disk1")));
+    assert_eq!(host.zvols(), [format!("tank/zendiloos.vms/{ID}-disk0")]);
+
+    assert_eq!(
+        host.run(Request::UpdateVm { spec: spec_with(two, false), remove: vec![] }).await,
+        Response::Done
+    );
+    assert_eq!(host.run(Request::DeleteVm { id: id() }).await, Response::Done);
+    assert!(host.zvols().is_empty(), "both locations: {:?}", host.zvols());
+}
+
+/// Directly on a card (macvtap): a wired card or a bond, as systemd-networkd
+/// describes it, never a bridge, VLAN, veth or a link it does not know.
+#[tokio::test]
+async fn a_card_goes_directly_only_on_a_wired_card_or_bond() {
+    let host = host(true);
+    set_up(&host).await;
+    let direct = |card: &str| VmDevices {
+        nics: vec![nic(0, VmNetwork::Direct { card: InterfaceName::parse(card).unwrap() })],
+        ..devices()
+    };
+    for other in ["br0", "enp1s0.10", "veth1a2b", "eth9"] {
+        refused(
+            host.run(Request::DefineVm { spec: spec_with(direct(other), false) }).await,
+            ErrorCode::Forbidden,
+            "no wired card or bond",
+        );
+    }
+    assert_eq!(
+        host.run(Request::DefineVm { spec: spec_with(direct("enp1s0"), false) }).await,
+        Response::Done
+    );
+    let xml = fs::read_to_string(host.path(&format!("domains/zendiloos-{ID}.xml"))).unwrap();
+    assert!(
+        xml.contains(
+            "<interface type='direct'>\n      <mac address='52:54:00:00:00:00'/>\n      \
+             <source dev='enp1s0' mode='bridge'/>\n      <model type='virtio'/>\n    </interface>"
+        ),
+        "{xml}"
+    );
+    assert!(!xml.contains("type='network'"), "{xml}");
+    let bonded = spec_with(direct("bond0"), false);
+    assert_eq!(host.run(Request::UpdateVm { spec: bonded, remove: vec![] }).await, Response::Done);
+    let xml = fs::read_to_string(host.path(&format!("domains/zendiloos-{ID}.xml"))).unwrap();
+    assert!(xml.contains("<source dev='bond0' mode='bridge'/>"), "{xml}");
+}
+
+/// An internal network: a bridge of zendiloOS's without members or an
+/// address, taken only while the rules that keep the NAS off it are in
+/// force; on the domain, a bridge as any other.
+#[tokio::test]
+async fn a_card_goes_on_an_internal_network_only_while_the_nas_is_kept_off_it() {
+    let host = host(true);
+    set_up(&host).await;
+    let internal = |bridge: &str| VmDevices {
+        nics: vec![nic(0, VmNetwork::Internal { bridge: InterfaceName::parse(bridge).unwrap() })],
+        ..devices()
+    };
+    // Not written yet.
+    refused(
+        host.run(Request::DefineVm { spec: spec_with(internal("vmnet0"), false) }).await,
+        ErrorCode::Forbidden,
+        "no internal network the NAS keeps itself off",
+    );
+    fs::write(
+        host.path("internal-networks.nft"),
+        "# Written by zendiloOS: what the NAS keeps off its internal networks for VMs.\n\
+         # Changes made here are replaced.\n\
+         table bridge zendiloos_internal\ndelete table bridge zendiloos_internal\n\
+         table bridge zendiloos_internal {\n\
+         \tchain input {\n\t\ttype filter hook input priority filter; policy accept;\n\
+         \t\t# Nothing on an internal network reaches the NAS.\n\t\tmeta ibrname { \"vmnet0\" } drop\n\t}\n\
+         \tchain output {\n\t\ttype filter hook output priority filter; policy accept;\n\
+         \t\t# Nor does the NAS send anything onto one.\n\t\tmeta obrname { \"vmnet0\" } drop\n\t}\n}\n",
+    )
+    .unwrap();
+    // br0 has a card: the LAN's, no internal network.
+    refused(
+        host.run(Request::DefineVm { spec: spec_with(internal("br0"), false) }).await,
+        ErrorCode::Forbidden,
+        "br0 is no internal network",
+    );
+    refused(
+        host.run(Request::DefineVm { spec: spec_with(internal("enp1s0"), false) }).await,
+        ErrorCode::Forbidden,
+        "no bridge",
+    );
+    assert_eq!(
+        host.run(Request::DefineVm { spec: spec_with(internal("vmnet0"), false) }).await,
+        Response::Done
+    );
+    let xml = fs::read_to_string(host.path(&format!("domains/zendiloos-{ID}.xml"))).unwrap();
+    assert!(xml.contains("<interface type='bridge'>\n      <mac address='52:54:00:00:00:00'/>\n      <source bridge='vmnet0'/>"), "{xml}");
+    assert!(
+        host.calls().contains(&"systemctl is-active --quiet zendiloos-internal-networks.service".to_owned())
+    );
+
+    // A card put in it since: the rules no longer those for the files, nor is it internal.
+    fs::write(host.path("network/05-zendiloos-enp2s0.network"), "[Network]\nBridge=vmnet0\n").unwrap();
+    refused(
+        host.run(Request::UpdateVm { spec: spec_with(internal("vmnet0"), false), remove: vec![] }).await,
+        ErrorCode::Forbidden,
+        "no internal network",
+    );
 }

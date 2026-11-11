@@ -2,7 +2,7 @@
 import { HardDrive, Plus, Trash2 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 
-import type { VirtualMachine, VmDiskBus } from '@/shared/api/types'
+import type { VirtualMachine, VmDiskBus, VmStoragePlace } from '@/shared/api/types'
 import { Button } from '@/shared/ui/button'
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
@@ -18,11 +18,39 @@ import {
   type VmForm,
 } from '../lib/vms'
 
-/** A VM's disks; `before`: the VM being changed, whose disks only grow. */
-const props = defineProps<{ pool?: string; before?: VirtualMachine; disabled?: boolean }>()
+/**
+ * A VM's disks; `locations` where they can go, the first first (the
+ * library's, where a disk goes unless another is chosen); `before`: the VM
+ * being changed, whose disks only grow and stay where they are.
+ */
+const props = defineProps<{
+  locations: VmStoragePlace[]
+  before?: VirtualMachine
+  disabled?: boolean
+}>()
 const form = defineModel<VmForm>('form', { required: true })
 
 const { t } = useI18n()
+
+/** The pool a disk is on, or goes on. */
+const poolOf = (pool: string | null) => pool ?? props.locations[0]?.pool ?? ''
+
+/** A disk the VM has: it stays where it was made. */
+const made = (slot: number) => Boolean(props.before?.disks.some((disk) => disk.slot === slot))
+
+function setPool(slot: number, pool: string): void {
+  form.value = {
+    ...form.value,
+    disks: form.value.disks.map((disk) => (disk.slot === slot ? { ...disk, pool } : disk)),
+  }
+}
+
+/** The locations a disk may be on: those there are, and its own. */
+function places(pool: string | null): string[] {
+  const all = props.locations.map((location) => location.pool)
+  const own = poolOf(pool)
+  return own && !all.includes(own) ? [...all, own] : all
+}
 
 function number(value: string | number): number {
   return typeof value === 'number' ? value : Number(value.trim() === '' ? NaN : value)
@@ -59,7 +87,7 @@ const invalid = (size: number, slot: number) =>
         v-for="disk in form.disks"
         :key="disk.slot"
         :data-disk="disk.slot"
-        class="grid gap-3 rounded-lg border p-3 sm:grid-cols-[1fr_8rem_8rem_auto] sm:items-end"
+        class="grid gap-3 rounded-lg border p-3 sm:grid-cols-[1fr_8rem_8rem_9rem_auto] sm:items-end"
       >
         <span class="flex items-center gap-2 text-sm font-medium sm:self-center">
           <HardDrive class="size-4 text-muted-foreground" />
@@ -95,6 +123,21 @@ const invalid = (size: number, slot: number) =>
             </option>
           </NativeSelect>
         </div>
+        <div class="grid gap-1.5">
+          <Label :for="`vm-disk-${disk.slot}-pool`" class="text-xs">{{
+            t('vms.devices.location')
+          }}</Label>
+          <NativeSelect
+            :id="`vm-disk-${disk.slot}-pool`"
+            :model-value="poolOf(disk.pool)"
+            :disabled="disabled || made(disk.slot) || places(disk.pool).length < 2"
+            @update:model-value="(value) => setPool(disk.slot, String(value))"
+          >
+            <option v-for="pool in places(disk.pool)" :key="pool" :value="pool">
+              {{ pool }}
+            </option>
+          </NativeSelect>
+        </div>
         <Button
           type="button"
           variant="ghost"
@@ -107,7 +150,7 @@ const invalid = (size: number, slot: number) =>
         </Button>
         <p
           v-if="before && minimumGib(before, disk.slot) > 1"
-          class="text-xs text-muted-foreground sm:col-span-4"
+          class="text-xs text-muted-foreground sm:col-span-5"
           :class="invalid(disk.sizeGib, disk.slot) && 'text-destructive'"
         >
           {{ t('vms.devices.growOnly', { min: minimumGib(before, disk.slot) }) }}
@@ -125,8 +168,12 @@ const invalid = (size: number, slot: number) =>
         <Plus />
         {{ t('vms.devices.addDisk') }}
       </Button>
-      <p v-if="pool" class="text-xs text-muted-foreground">
-        {{ t('vms.devices.sizeHint', { pool }) }}
+      <p v-if="locations.length" class="text-xs text-muted-foreground">
+        {{
+          t(locations.length > 1 ? 'vms.devices.locationsHint' : 'vms.devices.sizeHint', {
+            pool: locations[0]!.pool,
+          })
+        }}
       </p>
     </div>
   </section>

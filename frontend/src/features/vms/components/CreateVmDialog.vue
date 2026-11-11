@@ -263,7 +263,7 @@ const reviewRows = computed(() => [
       </template>
 
       <template v-else-if="step === 2">
-        <DisksEditor v-model:form="form" :pool="plugin.storage?.pool" />
+        <DisksEditor v-model:form="form" :locations="plugin.locations" />
         <p v-if="has('disk')" class="text-xs text-destructive">
           {{ t('vms.wizard.invalid.disk') }}
         </p>
@@ -276,7 +276,10 @@ const reviewRows = computed(() => [
       <template v-else>
         <fieldset class="grid gap-2">
           <legend class="mb-2 text-sm font-medium">{{ t('vms.wizard.network') }}</legend>
-          <NicsEditor v-model:form="form" :bridges="plugin.bridges" @leave="open = false" />
+          <NicsEditor v-model:form="form" :plugin="plugin" @leave="open = false" />
+          <p v-if="has('network')" class="text-xs text-destructive">
+            {{ t('vms.wizard.invalid.network') }}
+          </p>
         </fieldset>
         <div class="flex items-center gap-3">
           <Switch id="vm-autostart" v-model="form.autostart" />

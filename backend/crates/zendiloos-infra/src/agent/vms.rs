@@ -1,9 +1,10 @@
 //! [`VmHost`] through the system agent: libvirt's facts and states read
 //! here, unprivileged; the VMs' settings checked once more as protocol
-//! types; a console's socket relayed to channels. The bridges VMs may go
-//! on come from the Network context's view of the host (`ip`, which
+//! types; a console's socket relayed to channels; what the locations hold
+//! read from `zfs list`. The bridges, internal networks and cards VMs may
+//! go on come from the Network context's view of the host (`ip`, which
 //! zendiloosd runs in the host's network namespace; the agent has one of
-//! its own and sees none of the host's links).
+//! its own and sees none of the host's links) and its files.
 
 use std::collections::BTreeMap;
 use std::os::fd::OwnedFd;
@@ -15,18 +16,19 @@ use zendiloos_agent_proto::{
     AgentTransport, ErrorCode, InterfaceName, MacAddress, PackageRunState, PackageTask, PoolName, Report,
     Request, RequestId, Response, ShareLocation, ShareName, SharePath, VmBoot, VmCpus, VmDevices, VmDisk,
     VmDiskBus, VmDiskSize, VmDiskSlot, VmDrive, VmDriveSlot, VmFirmware, VmId, VmImageId, VmIsoSource,
-    VmMemory, VmNetwork, VmNic, VmNicModel, VmNicSlot, VmOs, VmSpec, VolumeNumber,
+    VmMemory, VmNetwork, VmNic, VmNicModel, VmNicSlot, VmOs, VmSpec, VmStorage, VolumeNumber,
 };
 use zendiloos_kernel::{PortError, RequestContext};
-use zendiloos_network::application::GetNetwork;
+use zendiloos_network::application::NetworkUseCases;
 use zendiloos_network::domain::{InterfaceKind, Network as HostNetwork};
 use zendiloos_storage::application::ports::ZfsSource;
+use zendiloos_storage::domain::VdevState;
 use zendiloos_vms::application::{
-    ConsoleSession, HostError, HostFacts, IsoSource, Steps, StoragePlace, VmHost, VmIds,
+    ConsoleSession, DatasetUsage, HostError, HostFacts, IsoSource, Steps, VmHost, VmIds, VmPool, ZvolUsage,
 };
 use zendiloos_vms::domain::{
-    BootDevice, DiskBus, Firmware, HostLimits, Network, NicModel, OsPreset, PowerState, Vm, VmAction,
-    VmCounters,
+    BootDevice, DiskBus, Firmware, HostLimits, Location, Network, NicModel, OsPreset, PowerState, Vm,
+    VmAction, VmCounters,
 };
 
 use super::{AgentStorage, WHAT, agent_error, call, call_raw, call_raw_reporting, unexpected};
@@ -39,25 +41,45 @@ const CONSOLE_CHUNK: usize = 64 * 1024;
 pub struct AgentVms {
     transport: Arc<dyn AgentTransport>,
     storage: AgentStorage,
-    network: GetNetwork,
+    network: NetworkUseCases,
+}
+
+/// What VMs may go on: bridges of the host's, internal networks, and wired
+/// cards and bonds for a card directly on one.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct VmNetworks {
+    bridges: Vec<String>,
+    internal: Vec<String>,
+    cards: Vec<String>,
 }
 
 impl AgentVms {
-    /// `network` reads the host's interfaces, for the bridges VMs may go on.
-    pub fn new(transport: Arc<dyn AgentTransport>, network: GetNetwork) -> Self {
+    /// `network` reads the host's interfaces and zendiloOS's files, for
+    /// the bridges, internal networks and cards VMs may go on.
+    pub fn new(transport: Arc<dyn AgentTransport>, network: NetworkUseCases) -> Self {
         Self { storage: AgentStorage::new(transport.clone()), transport, network }
     }
 
-    /// The bridges VMs may go on, by name; none while the network cannot be
-    /// read, which keeps a VM off a bridge rather than failing the page.
-    async fn bridges(&self) -> Vec<String> {
-        match self.network.execute().await {
-            Ok(network) => vm_bridges(&network),
+    /// What VMs may go on; nothing while the network cannot be read, which
+    /// keeps a VM off a bridge rather than failing the page. Internal
+    /// networks need zendiloOS's files too; while those cannot be read,
+    /// none is offered, and none is taken for a bridge of the LAN's.
+    async fn networks(&self, context: &RequestContext) -> VmNetworks {
+        let network = match self.network.get_network.execute().await {
+            Ok(network) => network,
             Err(error) => {
-                tracing::warn!(%error, "vms: cannot read the network for its bridges");
-                Vec::new()
+                tracing::warn!(%error, "vms: cannot read the network for its bridges and cards");
+                return VmNetworks::default();
             }
-        }
+        };
+        let internal = match self.network.configure.setup(context).await {
+            Ok(setup) => Some(setup.internal),
+            Err(error) => {
+                tracing::warn!(%error, "vms: cannot read which bridges are internal networks");
+                None
+            }
+        };
+        vm_networks(&network, internal)
     }
 
     fn transport(&self) -> &dyn AgentTransport {
@@ -70,18 +92,101 @@ impl AgentVms {
     }
 }
 
-/// Every bridge of the machine's but Docker's (`docker0`, `br-` and twelve
-/// hex digits, which the network's view leaves out already) and libvirt's
-/// (`virbr…`): those zendiloOS made, also without members (for VMs only),
-/// and those made otherwise.
-fn vm_bridges(network: &HostNetwork) -> Vec<String> {
-    network
+/// What VMs may go on. Bridges: every one of the machine's but Docker's
+/// (`docker0`, `br-` and twelve hex digits, which the network's view
+/// leaves out already) and libvirt's (`virbr…`), those zendiloOS made and
+/// those made otherwise; of them, the internal networks (`internal`, none
+/// while not known, which then are no bridges either) apart. Cards: the
+/// wired cards and bonds in no bridge or bond, which macvtap can sit on.
+fn vm_networks(network: &HostNetwork, internal: Option<Vec<String>>) -> VmNetworks {
+    let all: Vec<String> = network
         .interfaces
         .iter()
         .filter(|interface| interface.kind == InterfaceKind::Bridge)
         .map(|interface| interface.name.clone())
         .filter(|name| !network.docker_bridges.contains(name) && !name.starts_with("virbr"))
-        .collect()
+        .collect();
+    let (internal, bridges) = match internal {
+        Some(internal) => {
+            let internal: Vec<String> = all.iter().filter(|name| internal.contains(name)).cloned().collect();
+            let bridges = all.into_iter().filter(|name| !internal.contains(name)).collect();
+            (internal, bridges)
+        }
+        None => (Vec::new(), Vec::new()),
+    };
+    let cards = network
+        .interfaces
+        .iter()
+        .filter(|interface| matches!(interface.kind, InterfaceKind::Ethernet | InterfaceKind::Bond))
+        .filter(|interface| interface.member_of.is_none())
+        .map(|interface| interface.name.clone())
+        .collect();
+    VmNetworks { bridges, internal, cards }
+}
+
+/// ZFS's word for a pool's health.
+fn health(state: VdevState) -> &'static str {
+    match state {
+        VdevState::Online => "online",
+        VdevState::Degraded => "degraded",
+        VdevState::Faulted => "faulted",
+        VdevState::Offline => "offline",
+        VdevState::Removed => "removed",
+        VdevState::Unavailable => "unavailable",
+        VdevState::Suspended => "suspended",
+        VdevState::Unknown => "unknown",
+    }
+}
+
+/// `zfs list -H -p -r -t filesystem,volume -o
+/// name,type,used,usedbydataset,referenced,available,volsize` of the
+/// locations' datasets: each `<pool>/zendiloos.vms` with the zvols right
+/// below it. Lines of anything else are passed by.
+pub(crate) fn storage_usage(text: &str) -> Vec<DatasetUsage> {
+    let mut found: Vec<DatasetUsage> = Vec::new();
+    for line in text.lines() {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let [name, kind, used, files, referenced, available, volsize] = fields[..] else { continue };
+        let number = |text: &str| text.trim().parse::<u64>().ok();
+        let suffix = format!("/{}", zendiloos_agent_proto::VMS_DATASET);
+        match kind {
+            "filesystem" => {
+                let Some(pool) = name.strip_suffix(&suffix).filter(|pool| !pool.contains('/')) else {
+                    continue;
+                };
+                let (Some(used), Some(files), Some(available)) =
+                    (number(used), number(files), number(available))
+                else {
+                    continue;
+                };
+                found.push(DatasetUsage {
+                    pool: pool.to_owned(),
+                    used_bytes: used,
+                    files_bytes: files,
+                    available_bytes: available,
+                    zvols: Vec::new(),
+                });
+            }
+            "volume" => {
+                let Some((dataset, zvol)) = name.rsplit_once('/') else { continue };
+                let Some(pool) = dataset.strip_suffix(&suffix) else { continue };
+                let Some(usage) = found.iter_mut().find(|usage| usage.pool == pool) else { continue };
+                let (Some(used), Some(referenced), Some(volsize)) =
+                    (number(used), number(referenced), number(volsize))
+                else {
+                    continue;
+                };
+                usage.zvols.push(ZvolUsage {
+                    name: zvol.to_owned(),
+                    used_bytes: used,
+                    referenced_bytes: referenced,
+                    volsize_bytes: volsize,
+                });
+            }
+            _ => {}
+        }
+    }
+    found
 }
 
 fn host_answer(response: Response) -> Result<(), HostError> {
@@ -111,6 +216,15 @@ fn place(pool: &str, volume: u16) -> Result<(PoolName, VolumeNumber), HostError>
     ))
 }
 
+fn location(location: &Location) -> Result<VmStorage, HostError> {
+    let (pool, volume) = place(&location.pool, location.volume)?;
+    Ok(VmStorage { pool, volume })
+}
+
+fn interface(name: &str, what: &str) -> Result<InterfaceName, HostError> {
+    InterfaceName::parse(name).map_err(|_| invalid(what))
+}
+
 fn image_id(id: &str) -> Result<VmImageId, HostError> {
     VmImageId::parse(id).map_err(|_| invalid("image id"))
 }
@@ -127,10 +241,10 @@ fn drive_slot(slot: u8) -> Result<VmDriveSlot, HostError> {
     VmDriveSlot::new(slot).map_err(|_| invalid("drive slot"))
 }
 
-/// The VM in the agent's terms: every value checked once more.
-fn spec(vm: &Vm) -> Result<VmSpec, HostError> {
+/// The VM in the agent's terms: every value checked once more; the images
+/// in its drives on the library's volume, `library`.
+fn spec(vm: &Vm, library: u16) -> Result<VmSpec, HostError> {
     let settings = &vm.settings;
-    let (pool, volume) = place(&vm.pool, vm.volume)?;
     let disks = settings
         .disks
         .iter()
@@ -142,6 +256,7 @@ fn spec(vm: &Vm) -> Result<VmSpec, HostError> {
                     DiskBus::Virtio => VmDiskBus::Virtio,
                     DiskBus::Sata => VmDiskBus::Sata,
                 },
+                location: location(&disk.location)?,
             })
         })
         .collect::<Result<Vec<_>, HostError>>()?;
@@ -157,9 +272,11 @@ fn spec(vm: &Vm) -> Result<VmSpec, HostError> {
                 },
                 network: match &nic.network {
                     Network::User => VmNetwork::User,
-                    Network::Bridge(bridge) => VmNetwork::Bridge {
-                        bridge: InterfaceName::parse(bridge).map_err(|_| invalid("bridge"))?,
-                    },
+                    Network::Bridge(bridge) => VmNetwork::Bridge { bridge: interface(bridge, "bridge")? },
+                    Network::Direct(card) => VmNetwork::Direct { card: interface(card, "card")? },
+                    Network::Internal(bridge) => {
+                        VmNetwork::Internal { bridge: interface(bridge, "internal network")? }
+                    }
                 },
                 mac: MacAddress::parse(&nic.mac).map_err(|_| invalid("MAC address"))?,
             })
@@ -198,8 +315,7 @@ fn spec(vm: &Vm) -> Result<VmSpec, HostError> {
         },
         VmDevices { disks, nics, drives, boot },
         settings.autostart,
-        pool,
-        volume,
+        volume_number(library)?,
     )
     .map_err(|error| HostError::Port(PortError::new(WHAT, format!("not a valid VM for the agent: {error}"))))
 }
@@ -277,30 +393,53 @@ impl Report for Forward<'_> {
 impl VmHost for AgentVms {
     async fn facts(&self, context: &RequestContext) -> Result<HostFacts, PortError> {
         match call(self.transport(), Request::VmHost {}, context).await? {
-            Response::VmHost { kvm, cpu_virtualization, iommu, installed, cores, memory_bytes, storage } => {
-                Ok(HostFacts {
-                    kvm,
-                    cpu_virtualization: cpu_virtualization.filter(|flag| flag == "vmx" || flag == "svm"),
-                    iommu,
-                    installed,
-                    limits: HostLimits { cores, memory_bytes, bridges: self.bridges().await },
-                    storage: storage.map(|storage| StoragePlace {
-                        pool: storage.pool.as_str().to_owned(),
-                        volume: storage.volume.get(),
-                    }),
-                })
-            }
+            Response::VmHost {
+                kvm,
+                cpu_virtualization,
+                iommu,
+                installed,
+                cores,
+                memory_bytes,
+                locations,
+            } => Ok(HostFacts {
+                kvm,
+                cpu_virtualization: cpu_virtualization.filter(|flag| flag == "vmx" || flag == "svm"),
+                iommu,
+                installed,
+                limits: {
+                    let VmNetworks { bridges, internal, cards } = self.networks(context).await;
+                    HostLimits { cores, memory_bytes, bridges, internal, cards, locations: Vec::new() }
+                },
+                locations: locations
+                    .into_iter()
+                    .map(|location| Location {
+                        pool: location.pool.as_str().to_owned(),
+                        volume: location.volume.get(),
+                    })
+                    .collect(),
+            }),
             other => Err(unexpected(other)),
         }
     }
 
-    async fn pools(&self, context: &RequestContext) -> Result<Vec<StoragePlace>, PortError> {
+    async fn pools(&self, context: &RequestContext) -> Result<Vec<VmPool>, PortError> {
         Ok(self
             .storage
             .pools(context)
             .await?
             .into_iter()
-            .filter_map(|pool| Some(StoragePlace { volume: pool.volume?.get(), pool: pool.name }))
+            .filter_map(|pool| {
+                let space = pool.space;
+                Some(VmPool {
+                    location: Location { volume: pool.volume?.get(), pool: pool.name },
+                    health: health(pool.state).to_owned(),
+                    used_bytes: space.map_or(pool.allocated_bytes, |space| space.used_bytes),
+                    available_bytes: space
+                        .map_or(pool.size_bytes.saturating_sub(pool.allocated_bytes), |space| {
+                            space.available_bytes
+                        }),
+                })
+            })
             .collect())
     }
 
@@ -331,15 +470,27 @@ impl VmHost for AgentVms {
         }
     }
 
-    async fn set_up(&self, storage: &StoragePlace, context: &RequestContext) -> Result<(), HostError> {
+    async fn add_location(&self, storage: &Location, context: &RequestContext) -> Result<(), HostError> {
         let (pool, volume) = place(&storage.pool, storage.volume)?;
         self.done(Request::EnableVms { pool, volume }, context).await
+    }
+
+    async fn remove_location(&self, storage: &Location, context: &RequestContext) -> Result<(), HostError> {
+        let (pool, volume) = place(&storage.pool, storage.volume)?;
+        self.done(Request::DisableVms { pool, volume }, context).await
+    }
+
+    async fn storage_usage(&self, context: &RequestContext) -> Result<Vec<DatasetUsage>, PortError> {
+        match call(self.transport(), Request::VmStorageUsage {}, context).await? {
+            Response::VmStorageUsage { zfs_list } => Ok(storage_usage(&zfs_list)),
+            other => Err(unexpected(other)),
+        }
     }
 
     async fn copy_image(
         &self,
         image: &str,
-        storage: &StoragePlace,
+        storage: &Location,
         iso: &IsoSource,
         steps: &dyn Steps,
         context: &RequestContext,
@@ -360,7 +511,7 @@ impl VmHost for AgentVms {
 
     async fn image_files(
         &self,
-        storage: &StoragePlace,
+        storage: &Location,
         context: &RequestContext,
     ) -> Result<BTreeMap<String, u64>, PortError> {
         let volume =
@@ -410,17 +561,30 @@ impl VmHost for AgentVms {
         )
     }
 
-    async fn define(&self, vm: &Vm, context: &RequestContext) -> Result<(), HostError> {
-        self.done(Request::DefineVm { spec: spec(vm)? }, context).await
+    async fn define(&self, vm: &Vm, library: u16, context: &RequestContext) -> Result<(), HostError> {
+        self.done(Request::DefineVm { spec: spec(vm, library)? }, context).await
     }
 
-    async fn update(&self, vm: &Vm, removed: &[u8], context: &RequestContext) -> Result<(), HostError> {
+    async fn update(
+        &self,
+        vm: &Vm,
+        library: u16,
+        removed: &[u8],
+        context: &RequestContext,
+    ) -> Result<(), HostError> {
         let remove = removed.iter().map(|slot| disk_slot(*slot)).collect::<Result<Vec<_>, _>>()?;
-        self.done(Request::UpdateVm { spec: spec(vm)?, remove }, context).await
+        self.done(Request::UpdateVm { spec: spec(vm, library)?, remove }, context).await
     }
 
-    async fn change_media(&self, vm: &Vm, drive: u8, context: &RequestContext) -> Result<(), HostError> {
-        self.done(Request::ChangeVmMedia { spec: spec(vm)?, drive: drive_slot(drive)? }, context).await
+    async fn change_media(
+        &self,
+        vm: &Vm,
+        library: u16,
+        drive: u8,
+        context: &RequestContext,
+    ) -> Result<(), HostError> {
+        let request = Request::ChangeVmMedia { spec: spec(vm, library)?, drive: drive_slot(drive)? };
+        self.done(request, context).await
     }
 
     async fn set_autostart(
@@ -443,8 +607,7 @@ impl VmHost for AgentVms {
     }
 
     async fn remove(&self, vm: &Vm, context: &RequestContext) -> Result<(), HostError> {
-        let (pool, volume) = place(&vm.pool, vm.volume)?;
-        self.done(Request::DeleteVm { id: vm_id(&vm.id)?, pool, volume }, context).await
+        self.done(Request::DeleteVm { id: vm_id(&vm.id)? }, context).await
     }
 
     async fn states(&self, context: &RequestContext) -> Result<BTreeMap<String, PowerState>, PortError> {
@@ -564,21 +727,47 @@ mod tests {
     fn vm(id: &str) -> Vm {
         let mut settings =
             VmSettings { cpus: 1, memory_mib: 256, ..VmSettings::preset("box", OsPreset::Linux) };
+        settings.disks[0].location = Location { pool: "tank".into(), volume: 1 };
         settings.nics[0].mac = "52:54:00:00:00:01".into();
         settings.drives = vec![Drive { slot: 0, image: Some("00000000000a".into()) }];
-        Vm {
-            id: id.into(),
-            settings,
-            pool: "tank".into(),
-            volume: 1,
-            created_at: Timestamp::from_unix_seconds(0),
-            ready: false,
-        }
+        Vm { id: id.into(), settings, created_at: Timestamp::from_unix_seconds(0), ready: false }
+    }
+
+    /// The network's use cases over `source` and zendiloOS's files making
+    /// `vms0` an internal network.
+    fn network_of(source: Arc<dyn zendiloos_network::application::NetworkSource>) -> NetworkUseCases {
+        use zendiloos_network::application::NetworkPorts;
+        use zendiloos_network::domain::NetworkdFile;
+        use zendiloos_network::testing::{FakeConfigurator, FakeUsers};
+        let configurator = FakeConfigurator::default();
+        configurator.files.lock().unwrap().extend([
+            NetworkdFile {
+                name: "05-zendiloos-vms0.netdev".into(),
+                text: "[NetDev]\nName=vms0\nKind=bridge\n".into(),
+            },
+            NetworkdFile {
+                name: "05-zendiloos-vms0.network".into(),
+                text: "[Match]\nName=vms0\n\n[Network]\nDHCP=no\nIPv6AcceptRA=no\nLinkLocalAddressing=no\n"
+                    .into(),
+            },
+        ]);
+        NetworkUseCases::new(NetworkPorts {
+            source,
+            configurator: Arc::new(configurator),
+            users: Arc::new(FakeUsers::default()),
+            jobs: zendiloos_jobs::Jobs::new(
+                Arc::new(zendiloos_jobs::testing::MemoryJobs::default()),
+                Arc::new(zendiloos_jobs::testing::FixedClock),
+            ),
+            audit: Arc::new(zendiloos_vms::testing::MemoryAudit::default()),
+            clock: Arc::new(zendiloos_jobs::testing::FixedClock),
+        })
     }
 
     /// The host as zendiloosd reads it: a card in the bridge br0, a bridge
-    /// for VMs only without members, Docker's and libvirt's bridges.
-    fn network_with_bridges() -> GetNetwork {
+    /// for VMs only without members (an internal network by zendiloOS's
+    /// files), Docker's and libvirt's bridges, a free card, a bond.
+    fn network_with_bridges() -> NetworkUseCases {
         use zendiloos_network::domain::{Interface, LinkState};
         use zendiloos_network::testing::SettableNetwork;
         let interface = |name: &str, kind: InterfaceKind, member_of: Option<&str>| Interface {
@@ -600,23 +789,28 @@ mod tests {
                 interface("br-0123456789ab", InterfaceKind::Bridge, None),
                 interface("virbr0", InterfaceKind::Bridge, None),
                 interface("bond0", InterfaceKind::Bond, None),
+                interface("enp2s0", InterfaceKind::Ethernet, Some("bond0")),
+                interface("enp3s0", InterfaceKind::Ethernet, None),
+                interface("wlp1s0", InterfaceKind::Wireless, None),
             ],
             vec![],
             vec![],
         );
         let source = Arc::new(SettableNetwork::default());
         source.set(network);
-        GetNetwork::new(source)
+        network_of(source)
     }
 
-    /// The wizard offers every bridge of the machine's, a member-less one
-    /// made for VMs too, but Docker's and libvirt's; none while the network
-    /// cannot be read.
+    /// The wizard offers every bridge of the machine's but Docker's and
+    /// libvirt's, the internal networks apart, and the wired cards and
+    /// bonds in no bridge or bond; nothing while the network cannot be read.
     #[tokio::test]
-    async fn vms_are_offered_the_machines_own_bridges() {
+    async fn vms_are_offered_the_machines_own_bridges_internal_networks_and_cards() {
         let host = AgentVms::new(Arc::new(SimulatedAgent::new()), network_with_bridges());
         let facts = host.facts(&RequestContext::default()).await.unwrap();
-        assert_eq!(facts.limits.bridges, ["br0", "vms0"]);
+        assert_eq!(facts.limits.bridges, ["br0"]);
+        assert_eq!(facts.limits.internal, ["vms0"]);
+        assert_eq!(facts.limits.cards, ["bond0", "enp3s0"]);
 
         struct Unreadable;
         #[async_trait]
@@ -625,26 +819,79 @@ mod tests {
                 Err(PortError::new("network", "ip not found"))
             }
         }
-        let blind = AgentVms::new(Arc::new(SimulatedAgent::new()), GetNetwork::new(Arc::new(Unreadable)));
+        let blind = AgentVms::new(Arc::new(SimulatedAgent::new()), network_of(Arc::new(Unreadable)));
         let facts = blind.facts(&RequestContext::default()).await.unwrap();
-        assert!(facts.limits.bridges.is_empty() && facts.kvm);
+        assert!(facts.limits.bridges.is_empty() && facts.limits.cards.is_empty() && facts.kvm);
+    }
+
+    /// Without zendiloOS's files no bridge is taken for one of the LAN's:
+    /// it might be an internal network.
+    #[test]
+    fn without_the_files_no_bridge_is_offered() {
+        use zendiloos_network::domain::{Interface, LinkState};
+        let bridge = Interface {
+            name: "br0".into(),
+            kind: InterfaceKind::Bridge,
+            state: LinkState::Up,
+            mac: None,
+            mtu: 1500,
+            member_of: None,
+            parent: None,
+            addresses: vec![],
+        };
+        let network = HostNetwork::new(vec![bridge], vec![], vec![]);
+        assert_eq!(vm_networks(&network, None), VmNetworks::default());
+        assert_eq!(vm_networks(&network, Some(vec![])).bridges, ["br0"]);
+    }
+
+    #[test]
+    fn what_the_locations_hold_is_read_from_zfs() {
+        let text = "tank/zendiloos.vms\tfilesystem\t5368709120\t1073741824\t1073741824\t100000\t-\n\
+                    tank/zendiloos.vms/0a1b2c3d4e5f-disk0\tvolume\t3221225472\t3221225472\t2147483648\t100000\t21474836480\n\
+                    tank/zendiloos.vms/0a1b2c3d4e5f-disk0@x\tsnapshot\t1\t1\t1\t-\t-\n\
+                    cold/zendiloos.vms\tfilesystem\t0\t0\t0\t7\t-\n\
+                    cold/other/zendiloos.vms\tfilesystem\t1\t1\t1\t1\t-\n\
+                    elsewhere/zendiloos.vms/x-disk0\tvolume\t1\t1\t1\t1\t1\n\
+                    garbage\n";
+        let read = storage_usage(text);
+        assert_eq!(read.len(), 2);
+        assert_eq!(
+            (read[0].pool.as_str(), read[0].used_bytes, read[0].files_bytes),
+            ("tank", 5 << 30, 1 << 30)
+        );
+        assert_eq!(read[0].zvols.len(), 1);
+        let zvol = &read[0].zvols[0];
+        assert_eq!(zvol.name, "0a1b2c3d4e5f-disk0");
+        assert_eq!(
+            (zvol.used_bytes, zvol.referenced_bytes, zvol.volsize_bytes),
+            (3 << 30, 2 << 30, 20 << 30)
+        );
+        assert_eq!((read[1].pool.as_str(), read[1].available_bytes), ("cold", 7));
+        assert!(read[1].zvols.is_empty());
+        assert!(storage_usage("").is_empty());
     }
 
     #[test]
     fn a_vm_reaches_the_agent_only_as_checked_values() {
-        let spec = spec(&vm("0a1b2c3d4e5f")).unwrap();
+        let spec = spec(&vm("0a1b2c3d4e5f"), 1).unwrap();
         assert!(spec.nics()[0].network == VmNetwork::User && spec.memory.mib() == 256);
         assert_eq!(spec.images().map(VmImageId::as_str).collect::<Vec<_>>(), ["00000000000a"]);
         assert_eq!(
             spec.boot(),
             [VmBoot::Drive(VmDriveSlot::new(0).unwrap()), VmBoot::Disk(VmDiskSlot::new(0).unwrap())]
         );
-        assert!(super::spec(&vm("../../etc")).is_err());
+        assert_eq!(spec.disks()[0].location.pool.as_str(), "tank");
+        assert!(super::spec(&vm("../../etc"), 1).is_err());
+        assert!(super::spec(&vm("0a1b2c3d4e5f"), 0).is_err(), "no volume 0");
         let broken = |change: fn(&mut Vm)| {
             let mut vm = vm("0a1b2c3d4e5f");
             change(&mut vm);
-            super::spec(&vm).is_err()
+            super::spec(&vm, 1).is_err()
         };
+        assert!(broken(|vm| vm.settings.disks[0].location.pool = "tank/../x".into()));
+        assert!(broken(|vm| vm.settings.disks[0].location.volume = 0));
+        assert!(broken(|vm| vm.settings.nics[0].network = Network::Direct("enp1s0 mode=vepa".into())));
+        assert!(broken(|vm| vm.settings.nics[0].network = Network::Internal("".into())));
         assert!(broken(|vm| vm.settings.nics[0].network = Network::Bridge("br0 extra".into())));
         assert!(broken(|vm| vm.settings.memory_mib = 64));
         assert!(broken(|vm| vm.settings.nics[0].mac = "ff:ff:ff:ff:ff:ff".into()));
@@ -679,40 +926,49 @@ mod tests {
         let host = AgentVms::new(agent.clone(), network_with_bridges());
         let context = RequestContext::default();
         let facts = host.facts(&context).await.unwrap();
-        assert!(facts.kvm && !facts.installed && facts.storage.is_none());
-        assert_eq!(facts.limits.bridges, ["br0", "vms0"]);
+        assert!(facts.kvm && !facts.installed && facts.locations.is_empty());
+        assert_eq!(facts.limits.bridges, ["br0"]);
         let pools = host.pools(&context).await.unwrap();
-        assert!(!pools.is_empty());
+        assert!(
+            pools.iter().any(|pool| pool.health == "online")
+                && pools.iter().any(|pool| pool.health == "degraded"),
+            "{pools:?}"
+        );
+        let first = pools[0].location.clone();
 
         host.install(&context).await.unwrap();
-        host.set_up(&pools[0], &context).await.unwrap();
-        assert_eq!(host.facts(&context).await.unwrap().storage, Some(pools[0].clone()));
+        host.add_location(&first, &context).await.unwrap();
+        assert_eq!(host.facts(&context).await.unwrap().locations, std::slice::from_ref(&first));
 
         let mut made = vm("0a1b2c3d4e5f");
-        made.pool = pools[0].pool.clone();
-        made.volume = pools[0].volume;
+        made.settings.disks[0].location = first.clone();
+        let pools: Vec<Location> = pools.into_iter().map(|pool| pool.location).collect();
         let iso = IsoSource { share: "media".into(), volume: pools[0].volume, path: "isos/x.iso".into() };
         struct Silent;
         impl Steps for Silent {
             fn step(&self, _: &str, _: Option<u8>) {}
         }
         assert!(
-            matches!(host.define(&made, &context).await, Err(HostError::Refused(reason)) if reason.contains("library"))
+            matches!(host.define(&made, first.volume, &context).await, Err(HostError::Refused(reason)) if reason.contains("library"))
         );
         assert_eq!(host.copy_image("00000000000a", &pools[0], &iso, &Silent, &context).await.unwrap(), 4096);
         assert_eq!(host.image_files(&pools[0], &context).await.unwrap()["00000000000a"], 4096);
-        host.define(&made, &context).await.unwrap();
-        assert!(matches!(host.define(&made, &context).await, Err(HostError::Refused(_))));
+        host.define(&made, first.volume, &context).await.unwrap();
+        assert!(matches!(host.define(&made, first.volume, &context).await, Err(HostError::Refused(_))));
+        let usage = host.storage_usage(&context).await.unwrap();
+        assert_eq!(usage[0].zvols[0].name, "0a1b2c3d4e5f-disk0");
+        let refused = host.remove_location(&first, &context).await;
+        assert!(matches!(refused, Err(HostError::Refused(reason)) if reason.contains("disk")), "in use");
         assert_eq!(host.states(&context).await.unwrap()["0a1b2c3d4e5f"], PowerState::ShutOff);
         assert!(matches!(host.open_console(&made.id, &context).await, Err(HostError::Refused(_))));
         made.settings.cpus = 2;
-        host.update(&made, &[], &context).await.unwrap();
+        host.update(&made, first.volume, &[], &context).await.unwrap();
 
         host.control(&made.id, VmAction::Start, &context).await.unwrap();
         assert!(
-            matches!(host.update(&made, &[], &context).await, Err(HostError::Refused(reason)) if reason.contains("not shut off"))
+            matches!(host.update(&made, first.volume, &[], &context).await, Err(HostError::Refused(reason)) if reason.contains("not shut off"))
         );
-        host.change_media(&made, 0, &context).await.unwrap();
+        host.change_media(&made, first.volume, 0, &context).await.unwrap();
         let counted = host.counters(&context).await.unwrap();
         assert!(counted["0a1b2c3d4e5f"].cpu_time_ns.is_some());
         let mut console = host.open_console(&made.id, &context).await.unwrap();
@@ -723,6 +979,8 @@ mod tests {
         assert!(host.states(&context).await.unwrap().is_empty());
         host.delete_image("00000000000a", pools[0].volume, &context).await.unwrap();
         assert!(host.image_files(&pools[0], &context).await.unwrap().is_empty());
+        host.remove_location(&first, &context).await.unwrap();
+        assert!(host.facts(&context).await.unwrap().locations.is_empty());
     }
 
     #[tokio::test]
@@ -732,8 +990,9 @@ mod tests {
         let host = AgentVms::new(Arc::new(SimulatedAgent::new()), network_with_bridges());
         let context = RequestContext::default();
         host.install(&context).await.unwrap();
-        let pools = host.pools(&context).await.unwrap();
-        host.set_up(&pools[0], &context).await.unwrap();
+        let pools: Vec<Location> =
+            host.pools(&context).await.unwrap().into_iter().map(|pool| pool.location).collect();
+        host.add_location(&pools[0], &context).await.unwrap();
         let mut file = host.open_upload("00000000000c", pools[0].volume, 5, &context).await.unwrap();
         file.write_all(b"hello").await.unwrap();
         file.flush().await.unwrap();

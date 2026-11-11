@@ -6,6 +6,7 @@ import {
   Boxes,
   Cable,
   Container,
+  Database,
   Disc3,
   FolderOpen,
   Globe,
@@ -248,6 +249,9 @@ export const APPS: AppDefinition[] = [
     sections: [
       { id: 'machines', label: 'vms.sections.machines', icon: Server },
       { id: 'images', label: 'vms.sections.images', icon: Disc3 },
+      { id: 'storage', label: 'vms.sections.storage', icon: Database },
+      { id: 'networks', label: 'vms.sections.networks', icon: Network },
+      { id: 'log', label: 'vms.sections.log', icon: ScrollText },
     ],
     component: defineAsyncComponent(() => import('@/features/vms/components/VmsApp.vue')),
   },

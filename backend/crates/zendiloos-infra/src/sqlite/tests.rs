@@ -71,8 +71,8 @@ async fn creates_a_private_database_and_applies_all_migrations() {
         OpenReport {
             created: true,
             schema_before: None,
-            schema_after: 50,
-            applied: (1..=50).collect(),
+            schema_after: 51,
+            applied: (1..=51).collect(),
             backup: None
         }
     );
@@ -147,6 +147,7 @@ async fn creates_a_private_database_and_applies_all_migrations() {
             "vm_disks",
             "vm_drives",
             "vm_images",
+            "vm_locations",
             "vm_nics",
             "vms",
             "web_server"
@@ -166,8 +167,8 @@ async fn reopening_an_up_to_date_database_changes_nothing() {
         report,
         OpenReport {
             created: false,
-            schema_before: Some(50),
-            schema_after: 50,
+            schema_before: Some(51),
+            schema_after: 51,
             applied: vec![],
             backup: None
         }
@@ -335,7 +336,7 @@ fn migrations_up_to(version: i64) -> Vec<(String, String)> {
 /// images, of the same ids; their disk, card and a drive the devices.
 #[tokio::test]
 async fn the_vms_of_before_carry_on_with_their_isos_in_the_library() {
-    use zendiloos_vms::application::{VmImageRepository, VmRepository};
+    use zendiloos_vms::application::{VmImageRepository, VmLocationRepository, VmRepository};
     use zendiloos_vms::domain::{BootDevice, DiskBus, ImageOrigin, Network, NicModel};
 
     let env = Env::new();
@@ -382,10 +383,13 @@ async fn the_vms_of_before_carry_on_with_their_isos_in_the_library() {
     assert!(images.iter().all(|image| image.ready && image.bytes.is_none()));
     assert_eq!(images[1].origin, ImageOrigin::Share { share: "media".into(), path: "win/Win11.iso".into() });
 
+    let locations = super::SqliteVmLocations::new(db.clone()).list().await.unwrap();
+    assert_eq!(locations, [zendiloos_vms::domain::Location { pool: "tank".into(), volume: 1 }]);
     let vms = super::SqliteVms::new(db).list().await.unwrap();
     assert_eq!(vms.len(), 5);
     let web = &vms[0].settings;
     assert_eq!((web.disks[0].slot, web.disks[0].size_gib, web.disks[0].bus), (0, 20, DiskBus::Virtio));
+    assert_eq!(web.disks[0].location, locations[0], "on the pool the VM was on");
     assert_eq!(web.nics[0].model, NicModel::Virtio);
     assert_eq!(web.nics[0].mac, "52:54:00:3d:4e:5f");
     assert_eq!(web.drives[0].image.as_deref(), Some("0a1b2c3d4e5f"));
@@ -397,4 +401,69 @@ async fn the_vms_of_before_carry_on_with_their_isos_in_the_library() {
     assert_eq!(plain.drives[0].image, None, "an empty drive, for an image later");
     assert_eq!(plain.boot, [BootDevice::Disk(0), BootDevice::Drive(0)]);
     assert_eq!(vms[4].settings.drives[0].image, None, "a VM never made keeps no image");
+}
+
+/// The VMs of package 1: each disk on the location of its VM, which
+/// becomes the first, cards through the NAS or on their bridge, and the
+/// location of the first VM made first.
+#[tokio::test]
+async fn the_vms_of_one_location_keep_their_disks_and_cards_where_they_were() {
+    use zendiloos_vms::application::{VmLocationRepository, VmRepository};
+    use zendiloos_vms::domain::{Location, Network};
+
+    let env = Env::new();
+    let before = migrations_up_to(50);
+    let pairs: Vec<(&str, &str)> = before.iter().map(|(name, sql)| (name.as_str(), sql.as_str())).collect();
+    let v50 = env.migrator("v50", &pairs).await;
+    let (db, _) = Database::open_with(&env.db(), &env.backups(), &v50, SystemTime::now()).await.unwrap();
+    for (id, name, pool, volume, created) in [
+        ("0a1b2c3d4e5f", "web", "cold", 2, 5),
+        ("00000000000b", "mail", "tank", 1, 9),
+        ("00000000000c", "lab", "cold", 2, 7),
+    ] {
+        sqlx::query(
+            "INSERT INTO vms (id, name, os, cpus, memory_mib, firmware, autostart, boot, pool, volume, created_at, ready)
+             VALUES (?, ?, 'linux', 1, 256, 'uefi', 0, 'disk:0', ?, ?, ?, 1)",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(pool)
+        .bind(volume)
+        .bind(created)
+        .execute(db.pool())
+        .await
+        .unwrap();
+        for slot in [0, 3] {
+            sqlx::query("INSERT INTO vm_disks (vm, slot, size_gib, bus) VALUES (?, ?, 4, 'virtio')")
+                .bind(id)
+                .bind(slot)
+                .execute(db.pool())
+                .await
+                .unwrap();
+        }
+        let bridge = (name == "mail").then_some("br0");
+        sqlx::query("INSERT INTO vm_nics (vm, slot, model, bridge, mac) VALUES (?, 0, 'virtio', ?, ?)")
+            .bind(id)
+            .bind(bridge)
+            .bind(format!("52:54:00:00:00:{}", &id[10..]))
+            .execute(db.pool())
+            .await
+            .unwrap();
+    }
+    db.close().await;
+
+    let (db, report) = open(&env).await;
+    assert_eq!(report.applied, [51]);
+    let cold = Location { pool: "cold".into(), volume: 2 };
+    let tank = Location { pool: "tank".into(), volume: 1 };
+    let locations = super::SqliteVmLocations::new(db.clone()).list().await.unwrap();
+    assert_eq!(locations, [cold.clone(), tank.clone()], "the first VM's first");
+    let vms = super::SqliteVms::new(db).list().await.unwrap();
+    let web = &vms.iter().find(|vm| vm.settings.name == "web").unwrap().settings;
+    assert!(web.disks.len() == 2 && web.disks.iter().all(|disk| disk.location == cold));
+    assert_eq!(web.nics[0].network, Network::User);
+    assert_eq!(web.nics[0].mac, "52:54:00:00:00:5f");
+    let mail = &vms.iter().find(|vm| vm.settings.name == "mail").unwrap().settings;
+    assert!(mail.disks.iter().all(|disk| disk.location == tank));
+    assert_eq!(mail.nics[0].network, Network::Bridge("br0".into()));
 }

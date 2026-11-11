@@ -12,6 +12,7 @@ import {
   bootChoices,
   fileName,
   formatMemory,
+  fromNetwork,
   fromVm,
   hardwareChanged,
   imageNameValid,
@@ -20,6 +21,8 @@ import {
   limits,
   minimumGib,
   moveBoot,
+  network,
+  networkChoices,
   presetForm,
   problems,
   removeDisk,
@@ -32,6 +35,7 @@ import {
   toggleBoot,
   totalDiskGib,
   updateRequest,
+  withNetworkKind,
   withPreset,
 } from './vms'
 
@@ -39,10 +43,15 @@ const PLUGIN: VmPlugin = {
   hardware: { kvm: true, cpu_virtualization: 'vmx', iommu: false },
   installed: true,
   storage: { pool: 'tank', volume: 1 },
-  pools: [{ pool: 'tank', volume: 1 }],
+  locations: [{ pool: 'tank', volume: 1 }],
+  pools: [
+    { pool: 'tank', volume: 1, health: 'online', used_bytes: 1 << 30, available_bytes: 99 << 30 },
+  ],
   cores: 2,
   memory_bytes: 2 * 1024 ** 3,
   bridges: ['br0'],
+  internal_networks: ['vmnet0'],
+  cards: ['enp1s0', 'bond0'],
   image_upload_max_bytes: 32 * 1024 ** 3,
 }
 
@@ -64,7 +73,7 @@ function vm(extra: Partial<VirtualMachine> = {}): VirtualMachine {
     cpus: 1,
     memory_mib: 256,
     firmware: 'uefi',
-    disks: [{ slot: 0, size_gib: 20, bus: 'virtio' }],
+    disks: [{ slot: 0, size_gib: 20, bus: 'virtio', pool: 'tank', volume: 1 }],
     nics: [{ slot: 0, model: 'virtio', network: { kind: 'user' }, mac: '52:54:00:00:00:01' }],
     drives: [{ slot: 0, image: null }],
     boot: [
@@ -72,8 +81,6 @@ function vm(extra: Partial<VirtualMachine> = {}): VirtualMachine {
       { kind: 'disk', slot: 0 },
     ],
     autostart: false,
-    pool: 'tank',
-    volume: 1,
     created_at: 0,
     state: 'shut_off',
     ...extra,
@@ -89,8 +96,8 @@ describe('the VM settings', () => {
       cpus: 2,
       memoryMib: 1024,
       firmware: 'uefi',
-      disks: [{ slot: 0, sizeGib: 20, bus: 'virtio' }],
-      nics: [{ slot: 0, model: 'virtio', bridge: null }],
+      disks: [{ slot: 0, sizeGib: 20, bus: 'virtio', pool: null }],
+      nics: [{ slot: 0, model: 'virtio', kind: 'user', device: null }],
       drives: [{ slot: 0, image: null }],
       boot: [
         { kind: 'drive', slot: 0 },
@@ -99,7 +106,12 @@ describe('the VM settings', () => {
     })
     // Windows asks for 4 GiB; this NAS has 2, of which a VM is offered half.
     expect(presetForm('windows', PLUGIN).memoryMib).toBe(1024)
-    expect(presetForm('windows', PLUGIN).disks[0]).toEqual({ slot: 0, sizeGib: 64, bus: 'sata' })
+    expect(presetForm('windows', PLUGIN).disks[0]).toEqual({
+      slot: 0,
+      sizeGib: 64,
+      bus: 'sata',
+      pool: null,
+    })
     // Whole steps only: of 1974 MiB, not 987 but 896.
     const odd = { ...PLUGIN, memory_bytes: 1974 * 1024 * 1024 }
     expect(presetForm('linux', odd).memoryMib).toBe(896)
@@ -110,15 +122,15 @@ describe('the VM settings', () => {
   it('keep the name, the devices, networks and images when another preset is chosen', () => {
     let form = presetForm('linux', PLUGIN, 'box')
     form = addDisk(form)
-    form = { ...form, nics: [{ slot: 0, model: 'virtio', bridge: 'br0' }] }
+    form = { ...form, nics: [{ slot: 0, model: 'virtio', kind: 'bridge', device: 'br0' }] }
     form = { ...form, drives: [{ slot: 0, image: IMAGE.id }] }
     const windows = withPreset(form, 'windows', PLUGIN)
     expect(windows).toMatchObject({ name: 'box', os: 'windows', firmware: 'uefi' })
     expect(windows.disks).toEqual([
-      { slot: 0, sizeGib: 64, bus: 'sata' },
-      { slot: 1, sizeGib: 32, bus: 'sata' },
+      { slot: 0, sizeGib: 64, bus: 'sata', pool: null },
+      { slot: 1, sizeGib: 32, bus: 'sata', pool: null },
     ])
-    expect(windows.nics).toEqual([{ slot: 0, model: 'e1000e', bridge: 'br0' }])
+    expect(windows.nics).toEqual([{ slot: 0, model: 'e1000e', kind: 'bridge', device: 'br0' }])
     expect(windows.drives).toEqual([{ slot: 0, image: IMAGE.id }])
   })
 
@@ -169,7 +181,7 @@ describe('the VM settings', () => {
       ...form,
       cpus: 3,
       memoryMib: 4096,
-      disks: [{ slot: 0, sizeGib: 0, bus: 'virtio' as const }],
+      disks: [{ slot: 0, sizeGib: 0, bus: 'virtio' as const, pool: null }],
     }
     expect(problems(broken, PLUGIN, [])).toEqual(['cpus', 'memory', 'disk'])
     expect(problems({ ...form, cpus: 1.5 }, PLUGIN, [])).toEqual(['cpus'])
@@ -186,9 +198,15 @@ describe('the VM settings', () => {
     const form = fromVm(before)
     expect(minimumGib(before, 0)).toBe(20)
     expect(minimumGib(before, 3)).toBe(1)
-    const shrunk = { ...form, disks: [{ slot: 0, sizeGib: 10, bus: 'virtio' as const }] }
+    const shrunk = {
+      ...form,
+      disks: [{ slot: 0, sizeGib: 10, bus: 'virtio' as const, pool: 'tank' }],
+    }
     expect(problems(shrunk, PLUGIN, [], [], before)).toEqual(['diskShrunk'])
-    const grown = { ...form, disks: [{ slot: 0, sizeGib: 30, bus: 'virtio' as const }] }
+    const grown = {
+      ...form,
+      disks: [{ slot: 0, sizeGib: 30, bus: 'virtio' as const, pool: 'tank' }],
+    }
     expect(problems(grown, PLUGIN, [], [], before)).toEqual([])
   })
 
@@ -200,7 +218,7 @@ describe('the VM settings', () => {
       cpus: 1,
       memory_mib: 256,
       firmware: 'uefi',
-      disks: [{ slot: 0, size_gib: 20, bus: 'virtio' }],
+      disks: [{ slot: 0, size_gib: 20, bus: 'virtio', pool: null }],
       nics: [{ slot: 0, model: 'virtio', network: { kind: 'user' } }],
       drives: [{ slot: 0, image: null }],
       boot: [
@@ -209,7 +227,10 @@ describe('the VM settings', () => {
       ],
       autostart: false,
     })
-    const bridged = { ...form, nics: [{ slot: 0, model: 'e1000e' as const, bridge: 'br0' }] }
+    const bridged = {
+      ...form,
+      nics: [{ slot: 0, model: 'e1000e' as const, kind: 'bridge' as const, device: 'br0' }],
+    }
     expect(request(bridged).nics).toEqual([
       { slot: 0, model: 'e1000e', network: { kind: 'bridge', bridge: 'br0' } },
     ])
@@ -224,7 +245,7 @@ describe('the VM settings', () => {
       nics: [{ slot: 0, model: 'virtio', network: { kind: 'bridge', bridge: 'br0' }, mac: 'x' }],
     })
     const form = fromVm(running)
-    expect(form.nics).toEqual([{ slot: 0, model: 'virtio', bridge: 'br0' }])
+    expect(form.nics).toEqual([{ slot: 0, model: 'virtio', kind: 'bridge', device: 'br0' }])
     expect(hardwareChanged(form, running)).toBe(false)
     expect(hardwareChanged({ ...form, name: 'other', autostart: true }, running)).toBe(false)
     expect(hardwareChanged({ ...form, drives: [{ slot: 0, image: IMAGE.id }] }, running)).toBe(
@@ -242,8 +263,8 @@ describe('the VM settings', () => {
       expect(hardwareChanged(changed, running)).toBe(true)
     const two = vm({
       disks: [
-        { slot: 0, size_gib: 20, bus: 'virtio' },
-        { slot: 3, size_gib: 5, bus: 'sata' },
+        { slot: 0, size_gib: 20, bus: 'virtio', pool: 'tank', volume: 1 },
+        { slot: 3, size_gib: 5, bus: 'sata', pool: 'tank', volume: 1 },
       ],
     })
     expect(removedDisks(removeDisk(fromVm(two), 3), two)).toEqual([3])
@@ -285,5 +306,35 @@ describe('a VM state', () => {
     expect(formatMemory(256)).toBe('256 MiB')
     expect(formatMemory(2048)).toBe('2 GiB')
     expect(formatMemory(1536)).toBe('1.5 GiB')
+  })
+
+  it('put cards on each kind of network the machine has', () => {
+    expect(networkChoices(PLUGIN, 'bridge')).toEqual(['br0'])
+    expect(networkChoices(PLUGIN, 'direct')).toEqual(['enp1s0', 'bond0'])
+    expect(networkChoices(PLUGIN, 'internal')).toEqual(['vmnet0'])
+    expect(networkChoices(PLUGIN, 'user', 'br0')).toEqual([])
+    // A card on one gone since keeps it among the choices.
+    expect(networkChoices(PLUGIN, 'internal', 'old0')).toEqual(['vmnet0', 'old0'])
+    expect(networkChoices(undefined, 'bridge')).toEqual([])
+    const nic = { slot: 0, model: 'virtio' as const, kind: 'user' as const, device: null }
+    expect(withNetworkKind(nic, 'direct', PLUGIN)).toEqual({
+      ...nic,
+      kind: 'direct',
+      device: 'enp1s0',
+    })
+    expect(withNetworkKind(nic, 'user', PLUGIN)).toBe(nic)
+    const none = withNetworkKind(nic, 'bridge', { ...PLUGIN, bridges: [] })
+    expect(none.device).toBeNull()
+    const form = { ...presetForm('linux', PLUGIN, 'box'), nics: [none] }
+    expect(problems(form, PLUGIN, [])).toEqual(['network'])
+    for (const [kind, device, sent] of [
+      ['user', null, { kind: 'user' }],
+      ['bridge', 'br0', { kind: 'bridge', bridge: 'br0' }],
+      ['direct', 'bond0', { kind: 'direct', card: 'bond0' }],
+      ['internal', 'vmnet0', { kind: 'internal', network: 'vmnet0' }],
+    ] as const) {
+      expect(network({ kind, device })).toEqual(sent)
+      expect(fromNetwork(sent)).toEqual({ kind, device })
+    }
   })
 })

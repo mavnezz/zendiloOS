@@ -1,7 +1,8 @@
-//! Use cases: the plugin installed and its storage set up, VMs made (in a
-//! job), run, changed and removed, the image library filled from shares
-//! and browsers, the VMs' load watched, and their consoles opened. All for
-//! administrators (`vms.manage`); the caller checks that.
+//! Use cases: the plugin installed and its storage set up in one or more
+//! locations, VMs made (in a job), run, changed and removed, the image
+//! library filled from shares and browsers, the VMs' load watched, and
+//! their consoles opened. All for administrators (`vms.manage`); the
+//! caller checks that.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -11,14 +12,16 @@ use zendiloos_jobs::{Job, JobError, Jobs, Progress};
 use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, PortError, RequestContext};
 
 use crate::domain::{
-    BootDevice, Disk, Drive, Firmware, HostLimits, Invalid, IsoChoice, Nic, PowerState, Vm, VmAction,
-    VmCounters, VmImage, VmSettings, check_name, is_vm_id,
+    BootDevice, Disk, Drive, Firmware, HostLimits, Invalid, IsoChoice, Location, Nic, PowerState, Vm,
+    VmAction, VmCounters, VmImage, VmSettings, check_name, is_vm_id,
 };
 
 mod images;
+mod locations;
 mod stats;
 
 pub use images::{ImageUpload, UploadTicket, VmImageView};
+pub use locations::{DatasetUsage, LocationView, VmOnLocation, ZvolUsage};
 pub use stats::{STATS_EVERY, VmStatsSubscription};
 
 /// The VMs as zendiloOS keeps them.
@@ -52,11 +55,26 @@ pub trait VmImageRepository: Send + Sync {
     async fn delete(&self, id: &str) -> Result<bool, PortError>;
 }
 
-/// A pool zendiloOS made, by its name and volume.
+/// The locations of the VMs' storage, in the order they were added: the
+/// first holds the image library.
+#[async_trait]
+pub trait VmLocationRepository: Send + Sync {
+    /// The first first.
+    async fn list(&self) -> Result<Vec<Location>, PortError>;
+    /// Last; one there already stays where it is.
+    async fn add(&self, location: &Location) -> Result<(), PortError>;
+    async fn remove(&self, pool: &str) -> Result<bool, PortError>;
+}
+
+/// A pool zendiloOS made, where a location can go: its health and space as
+/// files see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoragePlace {
-    pub pool: String,
-    pub volume: u16,
+pub struct VmPool {
+    pub location: Location,
+    /// ZFS's word: `online`, `degraded`, `faulted`, …
+    pub health: String,
+    pub used_bytes: u64,
+    pub available_bytes: u64,
 }
 
 /// What the machine offers VMs.
@@ -70,8 +88,8 @@ pub struct HostFacts {
     /// libvirt and QEMU are installed.
     pub installed: bool,
     pub limits: HostLimits,
-    /// Where the VMs' storage is, once set up.
-    pub storage: Option<StoragePlace>,
+    /// The locations of the VMs' storage the host has, by volume.
+    pub locations: Vec<Location>,
 }
 
 /// An ISO the administrator may read, where it is.
@@ -114,17 +132,21 @@ pub enum HostError {
 #[async_trait]
 pub trait VmHost: Send + Sync {
     async fn facts(&self, context: &RequestContext) -> Result<HostFacts, PortError>;
-    /// The pools zendiloOS made, where the storage can go.
-    async fn pools(&self, context: &RequestContext) -> Result<Vec<StoragePlace>, PortError>;
+    /// The pools zendiloOS made, where a location can go.
+    async fn pools(&self, context: &RequestContext) -> Result<Vec<VmPool>, PortError>;
     /// Installs libvirt and QEMU from Debian, waiting until apt is done.
     async fn install(&self, context: &RequestContext) -> Result<(), HostError>;
-    /// Puts the VMs' storage on the pool; libvirt follows it.
-    async fn set_up(&self, place: &StoragePlace, context: &RequestContext) -> Result<(), HostError>;
+    /// Puts a location of the VMs' storage on the pool; libvirt follows it.
+    async fn add_location(&self, place: &Location, context: &RequestContext) -> Result<(), HostError>;
+    /// Removes an empty location: its dataset destroyed.
+    async fn remove_location(&self, place: &Location, context: &RequestContext) -> Result<(), HostError>;
+    /// What each location's dataset and its zvols hold.
+    async fn storage_usage(&self, context: &RequestContext) -> Result<Vec<DatasetUsage>, PortError>;
     /// Copies the ISO into the library as `image`; the bytes copied.
     async fn copy_image(
         &self,
         image: &str,
-        place: &StoragePlace,
+        place: &Location,
         iso: &IsoSource,
         steps: &dyn Steps,
         context: &RequestContext,
@@ -132,7 +154,7 @@ pub trait VmHost: Send + Sync {
     /// The library's files: their size by image.
     async fn image_files(
         &self,
-        place: &StoragePlace,
+        place: &Location,
         context: &RequestContext,
     ) -> Result<BTreeMap<String, u64>, PortError>;
     /// Removes an image's file; one that is gone is no failure.
@@ -149,14 +171,27 @@ pub trait VmHost: Send + Sync {
     ) -> Result<tokio::fs::File, HostError>;
     /// The bytes an upload stored, once its writer is closed.
     async fn finish_upload(&self, image: &str, context: &RequestContext) -> Result<u64, HostError>;
-    /// Makes a new VM's disks and defines it.
-    async fn define(&self, vm: &Vm, context: &RequestContext) -> Result<(), HostError>;
+    /// Makes a new VM's disks and defines it; the images in its drives are
+    /// in the library on `library`'s volume.
+    async fn define(&self, vm: &Vm, library: u16, context: &RequestContext) -> Result<(), HostError>;
     /// Changes a VM that is off: disks made or grown, the domain defined
     /// anew, the disks in `removed` destroyed.
-    async fn update(&self, vm: &Vm, removed: &[u8], context: &RequestContext) -> Result<(), HostError>;
+    async fn update(
+        &self,
+        vm: &Vm,
+        library: u16,
+        removed: &[u8],
+        context: &RequestContext,
+    ) -> Result<(), HostError>;
     /// Puts the image the VM's drive `drive` has into it, or ejects it:
     /// at once while it runs.
-    async fn change_media(&self, vm: &Vm, drive: u8, context: &RequestContext) -> Result<(), HostError>;
+    async fn change_media(
+        &self,
+        vm: &Vm,
+        library: u16,
+        drive: u8,
+        context: &RequestContext,
+    ) -> Result<(), HostError>;
     async fn set_autostart(
         &self,
         id: &str,
@@ -209,6 +244,7 @@ pub trait VmIds: Send + Sync {
 pub struct VmsPorts {
     pub repository: Arc<dyn VmRepository>,
     pub images: Arc<dyn VmImageRepository>,
+    pub locations: Arc<dyn VmLocationRepository>,
     pub host: Arc<dyn VmHost>,
     pub isos: Arc<dyn IsoFiles>,
     pub ids: Arc<dyn VmIds>,
@@ -234,6 +270,9 @@ pub enum VmsError {
     NotSetUp,
     #[error("there is no such pool")]
     PoolNotFound,
+    /// What is on a location that would go: VMs by name, the library.
+    #[error("the location holds {}", .0.join(", "))]
+    LocationInUse(Vec<String>),
     #[error("another virtual machine or image has that name")]
     NameTaken,
     #[error("the virtual machine is still being created")]
@@ -298,8 +337,17 @@ pub const CONSOLES_PER_ACCOUNT: usize = 4;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VmPlugin {
     pub facts: HostFacts,
-    /// Where the storage can go.
-    pub pools: Vec<StoragePlace>,
+    /// The locations of the VMs' storage, the first (the library's) first.
+    pub locations: Vec<Location>,
+    /// Where a location can go.
+    pub pools: Vec<VmPool>,
+}
+
+impl VmPlugin {
+    /// The location of the library, once set up.
+    pub fn library(&self) -> Option<&Location> {
+        self.locations.first()
+    }
 }
 
 /// A VM and what it does now.
@@ -448,8 +496,33 @@ impl Vms {
 
     pub async fn plugin(&self, context: &RequestContext) -> Result<VmPlugin, VmsError> {
         let facts = self.ports.host.facts(context).await?;
+        let locations = self.ordered_locations(&facts).await?;
         let pools = self.ports.host.pools(context).await?;
-        Ok(VmPlugin { facts, pools })
+        Ok(VmPlugin { facts, locations, pools })
+    }
+
+    /// The locations in the order they were added, those the host has; one
+    /// the host has and the records not (set up before they kept them, or
+    /// by an earlier zendiloOS) is taken in, after those known. Of several
+    /// taken in at once, the one the library's images are on goes first:
+    /// with none known, it is the library's.
+    async fn ordered_locations(&self, facts: &HostFacts) -> Result<Vec<Location>, VmsError> {
+        let mut known = self.ports.locations.list().await?;
+        let mut unknown: Vec<&Location> = facts
+            .locations
+            .iter()
+            .filter(|location| !known.iter().any(|other| other.pool == location.pool))
+            .collect();
+        if !unknown.is_empty() {
+            let images: BTreeSet<u16> =
+                self.ports.images.list().await?.into_iter().map(|image| image.volume).collect();
+            unknown.sort_by_key(|location| (!images.contains(&location.volume), location.volume));
+            for location in unknown {
+                self.ports.locations.add(location).await?;
+                known.push(location.clone());
+            }
+        }
+        Ok(known.into_iter().filter(|location| facts.locations.contains(location)).collect())
     }
 
     /// Installs libvirt and QEMU from Debian, in a job; refused on a machine
@@ -477,39 +550,28 @@ impl Vms {
         Ok(job)
     }
 
-    /// Puts the VMs' storage on a pool zendiloOS made.
+    /// Puts the VMs' storage on a pool zendiloOS made: its first location,
+    /// which holds the image library, or one more.
     pub async fn set_up(
         &self,
         pool: &str,
         actor: &Actor,
         context: &RequestContext,
     ) -> Result<VmPlugin, VmsError> {
-        let facts = self.ports.host.facts(context).await?;
-        if !facts.installed {
-            return Err(VmsError::NotInstalled);
-        }
-        let place = self
-            .ports
-            .host
-            .pools(context)
-            .await?
-            .into_iter()
-            .find(|place| place.pool == pool)
-            .ok_or(VmsError::PoolNotFound)?;
-        let done = self.ports.host.set_up(&place, context).await;
-        self.audit("vms.storage", outcome(&done), pool, actor, context).await;
-        done?;
-        self.plugin(context).await
+        self.place_location(pool, "vms.storage", actor, context).await
     }
 
-    /// The VMs' storage, which VMs and images need.
-    async fn storage(&self, context: &RequestContext) -> Result<(HostFacts, StoragePlace), VmsError> {
-        let facts = self.ports.host.facts(context).await?;
+    /// The VMs' storage, which VMs and images need: the facts with the
+    /// locations there are in their order, and the library's location.
+    async fn storage(&self, context: &RequestContext) -> Result<(HostFacts, Location), VmsError> {
+        let mut facts = self.ports.host.facts(context).await?;
         if !facts.installed {
             return Err(VmsError::NotInstalled);
         }
-        let place = facts.storage.clone().ok_or(VmsError::NotSetUp)?;
-        Ok((facts, place))
+        let locations = self.ordered_locations(&facts).await?;
+        let library = locations.first().cloned().ok_or(VmsError::NotSetUp)?;
+        facts.limits.locations = locations;
+        Ok((facts, library))
     }
 
     // The VMs.
@@ -580,7 +642,7 @@ impl Vms {
         actor: &Actor,
         context: &RequestContext,
     ) -> Result<(VmView, Job), VmsError> {
-        let (facts, place) = self.storage(context).await?;
+        let (facts, library) = self.storage(context).await?;
         let _library = self.library.lock().await;
         let existing = self.ports.repository.list().await?;
         let taken: Vec<&str> = existing.iter().map(|vm| vm.settings.name.as_str()).collect();
@@ -590,6 +652,8 @@ impl Vms {
         for nic in &mut settings.nics {
             nic.mac.clear();
         }
+        settings.sort_devices();
+        settings.place_disks(None, &facts.limits.locations)?;
         settings.give_macs(&[], &macs, || self.ports.ids.new_mac());
         let images = self.ready_images().await?;
         let images: Vec<&str> = images.iter().map(String::as_str).collect();
@@ -597,8 +661,6 @@ impl Vms {
         let vm = Vm {
             id: self.new_id().await?,
             settings: VmSettings { name, ..settings },
-            pool: place.pool.clone(),
-            volume: place.volume,
             created_at: self.ports.clock.now(),
             ready: false,
         };
@@ -611,7 +673,7 @@ impl Vms {
             .ports
             .jobs
             .start("vms.create", Some(vm.settings.name.clone()), Some(actor), move |progress| async move {
-                let done = this.make(&made, &progress, &context_owned).await;
+                let done = this.make(&made, library.volume, &progress, &context_owned).await;
                 match &done {
                     Ok(()) => {
                         if let Err(error) = this.ports.repository.set_ready(&made.id).await {
@@ -633,9 +695,15 @@ impl Vms {
         }
     }
 
-    async fn make(&self, vm: &Vm, progress: &Progress, context: &RequestContext) -> Result<(), HostError> {
+    async fn make(
+        &self,
+        vm: &Vm,
+        library: u16,
+        progress: &Progress,
+        context: &RequestContext,
+    ) -> Result<(), HostError> {
         progress.step("defining", Some(0.1)).await;
-        self.ports.host.define(vm, context).await
+        self.ports.host.define(vm, library, context).await
     }
 
     /// What a failed creation left goes: on the host and in the records.
@@ -667,7 +735,7 @@ impl Vms {
     ) -> Result<VmView, VmsError> {
         let vm = self.ready(id).await?;
         let _busy = self.take_busy(&vm.id, "changed")?;
-        let facts = self.ports.host.facts(context).await?;
+        let (facts, library) = self.storage(context).await?;
         let _library = self.library.lock().await;
         let others: Vec<Vm> =
             self.ports.repository.list().await?.into_iter().filter(|other| other.id != vm.id).collect();
@@ -690,6 +758,8 @@ impl Vms {
             boot,
             autostart,
         };
+        settings.sort_devices();
+        settings.place_disks(Some(&vm.settings), &facts.limits.locations)?;
         settings.give_macs(&vm.settings.nics, &macs, || self.ports.ids.new_mac());
         let images = self.ready_images().await?;
         let images: Vec<&str> = images.iter().map(String::as_str).collect();
@@ -712,10 +782,10 @@ impl Vms {
         let changed = Vm { settings, ..vm.clone() };
         let done = async {
             if hardware {
-                self.ports.host.update(&changed, &removed, context).await?;
+                self.ports.host.update(&changed, library.volume, &removed, context).await?;
             } else {
                 for drive in &media {
-                    self.ports.host.change_media(&changed, *drive, context).await?;
+                    self.ports.host.change_media(&changed, library.volume, *drive, context).await?;
                 }
                 if changed.settings.autostart != vm.settings.autostart {
                     self.ports.host.set_autostart(&vm.id, changed.settings.autostart, context).await?;

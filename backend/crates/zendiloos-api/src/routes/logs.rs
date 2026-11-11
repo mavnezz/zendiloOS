@@ -185,6 +185,9 @@ pub struct AuditParams {
     pub action: Option<String>,
     /// Only entries whose action starts so, such as `containers.`.
     pub prefix: Option<String>,
+    /// Only entries whose actor, action, target, address or reason holds
+    /// this, whatever the case; at most 100 characters.
+    pub search: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -221,6 +224,7 @@ pub struct AuditPage {
     responses(
         (status = OK, body = AuditPage),
         (status = FORBIDDEN, body = Problem, description = "`forbidden`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`: a search too long or with control characters"),
     )
 )]
 async fn audit(
@@ -230,7 +234,10 @@ async fn audit(
 ) -> Result<Json<AuditPage>, ApiError> {
     auth.require(Permission::LogsView)?;
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, AuditQuery::MAX_LIMIT);
-    let query = AuditQuery { limit, before: params.before, action: params.action, prefix: params.prefix };
+    let search = zendiloos_system::domain::audit_search(params.search.as_deref())
+        .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+    let query =
+        AuditQuery { limit, before: params.before, action: params.action, prefix: params.prefix, search };
     let records = state.system.read_audit_log.execute(query).await?;
     let older = (records.len() >= usize::from(limit)).then(|| records.last().map(|r| r.id)).flatten();
     Ok(Json(AuditPage {

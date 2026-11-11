@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", name, os, cpus, memory_mib, firmware, autostart AS \"autostart: bool\", boot,\n                      pool, volume, created_at, ready AS \"ready: bool\"\n               FROM vms WHERE id = ?",
+  "query": "SELECT id AS \"id!\", name, os, cpus, memory_mib, firmware, autostart AS \"autostart: bool\", boot,\n                      created_at, ready AS \"ready: bool\"\n               FROM vms ORDER BY created_at, id",
   "describe": {
     "columns": [
       {
@@ -92,30 +92,8 @@
         }
       },
       {
-        "name": "pool",
-        "ordinal": 8,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "vms",
-            "name": "pool"
-          }
-        }
-      },
-      {
-        "name": "volume",
-        "ordinal": 9,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "vms",
-            "name": "volume"
-          }
-        }
-      },
-      {
         "name": "created_at",
-        "ordinal": 10,
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -126,7 +104,7 @@
       },
       {
         "name": "ready: bool",
-        "ordinal": 11,
+        "ordinal": 9,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -137,11 +115,9 @@
       }
     ],
     "parameters": {
-      "Right": 1
+      "Right": 0
     },
     "nullable": [
-      false,
-      false,
       false,
       false,
       false,
@@ -154,5 +130,5 @@
       false
     ]
   },
-  "hash": "0a56d24a3b1fc91a0f131b5d98923639638b18a341a9abc271ffca9f60ad21f7"
+  "hash": "8ecdee9cedbbd424ec3b2e601d6ade87cc81f42c75515f8e51ac2591f2615318"
 }

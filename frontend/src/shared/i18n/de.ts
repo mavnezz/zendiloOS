@@ -2525,6 +2525,14 @@ const de: Messages = {
       info: 'Info',
       debug: 'Debug',
     },
+    search: 'Suchen',
+    searchPlaceholder: 'Wer, was, Ziel …',
+    newer: 'Neuere',
+    olderPage: 'Ältere',
+    page: 'Seite {n}',
+    export: 'Als CSV exportieren',
+    exporting: 'Wird exportiert …',
+    target: 'Ziel',
     loading: 'Wird geladen…',
     empty: 'Keine Einträge.',
     older: 'Ältere Einträge laden',
@@ -2620,7 +2628,13 @@ const de: Messages = {
     },
   },
   vms: {
-    sections: { machines: 'Maschinen', images: 'Images' },
+    sections: {
+      machines: 'Maschinen',
+      images: 'Images',
+      storage: 'Speicher',
+      networks: 'Netzwerke',
+      log: 'Protokoll',
+    },
     create: 'Virtuelle Maschine anlegen',
     empty: 'Noch keine virtuelle Maschine.',
     emptyHint:
@@ -2661,7 +2675,6 @@ const de: Messages = {
     autostartOff: 'Nicht mit dem NAS starten',
     autostart: 'Startet mit dem NAS',
     userNetwork: 'Über das NAS',
-    bridgeNetwork: 'Bridge {bridge}',
     noNetwork: 'Kein Netz',
     forceOffTitle: '{name} hart ausschalten?',
     forceOffText:
@@ -2699,6 +2712,9 @@ const de: Messages = {
       bus: 'Bus',
       buses: { virtio: 'virtio', sata: 'SATA' },
       sizeHint: 'Dünn belegte Volumes auf {pool}: Sie belegen nur, was die VM schreibt.',
+      location: 'Speicherort',
+      locationsHint:
+        'Dünn belegte Volumes: Sie belegen nur, was die VM schreibt. Eine neue Festplatte kommt auf {pool}, wenn Sie keinen anderen Speicherort wählen; eine Festplatte bleibt, wo sie angelegt wurde.',
       growOnly: 'Mindestens {min} GiB: Eine Festplatte wächst nur.',
       nic: 'Netzwerkkarte {n}',
       addNic: 'Netzwerkkarte hinzufügen',
@@ -2762,11 +2778,6 @@ const de: Messages = {
       bios: 'BIOS',
       biosHint: 'SeaBIOS: für ältere Systeme',
       network: 'Netz',
-      user: 'Über das NAS (passt)',
-      userHint:
-        'Die VM erreicht das LAN und das Internet von der Adresse des NAS aus; nichts erreicht die VM.',
-      bridge: 'Bridge {bridge}',
-      bridgeHint: 'Die VM hängt wie eine eigene Maschine im LAN und bekommt dort ihre Adresse.',
       noBridge:
         'Das NAS hat keine eigene Bridge; eine VM im LAN braucht eine. Legen Sie sie auf der Netzwerkseite über der Karte an, mit der das NAS im LAN hängt: Die VM bekommt ihre Adresse dann vom DHCP-Server des LANs.',
       toNetwork: 'Netzwerkseite öffnen',
@@ -2787,6 +2798,138 @@ const de: Messages = {
         boot: 'Wählen Sie mindestens ein Gerät, von dem die VM startet.',
         image:
           'Ein Image in einem Laufwerk ist nicht in der Bibliothek oder wird noch hinzugefügt.',
+        network: 'Wählen Sie, woran jede Netzwerkkarte hängt.',
+      },
+    },
+    networks: {
+      description:
+        'Jedes Netzwerk, das eine VM nutzen kann, und welche VMs mit ihren Karten daran hängen.',
+      kinds: {
+        user: 'Über das NAS',
+        bridge: 'Bridge des NAS',
+        direct: 'Direkt an einer Karte',
+        internal: 'Internes Netzwerk',
+      },
+      means: {
+        user: 'passt: Die VM erreicht LAN und Internet über die Adresse des NAS; nichts erreicht die VM.',
+        bridge:
+          'Die VM ist als eigene Maschine im LAN und bekommt dort ihre Adresse; NAS und VM erreichen einander.',
+        direct:
+          'Die VM ist ohne Bridge im LAN der Karte (macvtap). NAS und VM können einander nicht erreichen.',
+        internal: 'VMs daran erreichen einander, aber weder das LAN noch das NAS.',
+      },
+      device: {
+        user: 'Weg',
+        bridge: 'Bridge',
+        direct: 'Karte',
+        internal: 'Internes Netzwerk',
+      },
+      on: {
+        bridge: 'Bridge {device}',
+        direct: 'Karte {device}',
+        internal: 'Intern {device}',
+      },
+      none: 'Keins vorhanden',
+      throughNas: 'passt',
+      always: 'Immer vorhanden',
+      vms: 'VMs daran',
+      noVms: 'Keine VM hängt daran.',
+      gone: 'Nicht mehr auf dem NAS',
+      noBridges: 'Das NAS hat noch keine eigene Bridge.',
+      addBridge: 'Bridge auf der Netzwerkseite anlegen',
+      noCards: 'Das NAS hat keine kabelgebundene Karte und keinen Bond außerhalb einer Bridge.',
+      directWarning:
+        'So funktioniert macvtap: Was eine VM über die Karte hinausschickt, kommt nie beim NAS an, und was das NAS an die VM schickt, geht hinaus auf die Leitung. Nehmen Sie eine Bridge, wenn NAS und VM miteinander sprechen müssen.',
+      noInternal: 'Noch kein internes Netzwerk.',
+      addInternal: 'Internes Netzwerk anlegen',
+      removeInternal: '{name} entfernen',
+      internalDialog: {
+        title: 'Internes Netzwerk anlegen',
+        description:
+          'Eine Bridge ohne Karte und ohne Adresse des NAS, von der sich das NAS fernhält. Sie wird nach den Regeln der Netzwerkseite angelegt und sofort behalten.',
+        name: 'Name',
+        nameHint: '1 bis 15 Buchstaben, Ziffern, - oder _; nicht mit einem Bindestrich am Anfang.',
+        submit: 'Anlegen',
+      },
+      removeDialog: {
+        title: '{name} entfernen?',
+        description: 'Das interne Netzwerk wird entfernt. Hängt noch eine VM daran, bleibt es.',
+        submit: 'Entfernen',
+      },
+    },
+    storage: {
+      description:
+        'Wo die Festplatten der VMs liegen: ein Speicherort auf jedem Pool, den Sie wählen. Der erste hält auch die Image-Bibliothek.',
+      add: 'Speicherort hinzufügen',
+      library: 'Image-Bibliothek',
+      pool: 'Pool {pool}',
+      volume: 'Volume {n}',
+      health: {
+        online: 'Fehlerfrei',
+        degraded: 'Eingeschränkt',
+        faulted: 'Fehlerhaft',
+        offline: 'Offline',
+        removed: 'Entfernt',
+        unavailable: 'Nicht verfügbar',
+        suspended: 'Angehalten',
+        unknown: 'Unbekannt',
+      },
+      used: '{used} belegt, {free} frei',
+      ofPool: 'Anteil der VMs am Pool',
+      vms: 'VMs mit Festplatten hier',
+      noVms: 'Keine VM hat hier eine Festplatte.',
+      images: '{n} Image ({size}) | {n} Images ({size})',
+      noImages: 'Kein Image',
+      disks: 'Festplatte {disks} | Festplatten {disks}',
+      takes: '{used} von {size}',
+      notRead: 'unbekannt',
+      share: '{percent} des Speicherorts',
+      remove: 'Entfernen',
+      removeLabel: 'Speicherort auf {pool} entfernen',
+      vmsTake: 'Der Speicher der VMs belegt {size}',
+      blocked: {
+        vms: 'Virtuelle Maschinen haben hier Festplatten.',
+        images: 'Die Image-Bibliothek hat hier Images.',
+        library: 'Die Image-Bibliothek bleibt hier, solange es andere Speicherorte gibt.',
+      },
+      addDialog: {
+        title: 'Speicherort hinzufügen',
+        description:
+          'Seine Festplatten kommen als dünn belegte Volumes auf den Pool, den Sie wählen. Die Image-Bibliothek bleibt auf dem ersten Speicherort.',
+        pool: 'Pool',
+        none: 'Jeder Pool hat schon einen Speicherort.',
+        submit: 'Hinzufügen',
+      },
+      removeDialog: {
+        title: 'Speicherort auf {pool} entfernen?',
+        description:
+          'Das Dataset der VMs auf diesem Pool wird gelöscht. Nur ein Speicherort ohne Festplatten und Images kann weg.',
+        confirm: 'Geben Sie zur Bestätigung {pool} ein',
+        submit: 'Entfernen',
+      },
+    },
+    log: {
+      description:
+        'Was mit den virtuellen Maschinen getan wurde, und von wem: die Einträge des Audit-Protokolls.',
+      actions: {
+        install: 'Plugin installiert',
+        storage: 'Speicher eingerichtet',
+        location_add: 'Speicherort hinzugefügt',
+        location_remove: 'Speicherort entfernt',
+        create: 'Angelegt',
+        change: 'Geändert',
+        delete: 'Gelöscht',
+        start: 'Gestartet',
+        shutdown: 'Heruntergefahren',
+        restart: 'Neu gestartet',
+        force_off: 'Hart ausgeschaltet',
+        autostart_on: 'Autostart an',
+        autostart_off: 'Autostart aus',
+        console: 'Konsole geöffnet',
+        image_add: 'Image hinzugefügt',
+        image_upload: 'Image hochgeladen',
+        image_rename: 'Image umbenannt',
+        image_delete: 'Image gelöscht',
       },
     },
     images: {
@@ -3511,6 +3654,8 @@ const de: Messages = {
       'Fahren Sie die virtuelle Maschine zuerst herunter: Ihre Hardware ändert sich nur, solange sie aus ist.',
     image_in_use:
       'Virtuelle Maschinen haben dieses Image in einem Laufwerk; werfen Sie es dort zuerst aus',
+    location_in_use:
+      'Auf diesem Speicherort liegt noch etwas: Festplatten virtueller Maschinen oder die Image-Bibliothek. Löschen oder verschieben Sie es zuerst',
     iso_denied: 'Ihr Konto kann dieses ISO nicht lesen.',
     agent_failed: 'Das System konnte es nicht tun',
     unknown: 'Etwas ist schiefgegangen ({code}).',
