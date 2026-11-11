@@ -161,7 +161,7 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 | `zendiloos-certificates` | the ACME client plugin (acme.sh): accounts, challenges and certificates from Let's Encrypt, renewed daily; the web interface's ports and certificate, changed with confirmation (4.11) | kernel, jobs, notify |
 | `zendiloos-firewall` | the firewall: one ordered list of rules (interface, service or ports, source, allow or deny) and what happens when none matches, enforced by nftables for the NAS and the ports Docker publishes, changed with confirmation; services nobody reaches, told (4.12) | kernel, notify |
 | `zendiloos-vms` | virtual machines: the plugin (libvirt and QEMU installed, their storage in locations on one or more pools, the hardware check), VMs from an OS preset with their disks (each on its location), network cards (through the NAS, on a host bridge, directly on a card, on an internal network) and CD drives, made in a job and changed (hardware only while off), the image library (ISOs copied from a share or uploaded), what running VMs use, their state from libvirt and their consoles (4.13) | kernel, jobs |
-| `zendiloos-backup` | backup tasks: the plugin (rsync and the SSH client installed, the NAS's SSH key), tasks from a share to another share or a removable drive, to an rsync server (daemon or SSH with the host key pinned) or from one, mirrors and dated versions with retention, schedules and "when its drive is plugged in", runs as jobs with their log and transfer lists, restores (4.14) | kernel, jobs, notify |
+| `zendiloos-backup` | backup tasks: the plugin (rsync, the SSH client and rclone installed, the NAS's SSH key), tasks from a share to another share or a removable drive, to an rsync server (daemon or SSH with the host key pinned) or from one, to Google Drive or OneDrive (accounts signed in to with OAuth), encrypted with rclone's crypt if wished, mirrors and dated versions with retention, schedules and "when its drive is plugged in", runs as jobs with their log and transfer lists, restores (4.14) | kernel, jobs, notify |
 | `zendiloos-infra` | all secondary adapters, SQLite migrations | kernel, jobs, notify, contexts, agent-proto, exec; in tests also sim |
 | `zendiloos-api` | primary adapter: axum routes, DTOs, OpenAPI, auth middleware, WebSocket | kernel, jobs, notify, contexts |
 | `zendiloosd` | composition root (binary) | everything except agent |
@@ -434,7 +434,7 @@ simple to audit.
   `testparm`, `exportfs`, `smbcontrol`, `sshd`, `docker`, `dockerd`,
   `setsid`, `openssl`, `nginx`, `nft`, `virsh`, `ssh-keygen`, `ssh-keyscan` (and, in transient units,
   `systemd-tmpfiles`, this binary as `copy-vm-iso` and `receive-vm-image`,
-  4.13, as `backup-unit`, which runs `rsync` and through it `ssh`, 4.14, and `ip link
+  4.13, as `backup-unit`, which runs `rsync` and through it `ssh`, and `rclone`, 4.14, and `ip link
   delete` for a network device zendiloOS made that goes, 6).
   `zendiloos-docker-bridges.service`, a unit of the package, runs
   `iptables` and `ip6tables` as this binary's `docker-bridges` (4.12).
@@ -2885,10 +2885,10 @@ card (a macvlan of the host's own).
 
 ### 4.14 Backup
 
-**What it is.** A fourth plugin of the App Center, *Backup*: rsync and the
-SSH client from Debian, installed by the package runner (task
-`install-backup`: `rsync openssh-client` without recommended packages)
-when an administrator asks; then a desktop app of that name for
+**What it is.** A fourth plugin of the App Center, *Backup*: rsync, the
+SSH client and rclone from Debian, installed by the package runner (task
+`install-backup`: `rsync openssh-client rclone` without recommended
+packages) when an administrator asks; then a desktop app of that name for
 administrators. Its permission is a new one, `backup.manage` (4.3),
 rather than `shares.manage` or `storage.manage`: a backup reads whole
 shares whatever their rules say and a restore writes into them, which is
@@ -2896,13 +2896,15 @@ an administrator's alone, and the app is shown by it. Its context is
 `zendiloos-backup` (migration 0052).
 
 **Tasks.** A task has a name, a source, a target, a mode, a schedule,
-filters and options, of three kinds as its places say:
+filters and options, of four kinds as its places say:
 
 - *on this NAS*: a folder of a share to a folder of another share (on
   another pool) or of a removable drive;
 - *to an rsync server*: a folder of a share to a folder on a server;
 - *from an rsync server* ("back up a server"): a server's folder into a
-  folder of a share or of a removable drive.
+  folder of a share or of a removable drive;
+- *to a cloud*: a folder of a share to a folder of a Google Drive or
+  OneDrive account (below).
 
 A server is reached through an **rsync daemon** (`rsync://user@host:873/
 module/…`, a user and a password, unencrypted: the wizard says so) or
@@ -2918,8 +2920,7 @@ and pinned with the task; every connection checks it
 the system's ignored), and another key refuses the run with
 `host_key_changed`. The wizard's "Check the connection" lists the
 server's folder (`POST /backup/servers/check`). WebDAV, syncing between
-devices and a backup client for computers are later; cloud targets are
-below.
+devices and a backup client for computers are later.
 
 **Modes, and how the target looks.** A task writes into one folder of its
 target, named after the task when it was made (`folder`; renaming the
@@ -2989,8 +2990,8 @@ failure is told (`backup_failed`, an error), a partial run as a warning
 (`backup_partial`), a success when the task asks (`backup_succeeded`), in
 the routing group *Backup* (4.3). The audit log has `backup.install`,
 `backup.key`, `backup.task_create`, `backup.task_change`,
-`backup.task_delete`, `backup.run`, `backup.stop`, `backup.restore` and
-`backup.settings`.
+`backup.task_delete`, `backup.run`, `backup.stop`, `backup.restore`,
+`backup.settings`, `backup.cloud_sign_in` and `backup.cloud_delete`.
 
 **Filters and options.** Exclude patterns as rsync reads them (shown as
 chips; `*.tmp`, `Thumbs.db`, `.DS_Store`, `@eaDir`, `.recycle`,
@@ -3061,6 +3062,77 @@ run's unit as its credential (`LoadCredential=`, in
 `-F /dev/null`, `IdentitiesOnly`, `BatchMode`, no passwords and the pinned
 `known_hosts` only.
 
+**Clouds and encryption: rclone.** rsync does every task above; rclone
+does a task to a cloud and every encrypted one, with the same modes,
+layout, schedules, log, filters, restore and sandbox.
+
+*Cloud accounts* are signed in to with OAuth's authorization code flow
+without rclone on the administrator's computer: zendiloosd shows the
+provider's consent page for rclone's own public OAuth client (or the
+administrator's own client ID and secret, given per account), which
+sends the browser on to `http://127.0.0.1:53682/` (Google) or
+`http://localhost:53682/` (Microsoft), where nothing answers; the
+administrator pastes that address back (`POST
+/backup/accounts/sign-in/{flow}`, a sign-in kept 30 minutes, its state
+checked), and zendiloosd exchanges the code for a token itself (https,
+the token endpoints of Google and Microsoft) and keeps it, written as
+rclone keeps one (`access_token`, `refresh_token`, `expiry`). Google
+Drive is asked for `drive.file` only: rclone sees what it made, nothing
+else of the drive. For OneDrive zendiloosd asks Microsoft Graph for the
+account's drive (`/me/drive`: its id and type, which rclone needs). An
+account stays while a task backs up into it (`account_in_use`, and the
+database's foreign key); removing it forgets its token, not what was
+backed up. rclone refreshes the token as it runs: the unit reads it back
+from rclone's config file after every call of rclone, and zendiloosd keeps
+the newest (also after listings and retention), so a refresh token that
+rotates (Microsoft's) is never lost.
+
+*Encryption* is rclone's crypt (names and contents, `filename_encryption
+= standard`, folder names too) over the task's folder in its target, for
+a task to a share, a drive, a cloud or an SSH server (rclone's SFTP, with
+the NAS's key and the pinned host key as `known_hosts_file`); not for an
+rsync daemon nor a pull. The administrator gives a password (8 characters
+at least, typed twice) and optionally a salt (crypt's `password2`); both
+are kept as the daemon's password is (below) and never sent back, and the
+password cannot change while the task is encrypted, as what it backed up
+is encrypted with it. The wizard says plainly that without them the
+backup cannot be restored by anyone. Within the crypt the layout is the
+one above, so the target shows the marker, `current`, `removed` and the
+versions' names encrypted too, and nothing in plain text. A folder holding
+entries the crypt cannot decrypt (another password, or other files) is
+never written.
+
+*Versions with rclone* are complete copies, as rclone has no hard links:
+each takes as much space as the source, which the wizard says. In a cloud
+the newest version is first copied on the provider's side
+(`rclone copy`, server-side) into `<stamp>.incomplete`, so a run uploads
+only what changed; on the NAS and over SFTP the run copies anew. rclone
+then syncs the source into it (`rclone sync`, `--delete-excluded`) and
+names it with one move (`rclone moveto`); a run cut off is taken over by
+moving its folder. A mirror syncs into `current` with `--backup-dir
+removed/<stamp>`. Retention removes with `rclone purge`, past the cloud's
+bin (`use_trash = false`, `hard_delete = true`), where old versions would
+take space on. The progress comes from rclone's statistics
+(`--use-json-log --stats`), the transfer list from its log, written as
+rsync's changes; a listing (`rclone lsjson`) is written as `rsync
+--list-only` writes one, so zendiloosd reads both alike.
+
+*rclone's sandbox* is the unit's above, with the network only for a cloud
+or a server. Its remotes are set for rclone alone, by variables of its own
+(`RCLONE_CONFIG_BASE_*` for the place, `RCLONE_CONFIG_DEST_*` for the
+crypt), and a cloud's token by a config file in the unit's private `/tmp`
+(0600); the crypt's password and salt are obscured as rclone keeps them by
+`rclone obscure -` reading them on standard input. None of it is on a
+command line or in a unit property. A folder of the NAS is opened beneath
+its root as for rsync and given to rclone as `/proc/self/fd/<n>`; rclone
+leaves links out (`--skip-links`) and never follows one, and it has no
+`--one-file-system` of its own here (folders mounted within a share are
+backed up with it). A restore from an encrypted or cloud backup copies
+with rclone's filters for the folders asked for (`--filter-from`, their
+names' glob characters escaped) and `--ignore-existing` to keep what is
+there; what it wrote into a share then takes the folder's owner and group
+(by descriptor, never through a link), as rsync's `--chown` does.
+
 **Ownership, ACLs and attributes.** On the NAS (to a share or an ext4
 drive) a backup keeps owners, groups, modes, hard links, ACLs and extended
 attributes (`-rlptgoHAX --numeric-ids`). To a server it keeps modes,
@@ -3069,7 +3141,9 @@ set them (as root, or rsync's fake-super); ACLs and extended attributes
 stay on the NAS: rsync servers often lack the support or the rights, and
 a restore gives files the share's ACL anyway. From a server: modes,
 times, links within, hard links; its owners mean nothing here. On FAT,
-exFAT or NTFS: files, folders and times (`--modify-window=1`).
+exFAT or NTFS: files, folders and times (`--modify-window=1`). rclone
+(clouds, encryption) keeps files, folders and times; owners, modes, ACLs,
+attributes and hard links not.
 
 **Shares and pools.** A target folder in a share stays in its share, with
 the share's rules: whoever may read the share reads everything backed up
@@ -3082,18 +3156,23 @@ run, the targets and whether they are there), the tasks as cards (name,
 state, last run, source, target, mode, schedule; "Back up now" or "Stop",
 and edit, check the connection, restore, log, delete), the restore, the
 log (every run, each with its transfer list) and the settings (days the
-log is kept, the default bandwidth limit). A task is made in a wizard on
+log is kept, the default bandwidth limit, the cloud accounts signed in
+to). A task is made in a wizard on
 `StepDialog` (type, source and target, schedule and options, preview) and
 changed in tabs of the same parts; folders come from the folder picker.
 Deleting a task forgets it and its log; what it backed up stays.
 
 **Tested** by unit tests of the domain (tasks, schedules, retention,
-filters, paths), the agent's operations and the unit's work (against real
-rsync where the machine has it: versions with hard links, a run cut off
-taken over, a mirror's kept changes, retention by name only, restores,
-links planted in the source; and a fake rsync for daemons and SSH),
-feature tests of the API, the frontend's tests, and in the second test VM
-(`just vm-backup-test`, 7).
+filters, paths, the pasted sign-in address), the agent's operations and
+the unit's work (against real rsync where the machine has it: versions
+with hard links, a run cut off taken over, a mirror's kept changes,
+retention by name only, restores, links planted in the source; a fake
+rsync for daemons and SSH; a fake rclone for clouds, the crypt, SFTP,
+restores and retention, with its variables, config file and refreshed
+token), the sign-in against fake token endpoints and Graph, feature tests
+of the API, the frontend's tests, and in the second test VM (`just
+vm-backup-test`, 8, an encrypted backup with real rclone among them).
+Google Drive and OneDrive themselves are reached by none of these.
 
 ---
 
