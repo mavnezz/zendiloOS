@@ -152,7 +152,7 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 | `zendiloos-apps` | app catalogs and their sources, their apps filled in as templates of administrators' projects, apps installed the earlier way (4.9) | kernel, jobs |
 | `zendiloos-containers` | the Docker engine as administrators see it: containers, images, networks, volumes, Compose projects (administrators' own with their file in a share), use over time, newer images on a schedule, volumes backed up on a schedule and restored, moving Docker's data (4.9) | kernel, jobs, notify |
 | `zendiloos-updates` | updates of the NAS: Debian's packages and zendiloOS's releases from GitHub by channel, checked daily, installed on request (4.10) | kernel, notify |
-| `zendiloos-network` | interfaces, addresses, default routes, name servers; an interface's IP settings and name servers through systemd-networkd, changed with confirmation (6); later the hostname | kernel |
+| `zendiloos-network` | interfaces, addresses, default routes, name servers; an interface's IP settings and name servers through systemd-networkd, changed with confirmation (6); the network taken over from ifupdown in a job, with confirmation (6); later the hostname | kernel, jobs |
 | `zendiloos-certificates` | the ACME client plugin (acme.sh): accounts, challenges and certificates from Let's Encrypt, renewed daily; the web interface's ports and certificate, changed with confirmation (4.11) | kernel, jobs, notify |
 | `zendiloos-firewall` | the firewall: one ordered list of rules (interface, service or ports, source, allow or deny) and what happens when none matches, enforced by nftables for the NAS and the ports Docker publishes, changed with confirmation; services nobody reaches, told (4.12) | kernel, notify |
 | `zendiloos-vms` | virtual machines, a proof of concept: the plugin (libvirt and QEMU installed, their storage on a pool, the hardware check), VMs from an OS preset with their disk and an ISO copied from a share, made in a job, their state from libvirt and their consoles (4.13) | kernel, jobs |
@@ -434,7 +434,11 @@ simple to audit.
 - **Files** only at fixed locations known to the agent code, written
   atomically (temporary file, `fsync`, `rename`), for example
   `/etc/samba/zendiloos.conf`, `/etc/exports.d/zendiloos.exports`,
-  `/etc/systemd/network/05-zendiloos-<interface>.network`.
+  `/etc/systemd/network/05-zendiloos-<interface>.network`; taking the
+  network over from ifupdown, also `/etc/network/interfaces` and
+  `/etc/resolv.conf` (a link to systemd-resolved's stub), with the record
+  of what they were in `/etc/network` (6). ifupdown's files are read only
+  below `/etc/network`, never through a link.
 - **Mounts** through generated systemd mount units that the agent asks
   systemd to start. The mount then lives in the host's namespace (the
   hardened agent has its own), dependencies on Samba/NFS are explicit, and
@@ -444,14 +448,17 @@ simple to audit.
 - **systemd** through `systemctl` with fixed arguments: `reboot` and
   `poweroff`, and enabling, starting, stopping and reloading the services
   zendiloOS manages (`smbd`, `nfs-server`, `wsdd2`, `avahi-daemon`, `ssh`,
-  `docker`, `nginx`, `systemd-timesyncd`, `zendiloos-firewall`). What has
+  `docker`, `nginx`, `systemd-timesyncd`, `zendiloos-firewall`; for a
+  network taken over from ifupdown `networking.service`,
+  `systemd-networkd` and `systemd-resolved`). What has
   to run outside the agent's sandbox runs as a unit: transient ones through
   `systemd-run` (apt, acme.sh, `nginx -t`, `nft -c`) and `systemd-mount`
   (removable drives), or a unit of the package. The kernel's NFS server
   keeps its export cache per network namespace, so releasing a share's
   exports before unmounting it starts `zendiloos-nfs-flush.service`
   (`exportfs -r`, `exportfs -f`). D-Bus is reached through `busctl`
-  (systemd-networkd's `Reload` and `ReconfigureLink`) and `timedatectl`.
+  (systemd-networkd's `Reload` and `ReconfigureLink`, a link's
+  `AdministrativeState`) and `timedatectl`.
   **[Later]** zbus once operations need more, such as following a unit's
   state.
 - **Interpretation happens unprivileged.** The agent returns raw tool output;
@@ -1309,6 +1316,14 @@ TLS is rustls with ring and the system's certificate authorities
 - Validated types are the only form in which values reach a command line
   (`DiskName` accepts only `sda`, `nvme0n1` and the like: no paths, no `-`
   prefix).
+- Taking the network over from ifupdown (6), the agent parses nothing: it
+  hands ifupdown's files to zendiloosd as they are (only below
+  `/etc/network`, never through a link, 256 KiB and 64 files at most) with
+  their digest, and takes back interface settings of the protocol's types
+  (`InterfaceName`, addresses, prefixes), each interface once, which it
+  writes as systemd-networkd files of its own; it refuses them unless the
+  files still have that digest. It changes only `/etc/network/interfaces`,
+  `/etc/resolv.conf` and those files, after a record of how they were.
 - `Secret` has a redacted `Debug`/`Display` and is never logged.
 - Every operation is logged to the journal with request ID, peer UID/PID and
   result.
@@ -2089,7 +2104,14 @@ are fixed: install Docker (`docker.io`, `docker-compose`), the ACME
 client (`acme.sh`) and libvirt with QEMU for virtual machines (4.13), the
 App Center's plugins; check (lists fetched, then
 `apt-get --simulate upgrade` parsed into packages, security updates marked
-by Debian's security archive); update; and finish an update.
+by Debian's security archive); update; and finish an update. And
+systemd-resolved, for taking the network over from ifupdown
+(`install-networkd`; systemd-networkd comes with `systemd`): its package
+switches name resolution to it at once, enabling and starting it and
+moving `/etc/resolv.conf` aside for a link to its stub, which nothing would
+tell the name servers while ifupdown still runs the network; so the runner
+disables and stops it again and moves the file back, and the takeover
+switches it on (6).
 
 **An update cut off** (a power cut while DKMS builds ZFS for the new
 kernel, say) leaves packages unpacked or half configured. apt then sees
@@ -2533,7 +2555,7 @@ the interface and the agent deal with a single tool chain (`zpool`, `zfs`).
 | Migrations | forward only, embedded, transactional; before each migration a copy of the database in `/var/lib/zendiloos/backup/` | safe migrations without down scripts |
 | Configuration | static: `/etc/zendiloos/*.toml` (listen address, paths, log level, development flags); everything the admin manages lives in the database | |
 | System metrics | `sysinfo` for CPU, memory, processes, sensors; an own parser for `/proc/diskstats` | sysinfo does not cover storage specifics |
-| Network | systemd-networkd + systemd-resolved; on an existing Debian with ifupdown/NetworkManager display only. Per interface: IPv4 by DHCP or fixed (address, prefix, gateway), IPv6 from router advertisements or off, up to three name servers. The agent writes `/etc/systemd/network/05-zendiloos-<interface>.network` (before netplan's files), keeps the file it replaces as `….previous`, and has systemd-networkd reload and reconfigure the link over D-Bus (`busctl`: the agent's own network namespace has neither the host's links nor a working `networkctl`). A change is kept only if confirmed within two minutes, from the new address if it changed; otherwise the previous file returns, by a timer in the agent, and at the agent's start should it or the machine restart first. One change at a time | declarative files the agent writes atomically; verified in the second test VM (`just vm-network-test`): a setting that cuts the VM off goes back by itself |
+| Network | systemd-networkd + systemd-resolved; NetworkManager is only shown. Per interface: IPv4 by DHCP, fixed (address, prefix, gateway) or off, IPv6 from router advertisements or off (both off: the interface switched off, `ActivationPolicy=down`), up to three name servers; an interface without a file of zendiloOS's (down, or never set up) is switched on the same way. The agent writes `/etc/systemd/network/05-zendiloos-<interface>.network` (before netplan's files), keeps the file it replaces as `….previous`, and has systemd-networkd reload and reconfigure the link over D-Bus (`busctl`: the agent's own network namespace has neither the host's links nor a working `networkctl`). DHCP names the card by its MAC address (`ClientIdentifier=mac`): systemd's default, a DUID from the machine ID, changes with every installation, and so do those of ifupdown's DHCP clients (dhcpcd's `duid`, dhclient's `-i`); and it asks for the address the card has (`RequestAddress=`), so a server that keyed the lease by another client's identifier hands it out again once that one released it. A change is kept only if confirmed within two minutes, from the new address if it changed; otherwise the previous file returns, by a timer in the agent, and at the agent's start should it or the machine restart first. One change at a time. **The installation ISO** hands the network to systemd-networkd and systemd-resolved at its end (`packaging/iso/network.sh`): a file for each interface Debian's installer set up in `/etc/network/interfaces` (DHCP, or the static address it was given), the others none, so they stay down; both enabled, `/etc/resolv.conf` a link to systemd-resolved's stub, which knows the name servers on the first boot; ifupdown keeps the loopback only. **A Debian with ifupdown** is taken over on request (`POST /network/takeover`, `system.manage`, audited as `network.take_over`), in a job: systemd-resolved installed if missing (4.10); zendiloosd reads `/etc/network/interfaces` and what it sources from `interfaces.d` (the agent hands them over with a digest) and translates each interface ifupdown brings up (`auto`, `allow-hotplug`) that is a wired card here: `inet dhcp`, `inet static` (address, netmask, gateway, `dns-nameservers`; without them the name servers in force), `inet6 auto` and `inet6 dhcp` (router advertisements). It refuses anything else, naming file, line and why, and then leaves everything as it is: bonds, bridges, VLANs, wireless, commands run on the way, search domains, mappings, other sources, cards brought up only by hand. The agent refuses a takeover if the files changed since; it writes a record of everything it changes as it was (`/etc/network/zendiloos-takeover.json`, root's alone: `interfaces`, `resolv.conf` as file or link, the interfaces' systemd-networkd files, whether systemd-networkd and systemd-resolved were enabled and running), then stops `networking.service` (leases released, addresses removed), leaves ifupdown the loopback, links `resolv.conf` to the stub and enables and starts systemd-resolved and systemd-networkd. Not confirmed within two minutes, or should the agent or the machine restart first, ifupdown gets everything back from the record, from wherever the takeover got to: systemd-networkd first drops the static addresses it set (they would outlive it and stop ifupdown from setting them), it and systemd-resolved are stopped and disabled as they were, the files return, `networking.service` is restarted, and the record goes last, so a revert cut off is done again at the next start. Confirmed, the record goes; `interfaces.zendiloos-previous` and `resolv.conf.zendiloos-previous` stay for people. What systemd-networkd set in the kernel for IPv6 (router advertisements taken in user space) stays until the next boot after a revert | declarative files the agent writes atomically; verified in the second test VM (`just vm-network-test`): a setting that cuts the VM off goes back by itself; the takeover in a throwaway VM made an ifupdown machine (`just vm-network-takeover-test`): kept once confirmed, given back unconfirmed and after the agent restarted; the ISO's switch by `just iso-network-test` and `just iso-test` |
 | Network discovery | Windows finds the NAS through WS-Discovery (`wsdd2`), macOS through Bonjour (Samba announces `_smb._tcp` through `avahi-daemon`); both recommended by the package. NetBIOS stays off | without them, clients only reach the NAS by address; `wsdd` itself is not in Debian 13 |
 | File services | SMB (Samba, with `wsdd2`) and NFS (`nfs-kernel-server`) are switched on and off in the control panel; off means stopped and disabled, so it stays off after a restart, while shares, exports and permissions stay. The workgroup and the oldest SMB version answered (2.0, 2.1 or 3; SMB1 never) are written as global settings at the top of `/etc/samba/zendiloos.conf`, which `smb.conf` includes at the end of `[global]`; both are applied with the shares in one agent request, and if the host refuses, the previous settings return | per-share protocols would multiply what can go wrong for little gain; FTP, rsync and WebDAV are not offered until there is a reason |
 | SSH | the SSH server as a service in the control panel (Terminal): on or off (off means stopped and disabled; open sessions stay, as `KillMode=process`), its port (22, or a free one from 1024; zendiloosd refuses a port another program listens on, read from `/proc/net/tcp`), and whether root and passwords may log in, each either set or left as the system has it. The settings go to `/etc/ssh/sshd_config.d/00-zendiloos.conf`, read before the other drop-ins, so they win; `sshd -t` checks them first and the previous file returns if it fails. On request a transient systemd timer turns SSH off again after up to a day; SSH is then enabled only until the next boot (`enable --runtime`), as the timer itself is gone after a restart, so a restart turns it off too. Who may log in is Debian's: the accounts of the interface have no shell | keys, users allowed to log in and a web terminal belong to Debian's configuration or later |
@@ -2544,7 +2566,7 @@ the interface and the agent deal with a single tool chain (`zpool`, `zfs`).
 | Reproducibility | `rust-toolchain.toml`, `Cargo.lock`, `package-lock.json`, `SOURCE_DATE_EPOCH`, pinned build container; the installation ISO starts from Debian's netinst image, pinned by its SHA512 (`packaging/iso/netinst.env`); the appliance's images (phase 5) are to be built with mmdebstrap against a fixed snapshot.debian.org state, failing on any error | |
 | Licensing | Zendiloos code under Apache-2.0; the installation ISO adds only zendiloOS's package and the answers to Debian's netinst image, and Debian's packages come from its mirror with their copyright files. A package manifest/SBOM comes with the appliance's image (phase 5) | required when distributing a Debian-based image |
 | Quality | rustfmt, Clippy (`-D warnings` in CI), `unsafe_code = "forbid"` outside clearly bounded exceptions, `cargo deny`, ESLint, `vue-tsc --strict`, Vitest; coverage held by CI: backend 92 % of lines, every crate 90 % (the binaries' `main.rs` and zendiloosd's glue aside), contexts 93 %, domains 97 %; frontend 93 % of lines, its `.ts` logic 96 % (`scripts/coverage-check.sh`, `frontend/vite.config.ts`) | |
-| Installation (phases 1–4) | an installation ISO per stable release: Debian 13's netinst image with an entry "Install zendiloOS", answers by preseeding (only language, keyboard, name, root's password and the system's disk are asked) and the release's package installed at the end; ZFS built by DKMS on the machine (`docs/releases.md`) | Debian's own installer, nothing to maintain but the answers; the appliance's image (phase 5) can follow |
+| Installation (phases 1–4) | an installation ISO per stable release: Debian 13's netinst image with an entry "Install zendiloOS", answers by preseeding (only language, keyboard, name, root's password and the system's disk are asked) and the release's package installed at the end, then the network handed to systemd-networkd (Network, above); ZFS built by DKMS on the machine (`docs/releases.md`) | Debian's own installer, nothing to maintain but the answers; the appliance's image (phase 5) can follow |
 | Updates (phases 1–4) | Debian's packages through apt and zendiloOS's `.deb` from GitHub Releases, by channel (stable, test, development), checked daily, installed on request (4.10, `docs/releases.md`) | the appliance's image updates below build on the same releases and channels |
 | Installation and updates | **[Phase 5]** recommendation: root image built with mmdebstrap as a signed image, A/B partitions, updates with systemd-sysupdate, automatic rollback via systemd-boot boot counting, data and `/var` on separate partitions | alternatives: Debian installer with preseeding (apt based, not atomic), live-build with Calamares, mkosi. Decided in phase 5; the ground rule in 1.2 keeps all options open |
 

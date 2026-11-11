@@ -1,6 +1,6 @@
 [package]
 name = "zendiloos-network"
-description = "Bounded context Network: interfaces, addresses, routes and name servers"
+description = "Bounded context Network: interfaces, addresses, routes and name servers; taken over from ifupdown"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,16 +11,18 @@ publish.workspace = true
 # zendiloos-infra and zendiloos-api. See docs/architecture.md, 2.1.
 [dependencies]
 zendiloos-kernel.workspace = true
+zendiloos-jobs.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+zendiloos-jobs = { workspace = true, features = ["testing"] }
 tokio.workspace = true
 
 [features]
-# A fixed network, for tests.
-testing = []
+# A fixed network and a fake host, for tests.
+testing = ["zendiloos-jobs/testing"]
 
 [lints]
 workspace = true

@@ -65,7 +65,12 @@ beforeEach(() => {
     default_routes: [],
     name_servers: [],
   })
-  on('GET', '/api/v1/network/setup', { managed: false, pending: null })
+  on('GET', '/api/v1/network/setup', {
+    managed: false,
+    manager: 'unknown',
+    pending: null,
+    takeover: null,
+  })
   on('GET', '/api/v1/storage/pools', [{ name: 'tank', used_bytes: 1e12, available_bytes: 1e12 }])
   on('PATCH', '/api/v1/preferences', (call: { body: unknown }) => call.body)
 })

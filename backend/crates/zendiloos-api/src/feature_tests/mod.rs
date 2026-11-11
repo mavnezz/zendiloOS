@@ -6,6 +6,7 @@ mod docker;
 mod enclosure;
 mod errors;
 mod firewall;
+mod network;
 mod two_factor;
 mod vms;
 mod volumes;

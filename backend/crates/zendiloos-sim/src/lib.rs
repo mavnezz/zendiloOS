@@ -60,8 +60,8 @@ pub struct SimulatedAgent {
     clock: SimClock,
     /// Where `/volume<N>/<share>` directories are kept, if anywhere.
     files: Option<PathBuf>,
-    /// A network change waiting to be confirmed; nothing is changed.
-    network: Mutex<Option<zendiloos_agent_proto::PendingNetwork>>,
+    /// How the simulated host manages its network; nothing is changed.
+    network: Mutex<SimNetwork>,
     /// Docker's data root, once put on a pool.
     docker: Mutex<Option<String>>,
     /// Whether Docker is installed, and the latest run of apt.
@@ -133,12 +133,47 @@ fn acme_lines(order: &zendiloos_agent_proto::AcmeOrder) -> (Vec<String>, bool) {
     (lines, true)
 }
 
+/// The simulated host's network: managed by systemd-networkd, or by
+/// ifupdown with these files until taken over.
+#[derive(Debug, Default)]
+struct SimNetwork {
+    pending: Option<zendiloos_agent_proto::PendingNetwork>,
+    /// `/etc/network/interfaces` while ifupdown manages the network.
+    ifupdown: Option<String>,
+    /// What ifupdown had, while a takeover waits for confirmation.
+    taken_over: Option<String>,
+}
+
+impl SimNetwork {
+    /// A change whose time ran out goes back: a takeover gives ifupdown
+    /// its files again.
+    fn lapse(&mut self, now: i64) {
+        if self.pending.as_ref().is_some_and(|p| p.revert_at <= now) {
+            self.pending = None;
+            if let Some(files) = self.taken_over.take() {
+                self.ifupdown = Some(files);
+            }
+        }
+    }
+}
+
+/// A digest of the simulated ifupdown's file, as the agent hands one over.
+fn ifupdown_digest(text: &str) -> zendiloos_agent_proto::FilesDigest {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    zendiloos_agent_proto::FilesDigest::parse(&format!("{:064x}", hasher.finish()))
+        .unwrap_or_else(|_| unreachable!("64 hex digits"))
+}
+
 /// Docker's packages and the latest run of apt, simulated.
 #[derive(Debug)]
 struct SimPackages {
     docker: bool,
     /// acme.sh is installed: not at first, so its plugin can be installed.
     acme: bool,
+    /// systemd-resolved is installed; only a host with ifupdown has none.
+    resolved: bool,
     /// Kept while Docker is installed, with share contents.
     marker: Option<PathBuf>,
     run: Option<(PackageRun, std::time::Instant)>,
@@ -165,9 +200,10 @@ impl SimPackages {
     fn as_now(&self, (run, started): &(PackageRun, std::time::Instant)) -> PackageRun {
         let mut run = run.clone();
         let steps: &[(u64, &str)] = match run.task {
-            PackageTask::InstallDocker | PackageTask::InstallAcme | PackageTask::InstallVms => {
-                &[(0, "lists"), (1, "install"), (3, "")]
-            }
+            PackageTask::InstallDocker
+            | PackageTask::InstallAcme
+            | PackageTask::InstallVms
+            | PackageTask::InstallNetworkd => &[(0, "lists"), (1, "install"), (3, "")],
             PackageTask::Check => &[(0, "lists"), (2, "")],
             PackageTask::Update if run.release.is_some() => {
                 &[(0, "lists"), (1, "debian"), (3, "zendiloos"), (4, "modules"), (5, "")]
@@ -185,7 +221,10 @@ impl SimPackages {
                 run.finished_at = Some(run.started_at + i64::try_from(*at).unwrap_or(0));
                 if !matches!(
                     run.task,
-                    PackageTask::InstallDocker | PackageTask::InstallAcme | PackageTask::InstallVms
+                    PackageTask::InstallDocker
+                        | PackageTask::InstallAcme
+                        | PackageTask::InstallVms
+                        | PackageTask::InstallNetworkd
                 ) {
                     let done = run.task == PackageTask::Update;
                     run.report = Some(self.report(!done && self.pending, done || self.updated));
@@ -333,6 +372,7 @@ impl SimulatedAgent {
             packages: Mutex::new(SimPackages {
                 docker: true,
                 acme: false,
+                resolved: true,
                 marker: None,
                 run: None,
                 update: None,
@@ -376,6 +416,15 @@ impl SimulatedAgent {
             packages.marker = Some(marker);
         }
         self.files = Some(root);
+        self
+    }
+
+    /// A host as the Debian installer leaves it: ifupdown manages its
+    /// network with `interfaces`, systemd-resolved is not installed. Taken
+    /// over, systemd-networkd manages it, unless the takeover lapses.
+    pub fn with_ifupdown(self, interfaces: &str) -> Self {
+        self.network.lock().unwrap_or_else(PoisonError::into_inner).ifupdown = Some(interfaces.to_owned());
+        self.packages.lock().unwrap_or_else(PoisonError::into_inner).resolved = false;
         self
     }
 
@@ -698,6 +747,11 @@ impl AgentTransport for SimulatedAgent {
                 }) {
                     self.vms.lock().unwrap_or_else(PoisonError::into_inner).installed = true;
                 }
+                if run.as_ref().is_some_and(|run| {
+                    run.state == PackageRunState::Succeeded && run.task == PackageTask::InstallNetworkd
+                }) {
+                    packages.resolved = true;
+                }
                 let update = packages.last_update().map(Box::new);
                 Response::Packages { run, update }
             }
@@ -720,8 +774,9 @@ impl AgentTransport for SimulatedAgent {
                     error(ErrorCode::Forbidden, "refused: Docker's data is not on that pool")
                 }
             }
-            // The simulated host is managed by systemd-networkd; a change
-            // waits for confirmation and lapses at its time.
+            // The simulated host is managed by systemd-networkd (or ifupdown,
+            // until taken over); a change waits for confirmation and lapses
+            // at its time.
             // Apps installed the earlier way (`with_app`) run nowhere.
             Request::DeleteAppAccount { .. } => Response::Done,
             Request::StartApp { app } | Request::StopApp { app } => {
@@ -806,28 +861,78 @@ impl AgentTransport for SimulatedAgent {
             },
             Request::NetworkState {} => {
                 let now = i64::try_from((self.clock)()).unwrap_or(i64::MAX);
-                let mut pending = self.network.lock().unwrap_or_else(PoisonError::into_inner);
-                if pending.as_ref().is_some_and(|p| p.revert_at <= now) {
-                    *pending = None;
+                let mut network = self.network.lock().unwrap_or_else(PoisonError::into_inner);
+                network.lapse(now);
+                let resolved_installed =
+                    self.packages.lock().unwrap_or_else(PoisonError::into_inner).resolved;
+                let ifupdown = network.ifupdown.as_ref().map(|text| zendiloos_agent_proto::Ifupdown {
+                    files: vec![zendiloos_agent_proto::IfupdownFile {
+                        path: "interfaces".into(),
+                        text: text.clone(),
+                        skipped: None,
+                    }],
+                    digest: ifupdown_digest(text),
+                    active: true,
+                    resolved_installed,
+                });
+                Response::NetworkState {
+                    managed: ifupdown.is_none(),
+                    pending: network.pending.clone(),
+                    network_manager: false,
+                    ifupdown,
                 }
-                Response::NetworkState { managed: true, pending: pending.clone() }
             }
             Request::ApplyNetwork { config, confirm_within } => {
-                let mut pending = self.network.lock().unwrap_or_else(PoisonError::into_inner);
-                if pending.is_some() {
+                let now = i64::try_from((self.clock)()).unwrap_or(i64::MAX);
+                let mut network = self.network.lock().unwrap_or_else(PoisonError::into_inner);
+                network.lapse(now);
+                if network.ifupdown.is_some() {
+                    error(ErrorCode::Forbidden, "refused: systemd-networkd does not manage the network here")
+                } else if network.pending.is_some() {
                     error(ErrorCode::Conflict, "a change waits for confirmation")
                 } else {
-                    let now = i64::try_from((self.clock)()).unwrap_or(i64::MAX);
-                    let revert_at = now + i64::from(confirm_within.get());
-                    *pending = Some(zendiloos_agent_proto::PendingNetwork {
-                        interface: config.interface.clone(),
-                        revert_at,
+                    network.pending = Some(zendiloos_agent_proto::PendingNetwork {
+                        change: zendiloos_agent_proto::NetworkChange::Interface {
+                            interface: config.interface.clone(),
+                        },
+                        revert_at: now + i64::from(confirm_within.get()),
                     });
                     Response::Done
                 }
             }
+            Request::TakeOverNetwork { configs, digest, confirm_within } => {
+                let now = i64::try_from((self.clock)()).unwrap_or(i64::MAX);
+                let mut network = self.network.lock().unwrap_or_else(PoisonError::into_inner);
+                network.lapse(now);
+                let resolved = self.packages.lock().unwrap_or_else(PoisonError::into_inner).resolved;
+                match network.ifupdown.clone() {
+                    _ if network.pending.is_some() => {
+                        error(ErrorCode::Conflict, "a change waits for confirmation")
+                    }
+                    None => error(ErrorCode::Forbidden, "refused: ifupdown does not manage the network here"),
+                    Some(text) if ifupdown_digest(&text) != *digest => {
+                        error(ErrorCode::Forbidden, "refused: ifupdown's files changed since they were read")
+                    }
+                    Some(_) if !resolved => {
+                        error(ErrorCode::Forbidden, "refused: systemd-resolved is not installed")
+                    }
+                    Some(text) => {
+                        network.taken_over = Some(text);
+                        network.ifupdown = None;
+                        network.pending = Some(zendiloos_agent_proto::PendingNetwork {
+                            change: zendiloos_agent_proto::NetworkChange::Takeover {
+                                interfaces: configs.as_slice().iter().map(|c| c.interface.clone()).collect(),
+                            },
+                            revert_at: now + i64::from(confirm_within.get()),
+                        });
+                        Response::Done
+                    }
+                }
+            }
             Request::ConfirmNetwork {} => {
-                match self.network.lock().unwrap_or_else(PoisonError::into_inner).take() {
+                let mut network = self.network.lock().unwrap_or_else(PoisonError::into_inner);
+                network.taken_over = None;
+                match network.pending.take() {
                     Some(_) => Response::Done,
                     None => error(ErrorCode::Forbidden, "no change waits for confirmation"),
                 }

@@ -191,6 +191,8 @@ export function problemMessage(error: unknown): string {
     'port_in_use',
     'web_server_failed',
     'firewall_failed',
+    // What and where ifupdown sets up that a takeover does not carry over.
+    'not_carried_over',
     // The running containers that use the volume.
     'volume_in_use',
     // The containers a backup or restore keeps stopped.

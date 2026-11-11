@@ -104,8 +104,10 @@ fn allowed(name: &str, members: &BTreeSet<String>) -> Option<BTreeSet<String>> {
         | "zendiloos-exec"
         | "zendiloos-logging"
         | "zendiloos-architecture" => BTreeSet::new(),
-        "zendiloos-jobs" | "zendiloos-notify" | "zendiloos-identity" | "zendiloos-system"
-        | "zendiloos-network" => set(&["zendiloos-kernel"]),
+        "zendiloos-jobs" | "zendiloos-notify" | "zendiloos-identity" | "zendiloos-system" => {
+            set(&["zendiloos-kernel"])
+        }
+        "zendiloos-network" => set(&["zendiloos-kernel", "zendiloos-jobs"]),
         "zendiloos-storage" | "zendiloos-sharing" => {
             set(&["zendiloos-kernel", "zendiloos-jobs", "zendiloos-notify"])
         }

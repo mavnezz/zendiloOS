@@ -8074,7 +8074,7 @@
         "tags": [
           "network"
         ],
-        "summary": "Keeps the change that waits for confirmation. Needs `system.manage`.",
+        "summary": "Keeps the change that waits for confirmation, a takeover too. Needs\n`system.manage`.",
         "operationId": "confirm_network",
         "responses": {
           "204": {
@@ -8103,7 +8103,7 @@
         "tags": [
           "network"
         ],
-        "summary": "Applies new settings to an interface at once. Unless they are confirmed\nwithin two minutes (`POST /network/confirm`, from the new address if\nit changed), the old settings return by themselves. Needs\n`system.manage`.",
+        "summary": "Applies new settings to an interface at once: one that is down or has\nno settings of zendiloOS's yet is switched on, IPv4 and IPv6 off\nswitch it off. Unless they are confirmed within two minutes (`POST\n/network/confirm`, from the new address if it changed), the old\nsettings return by themselves. Needs `system.manage`.",
         "operationId": "configure_interface",
         "parameters": [
           {
@@ -8177,6 +8177,41 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/NetworkSetup"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/network/takeover": {
+      "post": {
+        "tags": [
+          "network"
+        ],
+        "summary": "Lets zendiloOS manage the network where ifupdown does, as a job:\nsystemd-resolved installed from Debian if it is missing, then each\ninterface ifupdown brings up set up through systemd-networkd as `GET\n/network/setup` says (DHCP keeps the address). Unless confirmed within\ntwo minutes (`POST /network/confirm`), or should the NAS restart first,\nifupdown gets the network back exactly as it was. Needs\n`system.manage`.",
+        "operationId": "take_over_network",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_carried_over` (the detail names what and where), `change_pending`, `refused`: not ifupdown, ifupdown not running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -17685,6 +17720,7 @@
         "oneOf": [
           {
             "type": "object",
+            "description": "From DHCP, asking for the address the card has.",
             "required": [
               "mode"
             ],
@@ -17727,6 +17763,21 @@
                 "format": "int32",
                 "description": "1 to 32.",
                 "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "None; with IPv6 off too, the interface is switched off (down).",
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "off"
+                ]
               }
             }
           }
@@ -18570,16 +18621,30 @@
           }
         }
       },
+      "NetworkManagerKind": {
+        "type": "string",
+        "description": "What manages the network.",
+        "enum": [
+          "networkd",
+          "ifupdown",
+          "network_manager",
+          "unknown"
+        ]
+      },
       "NetworkSetup": {
         "type": "object",
         "description": "Whether the network can be changed here, and a change that waits.",
         "required": [
-          "managed"
+          "managed",
+          "manager"
         ],
         "properties": {
           "managed": {
             "type": "boolean",
-            "description": "systemd-networkd manages the network; otherwise it is only shown."
+            "description": "systemd-networkd manages the network; otherwise it is only shown,\nor with ifupdown, taken over first."
+          },
+          "manager": {
+            "$ref": "#/components/schemas/NetworkManagerKind"
           },
           "pending": {
             "oneOf": [
@@ -18590,6 +18655,51 @@
                 "type": "null"
               }
             ]
+          },
+          "takeover": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NetworkTakeover",
+                "description": "Where ifupdown manages the network: what taking it over would do."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "NetworkTakeover": {
+        "type": "object",
+        "description": "Taking the network over from ifupdown, as it would go now.",
+        "required": [
+          "interfaces",
+          "refused",
+          "installs_resolved",
+          "ifupdown_running"
+        ],
+        "properties": {
+          "ifupdown_running": {
+            "type": "boolean",
+            "description": "`networking.service` runs; otherwise ifupdown has nothing to give."
+          },
+          "installs_resolved": {
+            "type": "boolean",
+            "description": "systemd-resolved is installed from Debian first."
+          },
+          "interfaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlannedInterface"
+            },
+            "description": "Each interface ifupdown brings up, as systemd-networkd would set it\nup; the others stay down until set up here."
+          },
+          "refused": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NotCarriedOver"
+            },
+            "description": "What would not be carried over (bonds, bridges, VLANs, wireless,\ncommands, search domains, …); while there is any, ifupdown stays."
           }
         }
       },
@@ -18780,6 +18890,23 @@
           }
         },
         "additionalProperties": false
+      },
+      "NotCarriedOver": {
+        "type": "object",
+        "description": "Where ifupdown sets up something a takeover would not carry over.",
+        "required": [
+          "place",
+          "reason"
+        ],
+        "properties": {
+          "place": {
+            "type": "string",
+            "description": "A file below `/etc/network` and its line, `interfaces:12`."
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
       },
       "Notification": {
         "type": "object",
@@ -19148,16 +19275,22 @@
         "type": "object",
         "required": [
           "interface",
+          "takeover",
           "revert_at"
         ],
         "properties": {
           "interface": {
-            "type": "string"
+            "type": "string",
+            "description": "The interface whose settings changed; empty for a takeover."
           },
           "revert_at": {
             "type": "integer",
             "format": "int64",
             "description": "When the old settings return unless confirmed, in Unix seconds."
+          },
+          "takeover": {
+            "type": "boolean",
+            "description": "zendiloOS took the network over from ifupdown: unless confirmed,\nifupdown gets it back exactly as it was."
           }
         }
       },
@@ -19388,6 +19521,104 @@
             "minimum": 0
           }
         }
+      },
+      "PlannedInterface": {
+        "type": "object",
+        "required": [
+          "name",
+          "ipv4",
+          "ipv6",
+          "dns"
+        ],
+        "properties": {
+          "dns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "ipv4": {
+            "$ref": "#/components/schemas/PlannedIpv4"
+          },
+          "ipv6": {
+            "$ref": "#/components/schemas/Ipv6Input"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "PlannedIpv4": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "From DHCP, asking for the address the card has, if any: the lease\nis the card's (its MAC address).",
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "keep": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "ipv4"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "dhcp"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "address",
+              "prefix",
+              "mode"
+            ],
+            "properties": {
+              "address": {
+                "type": "string",
+                "format": "ipv4"
+              },
+              "gateway": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "ipv4"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "static"
+                ]
+              },
+              "prefix": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "off"
+                ]
+              }
+            }
+          }
+        ]
       },
       "Pool": {
         "type": "object",
