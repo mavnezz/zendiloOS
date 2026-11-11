@@ -157,7 +157,7 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 | `zendiloos-network` | interfaces, addresses, default routes, name servers; an interface's IP settings and name servers through systemd-networkd, and bridges, bonds and VLANs made, changed and removed, each change with confirmation (6); the network taken over from ifupdown in a job, with confirmation (6); later the hostname | kernel, jobs |
 | `zendiloos-certificates` | the ACME client plugin (acme.sh): accounts, challenges and certificates from Let's Encrypt, renewed daily; the web interface's ports and certificate, changed with confirmation (4.11) | kernel, jobs, notify |
 | `zendiloos-firewall` | the firewall: one ordered list of rules (interface, service or ports, source, allow or deny) and what happens when none matches, enforced by nftables for the NAS and the ports Docker publishes, changed with confirmation; services nobody reaches, told (4.12) | kernel, notify |
-| `zendiloos-vms` | virtual machines: the plugin (libvirt and QEMU installed, their storage on a pool, the hardware check), VMs from an OS preset with their disks, network cards and CD drives, made in a job and changed (hardware only while off), the image library (ISOs copied from a share or uploaded), what running VMs use, their state from libvirt and their consoles (4.13) | kernel, jobs |
+| `zendiloos-vms` | virtual machines: the plugin (libvirt and QEMU installed, their storage in locations on one or more pools, the hardware check), VMs from an OS preset with their disks (each on its location), network cards (through the NAS, on a host bridge, directly on a card, on an internal network) and CD drives, made in a job and changed (hardware only while off), the image library (ISOs copied from a share or uploaded), what running VMs use, their state from libvirt and their consoles (4.13) | kernel, jobs |
 | `zendiloos-infra` | all secondary adapters, SQLite migrations | kernel, jobs, notify, contexts, agent-proto, exec; in tests also sim |
 | `zendiloos-api` | primary adapter: axum routes, DTOs, OpenAPI, auth middleware, WebSocket | kernel, jobs, notify, contexts |
 | `zendiloosd` | composition root (binary) | everything except agent |
@@ -250,8 +250,9 @@ Deliberate simplifications:
   `GroupObserver` and `AccountObserver`), which `zendiloos-infra` bridges
   to the context that follows (Sharing); no broker. A context that must ask
   another before it acts declares a port in its own terms the same way
-  (Network's `DeviceUsers`: what is on a bridge that would go, answered
-  from the VMs' records).
+  (Network's `DeviceUsers`: what is on a bridge that would go, or on a
+  card that would be taken into a bridge or bond, answered from the VMs'
+  records).
 
 **Alternatives considered:**
 
@@ -2401,6 +2402,37 @@ without Docker it does nothing. Removing the package removes the jump and
 the chain, as it removes the firewall's table. A bridge made otherwise
 (netplan, by hand) is its owner's to let through.
 
+**Internal networks: the NAS keeps itself off them.** A bridge zendiloOS
+made without members whose own file gives the NAS no address (neither
+DHCP nor a fixed address, neither router advertisements nor a link-local
+address) is an internal network for VMs (4.13). No address alone does not
+keep the NAS off it: Linux answers ARP for any of its addresses on every
+interface (`arp_ignore` 0) and takes in what comes on one for any of its
+addresses, so a VM on the bridge could reach the NAS's LAN address
+through it, its services by any rule that allows any interface, and, with
+IP forwarding on (Docker turns it on), be routed further; replies go out
+by the NAS's routes, but a connectionless packet needs none. So the agent
+writes `/etc/zendiloos/network/internal-networks.nft` from its own
+systemd-networkd files, a table of nftables' `bridge` family,
+`bridge zendiloos_internal`, created, deleted and made anew in one
+transaction: its `input` chain drops every frame such a bridge hands up
+to the NAS (`meta ibrname`), its `output` chain every frame the NAS would
+send onto one (`meta obrname`); without an internal network it only
+removes the table. Frames between the VMs' ports are the bridge's own and
+meet neither hook; with `br_netfilter` they pass the IP forward chains
+with the bridge as both interfaces, where this firewall's `forward` chain
+lets them through (the bridge is one of the machine's own once a VM's tap
+is in it, and one not listed yet meets the accept for other bridges
+first) and Docker's FORWARD chain does through `ZENDILOOS-BRIDGES`, which
+lists every bridge zendiloOS made. `zendiloos-internal-networks.service`
+loads the file early at boot, before `network-pre.target`, after Debian's
+`nftables.service` and again whenever that restarts or reloads, as
+`zendiloos-firewall.service` does; the agent writes it and has it loaded
+after every change of the network's devices, their undoing, and as it
+starts, also while the firewall is off. Removing the package removes the
+table. A card goes on an internal network only while the rules in force
+list it (4.13).
+
 **Changes go back unless confirmed**, as network and web server changes do:
 the file replaced is kept as `zendiloos.nft.previous` and returns after 90
 seconds, by a timer in the agent and after its restart. While a change
@@ -2446,7 +2478,8 @@ given against the NAS's, and a card per VM with its own load) and one for
 the image library. Every value is checked as in the other contexts,
 nothing a client sends reaches a command line or a domain's XML as text,
 and zendiloosd gains no privilege. Its context is `zendiloos-vms`
-(migrations 0049 and 0050).
+(migrations 0049, 0050 and 0051). Besides Machines and Images the app has
+pages for the VMs' storage, their networks and their log.
 
 **The hardware check.** The plugin's page says whether the CPU can run VMs
 (`/dev/kvm` is there, with the flag `vmx` for Intel VT-x or `svm` for
@@ -2489,26 +2522,51 @@ Debian 13 runs the monolithic `libvirtd`. The QEMU driver's own
 dependencies bring `systemd-container`; its recommendations (swtpm, passt)
 are left to the list above.
 
-**The storage.** Setting up puts the dataset `<pool>/zendiloos.vms` on a
-pool zendiloOS made (`setuid`, `devices` and `exec` off; the dot keeps it
-from ever being a share), mounted by its own unit at `/volume<N>/@vms`
-before libvirtd, which a drop-in (`RequiresMountsFor`) keeps from starting
-without it, as for Docker's data. A VM's disks are sparse zvols
-`<pool>/zendiloos.vms/<id>-disk<N>` (`volmode=dev`: their partitions never
-show on the host), the library's ISOs files in `/volume<N>/@vms/isos`. A
-pool with the VMs' storage on it is not deleted (the agent refuses);
-moving the storage is not offered yet.
+**The storage, in locations.** Setting up puts the first location, the
+dataset `<pool>/zendiloos.vms` on a pool zendiloOS made (`setuid`,
+`devices` and `exec` off; the dot keeps it from ever being a share),
+mounted by its own unit at `/volume<N>/@vms` before libvirtd, which a
+drop-in (`RequiresMountsFor`, one line per location) keeps from starting
+without every location, as for Docker's data. More locations go on other
+pools the same way (`POST /vms/locations`, `vms.location_add`), one per
+pool; zendiloosd keeps them in the order they were added (migration 0051,
+`vm_locations`, which took the pool the VMs of before were on as the
+first, and takes in one the host has and the records not). The first
+holds the image library, `/volume<N>/@vms/isos`, and stays where it is.
+A VM's disks are sparse zvols `<pool>/zendiloos.vms/<id>-disk<N>`
+(`volmode=dev`: their partitions never show on the host), each on the
+location it was made on: the first unless another is chosen, in the
+wizard and the edit dialog; a disk never moves (zendiloosd and the agent,
+which looks for the zvol of that slot on every location, refuse), and a
+VM's disks are destroyed on every location when it goes. The Storage page
+(`GET /vms/locations`) shows each location with its pool's health and
+space and the VMs with disks there, each with what its zvols take
+(`used`) and hold (`referenced`), read with one `zfs list` of the
+locations' datasets. A location goes (`POST
+/vms/locations/{pool}/delete`, `vms.location_remove`) only with the
+pool's name typed again, never while a VM has a disk there or the library
+images, nor the library's while there are others (`location_in_use`,
+naming them); the agent checks again that the dataset holds no zvol and
+the library no image, has libvirt stop waiting for it first (so stopping
+its mount never stops libvirt), unmounts it (a mount in use stays, and
+so does everything), destroys the dataset and removes its unit, putting
+back what it did should a step fail. A pool with a location on it is not
+deleted: the storage context refuses (`pool_in_use`, "the virtual
+machines' storage", from `vm_locations`), and so does the agent, by the
+location's mount unit; moving a disk to another location is not offered
+yet.
 
 **A VM.** Its settings: a name, an OS preset (Linux, Windows, other) that
 fills in vCPUs, memory, the first disk's size, the firmware, the disks'
 bus and the cards' model, vCPUs up to the machine's threads and memory up
 to its total (the administrator weighs what the NAS keeps), UEFI (OVMF,
 Secure Boot off) or BIOS (SeaBIOS), and its devices: 1 to 8 disks, each in
-a slot (0 to 7, its zvol `<id>-disk<slot>`) with a size of 1 GiB to 64 TiB
-and a bus, virtio (Linux) or SATA (systems that bring no virtio drivers,
-Windows' installer among them); up to 4 network cards, each in a slot,
-virtio or an Intel e1000e every system knows, through passt or on a host
-bridge; up to 3 SATA CD drives, each with an image of the library or
+a slot (0 to 7, its zvol `<id>-disk<slot>`) on a location, with a size of
+1 GiB to 64 TiB and a bus, virtio (Linux) or SATA (systems that bring no
+virtio drivers, Windows' installer among them); up to 4 network cards,
+each in a slot, virtio or an Intel e1000e every system knows, through
+passt, on a host bridge, directly on a wired card or bond, or on an
+internal network; up to 3 SATA CD drives, each with an image of the library or
 empty (an image goes into an empty drive while the VM runs, which needs
 the drive); and a boot order of these disks and drives, each once, the
 others never booted from. A new VM gets one disk, one card through the
@@ -2536,7 +2594,13 @@ with its NVRAM, its zvols destroyed; the images in its drives stay in the
 library) are audited (`vms.install`, `vms.storage`, `vms.create`,
 `vms.start`, `vms.shutdown`, `vms.restart`, `vms.force_off`,
 `vms.autostart_on`, `vms.autostart_off`, `vms.change`, `vms.delete`,
-`vms.console`).
+`vms.console`, `vms.location_add`, `vms.location_remove`). The app's Log
+page shows these entries (`GET /logs/audit?prefix=vms.`): who, when,
+what, outcome, searched on the server (`search`: what actor, action,
+target, address or reason hold, as plain text), a page at a time and
+exported as CSV in the browser (every field quoted, none starting with
+what a spreadsheet takes for a formula); the control panel's audit log
+has the same table. Nothing of its own is stored for it.
 
 **Changing a VM.** Everything but its system can be changed after it is
 made (`PUT /vms/{id}`, the whole settings, `vms.change`), and the domain is
@@ -2556,10 +2620,14 @@ grows (`zfs set volsize`; the guest grows its partition itself), never
 shrinks; the agent looks at every zvol's size first and changes nothing if
 one would. A disk removed is destroyed with its data, after the domain no
 longer names it, and only with the VM's name typed again. A card keeps
-its MAC address by its slot; a card on a bridge that is gone since may
-stay on it, but none goes onto one the machine does not have.
+its MAC address by its slot; a card on a bridge, internal network or card
+that is gone since may stay on it, but none goes onto one the machine
+does not have. Devices are kept in the order of their slots, so a change
+that sends them in another order is no hardware change.
 
-**The network.** Each card goes through passt by default, user-mode
+**The network.** A card's network is one of four kinds, which the
+Networks page lists with the VMs on each and what each means in one line.
+Each card goes through passt by default, user-mode
 networking: the VM's connections leave from the NAS's own address as the
 NAS's sockets, through
 its firewall's rules for what goes out; nothing reaches the VM (no ports
@@ -2588,6 +2656,51 @@ in `DOCKER-USER` (4.12), for the bridges zendiloOS made. A bridge a VM is on
 refuses with `device_in_use` naming the VMs. The firewall's rules do not
 filter what a VM on a bridge sends to the LAN or receives from it, only
 what reaches the NAS itself.
+
+*Directly on a card* (`direct`): macvtap on a wired card or bond of the
+host's in bridge mode (`<interface type='direct'>`, `<source dev='<card>'
+mode='bridge'/>`), which libvirt's QEMU driver makes itself, without a
+network driver: the VM is on the card's LAN as a machine of its own,
+without a bridge, and gets its address there. The NAS and such a VM do
+not reach each other: the card hands the frames a VM sends out to the
+wire, never back to the NAS's own stack, and the NAS's frames to the VM's
+address go out on the wire too (a switch does not send them back); this
+is how macvtap works, and the page says so plainly. Offered are the
+host's wired cards and bonds in no bridge or bond (zendiloosd's view with
+`ip`); the agent checks again through systemd-networkd that the link is
+of the type `ether` without a kind (a card; a VLAN or a `veth` has one)
+or of the kind `bond`, refusing a link it does not know or describes as
+anything else, and taking one it knows but does not describe as it is.
+What the firewall sees of it: the VM's frames leave by the card's own
+transmit path and come in for its MAC address by the macvlan receive
+handler, before the NAS's IP stack, so they meet neither the firewall's
+`input` nor its `forward` chain, nor Docker's FORWARD chain (no bridge, so
+no `br_netfilter`): its traffic is not filtered by the NAS, as a bridged
+VM's is not, and needs no rule in `DOCKER-USER`. A card a VM is directly
+on is not taken into a bridge or bond on the Network page: the Network
+context asks its `DeviceUsers` port before, and refuses with
+`device_in_use` naming the VMs, as for removing a bridge.
+
+*On an internal network* (`internal`): a bridge zendiloOS made without
+members whose own file gives the NAS no address, which the NAS keeps
+itself off (4.12, a table in nftables' `bridge` family): VMs on it reach
+each other, neither the LAN nor the NAS. It is made on the Networks page
+through the Network context's own device API (`POST /network/devices`, a
+bridge without members, as #50 made those for VMs), so the same checks,
+files and undoing apply; the page confirms the change at once (`POST
+/network/confirm`): a bridge without a member or address changes nothing
+the browser reaches the NAS by, and the confirmation still proves the NAS
+answers. Removing it is the Network context's too, refused while a VM is
+on it. The plugin offers the internal networks apart from the host's
+bridges (the Network context names them, `internal` in `GET
+/network/setup`); while zendiloOS's files cannot be read, no bridge is
+offered, so none is taken for the LAN's. On the domain it is a bridge as
+any other; defining it, the agent checks that it is a bridge of the
+host's and that the rules in force keep the NAS off it (the file is that
+of the bridges its files make internal, and its unit is active), else
+refuses. A bridge that gets a card on the Network page is no internal
+network any more (the LAN's), and its VMs' cards stay on it; one that is
+gone keeps the cards that were on it, as a host bridge does.
 
 **The image library.** ISOs live once in `/volume<N>/@vms/isos` as
 `<image>.iso`, the image's id twelve hexadecimal digits zendiloosd draws,
@@ -2711,8 +2824,10 @@ another pool, handing devices to a VM (the IOMMU), a TPM and Secure Boot
 with Microsoft's keys for Windows 11, rules of the firewall for VMs on a
 bridge (what is bridged to them is not filtered), counting the traffic of
 cards through passt, what libvirt-guests does at a shutdown (Debian's
-default: guests shut down), pools that hold VMs named in `pool_in_use`,
-and pages for the VMs' storage, networks and logs.
+default: guests shut down), moving a disk or the image library to
+another location, a host-only network (an internal network with an
+address of the NAS's), and a way for the NAS to reach VMs directly on a
+card (a macvlan of the host's own).
 
 ---
 
@@ -2757,7 +2872,7 @@ the interface and the agent deal with a single tool chain (`zpool`, `zfs`).
 | Migrations | forward only, embedded, transactional; before each migration a copy of the database in `/var/lib/zendiloos/backup/` | safe migrations without down scripts |
 | Configuration | static: `/etc/zendiloos/*.toml` (listen address, paths, log level, development flags); everything the admin manages lives in the database | |
 | System metrics | `sysinfo` for CPU, memory, processes, sensors; an own parser for `/proc/diskstats` | sysinfo does not cover storage specifics |
-| Network | systemd-networkd + systemd-resolved; NetworkManager is only shown. Per interface: IPv4 by DHCP, fixed (address, prefix, gateway) or off, IPv6 from router advertisements or off (both off: the interface switched off, `ActivationPolicy=down`), up to three name servers; an interface without a file of zendiloOS's (down, or never set up) is switched on the same way. The agent writes `/etc/systemd/network/05-zendiloos-<interface>.network` (before netplan's files), after a record of every file a change touches as it was (`zendiloos-change.json` beside them, root's alone), and has systemd-networkd reload and reconfigure the link over D-Bus (`busctl`: the agent's own network namespace has neither the host's links nor a working `networkctl`). DHCP names the card by its MAC address (`ClientIdentifier=mac`): systemd's default, a DUID from the machine ID, changes with every installation, and so do those of ifupdown's DHCP clients (dhcpcd's `duid`, dhclient's `-i`); and it asks for the address the card has (`RequestAddress=`), so a server that keyed the lease by another client's identifier hands it out again once that one released it. A change is kept only if confirmed within two minutes, from the new address if it changed; otherwise every file returns as the record says, from wherever the change got to, by a timer in the agent, and at the agent's start should it or the machine restart first; the record goes last, so an undoing cut off is done again (a `….previous` file an earlier agent kept beside a file returns at the start too). One change at a time. **Bridges, bonds and VLANs** are made, changed and removed on the Network page (`POST /network/devices`, `PUT` and `DELETE /network/devices/{name}`, `system.manage`, audited as `network.device_make`, `network.device_change`, `network.device_remove`), each as one such change of several files: a `05-zendiloos-<name>.netdev` for the device and the `.network` files of the device, its members and its parent. A bridge has wired cards, and bonds and VLANs made here, as members (or none, for VMs only), STP off unless asked; a bond has wired cards (active-backup, 802.3ad/LACP or balance-alb; its members' links watched every 100 ms, LACP asked to tell every second and traffic spread by address and port); a VLAN is on a wired card, a bond or a bridge with an id from 1 to 4094. Members are free: in no other bridge or bond (by zendiloOS's files or the kernel's), carrying no VLAN; names are interface names the kernel takes (15 characters at most), none in use, none Docker's (`docker0`, `br-` and twelve hex digits) or a `veth`'s, which the firewall takes for containers'; nothing may end up on itself (a VLAN on a bridge among its own members), all checked before anything is written, and `POST /network/devices/plan` says beforehand what becomes of each interface. A bridge or bond takes the settings of the first member given that has any, which becomes its first member, and that member's MAC address (`MACAddress=` in the `.netdev`), so DHCP, by the MAC address and asking for the address the card had, keeps the NAS's address; the other members' settings go. Its members are noted in order in its `.netdev` (`# Members:`); removed, it gives its settings back to its first member, asking for the address it has now, and the other members are switched off, as are members taken out of one. A VLAN has settings of its own, none by default: a VLAN made never brings a second default route or other name servers that could take the NAS's confirmation away, and one carrying VMs needs no address; its parent keeps its settings and carries it (`VLAN=`). Devices zendiloOS made stay up without addresses (`RequiredForOnline=no`) rather than being switched off. systemd-networkd makes a new `.netdev`'s device when it reloads (a VLAN's when its parent is set up) but neither removes nor changes one it made: a device that goes, or whose bond mode or STP changes, is deleted in a transient unit (`ip link delete`, 3.3) and, if it stays, made anew from its file; undoing a change deletes the devices it made and has systemd-networkd make those it removed again. A device that carries a VLAN or is a member of another is removed last; a bridge a VM is on is not removed (`device_in_use`, 4.13). An interface's settings are changed as before; a member's are its device's, and a parent keeps its VLANs. Firewall rules that name a member see its traffic no longer: it comes in on the device. Bridges, bonds and VLANs not made by zendiloOS are shown with their members and parent and their IP settings changed, but neither changed otherwise nor removed. **The installation ISO** hands the network to systemd-networkd and systemd-resolved at its end (`packaging/iso/network.sh`): a file for each interface Debian's installer set up in `/etc/network/interfaces` (DHCP, or the static address it was given), the others none, so they stay down; both enabled, `/etc/resolv.conf` a link to systemd-resolved's stub, which knows the name servers on the first boot; ifupdown keeps the loopback only. **A Debian with ifupdown** is taken over on request (`POST /network/takeover`, `system.manage`, audited as `network.take_over`), in a job: systemd-resolved installed if missing (4.10); zendiloosd reads `/etc/network/interfaces` and what it sources from `interfaces.d` (the agent hands them over with a digest) and translates each interface ifupdown brings up (`auto`, `allow-hotplug`) that is a wired card here: `inet dhcp`, `inet static` (address, netmask, gateway, `dns-nameservers`; without them the name servers in force), `inet6 auto` and `inet6 dhcp` (router advertisements). It refuses anything else, naming file, line and why, and then leaves everything as it is: bonds, bridges, VLANs, wireless, commands run on the way, search domains, mappings, other sources, cards brought up only by hand. The agent refuses a takeover if the files changed since; it writes a record of everything it changes as it was (`/etc/network/zendiloos-takeover.json`, root's alone: `interfaces`, `resolv.conf` as file or link, the interfaces' systemd-networkd files, whether systemd-networkd and systemd-resolved were enabled and running), then stops `networking.service` (leases released, addresses removed), leaves ifupdown the loopback, links `resolv.conf` to the stub and enables and starts systemd-resolved and systemd-networkd. Not confirmed within two minutes, or should the agent or the machine restart first, ifupdown gets everything back from the record, from wherever the takeover got to: systemd-networkd first drops the static addresses it set (they would outlive it and stop ifupdown from setting them), it and systemd-resolved are stopped and disabled as they were, the files return, `networking.service` is restarted, and the record goes last, so a revert cut off is done again at the next start. Confirmed, the record goes; `interfaces.zendiloos-previous` and `resolv.conf.zendiloos-previous` stay for people. What systemd-networkd set in the kernel for IPv6 (router advertisements taken in user space) stays until the next boot after a revert | declarative files the agent writes atomically; verified in the second test VM (`just vm-network-test`): a setting that cuts the VM off goes back by itself; the takeover in a throwaway VM made an ifupdown machine (`just vm-network-takeover-test`): kept once confirmed, given back unconfirmed and after the agent restarted; bridges, bonds and VLANs in a throwaway VM with two spare cards (`just vm-network-bridge-test`): the NAS keeps its address over a bridge, one unconfirmed goes with its link, by the timer and as the agent starts, frames bridged to a stand-in for a VM pass Docker's FORWARD chain, a bond and a VLAN come up and go, the firewall's and Docker's tables as before; the ISO's switch by `just iso-network-test` and `just iso-test` |
+| Network | systemd-networkd + systemd-resolved; NetworkManager is only shown. Per interface: IPv4 by DHCP, fixed (address, prefix, gateway) or off, IPv6 from router advertisements or off (both off: the interface switched off, `ActivationPolicy=down`), up to three name servers; an interface without a file of zendiloOS's (down, or never set up) is switched on the same way. The agent writes `/etc/systemd/network/05-zendiloos-<interface>.network` (before netplan's files), after a record of every file a change touches as it was (`zendiloos-change.json` beside them, root's alone), and has systemd-networkd reload and reconfigure the link over D-Bus (`busctl`: the agent's own network namespace has neither the host's links nor a working `networkctl`). DHCP names the card by its MAC address (`ClientIdentifier=mac`): systemd's default, a DUID from the machine ID, changes with every installation, and so do those of ifupdown's DHCP clients (dhcpcd's `duid`, dhclient's `-i`); and it asks for the address the card has (`RequestAddress=`), so a server that keyed the lease by another client's identifier hands it out again once that one released it. A change is kept only if confirmed within two minutes, from the new address if it changed; otherwise every file returns as the record says, from wherever the change got to, by a timer in the agent, and at the agent's start should it or the machine restart first; the record goes last, so an undoing cut off is done again (a `….previous` file an earlier agent kept beside a file returns at the start too). One change at a time. **Bridges, bonds and VLANs** are made, changed and removed on the Network page (`POST /network/devices`, `PUT` and `DELETE /network/devices/{name}`, `system.manage`, audited as `network.device_make`, `network.device_change`, `network.device_remove`), each as one such change of several files: a `05-zendiloos-<name>.netdev` for the device and the `.network` files of the device, its members and its parent. A bridge has wired cards, and bonds and VLANs made here, as members (or none, for VMs only), STP off unless asked; a bond has wired cards (active-backup, 802.3ad/LACP or balance-alb; its members' links watched every 100 ms, LACP asked to tell every second and traffic spread by address and port); a VLAN is on a wired card, a bond or a bridge with an id from 1 to 4094. Members are free: in no other bridge or bond (by zendiloOS's files or the kernel's), carrying no VLAN; names are interface names the kernel takes (15 characters at most), none in use, none Docker's (`docker0`, `br-` and twelve hex digits) or a `veth`'s, which the firewall takes for containers'; nothing may end up on itself (a VLAN on a bridge among its own members), all checked before anything is written, and `POST /network/devices/plan` says beforehand what becomes of each interface. A bridge or bond takes the settings of the first member given that has any, which becomes its first member, and that member's MAC address (`MACAddress=` in the `.netdev`), so DHCP, by the MAC address and asking for the address the card had, keeps the NAS's address; the other members' settings go. Its members are noted in order in its `.netdev` (`# Members:`); removed, it gives its settings back to its first member, asking for the address it has now, and the other members are switched off, as are members taken out of one. A VLAN has settings of its own, none by default: a VLAN made never brings a second default route or other name servers that could take the NAS's confirmation away, and one carrying VMs needs no address; its parent keeps its settings and carries it (`VLAN=`). Devices zendiloOS made stay up without addresses (`RequiredForOnline=no`) rather than being switched off. systemd-networkd makes a new `.netdev`'s device when it reloads (a VLAN's when its parent is set up) but neither removes nor changes one it made: a device that goes, or whose bond mode or STP changes, is deleted in a transient unit (`ip link delete`, 3.3) and, if it stays, made anew from its file; undoing a change deletes the devices it made and has systemd-networkd make those it removed again. A device that carries a VLAN or is a member of another is removed last; a bridge a VM is on is not removed, nor is a card or bond a VM is directly on taken into a bridge or bond (`device_in_use`, 4.13). A bridge made without members and without an address of the NAS's is an internal network for VMs, which the NAS keeps itself off by a table in nftables' `bridge` family (4.12); `GET /network/setup` names them (`internal`). An interface's settings are changed as before; a member's are its device's, and a parent keeps its VLANs. Firewall rules that name a member see its traffic no longer: it comes in on the device. Bridges, bonds and VLANs not made by zendiloOS are shown with their members and parent and their IP settings changed, but neither changed otherwise nor removed. **The installation ISO** hands the network to systemd-networkd and systemd-resolved at its end (`packaging/iso/network.sh`): a file for each interface Debian's installer set up in `/etc/network/interfaces` (DHCP, or the static address it was given), the others none, so they stay down; both enabled, `/etc/resolv.conf` a link to systemd-resolved's stub, which knows the name servers on the first boot; ifupdown keeps the loopback only. **A Debian with ifupdown** is taken over on request (`POST /network/takeover`, `system.manage`, audited as `network.take_over`), in a job: systemd-resolved installed if missing (4.10); zendiloosd reads `/etc/network/interfaces` and what it sources from `interfaces.d` (the agent hands them over with a digest) and translates each interface ifupdown brings up (`auto`, `allow-hotplug`) that is a wired card here: `inet dhcp`, `inet static` (address, netmask, gateway, `dns-nameservers`; without them the name servers in force), `inet6 auto` and `inet6 dhcp` (router advertisements). It refuses anything else, naming file, line and why, and then leaves everything as it is: bonds, bridges, VLANs, wireless, commands run on the way, search domains, mappings, other sources, cards brought up only by hand. The agent refuses a takeover if the files changed since; it writes a record of everything it changes as it was (`/etc/network/zendiloos-takeover.json`, root's alone: `interfaces`, `resolv.conf` as file or link, the interfaces' systemd-networkd files, whether systemd-networkd and systemd-resolved were enabled and running), then stops `networking.service` (leases released, addresses removed), leaves ifupdown the loopback, links `resolv.conf` to the stub and enables and starts systemd-resolved and systemd-networkd. Not confirmed within two minutes, or should the agent or the machine restart first, ifupdown gets everything back from the record, from wherever the takeover got to: systemd-networkd first drops the static addresses it set (they would outlive it and stop ifupdown from setting them), it and systemd-resolved are stopped and disabled as they were, the files return, `networking.service` is restarted, and the record goes last, so a revert cut off is done again at the next start. Confirmed, the record goes; `interfaces.zendiloos-previous` and `resolv.conf.zendiloos-previous` stay for people. What systemd-networkd set in the kernel for IPv6 (router advertisements taken in user space) stays until the next boot after a revert | declarative files the agent writes atomically; verified in the second test VM (`just vm-network-test`): a setting that cuts the VM off goes back by itself; the takeover in a throwaway VM made an ifupdown machine (`just vm-network-takeover-test`): kept once confirmed, given back unconfirmed and after the agent restarted; bridges, bonds and VLANs in a throwaway VM with two spare cards (`just vm-network-bridge-test`): the NAS keeps its address over a bridge, one unconfirmed goes with its link, by the timer and as the agent starts, frames bridged to a stand-in for a VM pass Docker's FORWARD chain, a bond and a VLAN come up and go, the firewall's and Docker's tables as before; the ISO's switch by `just iso-network-test` and `just iso-test` |
 | Network discovery | Windows finds the NAS through WS-Discovery (`wsdd2`), macOS through Bonjour (Samba announces `_smb._tcp` through `avahi-daemon`); both recommended by the package. NetBIOS stays off | without them, clients only reach the NAS by address; `wsdd` itself is not in Debian 13 |
 | File services | SMB (Samba, with `wsdd2`) and NFS (`nfs-kernel-server`) are switched on and off in the control panel; off means stopped and disabled, so it stays off after a restart, while shares, exports and permissions stay. The workgroup and the oldest SMB version answered (2.0, 2.1 or 3; SMB1 never) are written as global settings at the top of `/etc/samba/zendiloos.conf`, which `smb.conf` includes at the end of `[global]`; both are applied with the shares in one agent request, and if the host refuses, the previous settings return | per-share protocols would multiply what can go wrong for little gain; FTP, rsync and WebDAV are not offered until there is a reason |
 | SSH | the SSH server as a service in the control panel (Terminal): on or off (off means stopped and disabled; open sessions stay, as `KillMode=process`), its port (22, or a free one from 1024; zendiloosd refuses a port another program listens on, read from `/proc/net/tcp`), and whether root and passwords may log in, each either set or left as the system has it. The settings go to `/etc/ssh/sshd_config.d/00-zendiloos.conf`, read before the other drop-ins, so they win; `sshd -t` checks them first and the previous file returns if it fails. On request a transient systemd timer turns SSH off again after up to a day; SSH is then enabled only until the next boot (`enable --runtime`), as the timer itself is gone after a restart, so a restart turns it off too. Who may log in is Debian's: the accounts of the interface have no shell | keys, users allowed to log in and a web terminal belong to Debian's configuration or later |

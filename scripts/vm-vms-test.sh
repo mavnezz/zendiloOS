@@ -37,15 +37,33 @@
 #      disks, then both images with their files
 #  13. no network, bridge, dnsmasq or firewall table of libvirt's came, and
 #      nftables holds zendiloOS's rules as before
+#  14. a second storage location goes on another pool (ZENDILOOS_VMS_POOL2,
+#      else the first pool without one): its dataset mounted at
+#      /volume<N>/@vms, libvirt waiting for both; neither pool can be
+#      deleted, and the location is listed
+#  15. a VM with a disk on each location, a card on an internal network
+#      (a bridge without members made through the Network API and
+#      confirmed) and one directly on the NAS's card: both zvols on their
+#      pools, the domain's XML with a bridge and a macvtap card, the NAS
+#      without an address on the internal bridge and kept off it by
+#      nftables' bridge table; started, the VM's tap is in the bridge and
+#      a macvtap sits on the card; the location in use cannot be removed,
+#      nor can the card be taken into a bridge
+#  16. the log shows the test's VM events (searched by its name)
+#  17. the VM goes, then the internal network (its bridge table with it)
+#      and the location the test added, with the pool's name typed again
 #
 # Needs the VM running with the package installed and set up, a pool
 # zendiloOS made (ZENDILOOS_VMS_POOL picks it, else the one Docker's data
 # is on, else the first), the network for apt, node and sha256sum on this
 # machine (and the network here once, for Alpine's ISO); account and
-# password as for vm-storage-test.sh. Runs in the second VM by default
-# (2 cores, 2 GB): it installs packages and starts VMs there. The plugin
-# stays installed and its storage set up; the test's VMs, images and
-# share go.
+# password as for vm-storage-test.sh, and from step 14 on a second pool
+# without the VMs' storage and the network managed by systemd-networkd
+# (as `just vm-network-test` leaves it). Runs in the second VM by default
+# (2 cores, 2 GB, pools apps and tank): it installs packages and starts
+# VMs there. The plugin stays installed and its first location set up;
+# the test's VMs, images, share, internal network and the location it
+# added go, also when it fails.
 set -euo pipefail
 
 export ZENDILOOS_VM=${ZENDILOOS_VM:-2}
@@ -60,6 +78,11 @@ share="ztestvms"
 image_name="ztest alpine"
 upload_name="ztest upload"
 cut_name="ztest cut"
+places="ztest places"
+internal=ztvmnet0
+# Set once the test made them, so that cleaning up removes only its own.
+internal_made=""
+location_added=""
 cache=${XDG_CACHE_HOME:-$HOME/.cache}/zendiloos
 alpine="https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64"
 work=$(mktemp -d)
@@ -152,14 +175,45 @@ delete_share() {
     done
 }
 
+# The change of the network that waits for confirmation, `null` for none.
+pending() { call GET /network/setup | jq -c .pending 2>/dev/null || true; }
+
+# Sends a change of the network (a bridge made or removed) and confirms
+# it once it waits; the status code of the change, 000 if none came.
+network_change() {
+    local method=$1 path=$2 body=${3:-} code
+    code=$(status "$method" "$path" "$body")
+    [[ $code == 202 ]] || { printf '%s' "$code"; return 0; }
+    for _ in $(seq 1 60); do
+        [[ $(pending) == '{'* ]] && break
+        sleep 1
+    done
+    [[ $(status POST /network/confirm) == 204 ]] || { printf 'confirm'; return 0; }
+    printf '%s' "$code"
+}
+
+# Removes the internal network the test made, once no VM is on it.
+remove_internal() {
+    call GET /network/setup | jq -e --arg n "$internal" '.devices[] | select(.name == $n)' >/dev/null 2>&1 || return 0
+    # A change of the test's that waits (cut off before it was confirmed) goes first.
+    if [[ $(pending) == '{'* ]]; then status POST /network/confirm >/dev/null; fi
+    network_change DELETE "/network/devices/$internal" >/dev/null
+}
+
 clean() {
     delete_vm "$name"
     delete_vm "$big"
     delete_vm "renamed vm"
+    delete_vm "$places"
     delete_image "$image_name"
     delete_image "$upload_name"
     delete_image "$cut_name"
     delete_share
+    [[ -n $internal_made ]] && remove_internal
+    if [[ -n $location_added ]]; then
+        status POST "/vms/locations/$location_added/delete" "$(jq -n --arg p "$location_added" '{confirm: $p}')" >/dev/null
+    fi
+    return 0
 }
 
 cleanup() {
@@ -519,6 +573,163 @@ if [[ -n $firewall_before ]]; then
 else
     [[ -z $firewall_after ]] || fail "a firewall table appeared"
     note "the firewall is off; no table came"
+fi
+
+say "14. A second location of the VMs' storage goes on another pool"
+plugin=$(call GET /vms/plugin)
+first=$(jq -r '.storage.pool' <<<"$plugin")
+second=${ZENDILOOS_VMS_POOL2:-$(jq -r '[.pools[].pool] - [.locations[].pool] | .[0] // empty' <<<"$plugin")}
+if [[ -z $second ]]; then
+    # One of the test's earlier runs may have left it, or someone added it.
+    second=$(jq -r --arg f "$first" '[.locations[].pool | select(. != $f)][0] // empty' <<<"$plugin")
+fi
+[[ -n $second && $second != "$first" ]] || fail "no second pool for a location (the VM has $(jq -c '[.pools[].pool]' <<<"$plugin")): create one first"
+if jq -e --arg p "$second" '.locations | any(.pool == $p)' <<<"$plugin" >/dev/null; then
+    note "$second holds a location already; it stays after the test"
+else
+    [[ $(status POST /vms/locations "$(jq -n --arg p "$second" '{pool: $p}')") == 200 ]] \
+        || fail "adding a location on $second: $(cat "$work/last")"
+    location_added=$second
+fi
+plugin=$(call GET /vms/plugin)
+jq -e --arg f "$first" --arg s "$second" '.storage.pool == $f and (.locations | map(.pool) | index($f) == 0 and index($s) != null)' \
+    <<<"$plugin" >/dev/null || fail "the locations: $(jq -c '{storage, locations}' <<<"$plugin")"
+volume2=$(jq -r --arg s "$second" '.locations[] | select(.pool == $s) | .volume' <<<"$plugin")
+vm "findmnt -n -o SOURCE /volume$volume2/@vms" | grep -qx "$second/zendiloos.vms" || fail "/volume$volume2/@vms is not mounted"
+vm "sudo zfs get -H -o value setuid,devices,exec $second/zendiloos.vms" | tr '\n' ' ' | grep -q '^off off off' \
+    || fail "the second dataset allows setuid, devices or exec"
+drop_in=$(vm 'sudo cat /etc/systemd/system/libvirtd.service.d/zendiloos.conf')
+grep -q "RequiresMountsFor=/volume$volume/@vms" <<<"$drop_in" && grep -q "RequiresMountsFor=/volume$volume2/@vms" <<<"$drop_in" \
+    || fail "libvirt does not wait for both locations: $drop_in"
+for held in "$first" "$second"; do
+    code=$(status POST "/storage/pools/$held/destroy" "$(jq -n --arg p "$held" '{confirm: $p}')")
+    [[ $code == 409 ]] && jq -e '.code == "pool_in_use" and (.detail | contains("virtual machines"))' "$work/last" >/dev/null \
+        || fail "deleting $held with a location on it was not refused: $code $(cat "$work/last")"
+done
+listed=$(call GET /vms/locations)
+jq -e --arg f "$first" --arg s "$second" '(.[0].pool == $f and .[0].library) and any(.[]; .pool == $s and (.library | not) and .health != null)' \
+    <<<"$listed" >/dev/null || fail "the locations listed: $listed"
+note "$first (volume $volume, the library's) and $second (volume $volume2)"
+
+say "15. A VM with a disk on each location, a card on an internal network and one directly on the NAS's card"
+setup=$(call GET /network/setup)
+jq -e '.managed' <<<"$setup" >/dev/null || fail "systemd-networkd does not manage the network here: run just vm-network-test first"
+[[ $(jq -c .pending <<<"$setup") == null ]] || fail "a change of the network waits for confirmation: $(jq -c .pending <<<"$setup")"
+if ! jq -e --arg n "$internal" '.devices | any(.name == $n)' <<<"$setup" >/dev/null; then
+    code=$(network_change POST /network/devices "$(jq -n --arg n "$internal" '{kind: "bridge", name: $n, members: []}')")
+    [[ $code == 202 ]] || fail "making the internal network: $code $(cat "$work/last")"
+fi
+internal_made=yes
+wait_for "the internal network to be offered" \
+    "call GET /vms/plugin | jq -e --arg n '$internal' '.internal_networks | index(\$n) != null'" 60
+call GET /network/setup | jq -e --arg n "$internal" '.internal | index($n) != null' >/dev/null \
+    || fail "the Network page does not name $internal an internal network"
+wait_for "the NAS to keep itself off $internal" "vm 'sudo nft list table bridge zendiloos_internal' | grep -E 'ibrname .*$internal'" 60
+vm 'systemctl is-active --quiet zendiloos-internal-networks.service' || fail "the internal networks' unit is not active"
+rules=$(vm 'sudo nft list table bridge zendiloos_internal')
+grep -qE "hook input .*" <<<"$rules" && grep -qE "obrname .*$internal.* drop" <<<"$rules" || fail "the bridge table: $rules"
+sleep 3
+[[ -z $(vm "ip -o addr show dev $internal") ]] || fail "the NAS has an address on $internal: $(vm "ip -o addr show dev $internal")"
+plugin=$(call GET /vms/plugin)
+route_card=$(vm "ip -o route show default" | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
+card=$(jq -r --arg r "$route_card" '(.cards | if index($r) != null then $r else .[0] end) // empty' <<<"$plugin")
+[[ -n $card ]] || fail "no wired card for a VM to go on directly: $(jq -c .cards <<<"$plugin")"
+note "the internal network $internal, the card $card"
+new=$(jq -n --arg n "$places" --arg s "$second" --arg i "$internal" --arg c "$card" '{name: $n, os: "linux", cpus: 1,
+    memory_mib: 256, firmware: "bios",
+    disks: [{slot: 0, size_gib: 1, bus: "virtio"}, {slot: 1, size_gib: 2, bus: "virtio", pool: $s}],
+    nics: [{slot: 0, model: "virtio", network: {kind: "internal", network: $i}},
+           {slot: 1, model: "virtio", network: {kind: "direct", card: $c}}],
+    drives: [], boot: [{kind: "disk", slot: 0}], autostart: false}')
+[[ $(status POST /vms "$(jq '.nics[1].network.card = "lo"' <<<"$new")") == 422 ]] || fail "a card directly on lo: $(cat "$work/last")"
+[[ $(status POST /vms "$(jq '.disks[1].pool = "nowhere"' <<<"$new")") == 422 ]] || fail "a disk on no location: $(cat "$work/last")"
+[[ $(status POST /vms "$new") == 202 ]] || fail "create: $(cat "$work/last")"
+places_id=$(jq -er .vm.id "$work/last")
+job_succeeded "$(jq -r .job.id "$work/last")" 300
+domain="zendiloos-$places_id"
+vmjson=$(call GET "/vms/$places_id")
+jq -e --arg f "$first" --arg s "$second" '.disks[0].pool == $f and .disks[1].pool == $s' <<<"$vmjson" >/dev/null \
+    || fail "the disks' locations: $(jq -c .disks <<<"$vmjson")"
+[[ $(vm "sudo zfs get -H -p -o value volsize,volmode $first/zendiloos.vms/$places_id-disk0" | tr '\n' ' ') == "$((1 << 30)) dev " ]] \
+    || fail "disk 0 on $first"
+[[ $(vm "sudo zfs get -H -p -o value volsize,volmode $second/zendiloos.vms/$places_id-disk1" | tr '\n' ' ') == "$((2 << 30)) dev " ]] \
+    || fail "disk 1 on $second"
+if vm "sudo zfs list -H -o name $first/zendiloos.vms/$places_id-disk1" >/dev/null 2>&1; then fail "disk 1 is on $first too"; fi
+xml=$(vm "sudo virsh -c qemu:///system dumpxml --inactive $domain")
+grep -q "<source dev='/dev/zvol/$second/zendiloos.vms/$places_id-disk1'/>" <<<"$xml" || fail "disk 1 is not on $second: $xml"
+grep -A3 "<interface type='bridge'>" <<<"$xml" | grep -q "<source bridge='$internal'/>" || fail "no card on $internal: $xml"
+grep -A3 "<interface type='direct'>" <<<"$xml" | grep -q "<source dev='$card' mode='bridge'/>" || fail "no card directly on $card: $xml"
+for mac in $(jq -r '.nics[].mac' <<<"$vmjson"); do
+    grep -q "<mac address='$mac'/>" <<<"$xml" || fail "no card with $mac: $xml"
+done
+if grep -q "type='network'" <<<"$xml"; then fail "a network of libvirt's: $xml"; fi
+# Moved to the first location: refused, nothing changed.
+moved=$(jq '{name, cpus, memory_mib, firmware, disks: (.disks | map(.pool = "'"$first"'")),
+    nics: [.nics[] | {slot, model, network}], drives, boot, autostart}' <<<"$vmjson")
+[[ $(status PUT "/vms/$places_id" "$moved") == 422 ]] || fail "a disk moved to another location: $(cat "$work/last")"
+# Kept as they are, sent back as GET shows them: no change of the hardware, the addresses kept.
+same=$(jq '{name, cpus, memory_mib, firmware, disks, nics: [.nics[] | {slot, model, network}], drives, boot, autostart}' <<<"$vmjson")
+[[ $(status PUT "/vms/$places_id" "$same") == 200 ]] || fail "the same settings: $(cat "$work/last")"
+[[ $(jq -c '[.nics[].mac]' "$work/last") == $(jq -c '[.nics[].mac]' <<<"$vmjson") ]] || fail "the cards' addresses changed"
+# The location holds its disk: it stays.
+code=$(status POST "/vms/locations/$second/delete" "$(jq -n --arg p "$second" '{confirm: $p}')")
+[[ $code == 409 ]] && jq -e --arg n "$places" '.code == "location_in_use" and (.detail | contains($n))' "$work/last" >/dev/null \
+    || fail "a location in use was removed: $code $(cat "$work/last")"
+vm "sudo zfs list -H -o name $second/zendiloos.vms/$places_id-disk1" >/dev/null || fail "the disk on $second went"
+# The card a VM is on directly is not taken into a bridge.
+code=$(status POST /network/devices/plan "$(jq -n --arg c "$card" '{action: "make", device: {kind: "bridge", name: "ztestbr9", members: [$c]}}')")
+[[ $code == 409 ]] && jq -e --arg n "$places" '.code == "device_in_use" and (.detail | contains($n))' "$work/last" >/dev/null \
+    || fail "a card a VM is on directly would go into a bridge: $code $(cat "$work/last")"
+listed=$(call GET /vms/locations)
+jq -e --arg s "$second" --arg id "$places_id" '.[] | select(.pool == $s) | .vms | any(.id == $id and .disks == [1] and .size_bytes == 2147483648)' \
+    <<<"$listed" >/dev/null || fail "the VM on $second is not listed: $listed"
+# Started: its tap in the internal bridge, a macvtap on the card.
+if [[ $(status POST "/vms/$places_id/start") != 200 ]]; then
+    note "libvirt: $(vm "sudo tail -n 5 /var/log/libvirt/qemu/$domain.log" 2>&1)"
+    fail "start: $(cat "$work/last")"
+fi
+wait_for "the VM's tap in $internal" "vm 'ip -o link show master $internal' | grep -q ." 30
+vm "ip -o -d link show type macvtap" | grep -q "@$card" || fail "no macvtap on $card: $(vm 'ip -o -d link show type macvtap')"
+[[ -z $(vm "ip -o addr show dev $internal") ]] || fail "the NAS got an address on $internal"
+[[ $(status POST "/vms/$places_id/force-off") == 200 ]] || fail "force off: $(cat "$work/last")"
+wait_for "the VM to be off" "[[ \$(vm_state $places_id) == shut_off ]]" 30
+note "$domain: disks on $first and $second, cards on $internal and directly on $card"
+
+say "16. The log shows the test's VM events"
+log=$(call GET "/logs/audit?prefix=vms.&search=$(urlencode "$places")&limit=50")
+for action in vms.create vms.change vms.start vms.force_off; do
+    jq -e --arg a "$action" --arg n "$places" '.entries | any(.action == $a and .target == $n and .actor != null)' <<<"$log" >/dev/null \
+        || fail "no $action of $places in the log: $log"
+done
+jq -e '.entries | all(.action | startswith("vms."))' <<<"$log" >/dev/null || fail "other entries in the VMs' log: $log"
+if [[ -n $location_added ]]; then
+    call GET "/logs/audit?prefix=vms.&search=$(urlencode "$second")" | jq -e '.entries | any(.action == "vms.location_add")' >/dev/null \
+        || fail "no vms.location_add of $second in the log"
+fi
+[[ $(status GET "/logs/audit?search=$(printf 'x%.0s' $(seq 1 101))") == 422 ]] || fail "a search of 101 characters"
+
+say "17. The VM goes, then the internal network and the location the test added"
+[[ $(status POST "/vms/$places_id/delete" "$(jq -n --arg n "$places" '{confirm: $n}')") == 204 ]] || fail "delete: $(cat "$work/last")"
+for zvol in "$first/zendiloos.vms/$places_id-disk0" "$second/zendiloos.vms/$places_id-disk1"; do
+    if vm "sudo zfs list -H -o name $zvol" >/dev/null 2>&1; then fail "$zvol stayed"; fi
+done
+code=$(network_change DELETE "/network/devices/$internal")
+[[ $code == 202 ]] || fail "removing the internal network: $code $(cat "$work/last")"
+internal_made=""
+wait_for "the bridge table to go" "! vm 'sudo nft list table bridge zendiloos_internal' 2>/dev/null | grep -q '$internal'" 60
+if [[ -n $location_added ]]; then
+    code=$(status POST "/vms/locations/$second/delete" '{"confirm":"wrong"}')
+    [[ $code == 422 ]] || fail "removed without the pool's name: $code $(cat "$work/last")"
+    [[ $(status POST "/vms/locations/$second/delete" "$(jq -n --arg p "$second" '{confirm: $p}')") == 204 ]] \
+        || fail "removing the location: $(cat "$work/last")"
+    location_added=""
+    if vm "sudo zfs list -H -o name $second/zendiloos.vms" >/dev/null 2>&1; then fail "$second/zendiloos.vms stayed"; fi
+    vm "sudo test ! -e '/etc/systemd/system/volume$volume2-\\x40vms.mount'" || fail "the location's mount unit stayed"
+    if vm 'sudo cat /etc/systemd/system/libvirtd.service.d/zendiloos.conf' | grep -q "/volume$volume2/@vms"; then
+        fail "libvirt still waits for the removed location"
+    fi
+    vm 'systemctl is-active --quiet libvirtd.service' || fail "libvirtd stopped with the location"
+    call GET /vms/plugin | jq -e --arg s "$second" '.locations | all(.pool != $s)' >/dev/null || fail "the location is still listed"
 fi
 
 say "All virtual machine tests passed"

@@ -267,7 +267,7 @@ vm-firewall-test:
 vm-web-server-test:
     scripts/vm-web-server-test.sh
 
-# Virtual machines in the second VM (nested KVM): the plugin installed and set up, a VM booted into its firmware with its console's VNC greeting, an ISO added to the library from a share and by an upload, a VM of 2 disks and 2 cards changed while off and refused while it runs, its ISO ejected and inserted live, its load on the live WebSocket, the image kept while in use, no network of libvirt's
+# Virtual machines in the second VM (nested KVM): the plugin installed and set up, a VM booted into its firmware with its console's VNC greeting, an ISO added to the library from a share and by an upload, a VM of 2 disks and 2 cards changed while off and refused while it runs, its ISO ejected and inserted live, its load on the live WebSocket, the image kept while in use, a second storage location with a disk on each and its removal refused while in use, a card on an internal network the NAS has no address on and one directly on the VM's card, the VMs' log, no network of libvirt's
 vm-vms-test:
     scripts/vm-vms-test.sh
 
