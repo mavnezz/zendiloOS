@@ -526,6 +526,32 @@ const en = {
     poolUse: '{used} of {total} · {percent}',
     github: 'zendiloOS on GitHub',
   },
+  hostName: {
+    title: 'Rename this NAS',
+    description: 'The name the network knows it by.',
+    rename: 'Rename',
+    name: 'Name',
+    rules: 'Up to {max} letters, digits and -, not digits only.',
+    problems: {
+      empty: 'Enter a name.',
+      characters: 'Only letters (a–z), digits and - are allowed: no spaces, dots or umlauts.',
+      tooLong: 'At most {max} characters, as Windows takes names.',
+      hyphen: 'The name may neither begin nor end with -.',
+      digits: 'The name may not be digits only.',
+      reserved: 'localhost is the name every machine has for itself.',
+    },
+    reachedAs: 'Reached on the network as {name}.local',
+    smbAs: 'Windows lists it as {name}',
+    warning:
+      'Samba, Bonjour and WS-Discovery restart for the new name: open connections to shared folders end, and computers that remember the old name have to be told the new one. The web interface’s own certificate is made anew for the name.',
+    save: 'Rename',
+    done: 'This NAS is called {name} now; Windows lists it as {smb}.',
+    newAddress: 'Open the web interface at its new address:',
+    certificateRenewed:
+      'The web interface’s certificate was made anew for the new name: your browser asks you to trust it again once you reload the page.',
+    certificateKept:
+      'The web interface’s own certificate could not be made anew and still names the old name; the system log says why.',
+  },
   appearance: {
     description: 'How zendiloOS looks for this account.',
     language: 'Language',

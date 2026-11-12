@@ -18,6 +18,7 @@ mod docker;
 mod files;
 mod firewall;
 mod framing;
+mod host;
 mod network;
 mod packages;
 mod removable;
@@ -69,6 +70,7 @@ pub use firewall::{
     NotADockerBridge, PendingFirewall, TooManyFirewallRules, WaitingFirewall,
 };
 pub use framing::{FrameError, read_message, write_message};
+pub use host::{HostName, InvalidHostName};
 pub use network::{
     BondMode, ConfirmWithin, DeviceAction, FilesDigest, Ifupdown, IfupdownFile, InterfaceName,
     InvalidConfirmWithin, InvalidFilesDigest, InvalidInterfaceName, InvalidMacAddress, InvalidNameServers,
@@ -783,6 +785,19 @@ pub enum Request {
     },
     /// Keeps the change that waits to be confirmed.
     ConfirmFirewall {},
+    /// The machine's name as `/etc/hostname` holds it. Answers
+    /// [`Response::HostNameState`].
+    HostNameState {},
+    /// Renames the machine: systemd-hostnamed sets the name (static and
+    /// the kernel's) and `/etc/hosts` names it where it named the old one;
+    /// the machine's own, self-signed certificate is made anew for it
+    /// (nginx reloaded if it serves that one; an issued one is never
+    /// touched); Avahi, Samba and WS-Discovery restart if they run, as
+    /// they read the name when they start. Answers
+    /// [`Response::HostNameSet`].
+    SetHostName {
+        name: HostName,
+    },
     /// The clock's settings and state, and the time zones there are.
     /// Answers [`Response::TimeState`].
     TimeState {},
@@ -1159,6 +1174,8 @@ impl Request {
             Request::FirewallState {} => "firewall_state",
             Request::ApplyFirewall { .. } => "apply_firewall",
             Request::ConfirmFirewall {} => "confirm_firewall",
+            Request::HostNameState {} => "host_name_state",
+            Request::SetHostName { .. } => "set_host_name",
             Request::TimeState {} => "time_state",
             Request::SetTime { .. } => "set_time",
             Request::ListSnapshots {} => "list_snapshots",
@@ -1484,6 +1501,17 @@ pub enum Response {
         config: String,
         /// When the timer turns it off, Unix seconds.
         off_at: Option<i64>,
+    },
+    HostNameState {
+        /// `/etc/hostname` as it is; empty if there is none.
+        hostname: String,
+    },
+    HostNameSet {
+        /// The machine's own certificate names the new name.
+        certificate_renewed: bool,
+        /// nginx serves the machine's own certificate (not an issued one):
+        /// browsers are shown the new one.
+        own_certificate_served: bool,
     },
     TimeState {
         /// `timedatectl show`: zone, whether network time is on and
@@ -1904,6 +1932,7 @@ impl Request {
                 | Request::WebServerState { .. }
                 | Request::FirewallState { .. }
                 | Request::TimeState { .. }
+                | Request::HostNameState { .. }
                 | Request::ListSnapshots { .. }
                 | Request::ShareUsage { .. }
                 | Request::ListDirectory { .. }

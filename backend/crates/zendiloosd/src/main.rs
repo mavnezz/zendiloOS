@@ -27,8 +27,9 @@ use zendiloos_identity::application::{IdentityConfig, IdentityPorts, IdentityUse
 use zendiloos_infra::SystemClock;
 use zendiloos_infra::agent::{
     AgentAcme, AgentApps, AgentBackup, AgentDockerData, AgentDockerEngine, AgentFiles, AgentFirewall,
-    AgentNetwork, AgentPowerControl, AgentSharing, AgentSsh, AgentStorage, AgentSystemAccounts, AgentTime,
-    AgentUpdates, AgentVms, AgentVolumeArchiver, AgentWebTls, RandomPlanTokens, RandomVmIds, agent_version,
+    AgentHostName, AgentNetwork, AgentPowerControl, AgentSharing, AgentSsh, AgentStorage,
+    AgentSystemAccounts, AgentTime, AgentUpdates, AgentVms, AgentVolumeArchiver, AgentWebTls,
+    ChannelsFollowHostName, RandomPlanTokens, RandomVmIds, agent_version,
 };
 use zendiloos_infra::apps::{
     CatalogPolicy, ContainersForApps, FilesForApps, HttpsCatalogs, RandomSecrets, SharingForApps, YamlFiller,
@@ -152,25 +153,9 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     // An update starts only while no job runs, and no job starts while it
     // is started or installs (docs/architecture.md, 4.10).
     jobs.hold_while(Arc::new(updates.clone()));
-    let system = SystemUseCases::new(SystemPorts {
-        info: Arc::new(HostSystemInfo),
-        metrics: Arc::new(metrics),
-        power: Arc::new(AgentPowerControl::new(agent.clone())),
-        // A reboot waits for jobs and for an update being installed.
-        work: Arc::new(AllWork(vec![Arc::new(jobs.clone()), Arc::new(updates.clone())])),
-        time: Arc::new(AgentTime::new(agent.clone())),
-        ssh: Arc::new(AgentSsh::new(agent.clone())),
-        listening: Arc::new(ProcListening::default()),
-        tls: Arc::new(AgentWebTls::new(agent.clone())),
-        journal: Arc::new(journal),
-        audit: audit.clone(),
-        audit_reader: Arc::new(SqliteAuditLog::new(database.clone())),
-        clock: Arc::new(SystemClock),
-    });
     // Notifications also go out by email and to webhooks, named after the host.
-    let host_name = std::fs::read_to_string("/proc/sys/kernel/hostname")
-        .map(|name| name.trim().to_owned())
-        .unwrap_or_else(|_| "zendiloOS".to_owned());
+    // The one /etc/hostname holds, which follows a rename (as Channels do).
+    let host_name = zendiloos_infra::host::host_name().unwrap_or_else(|| "zendiloOS".to_owned());
     let channels = Channels::new(
         ChannelPorts {
             repository: Arc::new(channel_store.clone()),
@@ -183,6 +168,23 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         },
         host_name,
     );
+    let system = SystemUseCases::new(SystemPorts {
+        info: Arc::new(HostSystemInfo),
+        metrics: Arc::new(metrics),
+        power: Arc::new(AgentPowerControl::new(agent.clone())),
+        // A reboot waits for jobs and for an update being installed.
+        work: Arc::new(AllWork(vec![Arc::new(jobs.clone()), Arc::new(updates.clone())])),
+        time: Arc::new(AgentTime::new(agent.clone())),
+        host_name: Arc::new(AgentHostName::new(agent.clone())),
+        host_name_observer: Arc::new(ChannelsFollowHostName(channels.clone())),
+        ssh: Arc::new(AgentSsh::new(agent.clone())),
+        listening: Arc::new(ProcListening::default()),
+        tls: Arc::new(AgentWebTls::new(agent.clone())),
+        journal: Arc::new(journal),
+        audit: audit.clone(),
+        audit_reader: Arc::new(SqliteAuditLog::new(database.clone())),
+        clock: Arc::new(SystemClock),
+    });
     let channel_delivery = channels.clone().spawn(&notifier);
     let apps = Catalogs::new(
         Arc::new(SqliteAppSources::new(database.clone())),

@@ -427,8 +427,8 @@ pub struct ChannelPorts {
 #[derive(Clone)]
 pub struct Channels {
     ports: ChannelPorts,
-    /// The NAS's name, in every message.
-    host: String,
+    /// The NAS's name, in every message; it follows a rename.
+    host: Arc<Mutex<String>>,
     /// Something was queued or a channel is done: the queue looks again.
     wake: Arc<Notify>,
     /// The channels whose deliveries are being sent, each by a task of its
@@ -453,7 +453,21 @@ impl Drop for Sending {
 
 impl Channels {
     pub fn new(ports: ChannelPorts, host: String) -> Self {
-        Self { ports, host, wake: Arc::new(Notify::new()), sending: Arc::default() }
+        Self {
+            ports,
+            host: Arc::new(Mutex::new(host)),
+            wake: Arc::new(Notify::new()),
+            sending: Arc::default(),
+        }
+    }
+
+    /// The NAS was renamed: messages from now on name it so.
+    pub fn rename(&self, host: &str) {
+        host.clone_into(&mut self.host.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
+    }
+
+    fn host(&self) -> String {
+        self.host.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
     }
 
     pub async fn list(&self) -> Result<Vec<Channel>, ChannelError> {
@@ -698,11 +712,12 @@ impl Channels {
     /// Sends `notification` on `channel` once, and records the outcome as
     /// the channel's last delivery.
     async fn send(&self, channel: &Channel, notification: &Notification) -> Result<(), SendFailure> {
-        let text = message(notification, &self.host, channel.settings.language);
+        let host = self.host();
+        let text = message(notification, &host, channel.settings.language);
         let sent = match self.target(channel).await {
             Ok(target) => tokio::time::timeout(
                 SEND_TIMEOUT,
-                self.ports.sender.send(&target, &text, notification, &self.host),
+                self.ports.sender.send(&target, &text, notification, &host),
             )
             .await
             .unwrap_or_else(|_| {
@@ -1471,6 +1486,11 @@ mod tests {
         t.channels.send_due().await;
         assert_eq!(sent_titles(&t.sender), ["[nas] Test message", "[nas] Pool tank is degraded"]);
         assert!(t.queued().is_empty());
+
+        // Renamed: the next one names the new name.
+        t.channels.rename("office");
+        t.channels.test(chat.id, &alice(), &request()).await.unwrap();
+        assert_eq!(sent_titles(&t.sender)[2], "[office] Test message");
     }
 
     #[tokio::test]

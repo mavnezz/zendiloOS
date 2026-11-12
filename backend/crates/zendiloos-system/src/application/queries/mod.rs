@@ -1,3 +1,4 @@
+mod get_host_name;
 mod get_ssh;
 mod get_system_info;
 mod get_time;
@@ -5,6 +6,7 @@ mod get_tls;
 mod read_logs;
 mod watch_metrics;
 
+pub use get_host_name::GetHostName;
 pub use get_ssh::GetSsh;
 pub use get_system_info::GetSystemInfo;
 pub use get_time::GetTime;

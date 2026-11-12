@@ -100,6 +100,7 @@ impl Host {
             smbpasswd: any.clone(),
             busctl: any.clone(),
             ip: "/bin/false".into(),
+            hostnamectl: "/bin/false".into(),
             timedatectl: any.clone(),
             sshd: any.clone(),
             docker: any.clone(),

@@ -1,22 +1,28 @@
 <script setup lang="ts">
-import { Clock, Cpu, Database, ExternalLink, Server } from 'lucide-vue-next'
-import { computed, onScopeDispose, shallowRef } from 'vue'
+import { Clock, Cpu, Database, ExternalLink, Pencil, Server } from 'lucide-vue-next'
+import { computed, onScopeDispose, ref, shallowRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { live } from '@/shared/api/live'
 import type { Metrics, Pool } from '@/shared/api/types'
 import { formatBytes, formatDateTime, formatDuration, formatPercent } from '@/shared/lib/format'
 import { PROJECT_URL } from '@/shared/lib/star-prompt'
+import { Button } from '@/shared/ui/button'
 import { Meter } from '@/shared/ui/meter'
 import { DefinitionList, PageCard, PageHeader } from '@/shared/ui/page'
 
-import { useSystemInfo } from '../api'
+import { useHostName, useSystemInfo } from '../api'
+import HostNameDialog from './HostNameDialog.vue'
 
-/** The pools, if the account may see storage. */
-const props = defineProps<{ pools?: Pool[] }>()
+/** The pools, if the account may see storage; `canManage` renames the machine. */
+const props = defineProps<{ pools?: Pool[]; canManage?: boolean }>()
 
 const { t } = useI18n()
 const { data: info } = useSystemInfo()
+const { data: hostName } = useHostName()
+/** As the system keeps it now; the information's is the one zendiloOS started with. */
+const name = computed(() => hostName.value?.name || info.value?.hostname)
+const renaming = ref(false)
 const latest = shallowRef<Metrics | null>(null)
 onScopeDispose(live.subscribe('metrics', (sample) => (latest.value = sample)))
 
@@ -100,7 +106,21 @@ const share = (pool: Pool) => {
       >
         <div v-if="info" class="grid gap-4">
           <div>
-            <p class="text-2xl font-semibold tracking-tight">{{ info.hostname }}</p>
+            <div class="flex items-center gap-2">
+              <p class="text-2xl font-semibold tracking-tight" data-testid="host-name">
+                {{ name }}
+              </p>
+              <Button
+                v-if="canManage && hostName"
+                variant="ghost"
+                size="icon"
+                :aria-label="t('hostName.rename')"
+                :title="t('hostName.rename')"
+                @click="renaming = true"
+              >
+                <Pencil class="size-4" />
+              </Button>
+            </div>
             <p class="text-sm text-muted-foreground">zendiloOS {{ info.version }}</p>
             <a
               :href="PROJECT_URL"
@@ -159,5 +179,11 @@ const share = (pool: Pool) => {
         </div>
       </PageCard>
     </div>
+    <HostNameDialog
+      v-if="hostName"
+      v-model:open="renaming"
+      :name="hostName.name"
+      :max-length="hostName.max_length"
+    />
   </div>
 </template>

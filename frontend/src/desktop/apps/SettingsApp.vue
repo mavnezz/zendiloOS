@@ -90,7 +90,11 @@ const { data: pools } = useQuery({
       :title="t(current.label)"
       :description="t(`controlPanel.soon.${current.id}`)"
     />
-    <DeviceInfoPage v-else-if="section === 'device'" :pools="pools" />
+    <DeviceInfoPage
+      v-else-if="section === 'device'"
+      :pools="pools"
+      :can-manage="session.can('system.manage')"
+    />
     <StoragePage
       v-else-if="storagePage"
       :page="storagePage"

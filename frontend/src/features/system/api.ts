@@ -2,12 +2,41 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { computed } from 'vue'
 
 import { api, unwrap } from '@/shared/api/client'
-import type { PowerAction, SshRequest, TimeRequest, WebServer } from '@/shared/api/types'
+import type {
+  HostNameRenamed,
+  PowerAction,
+  SshRequest,
+  TimeRequest,
+  WebServer,
+} from '@/shared/api/types'
 
 export function useSystemInfo() {
   return useQuery({
     queryKey: ['system', 'info'],
     queryFn: () => unwrap(api.GET('/api/v1/system/info')),
+  })
+}
+
+/** The machine's name as the system keeps it, and how long a new one may be. */
+export function useHostName() {
+  return useQuery({
+    queryKey: ['system', 'hostname'],
+    queryFn: () => unwrap(api.GET('/api/v1/system/hostname')),
+  })
+}
+
+/** Renames the machine; what derives from the name follows on the server. */
+export function useSetHostName() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (name: string): Promise<HostNameRenamed> =>
+      unwrap(api.PUT('/api/v1/system/hostname', { body: { name } })),
+    onSuccess: async (renamed) => {
+      client.setQueryData(['system', 'hostname'], (state: { max_length: number } | undefined) =>
+        state ? { ...state, name: renamed.name } : state,
+      )
+      await client.invalidateQueries({ queryKey: ['system', 'info'] })
+    },
   })
 }
 

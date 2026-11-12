@@ -16,6 +16,24 @@ pub struct HostSystemInfo;
 /// os-release(5): `/etc/os-release` takes precedence, `/usr/lib/os-release`
 /// is the fallback.
 const OS_RELEASE_PATHS: [&str; 2] = ["/etc/os-release", "/usr/lib/os-release"];
+/// The name the system keeps; zendiloosd has a UTS namespace of its own
+/// (`ProtectHostname`), whose name is the one it started with.
+const HOSTNAME: &str = "/etc/hostname";
+
+/// The name `/etc/hostname` holds: its first line that is neither empty
+/// nor a comment (hostname(5)).
+pub fn static_name(text: &str) -> Option<&str> {
+    text.lines().map(str::trim).find(|line| !line.is_empty() && !line.starts_with('#'))
+}
+
+/// The machine's name as it is now: `/etc/hostname`, which follows a
+/// rename, or the one zendiloosd started with.
+pub fn host_name() -> Option<String> {
+    fs::read_to_string(HOSTNAME)
+        .ok()
+        .and_then(|text| static_name(&text).map(str::to_owned))
+        .or_else(|| System::host_name().ok())
+}
 
 #[async_trait]
 impl SystemInfoProvider for HostSystemInfo {
@@ -42,7 +60,7 @@ fn read_system_info() -> Result<SystemInfo, PortError> {
     )?;
 
     Ok(SystemInfo {
-        hostname: read("hostname", System::host_name())?,
+        hostname: host_name().ok_or_else(|| PortError::new("hostname", "the machine has no name"))?,
         os_name: OS_RELEASE_PATHS
             .iter()
             .find_map(|path| fs::read_to_string(path).ok())
@@ -92,6 +110,13 @@ mod tests {
         assert!(!info.architecture.is_empty());
         assert!(info.cpu_threads > 0);
         assert!(info.memory_total_bytes > 0);
+    }
+
+    #[test]
+    fn the_name_is_the_first_line_of_etc_hostname_that_says_one() {
+        assert_eq!(static_name("# by the installer\n\n nas \n"), Some("nas"));
+        assert_eq!(static_name("# nothing\n"), None);
+        assert!(host_name().is_some_and(|name| !name.is_empty()));
     }
 
     #[test]

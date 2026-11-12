@@ -1,3 +1,4 @@
+mod host_name;
 mod logs;
 mod metrics;
 mod power;
@@ -6,6 +7,7 @@ mod system_info;
 mod time;
 mod web;
 
+pub use host_name::{HOST_NAME_MAX, HostName, InvalidHostName, Renamed};
 pub use logs::{
     AuditQuery, AuditRecord, InvalidCursor, InvalidSearch, JournalCursor, JournalEntry, JournalPage,
     JournalQuery, LogPriority, LogSource, audit_search,

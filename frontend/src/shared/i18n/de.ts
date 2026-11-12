@@ -539,6 +539,33 @@ const de: Messages = {
     poolUse: '{used} von {total} · {percent}',
     github: 'zendiloOS auf GitHub',
   },
+  hostName: {
+    title: 'Dieses NAS umbenennen',
+    description: 'Der Name, unter dem das Netzwerk es kennt.',
+    rename: 'Umbenennen',
+    name: 'Name',
+    rules: 'Bis zu {max} Buchstaben, Ziffern und -, nicht nur Ziffern.',
+    problems: {
+      empty: 'Geben Sie einen Namen ein.',
+      characters:
+        'Erlaubt sind nur Buchstaben (a–z), Ziffern und -: keine Leerzeichen, Punkte oder Umlaute.',
+      tooLong: 'Höchstens {max} Zeichen, wie Windows Namen nimmt.',
+      hyphen: 'Der Name darf weder mit - beginnen noch enden.',
+      digits: 'Der Name darf nicht nur aus Ziffern bestehen.',
+      reserved: 'localhost ist der Name, den jeder Rechner für sich selbst hat.',
+    },
+    reachedAs: 'Im Netzwerk erreichbar als {name}.local',
+    smbAs: 'Windows zeigt es als {name}',
+    warning:
+      'Samba, Bonjour und WS-Discovery starten für den neuen Namen neu: Offene Verbindungen zu freigegebenen Ordnern enden, und Rechner, die den alten Namen kennen, brauchen den neuen. Das eigene Zertifikat der Weboberfläche wird für den Namen neu erstellt.',
+    save: 'Umbenennen',
+    done: 'Dieses NAS heißt jetzt {name}; Windows zeigt es als {smb}.',
+    newAddress: 'Öffnen Sie die Weboberfläche unter ihrer neuen Adresse:',
+    certificateRenewed:
+      'Das Zertifikat der Weboberfläche wurde für den neuen Namen neu erstellt: Ihr Browser fragt erneut, ob Sie ihm vertrauen, sobald Sie die Seite neu laden.',
+    certificateKept:
+      'Das eigene Zertifikat der Weboberfläche konnte nicht neu erstellt werden und nennt noch den alten Namen; das Systemprotokoll sagt, warum.',
+  },
   appearance: {
     description: 'Wie zendiloOS für dieses Konto aussieht.',
     language: 'Sprache',

@@ -45,6 +45,7 @@ checks and how to run it.
 | `vm-security-test` | TLS, failed sign-ins and blocked addresses, sessions |
 | `vm-firewall-test` | the firewall with nftables, Docker's published ports, a change that goes back unless confirmed |
 | `vm-ssh-test` | SSH as a service: port, rules, switching itself off |
+| `vm-hostname-test` | renaming the machine: the host name, `/etc/hosts`, Samba's NetBIOS name, `<name>.local` through Avahi, the certificate; the name put back |
 | `vm-web-server-test` | the web interface's ports and certificates, ACME |
 | `vm-notify-test` | notifications by e-mail and webhook |
 | `vm-network-test` | changing a card's addresses, a change that cuts the VM off going back |

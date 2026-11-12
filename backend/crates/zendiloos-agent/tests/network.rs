@@ -118,6 +118,7 @@ impl Host {
             groupdel: any.clone(),
             gpasswd: any.clone(),
             smbpasswd: any.clone(),
+            hostnamectl: "/bin/false".into(),
             timedatectl: any.clone(),
             sshd: any.clone(),
             // A transient unit deleting a link takes it off the host.

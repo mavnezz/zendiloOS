@@ -3952,6 +3952,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/hostname": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The machine's name. Needs `system.view`. */
+        get: operations["host_name"];
+        /**
+         * Renames the machine. What derives from the name follows at once:
+         *     `<name>.local` (Avahi), the SMB name (Samba's NetBIOS name, the name in
+         *     uppercase) and WS-Discovery, which restart if they run (open SMB
+         *     connections end), `/etc/hosts`, the web interface's own certificate
+         *     (never an issued one) and the notifications. Needs `system.manage`.
+         */
+        put: operations["set_host_name"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/info": {
         parameters: {
             query?: never;
@@ -6502,6 +6526,39 @@ export interface components {
         };
         /** @enum {string} */
         HookFormat: "json" | "text";
+        /** @description What came of a rename. */
+        HostNameRenamed: {
+            /**
+             * @description The web interface's own certificate was made anew for the name; if
+             *     not, it still names the old one.
+             */
+            certificate_renewed: boolean;
+            name: string;
+            /** @description As Samba and Windows show it. */
+            netbios_name: string;
+            /**
+             * @description The web interface serves that certificate: browsers meet a new one
+             *     and ask to trust it again.
+             */
+            own_certificate_served: boolean;
+        };
+        HostNameRequest: {
+            /**
+             * @description Letters, digits and `-`, at most 15, not digits only; kept in
+             *     lowercase.
+             */
+            name: string;
+        };
+        /** @description The machine's name. */
+        HostNameState: {
+            /** @description The most characters a new name may have (NetBIOS's limit). */
+            max_length: number;
+            /**
+             * @description As the system keeps it (`/etc/hostname`); one set elsewhere may be
+             *     longer than a new one may be.
+             */
+            name: string;
+        };
         ImageUpdate: {
             /** @description The containers made from it, by name. */
             containers: string[];
@@ -18414,6 +18471,75 @@ export interface operations {
             };
             /** @description `forbidden` */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    host_name: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HostNameState"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_host_name: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HostNameRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HostNameRenamed"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`: not a name of letters, digits and -, too long, digits only, localhost */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

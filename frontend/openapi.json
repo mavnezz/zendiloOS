@@ -13046,6 +13046,94 @@
         ]
       }
     },
+    "/api/v1/system/hostname": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "The machine's name. Needs `system.view`.",
+        "operationId": "host_name",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostNameState"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Renames the machine. What derives from the name follows at once:\n`<name>.local` (Avahi), the SMB name (Samba's NetBIOS name, the name in\nuppercase) and WS-Discovery, which restart if they run (open SMB\nconnections end), `/etc/hosts`, the web interface's own certificate\n(never an issued one) and the notifications. Needs `system.manage`.",
+        "operationId": "set_host_name",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HostNameRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostNameRenamed"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`: not a name of letters, digits and -, too long, digits only, localhost",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/system/info": {
       "get": {
         "tags": [
@@ -20483,6 +20571,65 @@
           "json",
           "text"
         ]
+      },
+      "HostNameRenamed": {
+        "type": "object",
+        "description": "What came of a rename.",
+        "required": [
+          "name",
+          "netbios_name",
+          "certificate_renewed",
+          "own_certificate_served"
+        ],
+        "properties": {
+          "certificate_renewed": {
+            "type": "boolean",
+            "description": "The web interface's own certificate was made anew for the name; if\nnot, it still names the old one."
+          },
+          "name": {
+            "type": "string"
+          },
+          "netbios_name": {
+            "type": "string",
+            "description": "As Samba and Windows show it."
+          },
+          "own_certificate_served": {
+            "type": "boolean",
+            "description": "The web interface serves that certificate: browsers meet a new one\nand ask to trust it again."
+          }
+        }
+      },
+      "HostNameRequest": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Letters, digits and `-`, at most 15, not digits only; kept in\nlowercase."
+          }
+        },
+        "additionalProperties": false
+      },
+      "HostNameState": {
+        "type": "object",
+        "description": "The machine's name.",
+        "required": [
+          "name",
+          "max_length"
+        ],
+        "properties": {
+          "max_length": {
+            "type": "integer",
+            "description": "The most characters a new name may have (NetBIOS's limit).",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string",
+            "description": "As the system keeps it (`/etc/hostname`); one set elsewhere may be\nlonger than a new one may be."
+          }
+        }
       },
       "ImageUpdate": {
         "type": "object",

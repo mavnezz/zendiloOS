@@ -73,6 +73,8 @@ pub struct SimulatedAgent {
     engine: Mutex<docker::SimDocker>,
     /// The clock's settings; the time itself stays the real one.
     time: Mutex<SimTime>,
+    /// The machine's name, as `/etc/hostname` would hold it.
+    host_name: Mutex<String>,
     /// The oldest TLS version the web interface accepts.
     tls: Mutex<zendiloos_agent_proto::TlsMinimum>,
     /// The SSH server's settings and the time it turns itself off.
@@ -393,6 +395,7 @@ impl SimulatedAgent {
             apps: Mutex::default(),
             engine: Mutex::default(),
             time: Mutex::default(),
+            host_name: Mutex::new("zendiloos".to_owned()),
             tls: Mutex::new(zendiloos_agent_proto::TlsMinimum::Tls12),
             ssh: Mutex::new((
                 zendiloos_agent_proto::SshConfig {
@@ -1148,6 +1151,14 @@ impl AgentTransport for SimulatedAgent {
                 let off_at = config.off_after.map(|off| now + i64::from(off.get()) * 60);
                 *self.ssh.lock().unwrap_or_else(PoisonError::into_inner) = (config.clone(), off_at);
                 Response::Done
+            }
+            Request::HostNameState {} => Response::HostNameState {
+                hostname: format!("{}\n", self.host_name.lock().unwrap_or_else(PoisonError::into_inner)),
+            },
+            Request::SetHostName { name } => {
+                *self.host_name.lock().unwrap_or_else(PoisonError::into_inner) = name.as_str().to_owned();
+                // As a machine whose web interface serves its own certificate.
+                Response::HostNameSet { certificate_renewed: true, own_certificate_served: true }
             }
             Request::TimeState {} => self.time.lock().unwrap_or_else(PoisonError::into_inner).state(),
             Request::SetTime { zone, network_time, servers, clock } => {

@@ -21,6 +21,7 @@ use crate::emmc::Emmc;
 use crate::enclosure::Enclosure;
 use crate::files::Files;
 use crate::firewall::{Firewall, FirewallPaths};
+use crate::host_name::{HostNamePaths, HostNames};
 use crate::network::{Network, NetworkPaths};
 use crate::packages::Packages;
 use crate::pools::{Erasable, HostPaths, Pools};
@@ -42,6 +43,7 @@ pub struct Paths {
     pub host: HostPaths,
     pub network: NetworkPaths,
     pub time: TimePaths,
+    pub host_name: HostNamePaths,
     pub ssh: SshPaths,
     pub web: WebPaths,
     pub acme: AcmePaths,
@@ -78,6 +80,7 @@ pub struct Operations {
     files: Files,
     network: std::sync::Arc<Network>,
     time: Time,
+    host_names: HostNames,
     ssh: Ssh,
     web: Web,
     acme: Acme,
@@ -121,6 +124,7 @@ impl Operations {
             ),
             network: std::sync::Arc::new(Network::new(tools, paths.network)?),
             time: Time::new(tools, paths.time)?,
+            host_names: HostNames::new(tools, paths.host_name)?,
             ssh: Ssh::new(tools, paths.ssh)?,
             web: Web::new(tools, paths.web)?,
             acme: Acme::new(tools, paths.acme)?,
@@ -407,6 +411,8 @@ impl Operations {
                 self.firewall.apply(config.as_ref(), *confirm_within, waiting.as_ref()).await
             }
             Request::ConfirmFirewall {} => self.firewall.confirm().await,
+            Request::HostNameState {} => self.host_names.state(),
+            Request::SetHostName { name } => self.host_names.set(name, &self.web_server).await,
             Request::TimeState {} => self.time.state().await,
             Request::SetTime { zone, network_time, servers, clock } => {
                 self.time.set(zone, *network_time, servers, *clock).await
