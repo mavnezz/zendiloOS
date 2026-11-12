@@ -347,7 +347,7 @@ cancel_job=$(jq -r .id "$work/last")
 state=$(job_end "$cancel_job" 300)
 [[ $state == "failed canceled"* || $state == succeeded* ]] || fail "the canceled job: $state"
 if [[ $state == "failed canceled"* ]]; then
-    if [[ -n $(vm "sudo find /volume$volume/$share/vm-backups/$sid -name manifest.json") ]]; then
+    if [[ -n $(vm "sudo find /volume$volume/$share/vm-backups/$sid -name manifest.json 2>/dev/null" || true) ]]; then
         fail "a canceled backup left a manifest"
     fi
     note "canceled; no manifest"
