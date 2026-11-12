@@ -295,6 +295,8 @@ share_id=$(call POST /shares "$(jq -n --arg n "$share" --arg pool "$pool" --argj
     || fail "the test's share"
 volume=$(call GET /shares | jq -er --arg s "$share" '.[] | select(.name == $s) | .volume')
 target=$(jq -n --argjson s "$share_id" '{target: {kind: "share", share_id: $s}, folder: "vm-backups"}')
+# The VM's snapshots before: the one from step 4 stays, the backup's own goes.
+snapshots_before=$(vm "sudo zfs list -H -t snapshot -o name -r $pool/zendiloos.vms" | grep "$did" || true)
 [[ $(status POST "/vms/$did/backups" "$target") == 202 ]] || fail "backup: $(cat "$work/last")"
 job_succeeded "$(jq -r .id "$work/last")" 900
 backup=$(call GET /vms/backups | jq -c --arg id "$did" '[.[] | select(.vm == $id)][0]')
@@ -313,8 +315,9 @@ if vm 'command -v zstd >/dev/null'; then
         || fail "the image does not hold the disk"
     note "Debian's zstd reads the image back"
 fi
-if vm "sudo zfs list -H -t snapshot -o name -r $pool/zendiloos.vms" | grep -q "$did"; then
-    fail "the backup's snapshot stayed: $(vm "sudo zfs list -H -t snapshot -o name -r $pool/zendiloos.vms")"
+snapshots_after=$(vm "sudo zfs list -H -t snapshot -o name -r $pool/zendiloos.vms" | grep "$did" || true)
+if [[ $snapshots_after != "$snapshots_before" ]]; then
+    fail "the backup's snapshot stayed: before: $snapshots_before; after: $snapshots_after"
 fi
 [[ $(vm "sudo zfs get -H -o value snapdev $d0") == hidden ]] || fail "the snapshots' devices stayed"
 [[ -z $(vm "systemctl list-units --all --plain --no-legend 'zendiloos-vm-*'") ]] || fail "a unit stayed"
@@ -344,7 +347,7 @@ cancel_job=$(jq -r .id "$work/last")
 state=$(job_end "$cancel_job" 300)
 [[ $state == "failed canceled"* || $state == succeeded* ]] || fail "the canceled job: $state"
 if [[ $state == "failed canceled"* ]]; then
-    if vm "sudo find /volume$volume/$share/vm-backups/$sid -name manifest.json" | grep -q .; then
+    if [[ -n $(vm "sudo find /volume$volume/$share/vm-backups/$sid -name manifest.json") ]]; then
         fail "a canceled backup left a manifest"
     fi
     note "canceled; no manifest"
@@ -374,12 +377,16 @@ else
     uid=$(jq -er .vm.id "$work/last")
     job_succeeded "$(jq -r .job.id "$work/last")" 300
     vendor=${usb%%:*}
-    vm "sudo virsh -c qemu:///system dumpxml zendiloos-$uid" | grep -q "<vendor id='0x$vendor'/>" || fail "no hostdev of $usb"
+    # Read whole first: grep -q stopping early breaks the pipe, which
+    # pipefail counts.
+    xml=$(vm "sudo virsh -c qemu:///system dumpxml zendiloos-$uid")
+    grep -q "<vendor id='0x$vendor'/>" <<<"$xml" || fail "no hostdev of $usb"
     [[ $(status POST "/vms/$uid/start") == 200 ]] || fail "start with $usb: $(cat "$work/last")"
     change=$(call GET "/vms/$uid" | jq '{name, cpus, memory_mib, firmware, disks, nics: [], drives, boot, autostart,
         usb: [], pci, tpm, secure_boot}')
     [[ $(status PUT "/vms/$uid" "$change") == 200 ]] || fail "pulled out while it runs: $(cat "$work/last")"
-    if vm "sudo virsh -c qemu:///system dumpxml zendiloos-$uid" | grep -q "<vendor id='0x$vendor'/>"; then
+    xml=$(vm "sudo virsh -c qemu:///system dumpxml zendiloos-$uid")
+    if grep -q "<vendor id='0x$vendor'/>" <<<"$xml"; then
         fail "$usb is still in the running VM"
     fi
     note "$usb given by vendor and product, pulled out while it ran"
