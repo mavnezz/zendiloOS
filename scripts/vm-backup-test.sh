@@ -448,9 +448,9 @@ restore=$(jq -n --argjson v "$oldest" --argjson d "$dst_id" '{version: $v, paths
 job_succeeded "$(jq -r .id "$work/last")"
 [[ $(sums "$dst/restored") == "$expected" ]] || fail "the restored files differ from the version"
 ok "restored version $older_name into $dst_share/restored: the same bytes"
-group=$(vm "stat -c %G \"$dst/restored/docs/notes.txt\"")
+group=$(vm "sudo stat -c %G \"$dst/restored/docs/notes.txt\"")
 [[ $group == zendiloos-files ]] || fail "a restored file's group is $group"
-vm "getfacl -p \"$dst/restored/docs/notes.txt\" 2>/dev/null | grep -q '^group:zendiloos-files:'" \
+vm "sudo getfacl -p \"$dst/restored/docs/notes.txt\" 2>/dev/null | grep -q '^group:zendiloos-files:'" \
     || note "getfacl shows no named group entry (the share's inherited ACL)"
 ok "restored files take the share's group"
 vm "echo 'changed after the restore' | sudo tee \"$dst/restored/docs/notes.txt\" >/dev/null"
@@ -517,7 +517,7 @@ restore=$(jq -n --argjson v "$oldest" --argjson d "$dst_id" '{version: $v, paths
 job_succeeded "$(jq -r .id "$work/last")"
 [[ $(sums "$dst/decrypted") == "$before" ]] || fail "the decrypted files differ from the source as it was"
 ok "the older version restored and decrypted: the same bytes as the source then"
-group=$(vm "stat -c %G \"$dst/decrypted/docs/notes.txt\"")
+group=$(vm "sudo stat -c %G \"$dst/decrypted/docs/notes.txt\"")
 [[ $group == zendiloos-files ]] || fail "a decrypted file's group is $group"
 ok "decrypted files take the share's group"
 some=$(jq -n --argjson v "$newest" --argjson d "$dst_id" '{version: $v, paths: ["docs"], existing: "replace",
