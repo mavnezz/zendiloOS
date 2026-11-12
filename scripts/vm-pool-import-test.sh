@@ -113,7 +113,10 @@ rules_gone() { local out; out=$(vm 'sudo nft list table inet zendiloos_firewall'
 vm 'dpkg -s zendiloos >/dev/null 2>&1' || fail "zendiloos is not installed: ZENDILOOS_VM=$vm_number just vm install"
 curl -sk "$base/api/v1/setup" | jq -e .required >/dev/null \
     || fail "VM $vm_number is set up already: make it afresh (destroy, create, start, install)"
-vm "command -v smbclient >/dev/null || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq smbclient >/dev/null"
+# The client inside the VM, again after the reinstall, whose fresh system
+# disk has none.
+smb_client() { vm "command -v smbclient >/dev/null || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq smbclient >/dev/null"; }
+smb_client
 
 say "1. A pool, a share with a file and the firewall's rules, backed up"
 reply=$(curl -sk -o "$work/setup" -w '%{http_code}' -H "Origin: $base" -H 'Content-Type: application/json' \
@@ -152,6 +155,7 @@ say "2. Reinstalled, the spare disks kept"
 "$root/scripts/vm.sh" start
 "$root/scripts/vm.sh" install "${ZENDILOOS_DEB:-}"
 wait_for "zendiloosd" "curl -skf $base/api/v1/health" 180
+smb_client
 new_hostid=$(vm 'od -An -tx4 /etc/hostid 2>/dev/null | tr -d " "')
 [[ $new_hostid != "$old_hostid" ]] || fail "the reinstalled machine has the old host id"
 listed=$(vm 'sudo zpool import -d /dev/disk/by-id 2>&1' || true)
