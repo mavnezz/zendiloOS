@@ -2762,10 +2762,20 @@ grows (`zfs set volsize`; the guest grows its partition itself), never
 shrinks; the agent looks at every zvol's size first and changes nothing if
 one would. A disk removed is destroyed with its data, after the domain no
 longer names it, and only with the VM's name typed again. A card keeps
-its MAC address by its slot; a card on a bridge, internal network or card
-that is gone since may stay on it, but none goes onto one the machine
-does not have. Devices are kept in the order of their slots, so a change
-that sends them in another order is no hardware change.
+its MAC address by its slot, from the VM's record as it is once the
+change holds the lock that changes and creations take (read again then,
+not from a look before the host was asked); a card on a bridge, internal
+network or card that is gone since may stay on it, but none goes onto one
+the machine does not have. A VM is read with its devices in one
+transaction, so a record is never seen with the devices of a change
+written meanwhile, and zendiloosd's journal names the cards of each VM
+recorded and changed (`vms: recorded`, `vms: changed`, slot and address
+each). Devices are kept in the order of their slots, so a change that
+sends them in another order is no hardware change. (Issue #71, cards with
+other addresses after an edit in two of about ten runs of the VM test,
+has no cause found in the code: a test changes VMs at random, the cards in
+any order, others made and changed at the same time, and every card keeps
+its address.)
 
 **The network.** A card's network is one of four kinds, which the
 Networks page lists with the VMs on each and what each means in one line.

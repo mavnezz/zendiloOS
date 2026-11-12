@@ -144,6 +144,23 @@ job_succeeded() {
     [[ $state == succeeded* ]] || fail "job $1: $state"
 }
 
+# Fails unless the VM's answer in $work/last has the cards of $2 (a GET
+# from before), slot by slot. Should it not, it says what a GET now,
+# libvirt and zendiloosd's journal (which logs the cards of each VM recorded
+# and changed, issue #71) tell, so the next time shows where the addresses
+# came from.
+same_cards() {
+    local id=$1 before=$2 after
+    after=$(jq -c '[.nics[] | [.slot, .mac]]' "$work/last")
+    [[ $after == $(jq -c '[.nics[] | [.slot, .mac]]' <<<"$before") ]] && return 0
+    note "the answer: $after"
+    note "before: $(jq -c '[.nics[] | [.slot, .mac]]' <<<"$before")"
+    note "GET now: $(call GET "/vms/$id" | jq -c '[.nics[] | [.slot, .mac]]')"
+    note "libvirt: $(vm "sudo virsh -c qemu:///system dumpxml --inactive zendiloos-$id" | grep -o "mac address='[^']*'" | tr '\n' ' ')"
+    note "journal: $(vm "sudo journalctl -u zendiloosd --since '-15 min' --no-pager -o cat" | grep "$id" | grep -E 'vms: (recorded|changed)' | tail -n 5)"
+    fail "the cards' addresses changed"
+}
+
 # The id of the VM called $1, if there is one.
 vm_id() { call GET /vms | jq -r --arg n "$1" '.[] | select(.name == $n) | .id'; }
 
@@ -484,9 +501,7 @@ change=$(jq '{name, cpus: 2, memory_mib: 512, firmware, disks: (.disks | map(if 
     nics: [.nics[] | {slot, model, network}], drives, boot, autostart}' <<<"$vmjson")
 [[ $(status PUT "/vms/$big_id" "$change") == 200 ]] || fail "change while off: $(cat "$work/last")"
 jq -e '.cpus == 2 and .memory_mib == 512' "$work/last" >/dev/null || fail "not changed: $(cat "$work/last")"
-macs_after=$(jq -c '[.nics[].mac]' "$work/last")
-macs_before=$(jq -c '[.nics[].mac]' <<<"$vmjson")
-[[ $macs_after == "$macs_before" ]] || fail "the cards' addresses changed: $macs_before, then $macs_after"
+same_cards "$big_id" "$vmjson"
 xml=$(vm "sudo virsh -c qemu:///system dumpxml --inactive $domain")
 grep -q "<vcpu placement='static'>2</vcpu>" <<<"$xml" || fail "libvirt has not 2 vCPUs: $xml"
 grep -q "<memory unit='KiB'>524288</memory>" <<<"$xml" || fail "libvirt has not 512 MiB: $xml"
@@ -670,9 +685,7 @@ moved=$(jq '{name, cpus, memory_mib, firmware, disks: (.disks | map(.pool = "'"$
 # Kept as they are, sent back as GET shows them: no change of the hardware, the addresses kept.
 same=$(jq '{name, cpus, memory_mib, firmware, disks, nics: [.nics[] | {slot, model, network}], drives, boot, autostart}' <<<"$vmjson")
 [[ $(status PUT "/vms/$places_id" "$same") == 200 ]] || fail "the same settings: $(cat "$work/last")"
-macs_after=$(jq -c '[.nics[] | [.slot, .mac]]' "$work/last")
-macs_before=$(jq -c '[.nics[] | [.slot, .mac]]' <<<"$vmjson")
-[[ $macs_after == "$macs_before" ]] || fail "the cards' addresses changed: $macs_before, then $macs_after"
+same_cards "$places_id" "$vmjson"
 # The location holds its disk: it stays.
 code=$(status POST "/vms/locations/$second/delete" "$(jq -n --arg p "$second" '{confirm: $p}')")
 [[ $code == 409 ]] && jq -e --arg n "$places" '.code == "location_in_use" and (.detail | contains($n))' "$work/last" >/dev/null \
