@@ -148,6 +148,17 @@ impl Packages {
         let going =
             |run: &Option<PackageRun>| run.as_ref().is_some_and(|run| run.state == PackageRunState::Running);
         let active = (going(&run) || going(&update)) && self.active().await;
+        if !active && (going(&run) || going(&update)) {
+            // The run may have ended between its record being read and its
+            // unit asked about: it writes its end before its unit stops, so
+            // read now, the record says how it ended (a check takes only
+            // seconds, and was told as cut off with its report lost).
+            run = self.recorded(STATE_FILE)?;
+            update = self.recorded(UPDATE_FILE).unwrap_or_else(|error| {
+                tracing::warn!(%error, "packages: the last update's record cannot be read");
+                None
+            });
+        }
         let latest = run.as_ref().map(|run| run.id.clone());
         if let Some(run) = run.as_mut().filter(|run| run.state == PackageRunState::Running && !active) {
             unseen(run);
@@ -1620,6 +1631,31 @@ mod tests {
 
         fs::write(root.path().join("state").join(STATE_FILE), "{").unwrap();
         assert!(packages.state().await.unwrap_err().to_string().contains("cannot be read"));
+    }
+
+    /// A run that ends between its record being read and its unit asked
+    /// about wrote its end first: it ended as it says, not unseen.
+    #[tokio::test]
+    async fn a_run_that_ends_while_it_is_looked_at_ends_as_it_says() {
+        let root = tempfile::tempdir().unwrap();
+        let packages = packages(root.path());
+        let mut check = run(PackageTask::Check);
+        record(&root.path().join("state"), &check).unwrap();
+        (check.state, check.finished_at) = (PackageRunState::Succeeded, Some(2));
+        record(&root.path().join("ended"), &check).unwrap();
+        // Asked about once the record was read, the unit has stopped and the
+        // run has written its end meanwhile.
+        fs::write(
+            root.path().join("systemctl"),
+            format!(
+                "#!/bin/sh\ncp {} {}\nexit 3\n",
+                root.path().join("ended").join(STATE_FILE).display(),
+                root.path().join("state").join(STATE_FILE).display()
+            ),
+        )
+        .unwrap();
+        let Response::Packages { run: Some(ended), .. } = packages.state().await.unwrap() else { panic!() };
+        assert_eq!((ended.state, ended.error), (PackageRunState::Succeeded, None));
     }
 
     #[tokio::test]
