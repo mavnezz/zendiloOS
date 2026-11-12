@@ -1,7 +1,9 @@
 # Runs exactly what `just check` and `just deb` run locally, with Rust as
 # rust-toolchain.toml pins it, Node as .nvmrc pins it and the other tools
 # as scripts/install-tools.sh pins them, so a green check on a workstation
-# means a green CI.
+# means a green CI. `just check` runs on amd64; the package is built for
+# amd64 and arm64 (cross-compiled, as `just deb arm64` does on a
+# workstation), and the backend's tests run once more on an arm64 machine.
 # Actions are pinned to commit SHAs; tags can be moved, commits cannot.
 # No job keeps the token in the checkout's git configuration: the release
 # job hands it to gh alone.
@@ -96,18 +98,51 @@ jobs:
           path: dev/coverage/
           retention-days: 14
 
-      # What the sources bring, as `just check` made and checked it
-      # (licences-check); a release adds its package and Debian's.
+      # What the sources bring for each architecture, as `just check` made
+      # and checked it (licences-check); a release adds its packages and
+      # Debian's.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom
-          path: dev/sbom/zendiloos.cdx.json
+          path: dev/sbom/zendiloos-*.cdx.json
           if-no-files-found: error
 
+  # The backend's tests on arm64, natively: what differs between the
+  # architectures (ioctl numbers and struct sizes through rustix, the
+  # sandbox of zendiloos-exec, C the crates bring) is run there once, while
+  # `just check` runs on amd64. Beside the check, not after it.
+  rust-arm64:
+    name: Rust on arm64
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Rust
+        run: rustup toolchain install && cargo --version
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: backend
+          prefix-key: v1-rustup
+
+      # Warnings fail here too: code only one architecture builds would
+      # otherwise only warn.
+      - name: Tests
+        working-directory: backend
+        env:
+          RUSTFLAGS: -D warnings
+        run: cargo test --workspace --locked
+
   package:
-    name: Debian package
+    # The amd64 one keeps the name the branch rule asks for.
+    name: Debian package${{ matrix.arch != 'amd64' && format(' ({0})', matrix.arch) || '' }}
     runs-on: ubuntu-24.04
     needs: check
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
     steps:
       # The whole history: a development build counts its version from the
       # last tag, and its package lists the changes since.
@@ -138,18 +173,20 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: just deb
-        run: ZENDILOOS_VERSION='${{ steps.version.outputs.version }}' just deb
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: ZENDILOOS_VERSION='${{ steps.version.outputs.version }}' just deb "$ARCH"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: zendiloos-deb
-          path: dist/*.deb
+          name: zendiloos-deb-${{ matrix.arch }}
+          path: dist/*_${{ matrix.arch }}.deb
           if-no-files-found: error
 
   release:
     name: Release
     runs-on: ubuntu-24.04
-    needs: package
+    needs: [package, rust-arm64]
     if: github.event_name == 'push'
     # The signing key lives in this environment, which only main and the
     # tags v* may deploy to (docs/releases.md).
@@ -187,9 +224,11 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends xorriso minisign
 
+      # The package of each architecture.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: zendiloos-deb
+          pattern: zendiloos-deb-*
+          merge-multiple: true
           path: dist
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -197,10 +236,10 @@ jobs:
           name: sbom
           path: sbom
 
-      # The installation ISO, for releases of the kinds the repository
-      # variable ZENDILOOS_ISO names: stable (the default), test (and
-      # stable), all (and every development build) or off. It is only the
-      # way in: afterwards the NAS updates itself.
+      # The installation ISOs, one per architecture, for releases of the
+      # kinds the repository variable ZENDILOOS_ISO names: stable (the
+      # default), test (and stable), all (and every development build) or
+      # off. They are only the way in: afterwards the NAS updates itself.
       - name: Installation ISO
         if: env.SKIP_RELEASE != '1'
         env:
@@ -215,18 +254,23 @@ jobs:
             stable:stable | test:stable | test:test | all:*) ;;
             *) echo "No ISO for a $kind release (ZENDILOOS_ISO=$ISO)"; exit 0 ;;
           esac
-          scripts/build-iso.sh dist/zendiloos_*_amd64.deb dist
-          # One name in every release, so that .../releases/latest/download/
-          # zendiloos-amd64-netinst.iso is always the newest stable one.
-          mv dist/zendiloos-*-amd64-netinst.iso dist/zendiloos-amd64-netinst.iso
+          for arch in amd64 arm64; do
+            scripts/build-iso.sh dist/zendiloos_*_"$arch".deb dist
+            # One name in every release, so that .../releases/latest/download/
+            # zendiloos-<arch>-netinst.iso is always the newest stable one.
+            mv dist/zendiloos-*-"$arch"-netinst.iso dist/zendiloos-"$arch"-netinst.iso
+          done
 
-      # The software bill of materials: the check's, with the package and
-      # the Debian packages it names; beside the package, in SHA256SUMS.
+      # The software bill of materials of each package: the check's for its
+      # architecture, with the package and the Debian packages it names;
+      # beside the package, in SHA256SUMS.
       - name: Software bill of materials
         if: env.SKIP_RELEASE != '1'
         run: |
-          package=$(ls dist/zendiloos_*.deb)
-          scripts/sbom.sh package "$package" sbom/zendiloos.cdx.json "${package%.deb}.cdx.json"
+          for arch in amd64 arm64; do
+            package=$(ls dist/zendiloos_*_"$arch".deb)
+            scripts/sbom.sh package "$package" sbom/zendiloos-"$arch".cdx.json "${package%.deb}.cdx.json"
+          done
 
       - name: Sign
         if: env.SKIP_RELEASE != '1'
@@ -248,8 +292,12 @@ jobs:
           key=$(mktemp)
           trap 'rm -f "$key"' EXIT
           printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
-          package=$(ls dist/zendiloos_*.deb)
-          version=$(basename "$package" | sed 's/^zendiloos_\(.*\)_[a-z0-9]*\.deb$/\1/')
+          # Both packages are of one version, which the signature names.
+          version=$(ls dist/zendiloos_*.deb | sed 's/^dist\/zendiloos_\(.*\)_[a-z0-9]*\.deb$/\1/' | sort -u)
+          if [ "$(ls dist/zendiloos_*.deb | wc -l)" != 2 ] || [ "$(echo "$version" | wc -l)" != 1 ]; then
+            echo "::error::Not one package for amd64 and one for arm64 of a version: $(ls dist/zendiloos_*.deb)"
+            exit 1
+          fi
           (cd dist && sha256sum zendiloos_*.deb zendiloos_*.cdx.json $(ls zendiloos-*.iso 2>/dev/null) > SHA256SUMS)
           printf '%s\n' "$MINISIGN_PASSWORD" | \
             minisign -S -s "$key" -m dist/SHA256SUMS -t "zendiloos $version"
@@ -261,7 +309,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           files=(dist/zendiloos_*.deb dist/zendiloos_*.cdx.json dist/SHA256SUMS dist/SHA256SUMS.minisig)
-          [ -f dist/zendiloos-amd64-netinst.iso ] && files+=(dist/zendiloos-amd64-netinst.iso)
+          files+=($(ls dist/zendiloos-*-netinst.iso 2>/dev/null))
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             kind=()
             case "$GITHUB_REF_NAME" in *-*) kind=(--prerelease) ;; esac

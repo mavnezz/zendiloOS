@@ -22,14 +22,23 @@
 #   ZENDILOOS_ISO_TEST_REUSE=1  skips the installation and starts the
 #   machine installed by the last run again
 #
-# Needs KVM and the network (the packages come from Debian's mirror); takes
-# 15 to 30 minutes. The machine lives in dev/iso-test and only listens on
-# 127.0.0.1 (HTTPS on ZENDILOOS_ISO_TEST_PORT, 8450).
+# The machine is of the ISO's architecture (its name says which). amd64: a
+# PC (qemu-system-x86_64) with KVM, 15 to 30 minutes. arm64: QEMU's `virt`
+# machine (qemu-system-aarch64, package qemu-system-arm) with the UEFI
+# firmware AAVMF (qemu-efi-aarch64; another in ZENDILOOS_ISO_TEST_AAVMF,
+# the directory of AAVMF_CODE.fd and AAVMF_VARS.fd), with KVM on an arm64
+# host and emulated (TCG) on any other, which takes hours, ZFS's build by
+# DKMS most of them; every wait is longer by ZENDILOOS_ISO_TEST_PATIENCE
+# (4 without KVM). Needs the network (the packages come from Debian's
+# mirror). The machine lives in dev/iso-test and only listens on 127.0.0.1
+# (HTTPS on ZENDILOOS_ISO_TEST_PORT, 8450).
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 iso=${1:-$(ls -t "$root"/dist/zendiloos-*-netinst.iso 2>/dev/null | head -1)}
 [[ -f $iso ]] || { echo "no ISO; run 'just iso'" >&2; exit 1; }
+[[ $(basename "$iso") =~ -(amd64|arm64)-netinst\.iso$ ]] || { echo "not an ISO for amd64 or arm64: $iso" >&2; exit 1; }
+arch=${BASH_REMATCH[1]}
 dir=$root/dev/iso-test
 port=${ZENDILOOS_ISO_TEST_PORT:-8450}
 base="https://127.0.0.1:$port"
@@ -40,7 +49,7 @@ say() { printf '\033[1m%s\033[0m\n' "$*"; }
 fail() { printf '\033[31mFAILED: %s\033[0m\n' "$*" >&2; exit 1; }
 
 wait_for() {
-    local what=$1 check=$2 seconds=${3:-120}
+    local what=$1 check=$2 seconds=$((${3:-120} * patience))
     for _ in $(seq 1 "$seconds"); do
         if eval "$check" >/dev/null 2>&1; then return 0; fi
         sleep 1
@@ -48,10 +57,41 @@ wait_for() {
     fail "timed out waiting for $what"
 }
 
+# The machine of the ISO's architecture, its CD drive, where the
+# installer's kernel lies on the ISO and the serial console's name.
+case $arch in
+    amd64)
+        machine=(qemu-system-x86_64 -enable-kvm -cpu host)
+        cdrom=(-cdrom "$iso")
+        installer=/install.amd console=ttyS0 patience=${ZENDILOOS_ISO_TEST_PATIENCE:-1}
+        ;;
+    arm64)
+        firmware=${ZENDILOOS_ISO_TEST_AAVMF:-/usr/share/AAVMF}
+        [[ -f $firmware/AAVMF_CODE.fd ]] \
+            || { echo "no UEFI firmware in $firmware: install qemu-efi-aarch64" >&2; exit 1; }
+        # Its variables (the boot entry the installer writes) stay with the
+        # machine, as on a board.
+        machine=(qemu-system-aarch64 -machine virt
+                 -drive "if=pflash,format=raw,readonly=on,file=$firmware/AAVMF_CODE.fd"
+                 -drive "if=pflash,format=raw,file=$dir/efivars.fd")
+        if [[ $(uname -m) == aarch64 && -w /dev/kvm ]]; then
+            machine+=(-accel kvm -cpu host)
+            patience=${ZENDILOOS_ISO_TEST_PATIENCE:-1}
+        else
+            # Emulated: what QEMU emulates fastest of a CPU with all it has.
+            machine+=(-accel tcg -cpu max,pauth-impdef=on)
+            patience=${ZENDILOOS_ISO_TEST_PATIENCE:-4}
+        fi
+        # No IDE on virt: the ISO in a SCSI CD drive.
+        cdrom=(-device virtio-scsi-pci,id=scsi -drive "file=$iso,if=none,id=cd,media=cdrom,readonly=on"
+               -device scsi-cd,drive=cd,bus=scsi.0)
+        installer=/install.a64 console=ttyAMA0
+        ;;
+esac
 # Disks with serial numbers, as real ones have: /dev/disk/by-id names them.
-machine=(qemu-system-x86_64 -enable-kvm -cpu host -smp 4 -m 4096 -display none
-         -drive "file=$dir/system.qcow2,if=none,id=system" -device virtio-blk-pci,drive=system,serial=ZDLSYSTEM
-         -drive "file=$dir/data.qcow2,if=none,id=data" -device virtio-blk-pci,drive=data,serial=ZDLDATA1)
+machine+=(-smp 4 -m 4096 -display none
+          -drive "file=$dir/system.qcow2,if=none,id=system" -device virtio-blk-pci,drive=system,serial=ZDLSYSTEM
+          -drive "file=$dir/data.qcow2,if=none,id=data" -device virtio-blk-pci,drive=data,serial=ZDLDATA1)
 
 stop() {
     [[ -f $dir/qemu.pid ]] && kill "$(cat "$dir/qemu.pid")" 2>/dev/null || true
@@ -75,8 +115,9 @@ rm -rf "$dir"
 mkdir -p "$dir"
 qemu-img create -q -f qcow2 "$dir/system.qcow2" 24G
 qemu-img create -q -f qcow2 "$dir/data.qcow2" 8G
-xorriso -osirrox on -indev "$iso" -extract /install.amd/vmlinuz "$dir/vmlinuz" \
-    -extract /install.amd/initrd.gz "$dir/initrd.gz" 2>/dev/null
+[[ $arch == arm64 ]] && cp "$firmware/AAVMF_VARS.fd" "$dir/efivars.fd"
+xorriso -osirrox on -indev "$iso" -extract "$installer/vmlinuz" "$dir/vmlinuz" \
+    -extract "$installer/initrd.gz" "$dir/initrd.gz" 2>/dev/null
 # What a person answers at the keyboard; the rest is the ISO's own. After
 # `---`: kept for the installed system, whose console then goes to the
 # serial port too.
@@ -88,15 +129,17 @@ answers=(
     partman/confirm=true partman/confirm_nooverwrite=true
     passwd/root-password=iso-test passwd/root-password-again=iso-test
     grub-installer/bootdev=/dev/vda
-    console=ttyS0,115200n8 --- console=tty0 console=ttyS0,115200n8
+    "console=$console,115200n8" --- console=tty0 "console=$console,115200n8"
 )
 # A monitor, to look at the installer's log console (VT4) should it stop.
-timeout 3600 "${machine[@]}" -no-reboot -cdrom "$iso" -kernel "$dir/vmlinuz" -initrd "$dir/initrd.gz" \
+started=$SECONDS
+timeout $((3600 * patience)) "${machine[@]}" -no-reboot "${cdrom[@]}" -kernel "$dir/vmlinuz" -initrd "$dir/initrd.gz" \
     -append "${answers[*]}" -nic user,model=virtio-net-pci -serial "file:$dir/install.log" \
     -monitor "unix:$dir/monitor.sock,server,nowait" \
     || fail "the installer did not finish (see $dir/install.log)"
 grep -q "Installation complete\|Requesting system reboot" "$dir/install.log" \
     || fail "the installation did not complete (see $dir/install.log)"
+echo "  installed in $(((SECONDS - started) / 60)) minutes"
 fi
 
 say "2. Starting the installed system"

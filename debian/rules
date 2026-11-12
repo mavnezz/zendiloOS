@@ -2,8 +2,30 @@
 # Built inside the container of packaging/build.Dockerfile, which provides
 # Rust as pinned in rust-toolchain.toml and Node.js 24; Debian 13's own
 # toolchains are too old. Hence no Build-Depends on cargo or nodejs.
+#
+# For amd64 and arm64: built for the other one, it is cross-compiled
+# (`dpkg-buildpackage --host-arch`, packaging/build-deb.sh) with Debian's
+# cross compiler, which links the programs and compiles the C the crates
+# bring (SQLite, ring, zstd). The web interface is the same for both.
+
+include /usr/share/dpkg/architecture.mk
 
 export DH_VERBOSE = 1
+# Rust's name of the architecture the package is for:
+# x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu.
+RUST_TARGET := $(DEB_HOST_GNU_CPU)-unknown-linux-gnu
+RUST_TARGET_ENV := $(shell echo '$(RUST_TARGET)' | tr 'a-z-' 'A-Z_')
+# Its linker and C compiler, by Debian's name, which is the native gcc's
+# too: aarch64-linux-gnu-gcc on arm64 and for it.
+export CARGO_TARGET_$(RUST_TARGET_ENV)_LINKER := $(DEB_HOST_GNU_TYPE)-gcc
+export CC_$(subst -,_,$(RUST_TARGET)) := $(DEB_HOST_GNU_TYPE)-gcc
+export AR_$(subst -,_,$(RUST_TARGET)) := $(DEB_HOST_GNU_TYPE)-ar
+# dpkg's C flags (hardening) are for the package's architecture, with some
+# of its own (-mbranch-protection on arm64). cc-rs would add CFLAGS to what
+# the build machine compiles for itself too (SQLite for the SQL macros), so
+# they go to the package's architecture alone.
+export CFLAGS_$(subst -,_,$(RUST_TARGET)) := $(CFLAGS)
+unexport CFLAGS
 # The SQL macros check queries against backend/.sqlx; no database needed.
 export SQLX_OFFLINE = true
 # The version zendiloosd reports and compares releases with
@@ -19,15 +41,15 @@ ZENDILOOS_REPOSITORY ?= .
 override_dh_auto_configure:
 
 override_dh_auto_build:
-	cd backend && cargo build --release --locked -p zendiloosd -p zendiloos-agent
+	cd backend && cargo build --release --locked --target $(RUST_TARGET) -p zendiloosd -p zendiloos-agent
 	cd frontend && npm ci --no-audit --no-fund && npm run build
 
 # The test suites run with `just check`, not in the package build.
 override_dh_auto_test:
 
 override_dh_auto_install:
-	install -D -m 0755 backend/target/release/zendiloosd debian/zendiloos/usr/sbin/zendiloosd
-	install -D -m 0755 backend/target/release/zendiloos-agent \
+	install -D -m 0755 backend/target/$(RUST_TARGET)/release/zendiloosd debian/zendiloos/usr/sbin/zendiloosd
+	install -D -m 0755 backend/target/$(RUST_TARGET)/release/zendiloos-agent \
 		debian/zendiloos/usr/libexec/zendiloos/zendiloos-agent
 	install -d debian/zendiloos/usr/share/zendiloos/webui
 	cp -r frontend/dist/. debian/zendiloos/usr/share/zendiloos/webui/
