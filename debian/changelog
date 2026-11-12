@@ -1,3 +1,58 @@
+zendiloos (0.5.0~rc.1) unstable; urgency=medium
+
+  * Test release of 0.5.0. Not yet run on real NAS hardware for a while:
+    for trying out, with data that has a backup elsewhere.
+  * Virtual machines (preview, x86-64): an App Center plugin with libvirt
+    and QEMU from Debian. VMs with several disks and network cards, an
+    image library, a console in the browser and their load live, changed
+    after they are made; storage locations on several pools; networks
+    through a bridge, directly on a card or internal to the NAS; a log.
+    Snapshots of all of a VM's disks at once, by hand and on schedules,
+    rolled back while it is off; backups into a share or onto a USB drive,
+    restored as a new VM or over the old one. A TPM and Secure Boot with
+    Microsoft's keys for Windows 11; USB devices of the host handed
+    through, PCI devices with their whole IOMMU group where it is on.
+  * Backup plugin: rsync and rclone from Debian. Tasks from a share to
+    another pool, a USB drive (also when it is plugged in), an rsync
+    server through its daemon or over SSH with the host key pinned,
+    Google Drive or OneDrive, and from a server into the NAS; mirrors and
+    dated versions with retention; names and contents encrypted if
+    wanted; restores of all or some of a version. Each run in a sandboxed
+    unit, with its log and transfer list.
+  * Network: zendiloOS manages the network with systemd-networkd also on
+    installations from the ISO, and takes it over from ifupdown. Bridges,
+    bonds and VLANs; every change stays only once confirmed and goes back
+    by itself otherwise; a card is switched off only after a question.
+    Changes made to the files outside zendiloOS are told, and restored or
+    kept.
+  * Configuration backup: zendiloOS's database, accounts, certificates and
+    settings in one file encrypted with a passphrase, downloaded or on a
+    schedule into a share or onto a USB drive, restored on a fresh
+    installation instead of the first setup. The old installation's pools
+    are offered for import, their shares mounted again; the network's and
+    the firewall's settings come into force only once confirmed. The ISO's
+    boot menu has a rescue entry.
+  * The machine's name can be changed on the Info page; SMB, mDNS and
+    WS-Discovery follow.
+  * Certificates from Let's Encrypt through 81 DNS providers, each checked
+    against Debian's acme.sh, IPv64 among them.
+  * Reliability: notifications are delivered again when the network was
+    not up yet, and update downloads tried again; a kernel without its
+    ZFS module is never started; the wear of an eMMC system disk is
+    watched; fewer writes to the system disk; systemd is reloaded only
+    when something it reads changed. An update is no longer stopped by a
+    removed kernel's modules, and a short check is no longer told as cut
+    off.
+  * arm64: packages and an installation ISO (UEFI), built and tested in
+    CI; not yet tried on real arm64 hardware. Virtual machines are offered
+    on x86-64 only. Each release carries a software bill of materials
+    (CycloneDX) per architecture and the licences.
+  * Storage: the new pool dialog is a wizard with estimates. Files: the
+    explorer has an action toolbar, a grid view and sections.
+  * Fixes and hardening throughout.
+
+ -- zendiloOS <github.com@stuch.me>  Thu, 12 Nov 2026 14:54:46 +0000
+
 zendiloos (0.4.0) unstable; urgency=medium
 
   * Firewall changes wait for confirmation on forwarded connections too,
