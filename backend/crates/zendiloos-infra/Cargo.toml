@@ -26,6 +26,8 @@ zendiloos-storage.workspace = true
 zendiloos-system.workspace = true
 zendiloos-vms.workspace = true
 zendiloos-backup.workspace = true
+zendiloos-recovery.workspace = true
+age.workspace = true
 argon2.workspace = true
 async-trait.workspace = true
 base64.workspace = true
@@ -47,6 +49,8 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 sha2.workspace = true
 sqlx.workspace = true
 sysinfo.workspace = true
+tar.workspace = true
+zstd.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 tracing.workspace = true
@@ -65,6 +69,7 @@ zendiloos-jobs = { workspace = true, features = ["testing"] }
 zendiloos-notify = { workspace = true, features = ["testing"] }
 zendiloos-vms = { workspace = true, features = ["testing"] }
 zendiloos-backup = { workspace = true, features = ["testing"] }
+zendiloos-recovery = { workspace = true, features = ["testing"] }
 zendiloos-network = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 tokio.workspace = true

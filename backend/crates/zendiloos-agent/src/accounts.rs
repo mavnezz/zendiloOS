@@ -12,7 +12,7 @@ use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use zendiloos_agent_proto::{AppName, GroupName, Password, Response, UserName};
+use zendiloos_agent_proto::{AppName, GroupName, Password, Response, RestoredGroup, RestoredUser, UserName};
 use zendiloos_exec::{Limits, Program};
 
 use crate::config::Tools;
@@ -103,6 +103,11 @@ fn next_id(database: &str, high_water: &str, kind: IdKind) -> Option<u32> {
         .find_map(|line| line.strip_prefix(&format!("{}=", kind.key()))?.trim().parse::<u32>().ok());
     let next = in_use.max(handed_out).map_or(ID_MIN, |highest| highest + 1);
     MANAGED_IDS.contains(&next).then_some(next)
+}
+
+/// The highest ID of `kind` handed out, as the high-water file says.
+fn handed_out(high_water: &str, kind: IdKind) -> Option<u32> {
+    high_water.lines().find_map(|line| line.strip_prefix(&format!("{}=", kind.key()))?.trim().parse().ok())
 }
 
 fn set_high_water(high_water: &str, kind: IdKind, id: u32) -> String {
@@ -285,6 +290,148 @@ impl Accounts {
             run(&self.groupdel, &["--", &name]).await?;
         }
         Ok(Response::Done)
+    }
+
+    /// The accounts of a configuration backup on this machine: each user
+    /// and group made with the ID it had, where it is missing, and each
+    /// group given its members. Checked first as a whole: a name that is
+    /// another ID's here, or an ID another name has, refuses it before
+    /// anything changes. The IDs handed out rise to the highest restored,
+    /// so none is handed out again.
+    pub(crate) async fn restore(
+        &self,
+        users: &[RestoredUser],
+        groups: &[RestoredGroup],
+    ) -> Result<Response, OperationError> {
+        let _serial = crate::waiting::lock(&self.serial).await?;
+        let (passwd, group) = self.read_files().await?;
+        let users_gid = passwd::group_id(&group, USERS_GROUP)
+            .ok_or_else(|| OperationError::Setup(format!("group {USERS_GROUP} is missing")))?;
+        let restored_names: Vec<&str> = users.iter().map(|user| user.name.as_str()).collect();
+        let mut make_users = Vec::new();
+        for user in users {
+            let taken = passwd::accounts(&passwd)
+                .find(|(name, uid, _)| *uid == user.uid && *name != user.name.as_str());
+            if let Some((other, ..)) = taken {
+                return Err(OperationError::Refused(format!(
+                    "UID {} of {} is {other}'s here",
+                    user.uid,
+                    user.name.as_str()
+                )));
+            }
+            match passwd::lookup(&passwd, user.name.as_str()) {
+                Some((uid, gid)) if uid == user.uid && gid == users_gid => {}
+                Some(_) => {
+                    return Err(OperationError::Refused(format!(
+                        "user {} has another UID or group here",
+                        user.name.as_str()
+                    )));
+                }
+                None => make_users.push(user),
+            }
+        }
+        let mut make_groups = Vec::new();
+        for restored in groups {
+            if restored.members.iter().any(|member| {
+                !restored_names.contains(&member.as_str())
+                    && passwd::lookup(&passwd, member.as_str()).is_none()
+            }) {
+                return Err(OperationError::Refused(format!(
+                    "a member of group {} has no user",
+                    restored.name.as_str()
+                )));
+            }
+            let taken = group.lines().find_map(|line| {
+                let mut fields = line.split(':');
+                let (name, _, gid) = (fields.next()?, fields.next()?, fields.next()?.parse::<u32>().ok()?);
+                (gid == restored.gid && name != restored.name.as_str()).then(|| name.to_owned())
+            });
+            if let Some(other) = taken {
+                return Err(OperationError::Refused(format!(
+                    "GID {} of {} is {other}'s here",
+                    restored.gid,
+                    restored.name.as_str()
+                )));
+            }
+            match passwd::group_id(&group, restored.name.as_str()) {
+                Some(gid) if gid == restored.gid => {}
+                Some(_) => {
+                    return Err(OperationError::Refused(format!(
+                        "group {} has another GID here",
+                        restored.name.as_str()
+                    )));
+                }
+                None => make_groups.push(restored),
+            }
+        }
+        let mut marks = self.read_high_water()?;
+        let highest = [
+            (IdKind::User, users.iter().map(|user| user.uid).max()),
+            (IdKind::Group, groups.iter().map(|group| group.gid).max()),
+        ];
+        for (kind, restored) in highest {
+            if let Some(restored) =
+                restored.filter(|id| handed_out(&marks, kind).is_none_or(|mark| *id > mark))
+            {
+                marks = set_high_water(&marks, kind, restored);
+            }
+        }
+        self.write_high_water(&marks)?;
+        for user in make_users {
+            let uid = user.uid.to_string();
+            let args = [
+                "--no-log-init",
+                "--no-create-home",
+                "--home-dir",
+                "/nonexistent",
+                "--shell",
+                NOLOGIN,
+                "--gid",
+                USERS_GROUP,
+                "--uid",
+                &uid,
+                "--",
+                user.name.as_str(),
+            ];
+            run(&self.useradd, &args).await?;
+        }
+        for restored in &make_groups {
+            run(&self.groupadd, &["--gid", &restored.gid.to_string(), "--", restored.name.as_str()]).await?;
+        }
+        for restored in groups {
+            let list = restored.members.iter().map(UserName::as_str).collect::<Vec<_>>().join(",");
+            run(&self.gpasswd, &["--members", &list, "--", restored.name.as_str()]).await?;
+        }
+        Ok(Response::Done)
+    }
+
+    /// The people's users and groups zendiloOS made, with their IDs and
+    /// members, for a configuration backup.
+    pub(crate) async fn managed(&self) -> Result<(Vec<RestoredUser>, Vec<RestoredGroup>), OperationError> {
+        let (passwd, group) = self.read_files().await?;
+        let users: Vec<RestoredUser> = passwd::accounts(&passwd)
+            .filter_map(|(name, uid, _)| {
+                let name = UserName::parse(name).ok()?;
+                require_managed(&passwd, &group, &name).ok()?;
+                Some(RestoredUser { name, uid })
+            })
+            .collect();
+        let groups = group
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split(':');
+                let (name, _, gid) = (fields.next()?, fields.next()?, fields.next()?.parse::<u32>().ok()?);
+                let name = GroupName::parse(name).ok()?;
+                require_managed_group(&passwd, &group, &name).ok()?;
+                let members = passwd::members(&group, name.as_str())
+                    .into_iter()
+                    .filter(|member| users.iter().any(|user| user.name.as_str() == *member))
+                    .filter_map(|member| UserName::parse(member).ok())
+                    .collect();
+                Some(RestoredGroup { name, gid, members })
+            })
+            .collect();
+        Ok((users, groups))
     }
 
     /// Missing until the first account is created.

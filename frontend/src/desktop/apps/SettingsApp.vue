@@ -6,6 +6,7 @@ import { useI18n } from 'vue-i18n'
 import UsersPage from '@/features/accounts/components/UsersPage.vue'
 import { useSessionStore } from '@/features/auth/store'
 import ChannelsSection from '@/features/channels/components/ChannelsSection.vue'
+import ConfigurationBackupPage from '@/features/configuration/components/ConfigurationBackupPage.vue'
 import LogsPage from '@/features/logs/components/LogsPage.vue'
 import { useNetwork } from '@/features/network/api'
 import NetworkSection from '@/features/network/components/NetworkSection.vue'
@@ -90,7 +91,11 @@ const { data: pools } = useQuery({
       :title="t(current.label)"
       :description="t(`controlPanel.soon.${current.id}`)"
     />
-    <DeviceInfoPage v-else-if="section === 'device'" :pools="pools" />
+    <DeviceInfoPage
+      v-else-if="section === 'device'"
+      :pools="pools"
+      :can-manage="session.can('system.manage')"
+    />
     <StoragePage
       v-else-if="storagePage"
       :page="storagePage"
@@ -111,6 +116,7 @@ const { data: pools } = useQuery({
       </PageDescription>
     </div>
     <UpdatePage v-else-if="section === 'update'" />
+    <ConfigurationBackupPage v-else-if="section === 'configuration-backup'" />
     <LocalePage v-else-if="section === 'locale'" />
     <UsersPage v-else-if="section === 'accounts'" :own-account-id="session.info?.account.id" />
     <FileServicesPage

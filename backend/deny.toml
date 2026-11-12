@@ -15,6 +15,14 @@ ignore = [
     # opens. The fixed libsqlite3-sys 0.39 needs an sqlx newer than 0.9.0,
     # which allows < 0.38; drop this once sqlx takes it.
     { id = "RUSTSEC-2026-0459", reason = "only our own database is opened; fixed libsqlite3-sys needs a newer sqlx" },
+    # Unmaintained, not vulnerable: both come with age (configuration
+    # backups, 4.15) through i18n-embed, which words age's errors.
+    # proc-macro-error2 runs only while compiling (i18n-embed-fl's macro),
+    # basic-toml reads age's own embedded i18n.toml, never input from
+    # elsewhere. age 0.12 still has the second and adds crates with a
+    # vulnerability; drop these once age's i18n has moved on.
+    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2: a compile-time helper of i18n-embed-fl's macro, which age uses" },
+    { id = "RUSTSEC-2026-0374", reason = "basic-toml: reads age's embedded i18n configuration only" },
 ]
 
 [licenses]

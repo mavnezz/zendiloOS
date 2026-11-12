@@ -690,6 +690,7 @@ mod tests {
                 "volume_filling",
                 "updates_installed",
                 "updates_failed",
+                "configuration_backup_failed",
                 "certificate_renewal_failed",
                 "certificate_not_taken",
                 "docker_backup_failed",

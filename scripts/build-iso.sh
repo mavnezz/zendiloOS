@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Builds the installation ISO (docs/releases.md, "Installation ISO"): Debian
 # 13's netinst image, checked against its pinned SHA512, with an entry
-# "Install zendiloOS" first in both boot menus (BIOS and UEFI), the answers
+# "Install zendiloOS" first in both boot menus (BIOS and UEFI) and "Rescue a
+# zendiloOS system" beside it (Debian's rescue mode: a shell in the
+# installed system, to save its configuration or repair it), the answers
 # in packaging/iso/preseed.cfg, the package to install at the end and
 # packaging/iso/network.sh, which hands the network to systemd-networkd. The
 # image is not rebuilt: xorriso replaces those few files and keeps Debian's
@@ -55,6 +57,8 @@ xorriso -osirrox on -indev "$cache/$debian" \
 chmod u+w "$work"/*
 
 boot="preseed/file=/cdrom/zendiloos/preseed.cfg"
+# Debian's rescue mode, without zendiloOS's answers: it installs nothing.
+rescue="rescue/enable=true"
 
 # BIOS: the entry comes first and is the default; Debian's stay below.
 cat >"$work/zendiloos.cfg" <<EOF
@@ -63,6 +67,10 @@ label zendiloos
 	menu default
 	kernel /install.amd/vmlinuz
 	append vga=788 initrd=/install.amd/gtk/initrd.gz $boot --- quiet
+label zendiloos-rescue
+	menu label ^Rescue a zendiloOS system
+	kernel /install.amd/vmlinuz
+	append vga=788 initrd=/install.amd/gtk/initrd.gz $rescue --- quiet
 EOF
 sed -i -e 's/^menu title .*/menu title zendiloOS installer (Debian '"$DEBIAN_VERSION"', BIOS mode)/' \
     -e 's/^include gtk.cfg$/include zendiloos.cfg\ninclude gtk.cfg/' "$work/menu.cfg"
@@ -76,11 +84,17 @@ menuentry --hotkey=z 'Install zendiloOS $version' {
     linux    /install.amd/vmlinuz vga=788 $boot --- quiet
     initrd   /install.amd/gtk/initrd.gz
 }
+menuentry --hotkey=r 'Rescue a zendiloOS system' {
+    set background_color=black
+    linux    /install.amd/vmlinuz vga=788 $rescue --- quiet
+    initrd   /install.amd/gtk/initrd.gz
+}
 EOF
 )
 awk -v entry="$entry" '!done && /^menuentry /{print entry; done=1} {print}' "$work/grub.cfg" >"$work/grub.new"
 mv "$work/grub.new" "$work/grub.cfg"
 grep -q "Install zendiloOS" "$work/grub.cfg" || { echo "the UEFI menu changed shape" >&2; exit 1; }
+grep -q "Rescue a zendiloOS system" "$work/grub.cfg" || { echo "the UEFI menu has no rescue entry" >&2; exit 1; }
 
 # "Check the CD" compares md5sum.txt: the files changed and added count.
 declare -A files=(

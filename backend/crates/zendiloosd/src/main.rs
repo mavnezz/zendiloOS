@@ -27,8 +27,9 @@ use zendiloos_identity::application::{IdentityConfig, IdentityPorts, IdentityUse
 use zendiloos_infra::SystemClock;
 use zendiloos_infra::agent::{
     AgentAcme, AgentApps, AgentBackup, AgentDockerData, AgentDockerEngine, AgentFiles, AgentFirewall,
-    AgentNetwork, AgentPowerControl, AgentSharing, AgentSsh, AgentStorage, AgentSystemAccounts, AgentTime,
-    AgentUpdates, AgentVms, AgentVolumeArchiver, AgentWebTls, RandomPlanTokens, RandomVmIds, agent_version,
+    AgentHostName, AgentNetwork, AgentPowerControl, AgentSharing, AgentSsh, AgentStorage,
+    AgentSystemAccounts, AgentTime, AgentUpdates, AgentVms, AgentVolumeArchiver, AgentWebTls,
+    ChannelsFollowHostName, RandomPlanTokens, RandomVmIds, agent_version,
 };
 use zendiloos_infra::apps::{
     CatalogPolicy, ContainersForApps, FilesForApps, HttpsCatalogs, RandomSecrets, SharingForApps, YamlFiller,
@@ -43,15 +44,18 @@ use zendiloos_infra::identity::{
     TotpCodes,
 };
 use zendiloos_infra::notify::NetworkChannels;
+use zendiloos_infra::recovery::{
+    AgentBackupFolders, ConfigurationRestorer, ConfigurationSnapshots, ProcessRestart,
+};
 use zendiloos_infra::sharing::DrivesForFiles;
 use zendiloos_infra::sqlite::{
     Database, Occupants, SqliteAccountAddresses, SqliteAccounts, SqliteAppSources, SqliteAuditLog,
     SqliteBackupAccounts, SqliteBackupRuns, SqliteBackupSettings, SqliteBackupTasks, SqliteCertificates,
-    SqliteChannels, SqliteDiskInventory, SqliteEjectedDrives, SqliteEnclosure, SqliteFirewall, SqliteGroups,
-    SqliteInstalledApps, SqliteJobs, SqliteNetworkSettings, SqliteNotifications, SqlitePreferences,
-    SqliteProjects, SqliteSecurity, SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares,
-    SqliteSystemUpdates, SqliteTwoFactor, SqliteUpdateSettings, SqliteVmImages, SqliteVmLocations, SqliteVms,
-    SqliteVolumeBackups,
+    SqliteChannels, SqliteConfigurationPlans, SqliteDiskInventory, SqliteEjectedDrives, SqliteEnclosure,
+    SqliteFirewall, SqliteGroups, SqliteInstalledApps, SqliteJobs, SqliteNetworkSettings,
+    SqliteNotifications, SqliteOperators, SqlitePreferences, SqliteProjects, SqliteSecurity,
+    SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares, SqliteSystemUpdates,
+    SqliteTwoFactor, SqliteUpdateSettings, SqliteVmImages, SqliteVmLocations, SqliteVms, SqliteVolumeBackups,
 };
 use zendiloos_infra::updates::{GitHubReleases, installed_notes};
 use zendiloos_jobs::Jobs;
@@ -59,6 +63,7 @@ use zendiloos_kernel::{AllWork, AuditLog, Clock, RequestContext};
 use zendiloos_network::application::{ConfigureNetwork, Looked, NetworkPorts, NetworkUseCases};
 use zendiloos_notify::Notifier;
 use zendiloos_notify::channels::{ChannelPorts, Channels};
+use zendiloos_recovery::application::{Recovery, RecoveryPorts};
 use zendiloos_sharing::application::{FilesUseCases, SharingPorts, SharingUseCases};
 use zendiloos_sim::SimulatedAgent;
 use zendiloos_storage::application::inventory::DiskInventory;
@@ -152,25 +157,9 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     // An update starts only while no job runs, and no job starts while it
     // is started or installs (docs/architecture.md, 4.10).
     jobs.hold_while(Arc::new(updates.clone()));
-    let system = SystemUseCases::new(SystemPorts {
-        info: Arc::new(HostSystemInfo),
-        metrics: Arc::new(metrics),
-        power: Arc::new(AgentPowerControl::new(agent.clone())),
-        // A reboot waits for jobs and for an update being installed.
-        work: Arc::new(AllWork(vec![Arc::new(jobs.clone()), Arc::new(updates.clone())])),
-        time: Arc::new(AgentTime::new(agent.clone())),
-        ssh: Arc::new(AgentSsh::new(agent.clone())),
-        listening: Arc::new(ProcListening::default()),
-        tls: Arc::new(AgentWebTls::new(agent.clone())),
-        journal: Arc::new(journal),
-        audit: audit.clone(),
-        audit_reader: Arc::new(SqliteAuditLog::new(database.clone())),
-        clock: Arc::new(SystemClock),
-    });
     // Notifications also go out by email and to webhooks, named after the host.
-    let host_name = std::fs::read_to_string("/proc/sys/kernel/hostname")
-        .map(|name| name.trim().to_owned())
-        .unwrap_or_else(|_| "zendiloOS".to_owned());
+    // The one /etc/hostname holds, which follows a rename (as Channels do).
+    let host_name = zendiloos_infra::host::host_name().unwrap_or_else(|| "zendiloOS".to_owned());
     let channels = Channels::new(
         ChannelPorts {
             repository: Arc::new(channel_store.clone()),
@@ -183,6 +172,23 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         },
         host_name,
     );
+    let system = SystemUseCases::new(SystemPorts {
+        info: Arc::new(HostSystemInfo),
+        metrics: Arc::new(metrics),
+        power: Arc::new(AgentPowerControl::new(agent.clone())),
+        // A reboot waits for jobs and for an update being installed.
+        work: Arc::new(AllWork(vec![Arc::new(jobs.clone()), Arc::new(updates.clone())])),
+        time: Arc::new(AgentTime::new(agent.clone())),
+        host_name: Arc::new(AgentHostName::new(agent.clone())),
+        host_name_observer: Arc::new(ChannelsFollowHostName(channels.clone())),
+        ssh: Arc::new(AgentSsh::new(agent.clone())),
+        listening: Arc::new(ProcListening::default()),
+        tls: Arc::new(AgentWebTls::new(agent.clone())),
+        journal: Arc::new(journal),
+        audit: audit.clone(),
+        audit_reader: Arc::new(SqliteAuditLog::new(database.clone())),
+        clock: Arc::new(SystemClock),
+    });
     let channel_delivery = channels.clone().spawn(&notifier);
     let apps = Catalogs::new(
         Arc::new(SqliteAppSources::new(database.clone())),
@@ -423,6 +429,31 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         interrupted => tracing::warn!(interrupted, "backup: runs were cut off when zendiloosd stopped"),
     }
     let backup_schedule = spawn_backup_schedule(backup.clone());
+    let restart = ProcessRestart::new();
+    let recovery = Recovery::new(RecoveryPorts {
+        snapshots: Arc::new(ConfigurationSnapshots::new(
+            database.clone(),
+            agent.clone(),
+            config.state_dir.clone(),
+            zendiloos_kernel::VERSION,
+            Arc::new(SystemClock),
+        )),
+        restorer: Arc::new(ConfigurationRestorer::new(agent.clone(), config.state_dir.clone())),
+        plans: Arc::new(SqliteConfigurationPlans::new(database.clone())),
+        folders: Arc::new(AgentBackupFolders::new(
+            Arc::new(AgentFiles::new(files_agent.clone())),
+            database.clone(),
+        )),
+        operators: Arc::new(SqliteOperators::new(database.clone())),
+        restart: Arc::new(restart.clone()),
+        // A restore restarts zendiloosd: not while jobs or an update run.
+        work: Arc::new(AllWork(vec![Arc::new(jobs.clone()), Arc::new(updates.clone())])),
+        jobs: jobs.clone(),
+        notifier: notifier.clone(),
+        audit: audit.clone(),
+        clock: Arc::new(SystemClock),
+    });
+    let configuration_backups = spawn_configuration_backups(recovery.clone());
 
     let snapshots = spawn_snapshot_schedules(sharing.clone());
     let migrations = spawn_permission_migrations(sharing.clone());
@@ -447,6 +478,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         firewall,
         vms,
         backup,
+        recovery,
     };
     let state = ApiState::new(use_cases, config.secure_cookies);
     let app = zendiloos_api::router(state);
@@ -469,7 +501,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     if let Some(listener) = systemd::inherited_unix_listener()? {
         tracing::info!(version = zendiloos_kernel::VERSION, "zendiloosd started on the socket from systemd");
         systemd::notify_ready();
-        axum::serve(listener, app).with_graceful_shutdown(shutdown_requested()).await?;
+        axum::serve(listener, app).with_graceful_shutdown(stop(restart.clone())).await?;
     } else {
         let listener = TcpListener::bind(config.listen)
             .await
@@ -477,7 +509,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         tracing::info!(address = %listener.local_addr()?, version = zendiloos_kernel::VERSION, "zendiloosd started");
         systemd::notify_ready();
         let app = app.into_make_service_with_connect_info::<SocketAddr>();
-        axum::serve(listener, app).with_graceful_shutdown(shutdown_requested()).await?;
+        axum::serve(listener, app).with_graceful_shutdown(stop(restart.clone())).await?;
     }
     purge.abort();
     sampler.abort();
@@ -489,13 +521,46 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     monitor.abort();
     snapshots.abort();
     backup_schedule.abort();
+    configuration_backups.abort();
     migrations.abort();
     self_tests.abort();
     channel_delivery.abort();
     catalog_refresh.abort();
     database.close().await;
+    if restart.was_requested() {
+        // systemd starts it again (Restart=on-failure), with the restored database.
+        tracing::warn!("zendiloosd stopped to start again with the restored configuration");
+        std::process::exit(RESTART_EXIT_CODE);
+    }
     tracing::info!("zendiloosd stopped");
     Ok(())
+}
+
+/// The exit status after a restore: not a success, so that systemd starts
+/// zendiloosd again (`Restart=on-failure`); EX_TEMPFAIL.
+const RESTART_EXIT_CODE: i32 = 75;
+
+/// Serving ends when systemd stops zendiloosd, or once a restore asked for
+/// a start with the restored database.
+async fn stop(restart: ProcessRestart) {
+    tokio::select! {
+        () = shutdown_requested() => {}
+        () = restart.requested() => {}
+    }
+}
+
+/// Every minute: the configuration's backup whose time came.
+fn spawn_configuration_backups(recovery: Recovery) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut every_minute = tokio::time::interval(Duration::from_secs(60));
+        every_minute.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            every_minute.tick().await;
+            if let Some(job) = recovery.run_due().await {
+                tracing::info!(job = job.id.get(), "configuration: backing up on schedule");
+            }
+        }
+    })
 }
 
 /// The way to the privileged agent. An unreachable agent is not fatal:
@@ -934,6 +999,13 @@ async fn open_database(config: &Config) -> anyhow::Result<Database> {
         .with_context(|| format!("cannot create state directory {}", config.state_dir.display()))?;
 
     let path = config.database_path();
+    // A restore staged its database: it takes the place of the one there.
+    let staged =
+        zendiloos_infra::recovery::stage_restored_database(&config.state_dir, &path, &config.backup_dir())
+            .context("cannot put the restored database in place")?;
+    if let Some(before) = &staged {
+        tracing::warn!(kept = %before.display(), "the restored configuration's database is in place");
+    }
     let (database, report) = Database::open(&path, &config.backup_dir()).await?;
     if let Some(backup) = &report.backup {
         tracing::info!(path = %backup.display(), "database backed up before migrating");

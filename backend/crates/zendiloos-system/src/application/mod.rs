@@ -9,8 +9,8 @@ use std::sync::Arc;
 use zendiloos_kernel::{AuditLog, Clock, RunningWork};
 
 use ports::{
-    AuditReader, JournalReader, ListeningPorts, LiveMetrics, PowerControl, SshControl, SystemInfoProvider,
-    TimeControl, WebTlsControl,
+    AuditReader, HostNameControl, HostNameObserver, JournalReader, ListeningPorts, LiveMetrics, PowerControl,
+    SshControl, SystemInfoProvider, TimeControl, WebTlsControl,
 };
 
 /// Adapters for every port of this context, plugged in by the composition
@@ -23,6 +23,8 @@ pub struct SystemPorts {
     /// What runs in the background, which a reboot waits for.
     pub work: Arc<dyn RunningWork>,
     pub time: Arc<dyn TimeControl>,
+    pub host_name: Arc<dyn HostNameControl>,
+    pub host_name_observer: Arc<dyn HostNameObserver>,
     pub ssh: Arc<dyn SshControl>,
     pub listening: Arc<dyn ListeningPorts>,
     pub tls: Arc<dyn WebTlsControl>,
@@ -40,6 +42,8 @@ pub struct SystemUseCases {
     pub request_power_action: commands::RequestPowerAction,
     pub get_time: queries::GetTime,
     pub set_time: commands::SetTime,
+    pub get_host_name: queries::GetHostName,
+    pub set_host_name: commands::SetHostName,
     pub get_ssh: queries::GetSsh,
     pub set_ssh: commands::SetSsh,
     pub get_tls: queries::GetTls,
@@ -61,6 +65,13 @@ impl SystemUseCases {
             ),
             get_time: queries::GetTime::new(ports.time.clone()),
             set_time: commands::SetTime::new(ports.time, ports.audit.clone(), ports.clock.clone()),
+            get_host_name: queries::GetHostName::new(ports.host_name.clone()),
+            set_host_name: commands::SetHostName::new(
+                ports.host_name,
+                ports.host_name_observer,
+                ports.audit.clone(),
+                ports.clock.clone(),
+            ),
             get_ssh: queries::GetSsh::new(ports.ssh.clone()),
             set_ssh: commands::SetSsh::new(
                 ports.ssh,

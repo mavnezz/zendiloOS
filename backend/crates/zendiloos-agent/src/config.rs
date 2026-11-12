@@ -71,6 +71,8 @@ pub struct Tools {
     /// the link of a bridge, bond or VLAN zendiloOS made.
     pub ip: PathBuf,
     pub timedatectl: PathBuf,
+    /// Asks systemd-hostnamed to rename the machine.
+    pub hostnamectl: PathBuf,
     /// May be missing: then the SSH server is not installed.
     pub sshd: PathBuf,
     pub systemd_run: PathBuf,
@@ -138,6 +140,7 @@ impl Default for Tools {
             busctl: PathBuf::from("/usr/bin/busctl"),
             ip: PathBuf::from("/usr/sbin/ip"),
             timedatectl: PathBuf::from("/usr/bin/timedatectl"),
+            hostnamectl: PathBuf::from("/usr/bin/hostnamectl"),
             sshd: PathBuf::from("/usr/sbin/sshd"),
             systemd_run: PathBuf::from("/usr/bin/systemd-run"),
             systemd_mount: PathBuf::from("/usr/bin/systemd-mount"),

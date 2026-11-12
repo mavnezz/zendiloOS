@@ -8,9 +8,10 @@ use utoipa_axum::routes;
 
 use zendiloos_identity::domain::Permission;
 use zendiloos_kernel::Timestamp;
-use zendiloos_system::application::commands::{PowerError, SetSshError, SetTimeError};
+use zendiloos_system::application::commands::{PowerError, SetHostNameError, SetSshError, SetTimeError};
 use zendiloos_system::domain::{
-    PowerAction, RootLogin, SshSettings, SshStatus, TimeSettings, TimeStatus, TlsMinimum,
+    HOST_NAME_MAX, PowerAction, Renamed, RootLogin, SshSettings, SshStatus, TimeSettings, TimeStatus,
+    TlsMinimum,
 };
 
 use crate::auth::Auth;
@@ -25,6 +26,7 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(power))
         .routes(routes!(metrics_history))
         .routes(routes!(time, set_time))
+        .routes(routes!(host_name, set_host_name))
         .routes(routes!(ssh, set_ssh))
         .routes(routes!(tls, set_tls))
 }
@@ -308,6 +310,107 @@ async fn set_time(
     };
     let status = state.system.set_time.execute(settings, &auth.0.actor(), &client).await?;
     Ok(Json(status.into()))
+}
+
+/// The machine's name.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct HostNameState {
+    /// As the system keeps it (`/etc/hostname`); one set elsewhere may be
+    /// longer than a new one may be.
+    pub name: String,
+    /// The most characters a new name may have (NetBIOS's limit).
+    pub max_length: usize,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HostNameRequest {
+    /// Letters, digits and `-`, at most 15, not digits only; kept in
+    /// lowercase.
+    pub name: String,
+}
+
+/// What came of a rename.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct HostNameRenamed {
+    pub name: String,
+    /// As Samba and Windows show it.
+    pub netbios_name: String,
+    /// The web interface's own certificate was made anew for the name; if
+    /// not, it still names the old one.
+    pub certificate_renewed: bool,
+    /// The web interface serves that certificate: browsers meet a new one
+    /// and ask to trust it again.
+    pub own_certificate_served: bool,
+}
+
+impl From<Renamed> for HostNameRenamed {
+    fn from(renamed: Renamed) -> Self {
+        Self {
+            netbios_name: renamed.name.to_ascii_uppercase(),
+            name: renamed.name,
+            certificate_renewed: renamed.certificate_renewed,
+            own_certificate_served: renamed.own_certificate_served,
+        }
+    }
+}
+
+/// The machine's name. Needs `system.view`.
+#[utoipa::path(
+    get,
+    path = "/system/hostname",
+    tag = "system",
+    security(("session" = [])),
+    responses(
+        (status = OK, body = HostNameState),
+        (status = FORBIDDEN, body = Problem, description = "`forbidden`"),
+    )
+)]
+async fn host_name(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+) -> Result<Json<HostNameState>, ApiError> {
+    auth.require(Permission::SystemView)?;
+    let name = state.system.get_host_name.execute(&client).await.map_err(ApiError::internal)?;
+    Ok(Json(HostNameState { name, max_length: HOST_NAME_MAX }))
+}
+
+/// Renames the machine. What derives from the name follows at once:
+/// `<name>.local` (Avahi), the SMB name (Samba's NetBIOS name, the name in
+/// uppercase) and WS-Discovery, which restart if they run (open SMB
+/// connections end), `/etc/hosts`, the web interface's own certificate
+/// (never an issued one) and the notifications. Needs `system.manage`.
+#[utoipa::path(
+    put,
+    path = "/system/hostname",
+    tag = "system",
+    security(("session" = [])),
+    request_body = HostNameRequest,
+    responses(
+        (status = OK, body = HostNameRenamed),
+        (status = FORBIDDEN, body = Problem, description = "`forbidden`, `csrf_rejected`"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`: not a name of letters, digits and -, too long, digits only, localhost"),
+    )
+)]
+async fn set_host_name(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    ApiJson(request): ApiJson<HostNameRequest>,
+) -> Result<Json<HostNameRenamed>, ApiError> {
+    auth.require(Permission::SystemManage)?;
+    let renamed = state.system.set_host_name.execute(&request.name, &auth.0.actor(), &client).await?;
+    Ok(Json(renamed.into()))
+}
+
+impl From<SetHostNameError> for ApiError {
+    fn from(error: SetHostNameError) -> Self {
+        match error {
+            SetHostNameError::Invalid(e) => ApiError::InvalidInput(e.to_string()),
+            SetHostNameError::Port(e) => ApiError::internal(e),
+        }
+    }
 }
 
 impl From<PowerError> for ApiError {

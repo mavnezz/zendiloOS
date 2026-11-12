@@ -25,9 +25,11 @@ zendiloos-storage.workspace = true
 zendiloos-system.workspace = true
 zendiloos-vms.workspace = true
 zendiloos-backup.workspace = true
+zendiloos-recovery.workspace = true
 axum.workspace = true
 axum-extra.workspace = true
 futures-util = "0.3"
+base64.workspace = true
 httpdate.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -52,6 +54,7 @@ zendiloos-notify = { workspace = true, features = ["testing"] }
 zendiloos-network = { workspace = true, features = ["testing"] }
 zendiloos-vms = { workspace = true, features = ["testing"] }
 zendiloos-backup = { workspace = true, features = ["testing"] }
+zendiloos-recovery = { workspace = true, features = ["testing"] }
 async-trait.workspace = true
 http-body-util.workspace = true
 tokio.workspace = true

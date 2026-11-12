@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext};
 
 use crate::domain::{
-    AuditQuery, AuditRecord, JournalPage, JournalQuery, MetricsSample, PowerAction, SshSettings, SshStatus,
-    SystemInfo, TimeSettings, TimeStatus, TlsMinimum,
+    AuditQuery, AuditRecord, HostName, JournalPage, JournalQuery, MetricsSample, PowerAction, Renamed,
+    SshSettings, SshStatus, SystemInfo, TimeSettings, TimeStatus, TlsMinimum,
 };
 
 /// Supplies facts about the host. Implemented in `zendiloos-infra`.
@@ -51,6 +51,23 @@ pub trait TimeControl: Send + Sync {
 
     /// Applies checked settings.
     async fn apply(&self, settings: &TimeSettings, context: &RequestContext) -> Result<(), PortError>;
+}
+
+/// The machine's name; changing it needs the privileged agent, which has
+/// what follows the name follow it (Avahi, Samba, WS-Discovery, the web
+/// interface's own certificate).
+#[async_trait]
+pub trait HostNameControl: Send + Sync {
+    /// The name as the system keeps it (`/etc/hostname`).
+    async fn name(&self, context: &RequestContext) -> Result<String, PortError>;
+
+    async fn rename(&self, name: &HostName, context: &RequestContext) -> Result<Renamed, PortError>;
+}
+
+/// What names the machine within zendiloOS and follows a new name: the
+/// notifications' subject. Told after a rename.
+pub trait HostNameObserver: Send + Sync {
+    fn renamed(&self, name: &str);
 }
 
 /// The newest metrics sample, and a way to follow the ones after it. A

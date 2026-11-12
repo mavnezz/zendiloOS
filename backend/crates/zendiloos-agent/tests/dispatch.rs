@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 use zendiloos_agent::config::Tools;
 use zendiloos_agent::{
-    AccountFiles, AcmePaths, Erasable, ErasePolicy, FirewallPaths, HostPaths, NetworkPaths, Operations,
-    Paths, SshPaths, TimePaths, WebPaths, WebServerPaths,
+    AccountFiles, AcmePaths, ConfigurationPlaces, Erasable, ErasePolicy, FirewallPaths, HostNamePaths,
+    HostPaths, NetworkPaths, Operations, Paths, SshPaths, TimePaths, WebPaths, WebServerPaths,
 };
 use zendiloos_agent_proto::{ErrorCode, Request, Response, Role};
 
@@ -73,6 +73,7 @@ impl Host {
             smbpasswd: p("smbpasswd"),
             busctl: p("busctl"),
             ip: "/bin/false".into(),
+            hostnamectl: "/bin/false".into(),
             timedatectl: p("timedatectl"),
             sshd: p("sshd"),
             systemd_run: p("systemd-run"),
@@ -130,6 +131,8 @@ impl Host {
                 internal: at("internal-networks.nft"),
             },
             time: TimePaths { servers: at("timesyncd.conf") },
+            host_name: HostNamePaths { hostname: at("hostname"), hosts: at("hosts") },
+            configuration: ConfigurationPlaces { samba_passwords: at("passdb.tdb"), host_id: at("hostid") },
             ssh: SshPaths { config: at("sshd_config.d/00-zendiloos.conf") },
             web: WebPaths { tls: at("nginx/tls.conf") },
             acme: AcmePaths {
@@ -221,6 +224,11 @@ fn requests() -> Vec<Value> {
         json!({ "op": "apply_firewall", "config": null, "confirm_within": null }),
         json!({ "op": "confirm_firewall" }),
         json!({ "op": "time_state" }),
+        json!({ "op": "host_name_state" }),
+        json!({ "op": "read_configuration" }),
+        json!({ "op": "restore_configuration", "files": [{ "path": "/etc/hostid", "content": "AQIDBA==" }] }),
+        json!({ "op": "restore_accounts", "users": [{ "name": "anna", "uid": 2001 }],
+                "groups": [{ "name": "family", "gid": 2002, "members": ["anna"] }] }),
         json!({ "op": "share_usage" }),
         json!({ "op": "show_on_console" }),
         json!({ "op": "create_share", "pool": tank, "volume": 1, "name": "media" }),
@@ -274,6 +282,7 @@ fn requests() -> Vec<Value> {
         json!({ "op": "check_compose", "project": "tesla", "directory": "/volume1/docker/tesla", "compose": "services: {}\n" }),
         json!({ "op": "deploy_project", "project": "tesla", "config": "{\"services\":{}}", "pull": true }),
         json!({ "op": "set_time", "zone": "Europe/Berlin", "network_time": true, "servers": ["ptbtime1.ptb.de"] }),
+        json!({ "op": "set_host_name", "name": "office" }),
         json!({ "op": "set_share_properties", "pool": tank, "volume": 1, "share": "media", "quota_bytes": 1_073_741_824u64,
                 "compression": "zstd", "record_size": "m1" }),
         json!({ "op": "show_on_console", "setup_code": "ABCD-EFGH-JKLM" }),

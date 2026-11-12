@@ -83,6 +83,7 @@ impl Host {
             smbpasswd: any.clone(),
             busctl: any.clone(),
             ip: "/bin/false".into(),
+            hostnamectl: "/bin/false".into(),
             timedatectl: any.clone(),
             docker: any.clone(),
             setsid: "/usr/bin/setsid".into(),

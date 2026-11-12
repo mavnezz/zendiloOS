@@ -98,7 +98,7 @@ The Debian package `zendiloos` (built with `just deb`) installs:
 | `/run/zendiloos/agent.sock` | `zendiloos-agent.socket`, `root:zendiloos 0660`: only zendiloosd reaches the system agent |
 | `/run/zendiloos/files.sock` | `zendiloos-files.socket`, `root:zendiloos 0660`: the files agent, the same program with `--role files` |
 | `/etc/samba/smb.conf` | installed from `/usr/share/zendiloos/smb.conf` only if it is Debian's unchanged default (kept as `smb.conf.debian`); it includes `/etc/samba/zendiloos.conf`, which the agent writes |
-| `/var/lib/zendiloos/` | database, backups, downloaded releases (`updates/`), setup code or the marker of an open setup (`setup-open`) (`0700`) |
+| `/var/lib/zendiloos/` | database, backups, downloaded releases (`updates/`), setup code or the marker of an open setup (`setup-open`) (`0700`); a configuration backup's database staged for the next start (`restore/zendiloos.db`, 4.15), the one it replaced kept in `backup/` as `zendiloos-<time>-before-restore.db` |
 | `/run/issue.d/zendiloos.issue` | the console text, written by the agent from its own template (0600): the login prompt shows the address and, until setup is done, the setup code, or for an open setup that the first administrator is created in the browser. zendiloosd only names the code; nothing it controls is read by agetty |
 
 `zendiloosd` uses `Type=notify` and is ordered before `getty.target`, so the
@@ -139,7 +139,7 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 
 | Concept | In Zendiloos |
 |---|---|
-| Bounded context | one core crate each: `identity`, `system`, `storage`, `sharing`, `apps`, `containers`, `updates`, `network`, `certificates`, `firewall`, `vms`, `backup` |
+| Bounded context | one core crate each: `identity`, `system`, `storage`, `sharing`, `apps`, `containers`, `updates`, `network`, `certificates`, `firewall`, `vms`, `backup`, `recovery` |
 | Domain layer | entities, value objects, aggregates, domain rules and errors; pure Rust, no I/O |
 | Application layer | use cases (commands and queries) and the **ports** they need, as traits |
 | Primary (driving) adapter | `zendiloos-api`: HTTP and WebSocket |
@@ -151,17 +151,18 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 |---|---|---|
 | `zendiloos-kernel` | shared kernel: time, `Secret`, request context, the audit entry and its port, what runs in the background (`RunningWork`), common port errors | – |
 | `zendiloos-identity` | accounts and groups with their Linux users and groups, roles and permissions, sessions, passwords, two-factor sign-in (TOTP, recovery codes), throttling, audit | kernel |
-| `zendiloos-system` | system information, metrics, power, logs, the SSH server, time and time zone, the web interface's oldest TLS version | kernel |
+| `zendiloos-system` | system information, metrics, power, logs, the SSH server, time and time zone, the machine's name (6), the web interface's oldest TLS version | kernel |
 | `zendiloos-storage` | disks, SMART and its self-tests, ZFS pools and volumes, removable drives, plans for erasing disks, monitoring; where each disk sits (the enclosure, a disk made to blink) and every disk seen; mdadm arrays read-only | kernel, jobs, notify |
 | `zendiloos-sharing` | SMB and NFS shares, share permissions, and the file manager (share contents as the signed-in user) | kernel, jobs, notify |
 | `zendiloos-apps` | app catalogs and their sources, their apps filled in as templates of administrators' projects, apps installed the earlier way (4.9) | kernel, jobs |
 | `zendiloos-containers` | the Docker engine as administrators see it: containers, images, networks, volumes, Compose projects (administrators' own with their file in a share), use over time, newer images on a schedule, volumes backed up on a schedule and restored, moving Docker's data (4.9) | kernel, jobs, notify |
 | `zendiloos-updates` | updates of the NAS: Debian's packages and zendiloOS's releases from GitHub by channel, checked daily, installed on request (4.10) | kernel, notify |
-| `zendiloos-network` | interfaces, addresses, default routes, name servers; an interface's IP settings and name servers through systemd-networkd, and bridges, bonds and VLANs made, changed and removed, each change with confirmation (6); the network taken over from ifupdown in a job, with confirmation (6); its settings as confirmed kept in the database and compared with the files at the start (6); later the hostname | kernel, jobs, notify |
+| `zendiloos-network` | interfaces, addresses, default routes, name servers; an interface's IP settings and name servers through systemd-networkd, and bridges, bonds and VLANs made, changed and removed, each change with confirmation (6); the network taken over from ifupdown in a job, with confirmation (6); its settings as confirmed kept in the database and compared with the files at the start (6) | kernel, jobs, notify |
 | `zendiloos-certificates` | the ACME client plugin (acme.sh): accounts, challenges and certificates from Let's Encrypt, renewed daily; the web interface's ports and certificate, changed with confirmation (4.11) | kernel, jobs, notify |
 | `zendiloos-firewall` | the firewall: one ordered list of rules (interface, service or ports, source, allow or deny) and what happens when none matches, enforced by nftables for the NAS and the ports Docker publishes, changed with confirmation; services nobody reaches, told (4.12) | kernel, notify |
 | `zendiloos-vms` | virtual machines: the plugin (libvirt and QEMU installed, their storage in locations on one or more pools, the hardware check), VMs from an OS preset with their disks (each on its location), network cards (through the NAS, on a host bridge, directly on a card, on an internal network) and CD drives, made in a job and changed (hardware only while off), the image library (ISOs copied from a share or uploaded), what running VMs use, their state from libvirt and their consoles (4.13) | kernel, jobs |
 | `zendiloos-backup` | backup tasks: the plugin (rsync, the SSH client and rclone installed, the NAS's SSH key), tasks from a share to another share or a removable drive, to an rsync server (daemon or SSH with the host key pinned) or from one, to Google Drive or OneDrive (accounts signed in to with OAuth), encrypted with rclone's crypt if wished, mirrors and dated versions with retention, schedules and "when its drive is plugged in", runs as jobs with their log and transfer lists, restores (4.14) | kernel, jobs, notify |
+| `zendiloos-recovery` | the configuration backup: the archive made of the database, the host's files and settings and the accounts' Linux users, encrypted with a passphrase; downloaded, or written on a schedule into a folder of a share or a removable drive with the newest kept; restored on this or a fresh installation, also instead of the first setup (4.15) | kernel, jobs, notify |
 | `zendiloos-infra` | all secondary adapters, SQLite migrations | kernel, jobs, notify, contexts, agent-proto, exec; in tests also sim |
 | `zendiloos-api` | primary adapter: axum routes, DTOs, OpenAPI, auth middleware, WebSocket | kernel, jobs, notify, contexts |
 | `zendiloosd` | composition root (binary) | everything except agent |
@@ -191,7 +192,7 @@ placeholder crates.
       sharing · apps · containers          │
       updates · network                    │
       certificates · firewall · vms        │
-      backup                               │
+      backup · recovery                    │
                │                           │
                └─────────────┬─────────────┘
                              v
@@ -429,7 +430,7 @@ simple to audit.
   (`docker exec` through `setsid`) differs: it reads what is typed and has
   no timeout. Currently: `systemctl`, `systemd-run`,
   `systemd-mount`, `busctl`, `timedatectl`, `lsblk`, `smartctl`, `zpool`,
-  `zfs`, `sgdisk`, `wipefs`, `udevadm`, `umount`, `rmdir`, `rm`,
+  `hostnamectl`, `zfs`, `sgdisk`, `wipefs`, `udevadm`, `umount`, `rmdir`, `rm`,
   `useradd`, `userdel`, `groupadd`, `groupdel`, `gpasswd`, `smbpasswd`,
   `testparm`, `exportfs`, `smbcontrol`, `sshd`, `docker`, `dockerd`,
   `setsid`, `openssl`, `nginx`, `nft`, `virsh`, `ssh-keygen`, `ssh-keyscan` (and, in transient units,
@@ -1406,6 +1407,14 @@ TLS is rustls with ring and the system's certificate authorities
   writes as systemd-networkd files of its own; it refuses them unless the
   files still have that digest. It changes only `/etc/network/interfaces`,
   `/etc/resolv.conf` and those files, after a record of how they were.
+- A configuration backup's restore (4.15) writes no text of zendiloosd's
+  into a configuration file the agent reads settings from: SSH, the clock,
+  TLS and the machine's name go back through their own typed requests, the
+  network not at all. What it writes as it is: certificates and keys
+  (PEM, checked by `nginx -t` before they stay), Samba's password database
+  (as `SetSmbPassword` could set any managed account's), ZFS's host id
+  (four bytes) and the IDs handed out (which only rise); users and groups
+  only with managed IDs, refused when a name or ID is another's.
 - `Secret` has a redacted `Debug`/`Display` and is never logged.
 - Every operation is logged to the journal with request ID, peer UID/PID and
   result.
@@ -2426,8 +2435,9 @@ does, rather than leaving the one before until the next renewal.
 
 **The web interface's settings** (Control panel → Web interface): the HTTP
 port, whether plain HTTP redirects to HTTPS or is not served, the HTTPS port,
-and the certificate: the machine's own, self-signed one, or an issued one
-that holds. Plain HTTP never serves the interface itself (the session cookie
+and the certificate: the machine's own, self-signed one (made anew for the
+new name when the machine is renamed, 6), or an issued one that holds. Plain
+HTTP never serves the interface itself (the session cookie
 is HTTPS-only): it points to HTTPS and answers HTTP challenges from acme.sh's
 `webroot`, which needs it on port 80 (as plain text whatever the name, and
 never through a link: `types { }`, `disable_symlinks on`). Ports are 1 to
@@ -3272,6 +3282,160 @@ of the API, the frontend's tests, and in the second test VM (`just
 vm-backup-test`, 8, an encrypted backup with real rclone among them).
 Google Drive and OneDrive themselves are reached by none of these.
 
+### 4.15 Configuration backup and recovery
+
+**What is backed up.** One file, `zendiloos-config-<name>-<UTC
+time>.tar.zst.age`: a tar archive, compressed with zstd and encrypted with
+age's passphrase encryption (scrypt), all three made in zendiloosd itself
+(the crates `tar`, `zstd` and `age`). Inside, in this order:
+`manifest.json` (the layout, `1`, zendiloOS's version, the database's
+schema, the machine's name, the time), `settings.json` (what the host
+keeps outside zendiloOS's files: the time zone and time servers as
+timedated has them, SSH's settings, the oldest TLS version),
+`accounts.json` (the people's Linux users and groups with their UIDs,
+GIDs and members, as the account files have them: the database keeps no
+GIDs, and the files on the volumes carry the UIDs), `zendiloos.db` (a
+consistent copy, `VACUUM INTO`, never the live file) and below `files/`
+what zendiloOS wrote that its database does not say again, read by the
+agent (`ReadConfiguration`, each a place of its own named by what it is,
+never by a path, a plain file read without following a link): the
+machine's own certificate and key, the issued certificates the web
+interface serves, Samba's passwords (`passdb.tdb`: an account's SMB
+password cannot be made from its web password's hash), ZFS's host id
+(`/etc/hostid`, by which a pool knows its machine), the IDs handed out,
+and for reference SSH's, timesyncd's and TLS's files and the network's
+(`05-zendiloos-*`). Everything else follows from the database at the next
+start, as always (1.2): Samba's and NFS's configuration, the web server's
+ports and certificate, the firewall's rules.
+
+**Encrypted, with a passphrase the administrator gives.** The archive
+holds the password hashes, the certificates' keys, Samba's passwords and
+the secrets kept for mail, backups and DNS, and it goes into a share,
+onto a USB drive or into a browser's downloads. Written root's alone it
+would be no safer there: Samba reads the shares as root, a drive goes
+elsewhere. So it is encrypted, with a passphrase of at least 12
+characters. *age* rather than `openssl enc`: age authenticates what it
+decrypts (a wrong passphrase or a changed file is refused, never read as
+garbage), its format is specified and small, and Debian's `age` opens a
+backup by hand (`age -d … | zstd -d | tar -x`), where `openssl enc` has
+no authenticated mode. age's command reads a passphrase only from a
+terminal, so zendiloosd uses the library. Decrypting accepts a work
+factor up to 2^22, so a backup a fast machine made opens on a slow one.
+
+**By hand and on a schedule** (Control panel → Configuration backup,
+`system.manage`): `POST /configuration/backup/download` answers the file
+for the passphrase given (`configuration.download` in the audit log). The
+plan (`GET` and `PUT /configuration/backup`, migration `0055`, one row)
+backs up daily or weekly at a time of the NAS's time zone, as the
+backup plugin's schedules reckon (made up once when the NAS was off), into
+a folder of a share or of a removable drive (made if missing), and keeps
+the newest N there (1 to 60, 7 by default; by name, which sorts as the
+times do; other files are never touched). It needs neither the Backup
+plugin nor rsync: zendiloosd writes the file through the files agent with
+the access of the administrator who set the plan up (as the file manager
+uploads: a hidden upload, then renamed), so the folder's rules hold; an
+account that is gone or no longer an administrator fails the run. The
+passphrase is kept with the plan as the mail server's password is (4.3):
+never sent back, a change without one keeps it. `POST
+/configuration/backup/run` backs up now. A run is a job
+(`configuration.backup`); its outcome is kept with the plan, and a failed
+one is told (`configuration_backup_failed`, an error of the group
+*System*). Audited: `configuration.backup_settings`, `configuration.backup`.
+
+**Restore** (`POST /configuration/restore`, `system.manage`; and `POST
+/setup/restore` instead of creating the first administrator, allowed as
+the setup is: the setup code, or an open setup from the own network,
+tries throttled as the setup's). The body is the file, the passphrase in
+`X-Zendiloos-Passphrase` as base64 of its UTF-8 (a header takes ASCII
+only); nginx takes up to 257 MiB on these two paths, zendiloosd 256.
+Refused while jobs or an update run (the restart would cut them off).
+Checked first as a whole, before anything changes: the passphrase
+(`wrong_passphrase`), the layout (only the entries above, each once,
+plain files, the manifest first; `not_a_backup`, `unsupported_backup` for
+another layout number), and the database: one of zendiloOS (its
+migrations' table), not newer than this release knows (`backup_too_new`:
+update first). An older one is taken as it is: the migrator brings it up
+at the next start, a copy made before, as for an update. Then the host's
+part goes back: the accounts' Linux users and groups with their IDs
+(`RestoreAccounts`: where missing, refused as a whole if a name or ID is
+another's here), the files (`RestoreConfiguration`, only those a backup
+puts back, each checked as what it is: PEM, four bytes, `uid=`/`gid=`
+lines; the certificates under the web server's lock, `nginx -t` and a
+reload, the ones before back if nginx refuses; Samba stopped while its
+passwords are written; the IDs handed out only rise), and the settings
+through their own requests (the machine's name, 6; the clock; SSH; TLS),
+each that fails only named in the answer. The database is staged as
+`restore/zendiloos.db` with the restore's audit entry written into it
+(the account by name: its ID is the other database's), and zendiloosd
+exits two seconds after its answer (status 75), for systemd to start it
+again (`Restart=on-failure`; run by hand, as `just dev` does, it is started
+again by hand). At its start, before opening the database,
+a staged one takes the place of the live one, which goes with its
+write-ahead log to `backup/zendiloos-<time>-before-restore.db`. Whoever was
+signed in signs in again, with the backup's accounts. Audited as
+`configuration.restore`.
+
+**The network is not put in force.** Interfaces have other names on
+other hardware, and a fixed address from elsewhere would cut the
+administrator off: the restore leaves the network as it is (the address
+the installer gave the fresh machine keeps answering) and names the
+network's files in the backup; they are set on the Network page, where
+every change is confirmed or goes back (6). The web interface's ports
+come from the database: the answer says the HTTPS port, the interface
+moves there with zendiloosd's start. **Known limits:** the firewall's
+rules come back as they were, without confirmation (as at every start),
+so rules made for another network can shut the browser out: the page
+says so before a restore. Pools of the old machine are not imported:
+with the host id restored, ZFS imports them at the next boot, but their
+volumes' mount units are not made (see the recovery mode below).
+Installed plugins (Docker, VMs, the Backup plugin, the ACME client) are
+installed again from the App Center; their settings are in the database.
+The Backup plugin's SSH key and acme.sh's accounts stay out (servers are
+given the new key; certificates are issued anew at their renewal).
+
+**Tested** by the domain's and use cases' tests (names, retention, the
+schedule, passphrases, the plan, refusals, the restart), the agent's
+against fake programs (the files read, links left out; certificates
+nginx refuses going back; Samba stopped and started; accounts made with
+their IDs and refused when taken), infra's (an archive written and read,
+another layout refused, a backup restored into a fresh state directory
+with its database staged, swapped in at the start and the audit entry in
+it, a newer schema refused, backups written into a share through the
+files agent), the API's feature tests, the frontend's, `just
+vm-config-backup-test` (VM 2 and a fresh VM 3) and `just iso-test`.
+
+**Recovery mode (design; the rescue entry is built).** For a machine that
+does not start, the ISO's menus have *Rescue a zendiloOS system*: Debian's
+rescue mode (`rescue/enable=true`, none of zendiloOS's answers), a shell in
+the installed system, from which a configuration backup can be copied
+off (`/var/lib/zendiloos`), a database from `backup/` put back, or a
+package repaired. The installer's environment has no ZFS, and a module
+built for the installed kernel loads only into that kernel, so the pools
+are not reached from there. What is to follow, in this order:
+
+1. *Importing pools of another installation* (Storage): `zpool import`
+   lists the pools zendiloOS made (`zendiloos:volume`) that are not
+   imported; the page offers them, the agent imports one (read-only
+   first, to look at, then for good with `-f` when its host id is
+   another's) and makes its volume's, shares', personal folders' and
+   Docker's mount units from the pool's datasets as creating them does.
+   With it, a fresh installation plus a configuration backup is a whole
+   recovery: the shares the database names come back on their pools.
+2. *A recovery boot entry of the installed system*: a GRUB entry
+   `zendiloOS (recovery)` booting the installed kernel into
+   `zendiloos-recovery.target`: no pools imported, no file services, no
+   Docker or VMs; nginx and zendiloosd with an empty database of its own
+   (`/run/zendiloos-recovery`), whose setup offers only a restore: a
+   backup uploaded, or one found in `@recovery` folders, on removable
+   drives and on pools imported read-only for the purpose (`zpool import
+   -o readonly=on -N`, the newest per machine name listed). Restored, the
+   machine starts normally.
+3. *A live image* with ZFS for the ISO's kernel, built with the ISO
+   (DKMS in the build container), for a machine whose system disk is gone:
+   it imports pools read-only, finds backups as above and installs
+   zendiloOS anew with the chosen backup restored at its first start
+   (the installer's late command stages it in `/var/lib/zendiloos`).
+
 ---
 
 ## 5. Storage Concept
@@ -3317,6 +3481,7 @@ the interface and the agent deal with a single tool chain (`zpool`, `zfs`).
 | Configuration | static: `/etc/zendiloos/*.toml` (listen address, paths, log level, development flags); everything the admin manages lives in the database | |
 | System metrics | `sysinfo` for CPU, memory, processes, sensors; an own parser for `/proc/diskstats` | sysinfo does not cover storage specifics |
 | Network | systemd-networkd + systemd-resolved; NetworkManager is only shown. Per interface: IPv4 by DHCP, fixed (address, prefix, gateway) or off, IPv6 from router advertisements or off (both off: the interface switched off, `ActivationPolicy=down`), up to three name servers; an interface without a file of zendiloOS's (down, or never set up) is switched on the same way. The agent writes `/etc/systemd/network/05-zendiloos-<interface>.network` (before netplan's files), after a record of every file a change touches as it was (`zendiloos-change.json` beside them, root's alone), and has systemd-networkd reload and reconfigure the link over D-Bus (`busctl`: the agent's own network namespace has neither the host's links nor a working `networkctl`). DHCP names the card by its MAC address (`ClientIdentifier=mac`): systemd's default, a DUID from the machine ID, changes with every installation, and so do those of ifupdown's DHCP clients (dhcpcd's `duid`, dhclient's `-i`); and it asks for the address the card has (`RequestAddress=`), so a server that keyed the lease by another client's identifier hands it out again once that one released it. A change is kept only if confirmed within two minutes, from the new address if it changed; otherwise every file returns as the record says, from wherever the change got to, by a timer in the agent, and at the agent's start should it or the machine restart first; the record goes last, so an undoing cut off is done again (a `….previous` file an earlier agent kept beside a file returns at the start too). One change at a time. **zendiloOS's settings are kept in its database** (migration `0054_network_settings`): its files as they were once a change was confirmed (an interface's, a device's, a takeover's, a restore's), so they are no longer the only record; the first start with that table keeps the files as they are. At each start, once the agent answers and no change waits (one the agent's own start undoes, say), zendiloosd compares the files with the settings, both read by the same code, so only what zendiloOS's settings say counts (addresses, DHCP, name servers, ports, VLANs, a device's kind, members, mode, STP and MAC address), not how a file is written. A file lost, one that says otherwise, or one of zendiloOS's that its settings do not have is told as a notification (`network_drift`, each difference once, also across restarts) and on the Network page (`drift` in `GET /network/setup`, live while no change waits), which offers two ways out: **restore** (`POST /network/restore`, audited as `network.restore`) writes the settings back as one change with confirmation like any other, every file lost or changed as kept, a device the settings do not have removed, an interface's file they do not have taken away (`unset` in the agent's change), and unconfirmed within two minutes the files are as they were; **keep the files** (`POST /network/keep-files`, `network.keep_files`) takes them as the settings, for a file changed by hand on purpose. Until one of them is chosen, no other change is made (`network_drift`, 409): it would be planned on files zendiloOS did not write, and confirming it would keep them. zendiloosd never writes the files back by itself at the start. The NAS runs as the files say, and a file changed outside zendiloOS may be what keeps it reachable now (an address set at the console, a card renamed by new hardware); written back at boot, a working network could be cut off with nobody there to confirm, and the confirmation that guards every change would only take the network away for two minutes before giving the changed files back. Where the change made the NAS unreachable, nothing zendiloosd does unattended helps either: what helps is the console, or restoring from the page once it is reachable. **Bridges, bonds and VLANs** are made, changed and removed on the Network page (`POST /network/devices`, `PUT` and `DELETE /network/devices/{name}`, `system.manage`, audited as `network.device_make`, `network.device_change`, `network.device_remove`), each as one such change of several files: a `05-zendiloos-<name>.netdev` for the device and the `.network` files of the device, its members and its parent. A bridge has wired cards, and bonds and VLANs made here, as members (or none, for VMs only), STP off unless asked; a bond has wired cards (active-backup, 802.3ad/LACP or balance-alb; its members' links watched every 100 ms, LACP asked to tell every second and traffic spread by address and port); a VLAN is on a wired card, a bond or a bridge with an id from 1 to 4094. Members are free: in no other bridge or bond (by zendiloOS's files or the kernel's), carrying no VLAN; names are interface names the kernel takes (15 characters at most), none in use, none Docker's (`docker0`, `br-` and twelve hex digits) or a `veth`'s, which the firewall takes for containers'; nothing may end up on itself (a VLAN on a bridge among its own members), all checked before anything is written, and `POST /network/devices/plan` says beforehand what becomes of each interface. A bridge or bond takes the settings of the first member given that has any, which becomes its first member, and that member's MAC address (`MACAddress=` in the `.netdev`), so DHCP, by the MAC address and asking for the address the card had, keeps the NAS's address; the other members' settings go. Its members are noted in order in its `.netdev` (`# Members:`); removed, it gives its settings back to its first member, asking for the address it has now, and the other members are switched off, as are members taken out of one. A VLAN has settings of its own, none by default: a VLAN made never brings a second default route or other name servers that could take the NAS's confirmation away, and one carrying VMs needs no address; its parent keeps its settings and carries it (`VLAN=`). Devices zendiloOS made stay up without addresses (`RequiredForOnline=no`) rather than being switched off. systemd-networkd makes a new `.netdev`'s device when it reloads (a VLAN's when its parent is set up) but neither removes nor changes one it made: a device that goes, or whose bond mode or STP changes, is deleted in a transient unit (`ip link delete`, 3.3) and, if it stays, made anew from its file; undoing a change deletes the devices it made and has systemd-networkd make those it removed again. A device that carries a VLAN or is a member of another is removed last; a bridge a VM is on is not removed, nor is a card or bond a VM is directly on taken into a bridge or bond (`device_in_use`, 4.13). A bridge made without members and without an address of the NAS's is an internal network for VMs, which the NAS keeps itself off by a table in nftables' `bridge` family (4.12); `GET /network/setup` names them (`internal`). An interface's settings are changed as before; a member's are its device's, and a parent keeps its VLANs. Firewall rules that name a member see its traffic no longer: it comes in on the device. Bridges, bonds and VLANs not made by zendiloOS are shown with their members and parent and their IP settings changed, but neither changed otherwise nor removed. **The installation ISO** hands the network to systemd-networkd and systemd-resolved at its end (`packaging/iso/network.sh`): a file for each interface Debian's installer set up in `/etc/network/interfaces` (DHCP, or the static address it was given), the others none, so they stay down; both enabled, `/etc/resolv.conf` a link to systemd-resolved's stub, which knows the name servers on the first boot; ifupdown keeps the loopback only. **A Debian with ifupdown** is taken over on request (`POST /network/takeover`, `system.manage`, audited as `network.take_over`), in a job: systemd-resolved installed if missing (4.10); zendiloosd reads `/etc/network/interfaces` and what it sources from `interfaces.d` (the agent hands them over with a digest) and translates each interface ifupdown brings up (`auto`, `allow-hotplug`) that is a wired card here: `inet dhcp`, `inet static` (address, netmask, gateway, `dns-nameservers`; without them the name servers in force), `inet6 auto` and `inet6 dhcp` (router advertisements). It refuses anything else, naming file, line and why, and then leaves everything as it is: bonds, bridges, VLANs, wireless, commands run on the way, search domains, mappings, other sources, cards brought up only by hand. The agent refuses a takeover if the files changed since; it writes a record of everything it changes as it was (`/etc/network/zendiloos-takeover.json`, root's alone: `interfaces`, `resolv.conf` as file or link, the interfaces' systemd-networkd files, whether systemd-networkd and systemd-resolved were enabled and running), then stops `networking.service` (leases released, addresses removed), leaves ifupdown the loopback, links `resolv.conf` to the stub and enables and starts systemd-resolved and systemd-networkd. Not confirmed within two minutes, or should the agent or the machine restart first, ifupdown gets everything back from the record, from wherever the takeover got to: systemd-networkd first drops the static addresses it set (they would outlive it and stop ifupdown from setting them), it and systemd-resolved are stopped and disabled as they were, the files return, `networking.service` is restarted, and the record goes last, so a revert cut off is done again at the next start. Confirmed, the record goes; `interfaces.zendiloos-previous` and `resolv.conf.zendiloos-previous` stay for people. What systemd-networkd set in the kernel for IPv6 (router advertisements taken in user space) stays until the next boot after a revert | declarative files the agent writes atomically; verified in the second test VM (`just vm-network-test`): a setting that cuts the VM off goes back by itself; the card's file lost by hand is told after zendiloosd restarts, written back with confirmation, and kept when lost again; the takeover in a throwaway VM made an ifupdown machine (`just vm-network-takeover-test`): kept once confirmed, given back unconfirmed and after the agent restarted; bridges, bonds and VLANs in a throwaway VM with two spare cards (`just vm-network-bridge-test`): the NAS keeps its address over a bridge, one unconfirmed goes with its link, by the timer and as the agent starts, frames bridged to a stand-in for a VM pass Docker's FORWARD chain, a bond and a VLAN come up and go, the firewall's and Docker's tables as before; the ISO's switch by `just iso-network-test` and `just iso-test` |
+| Machine's name | set by the installer (Debian's `netcfg`: `/etc/hostname`, and `127.0.1.1 <name>` in `/etc/hosts`, or the address it was given with the name and domain), changed on the control panel's Info page (`GET` and `PUT /system/hostname`, `system.manage` to change, audited as `system.host_name_update`). A name is one label as RFC 1123 allows (letters, digits and `-`, neither first nor last a `-`), not digits only and not `localhost`, kept in lowercase, and **at most 15 characters**: NetBIOS's limit, so the one name holds everywhere, as `<name>.local` (Avahi), as the SMB name Windows lists (Samba's NetBIOS name, which it takes from the host name in uppercase, and WS-Discovery, which asks Samba for it) and in the certificate; a name set elsewhere may be longer and is shown as it is. The agent (`SetHostName`, the protocol's `HostName`: a label of up to 63) has systemd-hostnamed set it (`hostnamectl hostname`: the static name and the kernel's; the agent and zendiloosd run in UTS namespaces of their own, `ProtectHostname`, so zendiloosd reads the name from `/etc/hostname`), puts the new name in `/etc/hosts` where it named the old one (a domain after it kept; Debian's `127.0.1.1` line made if no line names it; a link left alone), makes the machine's own, self-signed certificate anew for it (`<name>`, `<name>.local`, `localhost`, as `make-certificate` does; built beside the pair, swapped in, `nginx -t` and a reload if nginx serves it, the pair before back if nginx refuses; an issued certificate is never touched), and restarts what reads the name when it starts, only if it runs: `avahi-daemon`, `smbd` (open SMB connections end), `wsdd2`, in that order. `zendiloos.conf` names no host, so Samba's configuration is not written again; no unit file or link changes, so systemd is not reloaded. Within zendiloosd the notifications' subject follows (`HostNameObserver`). The interface says that the browser meets a new certificate and offers the new address when it was reached by the old name. A DHCP server learns the new name when the lease is renewed. Tested in the agent against fake programs, by the API's tests and in the second test VM (`just vm-hostname-test`) | the NetBIOS name could be written into `zendiloos.conf` instead (and a longer host name cut there), but then Samba's name and the host name part; the self-signed certificate could be kept, but it would name a host that no longer answers |
 | Network discovery | Windows finds the NAS through WS-Discovery (`wsdd2`), macOS through Bonjour (Samba announces `_smb._tcp` through `avahi-daemon`); both recommended by the package. NetBIOS stays off | without them, clients only reach the NAS by address; `wsdd` itself is not in Debian 13 |
 | File services | SMB (Samba, with `wsdd2`) and NFS (`nfs-kernel-server`) are switched on and off in the control panel; off means stopped and disabled, so it stays off after a restart, while shares, exports and permissions stay. The workgroup and the oldest SMB version answered (2.0, 2.1 or 3; SMB1 never) are written as global settings at the top of `/etc/samba/zendiloos.conf`, which `smb.conf` includes at the end of `[global]`; both are applied with the shares in one agent request, and if the host refuses, the previous settings return | per-share protocols would multiply what can go wrong for little gain; FTP, rsync and WebDAV are not offered until there is a reason |
 | SSH | the SSH server as a service in the control panel (Terminal): on or off (off means stopped and disabled; open sessions stay, as `KillMode=process`), its port (22, or a free one from 1024; zendiloosd refuses a port another program listens on, read from `/proc/net/tcp`), and whether root and passwords may log in, each either set or left as the system has it. The settings go to `/etc/ssh/sshd_config.d/00-zendiloos.conf`, read before the other drop-ins, so they win; `sshd -t` checks them first and the previous file returns if it fails. On request a transient systemd timer turns SSH off again after up to a day; SSH is then enabled only until the next boot (`enable --runtime`), as the timer itself is gone after a restart, so a restart turns it off too. Who may log in is Debian's: the accounts of the interface have no shell | keys, users allowed to log in and a web terminal belong to Debian's configuration or later |

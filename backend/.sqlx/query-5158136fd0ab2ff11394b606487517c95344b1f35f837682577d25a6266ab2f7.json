@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE configuration_backup SET last_at = ?, last_ok = ?, last_file = ?, last_error = ? WHERE id = 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "5158136fd0ab2ff11394b606487517c95344b1f35f837682577d25a6266ab2f7"
+}

@@ -12,6 +12,7 @@ mod backup;
 mod backup_tasks;
 mod certificates;
 mod channels;
+mod configuration_backup;
 mod enclosure;
 mod firewall;
 mod groups;
@@ -35,7 +36,7 @@ mod vms;
 mod volume_backups;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use std::fs::OpenOptions;
 use std::io;
@@ -54,6 +55,7 @@ pub use audit::SqliteAuditLog;
 pub use backup_tasks::{SqliteBackupAccounts, SqliteBackupRuns, SqliteBackupSettings, SqliteBackupTasks};
 pub use certificates::SqliteCertificates;
 pub use channels::{SqliteAccountAddresses, SqliteChannels};
+pub use configuration_backup::{SqliteConfigurationPlans, SqliteOperators};
 pub use enclosure::{SqliteDiskInventory, SqliteEnclosure};
 pub use firewall::SqliteFirewall;
 pub use groups::SqliteGroups;
@@ -172,6 +174,28 @@ impl Database {
 
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// The newest migration this release knows.
+    pub fn supported_schema() -> i64 {
+        MIGRATOR.iter().filter(|m| m.migration_type.is_up_migration()).map(|m| m.version).max().unwrap_or(0)
+    }
+
+    /// Writes a consistent copy of the database to `path`, a new file
+    /// readable by the owner alone (`VACUUM INTO`, never a copy of the live
+    /// file); its schema, the newest migration applied.
+    pub(crate) async fn copy_to(&self, path: &Path) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
+        OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;
+        let target = path.to_str().ok_or("the copy's path is not valid UTF-8")?;
+        if let Err(error) = sqlx::query("VACUUM INTO ?").bind(target).execute(&self.pool).await {
+            let _ = std::fs::remove_file(path);
+            return Err(error.into());
+        }
+        let schema: Option<i64> =
+            sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations WHERE success = 1")
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(schema.unwrap_or(0))
     }
 
     /// Waits for running queries and closes all connections, which also

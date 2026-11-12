@@ -387,6 +387,69 @@ const en = {
       addButton: 'Add',
     },
   },
+  configurationBackup: {
+    description:
+      'zendiloOS’s configuration in one file: its database (accounts, shares, settings), the web interface’s certificates, Samba’s passwords, the people’s Linux users and the system’s settings. Encrypted with a passphrase: keep it apart from the backup, as without it nobody can open or restore it.',
+    passphrase: 'Passphrase',
+    passphraseRepeat: 'Repeat the passphrase',
+    passphraseHint: 'At least {min} characters.',
+    passphraseKept: 'A passphrase is kept; type one to replace it.',
+    passphrasesDiffer: 'The passphrases do not match.',
+    download: {
+      title: 'Back up now',
+      intro: 'Downloads a backup of the configuration as it is now.',
+      submit: 'Download a backup',
+    },
+    plan: {
+      title: 'Back up on a schedule',
+      intro:
+        'Writes a backup into a folder of a share or of a USB drive, as the administrator who sets this up, and keeps the newest. The Backup plugin is not needed.',
+      enabled: 'On',
+      when: 'When',
+      daily: 'Daily',
+      weekly: 'Weekly',
+      at: 'at',
+      where: 'Into',
+      share: 'Share',
+      drive: 'USB drive',
+      choose: 'Choose…',
+      folder: 'Folder',
+      folderHint: 'Within the share or drive, made if missing; empty: its top.',
+      keep: 'Keep',
+      keepHint: 'The newest {count} backups stay in the folder; older ones of zendiloOS go.',
+      save: 'Save',
+      runNow: 'Back up now into the folder',
+      started: 'The backup runs; the job list shows it.',
+      next: 'Next: {time}',
+      by: 'Written as {name}.',
+      lastOk: 'Last: {time}, {file}',
+      lastFailed: 'Last: {time}, failed: {error}',
+      weekdays: {
+        0: 'Monday',
+        1: 'Tuesday',
+        2: 'Wednesday',
+        3: 'Thursday',
+        4: 'Friday',
+        5: 'Saturday',
+        6: 'Sunday',
+      },
+    },
+    restore: {
+      title: 'Restore',
+      intro:
+        'Puts the configuration of a backup back on this NAS: its accounts (sign in with them afterwards), shares, settings and certificates. zendiloOS starts again with it. The network stays as it is; set it on the Network page, where each change is confirmed. Firewall rules come back as they were.',
+      file: 'Backup',
+      submit: 'Restore…',
+      confirmTitle: 'Restore this backup?',
+      confirm:
+        'Everything set here since is replaced by the backup’s; the database before is kept beside it. zendiloOS starts again and everyone signs in anew.',
+      confirmLabel: 'Restore',
+      done: 'The backup of {name} made {time} by zendiloOS {version} is restored.',
+      port: 'The web interface answers on port {port} once zendiloOS started again.',
+      network: 'Network settings in the backup, not put in force: {files}.',
+      restarting: 'zendiloOS starts again; this page reloads.',
+    },
+  },
   setup: {
     title: 'Set up zendiloOS',
     intro: 'Create the first administrator account.',
@@ -402,6 +465,17 @@ const en = {
     passwordsDiffer: 'The passwords do not match.',
     submit: 'Create administrator',
     toLogin: 'Go to sign-in',
+    restoreInstead: 'Restore a configuration backup instead',
+    createInstead: 'Create an administrator instead',
+    restoreIntro:
+      'A backup of another zendiloOS (Control panel → Configuration backup) brings its accounts, settings and certificates here. Sign in with its accounts afterwards.',
+    backupFile: 'Configuration backup (.tar.zst.age)',
+    passphrase: 'Its passphrase',
+    restore: 'Restore',
+    restoring: 'Restoring…',
+    restored: 'The backup of {name} made {time} is restored.',
+    restarting: 'zendiloOS starts again with it; the sign-in follows in a moment.',
+    restoredSlow: 'zendiloOS takes longer than usual to start again. Reload the page in a moment.',
   },
   login: {
     title: 'Sign in',
@@ -480,6 +554,7 @@ const en = {
     network: 'Network',
     locale: 'Time & language',
     update: 'Updates',
+    configurationBackup: 'Configuration backup',
     accounts: 'Users',
     groups: 'Groups',
     fileServices: 'File services',
@@ -525,6 +600,32 @@ const en = {
     storage: 'Storage',
     poolUse: '{used} of {total} · {percent}',
     github: 'zendiloOS on GitHub',
+  },
+  hostName: {
+    title: 'Rename this NAS',
+    description: 'The name the network knows it by.',
+    rename: 'Rename',
+    name: 'Name',
+    rules: 'Up to {max} letters, digits and -, not digits only.',
+    problems: {
+      empty: 'Enter a name.',
+      characters: 'Only letters (a–z), digits and - are allowed: no spaces, dots or umlauts.',
+      tooLong: 'At most {max} characters, as Windows takes names.',
+      hyphen: 'The name may neither begin nor end with -.',
+      digits: 'The name may not be digits only.',
+      reserved: 'localhost is the name every machine has for itself.',
+    },
+    reachedAs: 'Reached on the network as {name}.local',
+    smbAs: 'Windows lists it as {name}',
+    warning:
+      'Samba, Bonjour and WS-Discovery restart for the new name: open connections to shared folders end, and computers that remember the old name have to be told the new one. The web interface’s own certificate is made anew for the name.',
+    save: 'Rename',
+    done: 'This NAS is called {name} now; Windows lists it as {smb}.',
+    newAddress: 'Open the web interface at its new address:',
+    certificateRenewed:
+      'The web interface’s certificate was made anew for the new name: your browser asks you to trust it again once you reload the page.',
+    certificateKept:
+      'The web interface’s own certificate could not be made anew and still names the old name; the system log says why.',
   },
   appearance: {
     description: 'How zendiloOS looks for this account.',
@@ -1540,6 +1641,7 @@ const en = {
         updates_installed: 'Updates installed',
         updates_failed: 'Update failed',
         network_drift: 'Network files changed outside zendiloOS',
+        configuration_backup_failed: 'Configuration backup failed',
         certificate_renewed: 'Certificate renewed',
         certificate_renewal_failed: 'Certificate not renewed',
         certificate_not_taken: 'New certificate not taken',
@@ -2601,6 +2703,7 @@ const en = {
       interrupted: 'Interrupted by a restart; check the result.',
     },
     kinds: {
+      configuration_backup: 'Back up the configuration',
       files_copy: 'Copy files',
       files_delete: 'Delete files',
       files_move: 'Move files',
@@ -3559,6 +3662,10 @@ const en = {
       title: 'Network files changed',
       body: "zendiloOS's network files differ from its settings ({names}). Control panel → Network restores the settings or keeps the files.",
     },
+    configuration_backup_failed: {
+      title: 'No backup of the configuration',
+      body: '{reason} Control panel → Configuration backup shows the plan and the last run.',
+    },
     snapshot_failed: {
       title: 'No snapshot of {share}',
       body: "A scheduled snapshot could not be taken. Is the share's volume there?",
@@ -4027,6 +4134,12 @@ const en = {
     not_own_project: 'This project’s Compose file is not kept in zendiloOS.',
     jobs_running:
       'Background tasks are still running and would stop halfway; wait until they have finished',
+    wrong_passphrase: 'The passphrase does not open this backup.',
+    not_a_backup: 'This is not a configuration backup of zendiloOS',
+    unsupported_backup: 'This backup is of a layout this version of zendiloOS does not read.',
+    backup_too_new:
+      'The backup was made by a newer zendiloOS than this one. Update zendiloOS first, then restore it.',
+    not_planned: 'Choose a folder and a passphrase for the backups first.',
     pool_in_use:
       'The pool still holds data that would be lost without notice. Delete or move it first, each in its own place',
     drive_in_use:

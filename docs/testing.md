@@ -45,6 +45,8 @@ checks and how to run it.
 | `vm-security-test` | TLS, failed sign-ins and blocked addresses, sessions |
 | `vm-firewall-test` | the firewall with nftables, Docker's published ports, a change that goes back unless confirmed |
 | `vm-ssh-test` | SSH as a service: port, rules, switching itself off |
+| `vm-config-backup-test` | the configuration backup: downloaded, on a schedule into a share with retention, refusals (passphrase, noise, a newer schema), restored on a fresh third VM instead of its setup with its accounts (UIDs, SMB passwords), name, time zone and SSH (VM 2 and VM 3) |
+| `vm-hostname-test` | renaming the machine: the host name, `/etc/hosts`, Samba's NetBIOS name, `<name>.local` through Avahi, the certificate; the name put back |
 | `vm-web-server-test` | the web interface's ports and certificates, ACME |
 | `vm-notify-test` | notifications by e-mail and webhook |
 | `vm-network-test` | changing a card's addresses, a change that cuts the VM off going back |
@@ -59,7 +61,7 @@ checks and how to run it.
 | `vm-backup-test` | backup tasks: the plugin, mirrors and versions between pools, a USB drive when plugged in, an rsync daemon and SSH with a pinned host key, a pull, restores, an encrypted backup with rclone |
 | `vm-update-test` | updates of Debian and zendiloOS through the interface, signed releases, refusals, a newer kernel without its ZFS module never started |
 | `vm-upgrade-test` | a machine set up with an older package keeps its accounts, pools, shares and files when a newer one is installed |
-| `iso-test` | installing from the ISO, the first setup, a pool, the network managed by systemd-networkd |
+| `iso-test` | installing from the ISO, the rescue entry in its menus, the first setup, a pool, the network managed by systemd-networkd, a configuration backup restored |
 
 ## Not tested yet
 

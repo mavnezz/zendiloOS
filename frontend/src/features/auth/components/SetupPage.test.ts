@@ -1,6 +1,7 @@
 import {
   callsTo,
   cleanup,
+  click,
   mountApp,
   on,
   page,
@@ -9,7 +10,7 @@ import {
   type,
 } from '@/shared/testing/server'
 
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
 
 import type { SessionInfo } from '@/shared/api/types'
@@ -62,7 +63,89 @@ function submit(selector: string): Promise<void> {
   return settle()
 }
 
-beforeEach(() => cleanup())
+const server = vi.hoisted(() => ({ back: true }))
+vi.mock('@/shared/lib/passphrase', async (original) => ({
+  ...(await original<typeof import('@/shared/lib/passphrase')>()),
+  waitForServer: () => Promise.resolve(server.back),
+}))
+
+beforeEach(() => {
+  cleanup()
+  server.back = true
+})
+
+/** Chooses `content` as the file of the input `selector`. */
+async function chooseFile(selector: string, content: string): Promise<void> {
+  const input = document.body.querySelector<HTMLInputElement>(selector)!
+  const file = new File([content], 'zendiloos-config-nas-20261112T030000Z.tar.zst.age')
+  Object.defineProperty(input, 'files', { value: [file], configurable: true })
+  input.dispatchEvent(new Event('change'))
+  await settle()
+}
+
+describe('restoring instead of the setup', () => {
+  const restored = {
+    host_name: 'nas',
+    created_at: 1_800_000_000,
+    version: '0.4.0',
+    warnings: ['SSH’s settings are not put back'],
+    https_port: 443,
+    network: [],
+  }
+
+  it('sends the backup with its passphrase and the code, then leads to the sign-in', async () => {
+    on('POST', '/api/v1/setup/restore', () => restored)
+    const router = memoryRouter()
+    await router.push('/setup')
+    mountApp(SetupPage, { global: { plugins: [router] } })
+    await settle()
+    document.body.querySelector<HTMLButtonElement>('[data-testid="restore-instead"]')!.click()
+    await settle()
+    await type('#setup-code', 'ABCD-EFGH-IJKL')
+    await chooseFile('#setup-backup', 'encrypted')
+    await type('#setup-passphrase', 'correct horse battery')
+    await submit('#setup-passphrase')
+
+    const call = callsTo('POST', '/api/v1/setup/restore')[0]!
+    expect(call.body).toBe('encrypted')
+    expect(call.headers.get('x-zendiloos-passphrase')).toBe(btoa('correct horse battery'))
+    expect(call.headers.get('x-zendiloos-setup-code')).toBe('ABCD-EFGH-IJKL')
+    expect(page()).toContain('The backup of nas')
+    expect(page()).toContain('SSH’s settings are not put back')
+    expect(router.currentRoute.value.name).toBe('login')
+  })
+
+  it('says what is wrong with the backup, and when the restart takes long', async () => {
+    on('GET', '/api/v1/setup', () => ({ required: true, code_required: false }))
+    on('POST', '/api/v1/setup/restore', () => problem(422, 'wrong_passphrase'))
+    mountApp(SetupPage, { global: { plugins: [memoryRouter()] } })
+    await settle()
+    document.body.querySelector<HTMLButtonElement>('[data-testid="restore-instead"]')!.click()
+    await settle()
+    await chooseFile('#setup-backup', 'encrypted')
+    await type('#setup-passphrase', 'not the one')
+    await submit('#setup-passphrase')
+    expect(page()).toContain('The passphrase does not open this backup.')
+    expect(
+      callsTo('POST', '/api/v1/setup/restore')[0]!.headers.get('x-zendiloos-setup-code'),
+    ).toBeNull()
+
+    server.back = false
+    on('POST', '/api/v1/setup/restore', () => restored)
+    await submit('#setup-passphrase')
+    expect(page()).toContain('takes longer than usual')
+    expect(page()).toContain('Go to sign-in')
+  })
+
+  it('goes back to creating an administrator', async () => {
+    mountApp(SetupPage, { global: { plugins: [memoryRouter()] } })
+    await settle()
+    document.body.querySelector<HTMLButtonElement>('[data-testid="restore-instead"]')!.click()
+    await settle()
+    await click('Create an administrator instead')
+    expect(document.body.querySelector('#setup-name')).not.toBeNull()
+  })
+})
 
 describe('the setup', () => {
   it('creates the first administrator and goes to the desktop', async () => {

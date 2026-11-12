@@ -1,0 +1,218 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT enabled AS \"enabled: bool\", frequency, weekday, hour, minute, target_kind, share_id, drive,\n                      folder, keep, passphrase, account_id, since, last_at, last_ok AS \"last_ok: bool\", last_file,\n                      last_error\n               FROM configuration_backup WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "enabled: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "configuration_backup",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "name": "frequency",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "configuration_backup",
+            "name": "frequency"
+          }
+        }
+      },
+      {
+        "name": "weekday",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "configuration_backup",
+            "name": "weekday"
+          }
+        }
+      },
+      {
+        "name": "hour",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "configuration_backup",
+            "name": "hour"
+          }
+        }
+      },
+      {
+        "name": "minute",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "configuration_backup",
+            "name": "minute"
+          }
+        }
+      },
+      {
+        "name": "target_kind",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "configuration_backup",
+            "name": "target_kind"
+          }
+        }
+      },
+      {
+        "name": "share_id",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "configuration_backup",
+            "name": "share_id"
+          }
+        }
+      },
+      {
+        "name": "drive",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "configuration_backup",
+            "name": "drive"
+          }
+        }
+      },
+      {
+        "name": "folder",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "configuration_backup",
+            "name": "folder"
+          }
+        }
+      },
+      {
+        "name": "keep",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "configuration_backup",
+            "name": "keep"
+          }
+        }
+      },
+      {
+        "name": "passphrase",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "configuration_backup",
+            "name": "passphrase"
+          }
+        }
+      },
+      {
+        "name": "account_id",
+        "ordinal": 11,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "configuration_backup",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "name": "since",
+        "ordinal": 12,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "configuration_backup",
+            "name": "since"
+          }
+        }
+      },
+      {
+        "name": "last_at",
+        "ordinal": 13,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "configuration_backup",
+            "name": "last_at"
+          }
+        }
+      },
+      {
+        "name": "last_ok: bool",
+        "ordinal": 14,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "configuration_backup",
+            "name": "last_ok"
+          }
+        }
+      },
+      {
+        "name": "last_file",
+        "ordinal": 15,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "configuration_backup",
+            "name": "last_file"
+          }
+        }
+      },
+      {
+        "name": "last_error",
+        "ordinal": 16,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "configuration_backup",
+            "name": "last_error"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "6b94bee0aaf8ded05f54b822fc3763049b8d35cd7e8d32580383a62f0635ef90"
+}

@@ -17,13 +17,13 @@
 
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::{Mutex, MutexGuard};
 use tokio::task::JoinHandle;
-use zendiloos_agent_proto::{ConfirmWithin, PendingWebServer, Response, WebServerConfig};
+use zendiloos_agent_proto::{ConfirmWithin, HostName, PendingWebServer, Response, WebServerConfig};
 use zendiloos_exec::{Limits, Program, Surroundings};
 
 use crate::config::Tools;
@@ -327,6 +327,57 @@ impl WebServer {
         Held { web_server: self, _pending: self.pending.lock().await }
     }
 
+    /// Writes certificates and keys restored from a configuration backup
+    /// (`files`: where, what, its mode), under the lock changes take, has
+    /// `nginx -t` read them and nginx reload; refused, every file returns
+    /// as it was (or goes, where there was none).
+    pub(crate) async fn put_restored(&self, files: &[(PathBuf, Vec<u8>, u32)]) -> Result<(), OperationError> {
+        use std::os::unix::fs::DirBuilderExt;
+        let _pending = self.pending.lock().await;
+        let mut before: Vec<(PathBuf, Option<Vec<u8>>, u32)> = Vec::new();
+        let written = (|| {
+            for (path, content, mode) in files {
+                let previous = match fs::read(path) {
+                    Ok(bytes) => Some(bytes),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(OperationError::Read(path.clone(), error)),
+                };
+                if let Some(parent) = path.parent() {
+                    fs::DirBuilder::new()
+                        .recursive(true)
+                        .mode(0o755)
+                        .create(parent)
+                        .map_err(|e| OperationError::Write(parent.to_owned(), e))?;
+                }
+                before.push((path.clone(), previous, *mode));
+                crate::durable::replace_mode(path, content, *mode)?;
+            }
+            Ok(())
+        })();
+        let taken = match written {
+            Ok(()) => match self.check().await {
+                Ok(()) => self.reload().await,
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        };
+        if let Err(error) = taken {
+            for (path, previous, mode) in before.iter().rev() {
+                let back = match previous {
+                    Some(bytes) => crate::durable::replace_mode(path, bytes, *mode),
+                    None => fs::remove_file(path).map_err(|e| OperationError::Write(path.clone(), e)),
+                };
+                if let Err(back) = back {
+                    tracing::error!(%back, path = %path.display(), "cannot put a certificate back");
+                }
+            }
+            return Err(OperationError::Failed(format!(
+                "nginx does not take the restored certificates: {error}"
+            )));
+        }
+        Ok(())
+    }
+
     /// nginx reads its certificate again: it was renewed. Not while a
     /// change is applied or goes back.
     pub(crate) async fn reload_certificate(&self) -> Result<Response, OperationError> {
@@ -334,6 +385,121 @@ impl WebServer {
         self.check().await?;
         self.reload().await?;
         Ok(Response::Done)
+    }
+
+    /// Whether nginx is set to serve the machine's own certificate (or will
+    /// be once a change waiting for confirmation goes back).
+    fn serves_own(&self) -> bool {
+        let own = format!("ssl_certificate     {};", self.paths.own_certificate.display());
+        ["https.conf", "https.conf.previous"]
+            .iter()
+            .any(|name| fs::read_to_string(self.file(name)).is_ok_and(|text| text.contains(&own)))
+    }
+
+    /// Makes the machine's own, self-signed certificate anew for `name`
+    /// (`<name>`, `<name>.local`, `localhost`, as the package's
+    /// `make-certificate` does): the pair is made in a folder of its own
+    /// beside the one served (`openssl req`, the key private from the
+    /// start), swapped in, and if nginx serves it, checked with `nginx -t`
+    /// and nginx reloaded, under the lock changes of the web server take;
+    /// refused, the pair before returns. An issued certificate is never
+    /// touched. Whether nginx serves the own one.
+    pub(crate) async fn renew_own_certificate(
+        &self,
+        openssl: &Program,
+        name: &HostName,
+    ) -> Result<bool, OperationError> {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+        let (certificate, key) = (&self.paths.own_certificate, &self.paths.own_key);
+        let folder = certificate.parent().unwrap_or(certificate).to_owned();
+        let staged = folder.join("zendiloos-new");
+        let write = |path: &Path| {
+            let path = path.to_owned();
+            move |error: io::Error| OperationError::Write(path, error)
+        };
+        match fs::remove_dir_all(&staged) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(OperationError::Write(staged, error)),
+        }
+        fs::create_dir_all(&folder).map_err(write(&folder))?;
+        fs::DirBuilder::new().mode(0o700).create(&staged).map_err(write(&staged))?;
+        let file_name = |path: &Path| path.file_name().map_or_else(|| "file".into(), ToOwned::to_owned);
+        let (new_certificate, new_key) = (staged.join(file_name(certificate)), staged.join(file_name(key)));
+        // openssl writes into the file as it is: private before the key is in it.
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&new_key)
+            .map_err(write(&new_key))?;
+        let (subject, names) = (
+            format!("/CN={}", name.as_str()),
+            format!("subjectAltName=DNS:{0},DNS:{0}.local,DNS:localhost,IP:127.0.0.1", name.as_str()),
+        );
+        let (key_out, certificate_out) =
+            (new_key.display().to_string(), new_certificate.display().to_string());
+        let args = [
+            "req",
+            "-x509",
+            "-newkey",
+            "ec",
+            "-pkeyopt",
+            "ec_paramgen_curve:P-256",
+            "-nodes",
+            "-days",
+            "3650",
+            "-subj",
+            &subject,
+            "-addext",
+            &names,
+            "-keyout",
+            &key_out,
+            "-out",
+            &certificate_out,
+        ];
+        let made = zendiloos_exec::run(openssl, args, LIMITS)
+            .await
+            .map_err(OperationError::from)
+            .and_then(|output| output.success(openssl).map(|_| ()).map_err(OperationError::from));
+        if let Err(error) = made {
+            let _ = fs::remove_dir_all(&staged);
+            return Err(error);
+        }
+        fs::set_permissions(&new_certificate, fs::Permissions::from_mode(0o644))
+            .map_err(write(&new_certificate))?;
+        // Held from the swap until it stands or is undone: no change of the
+        // web server, and no reload, meets the new pair before nginx -t did.
+        let _pending = self.pending.lock().await;
+        // The certificate first, the key last, as make-certificate does.
+        let certificate_swap = swap(&new_certificate, certificate).map_err(write(certificate))?;
+        let key_swap = match swap(&new_key, key) {
+            Ok(exchanged) => exchanged,
+            Err(error) => {
+                let _ = unswap(&new_certificate, certificate, certificate_swap);
+                return Err(OperationError::Write(key.clone(), error));
+            }
+        };
+        sync_folder(&folder)?;
+        let served = self.serves_own();
+        if served {
+            let taken = match self.check().await {
+                Ok(()) => self.reload().await,
+                Err(error) => Err(error),
+            };
+            if let Err(refused) = taken {
+                unswap(&new_key, key, key_swap).map_err(write(key))?;
+                unswap(&new_certificate, certificate, certificate_swap).map_err(write(certificate))?;
+                sync_folder(&folder)?;
+                let _ = fs::remove_dir_all(&staged);
+                return Err(OperationError::Failed(format!(
+                    "nginx does not take the new certificate: {refused}"
+                )));
+            }
+        }
+        fs::remove_dir_all(&staged).map_err(write(&staged))?;
+        tracing::info!(name = name.as_str(), served, "web server: the machine's own certificate made anew");
+        Ok(served)
     }
 
     /// Puts the previous files back (or removes ours where there were none)
@@ -377,10 +543,30 @@ impl WebServer {
     }
 }
 
+/// Puts `new` at `served` in one step, the file there before at `new`:
+/// whether there was one.
+fn swap(new: &Path, served: &Path) -> io::Result<bool> {
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+    match renameat_with(CWD, new, CWD, served, RenameFlags::EXCHANGE) {
+        Ok(()) => Ok(true),
+        Err(rustix::io::Errno::NOENT) => fs::rename(new, served).map(|()| false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Undoes [`swap`]: the file before back at `served`, or none if there
+/// was none.
+fn unswap(new: &Path, served: &Path, exchanged: bool) -> io::Result<()> {
+    if exchanged { swap(new, served).map(|_| ()) } else { fs::remove_file(served) }
+}
+
+fn sync_folder(folder: &Path) -> Result<(), OperationError> {
+    fs::File::open(folder).and_then(|f| f.sync_all()).map_err(|e| OperationError::Write(folder.to_owned(), e))
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
-    use std::path::Path;
 
     use zendiloos_agent_proto::WebPort;
 

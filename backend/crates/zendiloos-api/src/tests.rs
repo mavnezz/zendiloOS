@@ -21,14 +21,14 @@ use zendiloos_sharing::application::{FilesUseCases, SharingPorts, SharingUseCase
 use zendiloos_storage::application::StorageUseCases;
 use zendiloos_storage::testing::FakeStorage;
 use zendiloos_system::application::ports::{
-    AuditReader, JournalReader, ListeningPorts, LiveMetrics, MetricsSubscription, PowerControl, SshControl,
-    SystemInfoProvider, TimeControl, WebTlsControl,
+    AuditReader, HostNameControl, HostNameObserver, JournalReader, ListeningPorts, LiveMetrics,
+    MetricsSubscription, PowerControl, SshControl, SystemInfoProvider, TimeControl, WebTlsControl,
 };
 use zendiloos_system::application::{SystemPorts, SystemUseCases};
 use zendiloos_system::domain::{
-    AuditQuery, AuditRecord, Hardware, JournalCursor, JournalEntry, JournalPage, JournalQuery, LogPriority,
-    MemoryUsage, MetricsSample, PowerAction, SshSettings, SshStatus, SystemInfo, TimeSettings, TimeStatus,
-    TlsMinimum,
+    AuditQuery, AuditRecord, Hardware, HostName, JournalCursor, JournalEntry, JournalPage, JournalQuery,
+    LogPriority, MemoryUsage, MetricsSample, PowerAction, Renamed, SshSettings, SshStatus, SystemInfo,
+    TimeSettings, TimeStatus, TlsMinimum,
 };
 
 use crate::{ApiState, CSRF_HEADER, UseCases, openapi, router};
@@ -163,6 +163,44 @@ impl TimeControl for FakeTime {
     }
 }
 
+/// The machine's name, as hostnamed would keep it; hostnamed refuses the
+/// name `refused`. Records what followed a rename.
+pub(crate) struct FakeHostName {
+    pub(crate) name: Mutex<String>,
+    pub(crate) followed: Mutex<Vec<String>>,
+}
+
+impl Default for FakeHostName {
+    fn default() -> Self {
+        Self { name: Mutex::new("zendiloos".into()), followed: Mutex::default() }
+    }
+}
+
+#[async_trait]
+impl HostNameControl for FakeHostName {
+    async fn name(&self, _: &RequestContext) -> Result<String, PortError> {
+        Ok(self.name.lock().unwrap().clone())
+    }
+
+    async fn rename(&self, name: &HostName, _: &RequestContext) -> Result<Renamed, PortError> {
+        if name.as_str() == "refused" {
+            return Err(PortError::new("agent", "Invalid hostname"));
+        }
+        name.as_str().clone_into(&mut self.name.lock().unwrap());
+        Ok(Renamed {
+            name: name.as_str().to_owned(),
+            certificate_renewed: true,
+            own_certificate_served: true,
+        })
+    }
+}
+
+impl HostNameObserver for FakeHostName {
+    fn renamed(&self, name: &str) {
+        self.followed.lock().unwrap().push(name.to_owned());
+    }
+}
+
 fn sample(at: i64) -> MetricsSample {
     MetricsSample {
         at: zendiloos_kernel::Timestamp::from_unix_seconds(at),
@@ -272,6 +310,7 @@ pub(crate) struct Harness {
     pub(crate) app: Router,
     pub(crate) identity: TestIdentity,
     pub(crate) power: Arc<RecordingPower>,
+    pub(crate) host_name: Arc<FakeHostName>,
     pub(crate) journal: Arc<FakeJournal>,
     pub(crate) jobs: Jobs,
     pub(crate) storage: Arc<FakeStorage>,
@@ -305,6 +344,8 @@ pub(crate) struct Harness {
     /// rsync pretended, not installed at first; drives a test plugs in.
     pub(crate) backup_host: Arc<zendiloos_backup::testing::FakeHost>,
     pub(crate) backup_drives: Arc<zendiloos_backup::testing::FakeDrives>,
+    /// The configuration backup's ports, pretended; its audit and jobs its own.
+    pub(crate) recovery: zendiloos_recovery::testing::Fakes,
     /// The network's host, pretended: managed by systemd-networkd unless a
     /// test gives it ifupdown.
     pub(crate) network_host: Arc<zendiloos_network::testing::FakeConfigurator>,
@@ -443,6 +484,7 @@ impl Harness {
         let identity = TestIdentity::new();
         let power = Arc::new(RecordingPower::default());
         let journal = Arc::new(FakeJournal::default());
+        let host_name = Arc::new(FakeHostName::default());
         let jobs = Jobs::new(Arc::new(MemoryJobs::default()), identity.clock.clone());
         let system = SystemUseCases::new(SystemPorts {
             info: Arc::new(provider),
@@ -450,6 +492,8 @@ impl Harness {
             power: power.clone(),
             work: Arc::new(jobs.clone()),
             time: Arc::new(FakeTime::default()),
+            host_name: host_name.clone(),
+            host_name_observer: host_name.clone(),
             ssh: Arc::new(FakeSsh::default()),
             listening: Arc::new(FakeListening),
             tls: Arc::new(FakeTls::default()),
@@ -588,6 +632,8 @@ impl Harness {
                 audit: identity.audit.clone(),
                 clock: identity.clock.clone(),
             });
+        let (recovery, recovery_fakes) = zendiloos_recovery::testing::recovery();
+        recovery_fakes.operators.0.lock().unwrap().clear();
         let network_host = Arc::new(zendiloos_network::testing::FakeConfigurator::default());
         let network_source = Arc::new(SettableNetwork::default());
         let network_users = Arc::new(FakeUsers::default());
@@ -595,6 +641,7 @@ impl Harness {
         let use_cases = UseCases {
             vms,
             backup,
+            recovery,
             certificates,
             firewall: firewall.clone(),
             containers: docker_test.containers,
@@ -655,6 +702,7 @@ impl Harness {
             app: router(state),
             identity,
             power,
+            host_name,
             journal,
             jobs,
             storage: storage_fake,
@@ -678,6 +726,7 @@ impl Harness {
             vm_host,
             backup_host,
             backup_drives,
+            recovery: recovery_fakes,
             network_host,
             network_source,
             network_users,
@@ -1311,6 +1360,49 @@ async fn admins_turn_ssh_on_and_off() {
 }
 
 #[tokio::test]
+async fn admins_rename_the_machine_and_what_follows_its_name_is_told() {
+    let h = Harness::new();
+    let viewer = h.sign_in("bob", Role::ReadOnly).await;
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let put = |session: &Session, body: Value| {
+        h.send(json(with_csrf(changing(Method::PUT, "/api/v1/system/hostname"), session), body))
+    };
+
+    let state = h.send(empty(with_cookie(get("/api/v1/system/hostname"), &viewer))).await;
+    assert_eq!(state.status, StatusCode::OK);
+    assert_eq!(state.body, json!({ "name": "zendiloos", "max_length": 15 }));
+
+    assert_problem(&put(&viewer, json!({ "name": "office" })).await, StatusCode::FORBIDDEN, "forbidden");
+    let reply = put(&admin, json!({ "name": " Office " })).await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
+    assert_eq!(
+        reply.body,
+        json!({ "name": "office", "netbios_name": "OFFICE", "certificate_renewed": true, "own_certificate_served": true })
+    );
+    assert_eq!(*h.host_name.name.lock().unwrap(), "office");
+    assert_eq!(h.host_name.followed.lock().unwrap()[..], ["office"], "the notifications follow");
+    let entry = h.identity.audit.entries().last().cloned().unwrap();
+    assert_eq!((entry.action, entry.target.as_deref()), ("system.host_name_update", Some("office")));
+    let state = h.send(empty(with_cookie(get("/api/v1/system/hostname"), &viewer))).await;
+    assert_eq!(state.body["name"], "office");
+
+    for bad in ["", "nas.local", "a-very-long-name", "1234", "-nas", "localhost", "küche"] {
+        let refused = put(&admin, json!({ "name": bad })).await;
+        assert_problem(&refused, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input");
+    }
+    assert_eq!(
+        put(&admin, json!({ "name": "nas", "domain": "lan" })).await.status,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    // hostnamed refuses: told as a failure, nothing follows.
+    let failed = put(&admin, json!({ "name": "refused" })).await;
+    assert_eq!(failed.status, StatusCode::INTERNAL_SERVER_ERROR);
+    let entry = h.identity.audit.entries().last().cloned().unwrap();
+    assert_eq!((entry.action, entry.outcome), ("system.host_name_update", Outcome::Failure));
+    assert_eq!(h.host_name.followed.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn admins_set_the_time_zone_and_servers() {
     let h = Harness::new();
     let viewer = h.sign_in("bob", Role::ReadOnly).await;
@@ -1705,10 +1797,11 @@ async fn a_wrong_current_password_is_not_mistaken_for_a_lost_session() {
 
 /// Routes anyone may call. Everything else must require a session; this
 /// guards against a handler that forgets its `Auth` argument.
-const PUBLIC: [(&str, &str); 5] = [
+const PUBLIC: [(&str, &str); 6] = [
     ("GET", "/api/v1/health"),
     ("GET", "/api/v1/setup"),
     ("POST", "/api/v1/setup"),
+    ("POST", "/api/v1/setup/restore"),
     ("POST", "/api/v1/auth/login"),
     ("POST", "/api/v1/auth/login/second-factor"),
 ];
@@ -1807,6 +1900,10 @@ fn openapi_documents_every_route() {
             "/api/v1/certificates/plugin/install",
             "/api/v1/certificates/{id}",
             "/api/v1/certificates/{id}/issue",
+            "/api/v1/configuration/backup",
+            "/api/v1/configuration/backup/download",
+            "/api/v1/configuration/backup/run",
+            "/api/v1/configuration/restore",
             "/api/v1/docker/backup-shares/{id}/readers",
             "/api/v1/docker/backups",
             "/api/v1/docker/backups/import",
@@ -1911,6 +2008,7 @@ fn openapi_documents_every_route() {
             "/api/v1/security/settings",
             "/api/v1/security/unblock",
             "/api/v1/setup",
+            "/api/v1/setup/restore",
             "/api/v1/shares",
             "/api/v1/shares/access/{kind}/{id}",
             "/api/v1/shares/{id}",
@@ -1943,6 +2041,7 @@ fn openapi_documents_every_route() {
             "/api/v1/storage/removable/{id}/mount",
             "/api/v1/storage/self-test-plans",
             "/api/v1/storage/volumes",
+            "/api/v1/system/hostname",
             "/api/v1/system/info",
             "/api/v1/system/metrics/history",
             "/api/v1/system/power",

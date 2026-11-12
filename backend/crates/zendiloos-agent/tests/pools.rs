@@ -155,6 +155,7 @@ fn host(erasable: Erasable) -> Host {
         smbcontrol: script("smbcontrol", ""),
         busctl: script("busctl", ""),
         ip: "/bin/false".into(),
+        hostnamectl: "/bin/false".into(),
         timedatectl: script("timedatectl", ""),
         sshd: script("sshd", ""),
         systemd_run: script("systemd-run", ""),
@@ -169,6 +170,8 @@ fn host(erasable: Erasable) -> Host {
     let paths = Paths {
         network: Default::default(),
         time: Default::default(),
+        host_name: Default::default(),
+        configuration: Default::default(),
         ssh: Default::default(),
         web: Default::default(),
         acme: Default::default(),

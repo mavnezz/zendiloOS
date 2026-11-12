@@ -38,6 +38,7 @@ impl Host {
             systemd_mount: "/bin/false".into(),
             umount: "/bin/false".into(),
             rmdir: "/bin/false".into(),
+            hostnamectl: "/bin/false".into(),
             timedatectl: script(
                 "timedatectl",
                 "case \"$*\" in\n\

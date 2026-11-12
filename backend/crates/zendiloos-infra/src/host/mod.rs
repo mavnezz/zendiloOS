@@ -14,4 +14,4 @@ pub use listening::ProcListening;
 pub use metrics::HostMetrics;
 pub use network::IpNetworkReader;
 pub use sampler::MetricsHub;
-pub use system_info::HostSystemInfo;
+pub use system_info::{HostSystemInfo, host_name, static_name};

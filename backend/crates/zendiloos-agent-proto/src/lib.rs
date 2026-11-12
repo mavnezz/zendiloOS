@@ -13,11 +13,13 @@ mod acme;
 mod apps;
 mod backup;
 mod client;
+mod configuration;
 mod descriptor;
 mod docker;
 mod files;
 mod firewall;
 mod framing;
+mod host;
 mod network;
 mod packages;
 mod removable;
@@ -51,6 +53,10 @@ pub use backup::{
     InvalidBackupTaskId, InvalidBackupWord, is_stamp,
 };
 pub use client::{AgentTransport, Report, TransportError, UnixTransport};
+pub use configuration::{
+    ConfigurationFile, ConfigurationPath, FileContent, InvalidConfigurationFile, InvalidConfigurationPath,
+    InvalidFileContent, MANAGED_IDS, RestoredGroup, RestoredUser, network_file_name,
+};
 pub use descriptor::{MessageReader, read_message_with_file, write_message_with_file};
 pub use docker::{
     ArchiveDigest, BackupStem, ComposeText, ContainerAction, ContainerId, DOCKER_AROUND, DOCKER_PATIENCE,
@@ -69,6 +75,7 @@ pub use firewall::{
     NotADockerBridge, PendingFirewall, TooManyFirewallRules, WaitingFirewall,
 };
 pub use framing::{FrameError, read_message, write_message};
+pub use host::{HostName, InvalidHostName};
 pub use network::{
     BondMode, ConfirmWithin, DeviceAction, FilesDigest, Ifupdown, IfupdownFile, InterfaceName,
     InvalidConfirmWithin, InvalidFilesDigest, InvalidInterfaceName, InvalidMacAddress, InvalidNameServers,
@@ -783,6 +790,38 @@ pub enum Request {
     },
     /// Keeps the change that waits to be confirmed.
     ConfirmFirewall {},
+    /// The files of the configuration backup as they are (see
+    /// [`ConfigurationPath`]), those missing left out, and the people's
+    /// users and groups with their IDs. Answers
+    /// [`Response::Configuration`].
+    ReadConfiguration {},
+    /// Writes the files of a configuration backup back, each at its place
+    /// (only those [`ConfigurationPath::restorable`]), with what follows:
+    /// nginx checks and takes the certificates (the ones before return if
+    /// it refuses), Samba stops while its passwords are written.
+    RestoreConfiguration {
+        files: Vec<ConfigurationFile>,
+    },
+    /// Makes the accounts' Linux users and groups with the IDs they had,
+    /// where they are missing; refused as a whole if a name or ID is taken
+    /// otherwise here.
+    RestoreAccounts {
+        users: Vec<RestoredUser>,
+        groups: Vec<RestoredGroup>,
+    },
+    /// The machine's name as `/etc/hostname` holds it. Answers
+    /// [`Response::HostNameState`].
+    HostNameState {},
+    /// Renames the machine: systemd-hostnamed sets the name (static and
+    /// the kernel's) and `/etc/hosts` names it where it named the old one;
+    /// the machine's own, self-signed certificate is made anew for it
+    /// (nginx reloaded if it serves that one; an issued one is never
+    /// touched); Avahi, Samba and WS-Discovery restart if they run, as
+    /// they read the name when they start. Answers
+    /// [`Response::HostNameSet`].
+    SetHostName {
+        name: HostName,
+    },
     /// The clock's settings and state, and the time zones there are.
     /// Answers [`Response::TimeState`].
     TimeState {},
@@ -1159,6 +1198,11 @@ impl Request {
             Request::FirewallState {} => "firewall_state",
             Request::ApplyFirewall { .. } => "apply_firewall",
             Request::ConfirmFirewall {} => "confirm_firewall",
+            Request::ReadConfiguration {} => "read_configuration",
+            Request::RestoreConfiguration { .. } => "restore_configuration",
+            Request::RestoreAccounts { .. } => "restore_accounts",
+            Request::HostNameState {} => "host_name_state",
+            Request::SetHostName { .. } => "set_host_name",
             Request::TimeState {} => "time_state",
             Request::SetTime { .. } => "set_time",
             Request::ListSnapshots {} => "list_snapshots",
@@ -1484,6 +1528,24 @@ pub enum Response {
         config: String,
         /// When the timer turns it off, Unix seconds.
         off_at: Option<i64>,
+    },
+    Configuration {
+        files: Vec<ConfigurationFile>,
+        /// The people's users and groups zendiloOS made, as the account
+        /// files have them: their IDs are those their files carry.
+        users: Vec<RestoredUser>,
+        groups: Vec<RestoredGroup>,
+    },
+    HostNameState {
+        /// `/etc/hostname` as it is; empty if there is none.
+        hostname: String,
+    },
+    HostNameSet {
+        /// The machine's own certificate names the new name.
+        certificate_renewed: bool,
+        /// nginx serves the machine's own certificate (not an issued one):
+        /// browsers are shown the new one.
+        own_certificate_served: bool,
     },
     TimeState {
         /// `timedatectl show`: zone, whether network time is on and
@@ -1904,6 +1966,7 @@ impl Request {
                 | Request::WebServerState { .. }
                 | Request::FirewallState { .. }
                 | Request::TimeState { .. }
+                | Request::HostNameState { .. }
                 | Request::ListSnapshots { .. }
                 | Request::ShareUsage { .. }
                 | Request::ListDirectory { .. }

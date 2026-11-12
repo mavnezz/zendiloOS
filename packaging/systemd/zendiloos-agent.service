@@ -39,6 +39,16 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 # - time: systemd-timedated sets the zone, network time and the clock
 #   (asked over D-Bus by timedatectl; the agent itself may not touch the
 #   clock), timesyncd's server list goes to /etc;
+# - the machine's name: systemd-hostnamed sets it (asked over D-Bus by
+#   hostnamectl; the agent's own UTS namespace below keeps the name it
+#   started with), /etc/hosts and the machine's own certificate in
+#   /etc/zendiloos/tls (openssl) are in /etc; Avahi, smbd and wsdd2, which
+#   read the name when they start, are restarted by systemd;
+# - the configuration backup: its files are read where they are; restored,
+#   the certificates go to /etc/zendiloos (nginx -t and a reload, as for
+#   issued ones), Samba's passwords to /var/lib/samba/private (smbd
+#   stopped meanwhile), ZFS's host id to /etc; the people's users and
+#   groups are made with the IDs they had by the shadow tools;
 # - SSH: its settings go to /etc/ssh/sshd_config.d; `sshd -t` checks them
 #   in a transient unit (systemd-run), which brings /run/sshd along when
 #   the service is stopped; ssh.service is started, stopped, enabled and

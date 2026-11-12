@@ -13,6 +13,10 @@
 #   4. systemd-networkd manages the network (the ISO handed it over from
 #      ifupdown), so zendiloOS can change it, and names resolve through
 #      systemd-resolved: apt finds Debian's mirror when looking for updates
+#   5. a configuration backup downloads encrypted with age and is restored
+#      on the same machine: zendiloosd starts again with it, the
+#      administrator signs in as before
+#   0. before all, both boot menus offer "Rescue a zendiloOS system"
 #
 # Usage: scripts/iso-test.sh [ISO]   (the newest dist/zendiloos-*.iso)
 #   ZENDILOOS_ISO_TEST_REUSE=1  skips the installation and starts the
@@ -56,6 +60,13 @@ stop() {
 trap stop EXIT
 
 stop
+say "0. The boot menus offer the rescue mode"
+menus=$(mktemp -d)
+xorriso -osirrox on -indev "$iso" -extract /boot/grub/grub.cfg "$menus/grub.cfg" \
+    -extract /isolinux/zendiloos.cfg "$menus/isolinux.cfg" 2>/dev/null
+grep -q "menuentry --hotkey=r 'Rescue a zendiloOS system'" "$menus/grub.cfg" || fail "no rescue entry for UEFI"
+grep -A3 '^label zendiloos-rescue' "$menus/isolinux.cfg" | grep -q 'rescue/enable=true' || fail "no rescue entry for BIOS"
+rm -rf "$menus"
 if [[ ${ZENDILOOS_ISO_TEST_REUSE:-} == 1 && -f $dir/system.qcow2 ]]; then
     say "1. Reusing the machine installed before"
 else
@@ -155,6 +166,25 @@ updates=$(call GET /system/updates)
 jq -e '.packages_error == null' <<<"$updates" >/dev/null \
     || fail "apt could not reach Debian's mirror (name resolution?): $(jq -r .packages_error <<<"$updates")"
 echo "  apt reached Debian's mirror: $(jq '.packages | length' <<<"$updates") packages to update"
+
+say "5. A configuration backup, downloaded and restored"
+passphrase="iso test passphrase"
+curl -skf -b "$work/jar" -H "Origin: $base" -H "X-CSRF-Token: $(cat "$work/csrf")" \
+    -H 'Content-Type: application/json' -d "$(jq -n --arg p "$passphrase" '{passphrase: $p}')" \
+    -o "$work/backup.tar.zst.age" "$api/configuration/backup/download" || fail "no backup"
+head -c 22 "$work/backup.tar.zst.age" | grep -q 'age-encryption.org/v1' || fail "the backup is not age's"
+echo "  $(du -h "$work/backup.tar.zst.age" | cut -f1) encrypted"
+restored=$(curl -sk -b "$work/jar" -H "Origin: $base" -H "X-CSRF-Token: $(cat "$work/csrf")" \
+    -H 'Content-Type: application/octet-stream' -H "X-Zendiloos-Passphrase: $(printf %s "$passphrase" | base64)" \
+    --data-binary "@$work/backup.tar.zst.age" "$api/configuration/restore")
+jq -e '.host_name' <<<"$restored" >/dev/null || fail "not restored: $restored"
+echo "  restored, warnings: $(jq -c .warnings <<<"$restored")"
+sleep 5
+wait_for "zendiloOS after the restore" "curl -skf $api/health" 180
+curl -sk -c "$work/jar" -H "Origin: $base" -H 'Content-Type: application/json' \
+    -d "$(jq -n --arg password "$password" '{name: "admin", password: $password}')" \
+    "$api/auth/login" | jq -er .csrf_token >"$work/csrf" || fail "cannot sign in after the restore"
+call GET /storage/pools | jq -e '.[] | select(.name == "tank")' >/dev/null || fail "the pool is gone after the restore"
 rm -rf "$work"
 
 say "The ISO installs a working zendiloOS (the machine stays in $dir until the next run)"
