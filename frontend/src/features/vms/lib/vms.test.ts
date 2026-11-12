@@ -35,12 +35,13 @@ import {
   toggleBoot,
   totalDiskGib,
   updateRequest,
+  withFirmware,
   withNetworkKind,
   withPreset,
 } from './vms'
 
 const PLUGIN: VmPlugin = {
-  hardware: { kvm: true, cpu_virtualization: 'vmx', iommu: false },
+  hardware: { kvm: true, cpu_virtualization: 'vmx', iommu: false, swtpm: true, secure_boot: true },
   installed: true,
   storage: { pool: 'tank', volume: 1 },
   locations: [{ pool: 'tank', volume: 1 }],
@@ -81,6 +82,10 @@ function vm(extra: Partial<VirtualMachine> = {}): VirtualMachine {
       { kind: 'disk', slot: 0 },
     ],
     autostart: false,
+    usb: [],
+    pci: [],
+    tpm: false,
+    secure_boot: false,
     created_at: 0,
     state: 'shut_off',
     ...extra,
@@ -226,6 +231,10 @@ describe('the VM settings', () => {
         { kind: 'disk', slot: 0 },
       ],
       autostart: false,
+      usb: [],
+      pci: [],
+      tpm: false,
+      secure_boot: false,
     })
     const bridged = {
       ...form,
@@ -259,8 +268,13 @@ describe('the VM settings', () => {
       addDrive(form),
       removeNic(form, 0),
       moveBoot(form, { kind: 'disk', slot: 0 }, -1),
+      { ...form, tpm: true },
+      { ...form, secureBoot: true },
+      { ...form, pci: ['0000:01:00.0'] },
     ])
       expect(hardwareChanged(changed, running)).toBe(true)
+    // USB devices plug in and out while it runs.
+    expect(hardwareChanged({ ...form, usb: ['046d:c31c'] }, running)).toBe(false)
     const two = vm({
       disks: [
         { slot: 0, size_gib: 20, bus: 'virtio', pool: 'tank', volume: 1 },
@@ -285,6 +299,46 @@ describe('the VM settings', () => {
     expect(
       imageNameValid(' Debian 13 ') && !imageNameValid(' ') && !imageNameValid('x'.repeat(129)),
     ).toBe(true)
+  })
+})
+
+describe('a TPM and Secure Boot', () => {
+  it('come with the Windows preset where the machine has them', () => {
+    const windows = presetForm('windows', PLUGIN)
+    expect([windows.tpm, windows.secureBoot]).toEqual([true, true])
+    expect([presetForm('linux', PLUGIN).tpm, presetForm('other', PLUGIN).secureBoot]).toEqual([
+      false,
+      false,
+    ])
+    const bare = { ...PLUGIN, hardware: { ...PLUGIN.hardware, swtpm: false, secure_boot: false } }
+    const without = presetForm('windows', bare)
+    expect([without.tpm, without.secureBoot]).toEqual([false, false])
+    // Another preset keeps the host's devices.
+    const given = {
+      ...presetForm('linux', PLUGIN, 'box'),
+      usb: ['046d:c31c'],
+      pci: ['0000:01:00.0'],
+    }
+    expect(withPreset(given, 'windows', PLUGIN)).toMatchObject({
+      usb: ['046d:c31c'],
+      pci: ['0000:01:00.0'],
+      tpm: true,
+    })
+  })
+
+  it('need UEFI and their packages, and go to the server', () => {
+    const form = { ...presetForm('windows', PLUGIN, 'win'), memoryMib: 1024 }
+    expect(problems(form, PLUGIN, [])).toEqual([])
+    const bios = withFirmware(form, 'bios')
+    expect(bios.secureBoot).toBe(false)
+    expect(withFirmware(bios, 'uefi').secureBoot).toBe(false)
+    expect(problems({ ...bios, secureBoot: true }, PLUGIN, [])).toContain('secureBootBios')
+    const bare = { ...PLUGIN, hardware: { ...PLUGIN.hardware, swtpm: false, secure_boot: false } }
+    expect(problems(form, bare, [])).toEqual(['tpmMissing', 'secureBootMissing'])
+    const had = vm({ tpm: true, secure_boot: true })
+    expect(problems(form, bare, [], [], had)).toEqual([])
+    expect(request(form)).toMatchObject({ tpm: true, secure_boot: true })
+    expect(fromVm(had)).toMatchObject({ tpm: true, secureBoot: true })
   })
 })
 

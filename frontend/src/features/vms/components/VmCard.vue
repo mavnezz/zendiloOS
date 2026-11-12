@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import {
+  Archive,
+  Camera,
   CirclePower,
   LoaderCircle,
   Monitor,
@@ -14,7 +16,7 @@ import {
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import type { VirtualMachine, VmLoad } from '@/shared/api/types'
+import type { Job, VirtualMachine, VmLoad } from '@/shared/api/types'
 import { formatBytes, formatPercent, formatRate } from '@/shared/lib/format'
 import { ActionMenu, type Action } from '@/shared/ui/action-menu'
 import { Badge } from '@/shared/ui/badge'
@@ -31,16 +33,26 @@ import {
   totalDiskGib,
 } from '../lib/vms'
 
-/** One VM; `load`: what it uses now, while it runs and is looked at. */
-const props = defineProps<{ vm: VirtualMachine; load?: VmLoad | null; busy?: boolean }>()
+/**
+ * One VM; `load`: what it uses now, while it runs and is looked at;
+ * `work`: the backup or restore it is in, if one runs.
+ */
+const props = defineProps<{
+  vm: VirtualMachine
+  load?: VmLoad | null
+  busy?: boolean
+  work?: Job | null
+}>()
 const emit = defineEmits<{
   console: []
   start: []
   shutDown: []
+  cancel: []
   action: [id: CardAction]
 }>()
 
-const { t } = useI18n()
+const i18n = useI18n()
+const { t } = i18n
 const on = computed(() => isOn(props.vm.state))
 const creating = computed(() => props.vm.state === 'creating')
 
@@ -51,6 +63,13 @@ const stops = computed<Action[]>(() => [
 
 const more = computed<Action[]>(() => [
   { id: 'edit', label: t('vms.editVm'), icon: Pencil, disabled: creating.value },
+  { id: 'snapshots', label: t('vms.snapshots.action'), icon: Camera, disabled: creating.value },
+  {
+    id: 'backup',
+    label: t('vms.backup.action'),
+    icon: Archive,
+    disabled: creating.value || Boolean(props.work),
+  },
   {
     id: 'autostart',
     label: props.vm.autostart ? t('vms.autostartOff') : t('vms.autostartOn'),
@@ -77,6 +96,11 @@ const network = computed(() => {
 
 const memoryBytes = computed(() => props.vm.memory_mib * 1024 * 1024)
 const used = computed(() => props.load?.memory_used_bytes ?? null)
+const workStep = computed(() => {
+  const step = props.work?.step ?? 'working'
+  const key = `vms.jobSteps.${step}`
+  return i18n.te(key) ? t(key) : t('vms.jobSteps.working')
+})
 const counted = computed(
   () =>
     props.load?.received_bytes_per_second !== null &&
@@ -163,6 +187,32 @@ const counted = computed(
         <dd class="font-medium tabular-nums">{{ totalDiskGib(vm) }} GiB</dd>
       </div>
     </dl>
+
+    <div
+      v-if="work"
+      class="grid gap-2 rounded-lg border border-info/30 bg-info/5 p-3 text-sm"
+      data-testid="vm-work"
+    >
+      <div class="flex items-center gap-2">
+        <LoaderCircle class="size-4 animate-spin text-info" />
+        <span class="flex-1 font-medium">
+          {{ work.kind === 'vms.restore' ? t('vms.work.restore') : t('vms.work.backup') }}
+          · {{ workStep }}
+        </span>
+        <span v-if="work.progress !== null && work.progress !== undefined" class="tabular-nums">
+          {{ formatPercent(work.progress * 100) }}
+        </span>
+        <Button
+          size="sm"
+          variant="outline"
+          :aria-label="t('vms.work.cancelLabel', { name: vm.name })"
+          @click="emit('cancel')"
+        >
+          {{ t('vms.work.cancel') }}
+        </Button>
+      </div>
+      <Meter :value="work.progress ?? 0" :label="workStep" />
+    </div>
 
     <footer class="flex flex-wrap items-center gap-2">
       <Button size="sm" :disabled="!on" @click="emit('console')">

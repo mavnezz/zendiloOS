@@ -17,7 +17,7 @@ const t = (key: string, values: Record<string, unknown> = {}) => i18n.global.t(k
 
 function plugin(extra: Partial<VmPlugin> = {}): VmPlugin {
   return {
-    hardware: { kvm: true, cpu_virtualization: 'svm', iommu: true },
+    hardware: { kvm: true, cpu_virtualization: 'svm', iommu: true, swtpm: true, secure_boot: true },
     installed: false,
     storage: null,
     locations: [],
@@ -77,13 +77,56 @@ describe('the Virtual machines plugin', () => {
     on(
       'GET',
       '/api/v1/vms/plugin',
-      plugin({ hardware: { kvm: false, cpu_virtualization: null, iommu: false } }),
+      plugin({
+        hardware: {
+          kvm: false,
+          cpu_virtualization: null,
+          iommu: false,
+          swtpm: true,
+          secure_boot: true,
+        },
+      }),
     )
     await mountApp(VmsSection)
     expect(button(t('appStore.install')).disabled).toBe(true)
     expect(text('vms-kvm')).toContain(t('appStore.vms.kvmOff'))
     expect(text('vms-iommu')).toContain(t('appStore.vms.iommuOff'))
+    expect(text('vms-iommu')).toContain(t('appStore.vms.iommuHint'))
     expect(page()).toContain(t('appStore.vms.noKvm'))
+  })
+
+  it('says whether VMs can have a TPM and Secure Boot, and installs again for swtpm', async () => {
+    on(
+      'GET',
+      '/api/v1/vms/plugin',
+      plugin({
+        installed: true,
+        storage: { pool: 'tank', volume: 1 },
+        hardware: {
+          kvm: true,
+          cpu_virtualization: 'vmx',
+          iommu: true,
+          swtpm: false,
+          secure_boot: true,
+        },
+      }),
+    )
+    on('POST', '/api/v1/vms/plugin/install', {
+      id: 10,
+      kind: 'vms.install',
+      target: 'libvirt',
+      state: 'running',
+      created_at: 0,
+      updated_at: 0,
+      output: [],
+    })
+    await mountApp(VmsSection)
+    expect(text('vms-tpm')).toContain(t('appStore.vms.tpmOff'))
+    expect(text('vms-secure-boot')).toContain(t('appStore.vms.secureBootOn'))
+    expect(page()).toContain(t('appStore.vms.reinstallHint'))
+    await click(t('appStore.vms.reinstall'))
+    expect(called('POST', '/api/v1/vms/plugin/install')).toHaveLength(1)
+    expect(document.querySelector('[data-testid="vms-reinstall"]')).toBeNull()
   })
 
   it('puts the storage on the pool picked once installed', async () => {

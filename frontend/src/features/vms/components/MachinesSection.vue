@@ -5,16 +5,20 @@ import { useI18n } from 'vue-i18n'
 
 import type { VirtualMachine, VmPlugin } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
+import { useJobsStore } from '@/shared/jobs/store'
 import { useOpenApp } from '@/shared/lib/window-section'
 import { Alert } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
 import { ConfirmDialog } from '@/shared/ui/confirm-dialog'
 
-import { useVmActions, useVmImages, useVms, useVmStats } from '../api'
+import { useBackupActions, useVmActions, useVmImages, useVms, useVmStats } from '../api'
+import { workOf } from '../lib/backups'
+import BackupDialog from './BackupDialog.vue'
 import CreateVmDialog from './CreateVmDialog.vue'
 import DeleteVmDialog from './DeleteVmDialog.vue'
 import EditVmDialog from './EditVmDialog.vue'
 import type { CardAction } from '../lib/vms'
+import SnapshotsDialog from './SnapshotsDialog.vue'
 import VmCard from './VmCard.vue'
 import VmsOverview from './VmsOverview.vue'
 
@@ -25,6 +29,8 @@ const emit = defineEmits<{ library: [] }>()
 const { t } = useI18n()
 const openApp = useOpenApp()
 const actions = useVmActions()
+const backups = useBackupActions()
+const jobs = useJobsStore()
 const { data: vms, error, isPending } = useVms()
 const { data: images } = useVmImages()
 const stats = useVmStats()
@@ -33,6 +39,8 @@ const creating = ref(false)
 const editing = ref<VirtualMachine | null>(null)
 const deleting = ref<VirtualMachine | null>(null)
 const forcing = ref<VirtualMachine | null>(null)
+const snapshotting = ref<VirtualMachine | null>(null)
+const backingUp = ref<VirtualMachine | null>(null)
 const busy = ref<string | null>(null)
 const failure = ref<string | null>(null)
 
@@ -57,6 +65,8 @@ function menu(vm: VirtualMachine, id: CardAction): void {
   if (id === 'force_off') forcing.value = vm
   else if (id === 'restart') void act(vm, actions.restart)
   else if (id === 'edit') editing.value = vm
+  else if (id === 'snapshots') snapshotting.value = vm
+  else if (id === 'backup') backingUp.value = vm
   else if (id === 'autostart') void act(vm, (vmId) => actions.setAutostart(vmId, !vm.autostart))
   else deleting.value = vm
 }
@@ -115,9 +125,11 @@ function forceOff(): void {
             :vm="vm"
             :load="loadOf(vm)"
             :busy="busy === vm.id"
+            :work="workOf(jobs.list, vm.name) ?? null"
             @console="openApp?.('vm-console', vm.id)"
             @start="act(vm, actions.start)"
             @shut-down="act(vm, actions.shutDown)"
+            @cancel="act(vm, backups.cancel)"
             @action="(id) => menu(vm, id)"
           />
         </li>
@@ -140,6 +152,18 @@ function forceOff(): void {
       :open="Boolean(editing)"
       @update:open="(open: boolean) => !open && (editing = null)"
       @library="emit('library')"
+    />
+    <SnapshotsDialog
+      v-if="snapshotting"
+      :vm="vms?.find((vm) => vm.id === snapshotting?.id) ?? snapshotting"
+      :open="Boolean(snapshotting)"
+      @update:open="(open: boolean) => !open && (snapshotting = null)"
+    />
+    <BackupDialog
+      v-if="backingUp"
+      :vm="backingUp"
+      :open="Boolean(backingUp)"
+      @update:open="(open: boolean) => !open && (backingUp = null)"
     />
     <DeleteVmDialog
       v-if="deleting"

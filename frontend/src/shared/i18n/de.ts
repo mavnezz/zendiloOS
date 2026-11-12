@@ -232,9 +232,21 @@ const de: Messages = {
         'Nicht nutzbar: Es gibt kein /dev/kvm. Schalten Sie VT-x oder AMD-V in der Firmware (BIOS/UEFI) ein; sonst kann diese CPU keine VMs betreiben.',
       flags: { vmx: 'Intel VT-x', svm: 'AMD-V', none: 'kein Flag' },
       iommu: 'IOMMU',
-      iommuOn: 'An: Ein Gerät wie eine Grafikkarte ließe sich später an eine VM durchreichen.',
+      iommuOn: 'An: Geräte des NAS wie eine Grafikkarte lassen sich an eine VM durchreichen.',
       iommuOff:
-        'Aus: VMs laufen trotzdem; nur das Durchreichen eines Geräts an eine VM braucht sie (VT-d, AMD-Vi).',
+        'Aus: VMs laufen trotzdem; nur das Durchreichen eines PCI-Geräts an eine VM braucht sie.',
+      iommuHint:
+        'Zum Einschalten: VT-d (Intel) oder AMD-Vi (AMD) in der Firmware; bei Intel außerdem intel_iommu=on in GRUB_CMDLINE_LINUX in /etc/default/grub, update-grub und ein Neustart.',
+      tpm: 'TPM für VMs',
+      tpmOn: 'swtpm ist installiert: VMs können ein TPM 2.0 haben, wie Windows 11 es braucht.',
+      tpmOff:
+        'swtpm ist noch nicht installiert: Installieren Sie das Plugin erneut, das bringt es mit.',
+      secureBoot: 'Secure Boot',
+      secureBootOn: 'OVMF mit Microsofts Schlüsseln ist da: VMs können mit Secure Boot starten.',
+      secureBootOff: 'OVMF mit Microsofts Schlüsseln fehlt.',
+      reinstall: 'Erneut installieren',
+      reinstallHint:
+        'Das Plugin wurde installiert, bevor VMs ein TPM hatten: Eine erneute Installation bringt swtpm mit.',
       host: 'Das NAS',
       hostValue: '{cores} Threads · {memory}',
       storage: 'Speicher',
@@ -252,9 +264,9 @@ const de: Messages = {
       aboutNetwork:
         'Das eigene Netz von libvirt (eine Bridge mit DHCP-Server und Firewall-Regeln) wird nicht installiert: Eine VM erreicht das Netz über das NAS (passt) oder hängt wie eine eigene Maschine an einer Bridge des NAS. Die Firewall von zendiloOS bleibt, wie sie ist.',
       proofOfConcept:
-        'Ein Proof of Concept: VMs lassen sich nach dem Anlegen noch nicht ändern, verschieben, in Snapshots festhalten oder sichern.',
+        'VMs werden auf ihren Pools in Snapshots festgehalten und in Freigaben oder auf USB-Laufwerke gesichert; das Verschieben auf einen anderen Pool kommt noch.',
       needsPackages:
-        'Die Debian-Pakete libvirt-daemon, sein QEMU-Treiber, qemu-system-x86, OVMF und passt (etwa 150 MB)',
+        'Die Debian-Pakete libvirt-daemon, sein QEMU-Treiber, qemu-system-x86, OVMF, passt und swtpm (etwa 160 MB)',
       needsKvm: 'Eine CPU mit VT-x oder AMD-V, in der Firmware eingeschaltet',
       needsPool: 'Ein Pool für die Festplatten der VMs',
       toApp: 'Virtuelle Maschinen öffnen',
@@ -2783,8 +2795,11 @@ const de: Messages = {
       certificates_issue: 'Zertifikat ausstellen',
       vms_install: 'libvirt und QEMU installieren',
       vms_create: 'Virtuelle Maschine anlegen',
+      vms_backup: 'Virtuelle Maschine sichern',
+      vms_restore: 'Virtuelle Maschine wiederherstellen',
     },
     errors: {
+      canceled: 'Abgebrochen.',
       not_found: 'Eine Datei oder ein Ordner existiert nicht mehr.',
       denied: 'Keine Berechtigung.',
       name_taken: 'Der Name ist im Zielordner vergeben.',
@@ -3213,6 +3228,7 @@ const de: Messages = {
       storage: 'Speicher',
       networks: 'Netzwerke',
       log: 'Protokoll',
+      backups: 'Sicherungen',
     },
     create: 'Virtuelle Maschine anlegen',
     empty: 'Noch keine virtuelle Maschine.',
@@ -3326,9 +3342,10 @@ const de: Messages = {
         disks: 'Festplatten',
         network: 'Netz',
         media: 'Medien und Start',
+        devices: 'Geräte des NAS',
       },
       running:
-        'Die VM läuft: Ihr Name, der Autostart und die Images in ihren Laufwerken ändern sich sofort. Fahren Sie sie herunter, um ihre Hardware zu ändern.',
+        'Die VM läuft: Ihr Name, der Autostart, die Images in ihren Laufwerken und ihre USB-Geräte ändern sich sofort. Fahren Sie sie herunter, um ihre Hardware zu ändern.',
       firmwareWarning:
         'Ein mit der einen Firmware installiertes System startet mit der anderen womöglich nicht: Ändern Sie sie nur vor der Installation oder wenn Sie wissen, dass das System beide kennt.',
       removing:
@@ -3353,7 +3370,7 @@ const de: Messages = {
       memoryHint: 'Die VM nimmt ihn dem NAS, solange sie läuft.',
       firmware: 'Firmware',
       uefi: 'UEFI',
-      uefiHint: 'OVMF, Secure Boot aus: für aktuelle Systeme',
+      uefiHint: 'OVMF: für aktuelle Systeme, mit Secure Boot, wenn gewählt',
       bios: 'BIOS',
       biosHint: 'SeaBIOS: für ältere Systeme',
       network: 'Netz',
@@ -3363,6 +3380,11 @@ const de: Messages = {
       autostart: 'Die VM mit dem NAS starten',
       review: 'Übersicht',
       media: 'Medien',
+      security: 'TPM und Secure Boot',
+      hostDevices: 'Geräte des NAS',
+      on: 'An',
+      off: 'Aus',
+      none: 'Keine',
       back: 'Zurück',
       next: 'Weiter',
       submit: 'Anlegen',
@@ -3378,6 +3400,9 @@ const de: Messages = {
         image:
           'Ein Image in einem Laufwerk ist nicht in der Bibliothek oder wird noch hinzugefügt.',
         network: 'Wählen Sie, woran jede Netzwerkkarte hängt.',
+        secureBootBios: 'Secure Boot braucht UEFI.',
+        tpmMissing: 'Ein TPM braucht swtpm, das nicht installiert ist.',
+        secureBootMissing: 'Secure Boot braucht OVMF mit Microsofts Schlüsseln, das fehlt.',
       },
     },
     networks: {
@@ -3509,6 +3534,14 @@ const de: Messages = {
         image_upload: 'Image hochgeladen',
         image_rename: 'Image umbenannt',
         image_delete: 'Image gelöscht',
+        snapshot: 'Snapshot erstellt',
+        rollback: 'Auf einen Snapshot zurückgesetzt',
+        snapshot_delete: 'Snapshot gelöscht',
+        snapshot_schedules: 'Snapshot-Zeitpläne geändert',
+        backup: 'Gesichert',
+        backup_cancel: 'Sicherung oder Wiederherstellung abgebrochen',
+        restore: 'Wiederhergestellt',
+        backup_delete: 'Sicherung gelöscht',
       },
     },
     images: {
@@ -3553,6 +3586,195 @@ const de: Messages = {
       deleteTitle: '{name} löschen?',
       deleteText:
         'Das ISO wird aus dem Speicher der VMs entfernt. Die Datei, aus der es stammt, bleibt, wo sie ist.',
+    },
+    security: {
+      tpm: 'TPM 2.0',
+      tpmHint:
+        'Ein Software-TPM (swtpm), dessen Zustand bei der VM bleibt, auch in ihren Sicherungen: Windows 11 braucht eines, ebenso BitLocker und andere Festplattenverschlüsselung.',
+      tpmMissing:
+        'swtpm ist nicht installiert: Installieren Sie das Plugin Virtuelle Maschinen im App Center erneut, das bringt es mit.',
+      secureBoot: 'Secure Boot',
+      secureBootHint:
+        'Die UEFI-Firmware startet nur Signiertes, mit Microsofts Schlüsseln: Windows 11 braucht es, und die meisten Linux-Systeme starten damit auch.',
+      secureBootBios: 'Secure Boot braucht UEFI.',
+      secureBootMissing:
+        'OVMF mit Microsofts Schlüsseln fehlt: Installieren Sie das Plugin Virtuelle Maschinen im App Center erneut.',
+      fresh:
+        'Andere Firmware oder Secure Boot umgeschaltet: Die UEFI-Einstellungen beginnen beim nächsten Start von vorn. Ihre Starteinträge gehen verloren; Windows und die meisten Systeme starten über ihren Rückfallpfad.',
+      hardware: 'Beides ist Hardware: Es ändert sich nur, solange die VM aus ist.',
+    },
+    hostDevices: {
+      usb: 'USB-Geräte',
+      usbHint:
+        'Nach Hersteller und Produkt zugeordnet, damit ein Gerät der VM bleibt, wenn es anderswo oder neu eingesteckt wird. USB-Geräte werden eingesteckt und abgezogen, während die VM läuft.',
+      usbNone: 'Am NAS steckt kein USB-Gerät.',
+      notPlugged: 'Nicht eingesteckt: Ohne es startet die VM nicht.',
+      twins:
+        'Mehrere Geräte dieses Herstellers und Produkts stecken: Sie sind nicht zu unterscheiden, und die VM startet erst, wenn nur noch eines steckt.',
+      port: 'Anschluss {port}',
+      usbMax: 'Eine VM bekommt höchstens 8 USB-Geräte.',
+      pci: 'PCI-Geräte',
+      pciHint:
+        'Ein Gerät geht mit allen Geräten seiner IOMMU-Gruppe an die VM, denn sie gehören zusammen. libvirt übergibt es der VM beim Start (vfio-pci) und gibt es beim Ausschalten zurück.',
+      pciWarning:
+        'Solange die VM läuft, gehören ihre PCI-Geräte allein ihr: Das NAS kann sie nicht nutzen. Ein Gerät, das sich nicht sauber zurücksetzt, braucht womöglich einen Neustart des NAS, bevor es wieder geht.',
+      pciRunning: 'PCI-Geräte ändern sich nur, solange die VM aus ist.',
+      pciNone: 'Das NAS hat kein PCI-Gerät, das sich übergeben ließe.',
+      pciMax: 'Eine VM bekommt höchstens 8 PCI-Geräte.',
+      group: 'IOMMU-Gruppe {n}',
+      gone: 'Nicht mehr am NAS',
+      driver: 'Treiber {driver}',
+      needs: {
+        disk: 'Bleibt beim NAS: Die Festplatte {disk} daran ist in Gebrauch.',
+        console: 'Bleibt beim NAS: die Grafik seiner Konsole.',
+        network: 'Bleibt beim NAS: Sein Netz läuft über {interface}.',
+        networkUnknown:
+          'Bleibt beim NAS: eine Netzwerkkarte, und welche Karten das NAS nutzt, ist nicht bekannt.',
+        bridge: 'Eine Bridge des PCI-Busses: Sie bleibt beim NAS, und mit ihr ihre Gruppe.',
+        noGroup: 'In keiner IOMMU-Gruppe: Es lässt sich nicht übergeben.',
+      },
+      heldBy: 'Bleibt zusammen mit {device} beim NAS',
+      kinds: {
+        network: 'Netz',
+        display: 'Grafik',
+        storage: 'Speicher',
+        usb: 'USB-Controller',
+        audio: 'Audio',
+        bridge: 'Bridge',
+        other: 'Gerät',
+      },
+      iommuOff: 'Die IOMMU ist aus, daher lässt sich kein PCI-Gerät an eine VM übergeben.',
+      iommuHint: {
+        intel:
+          'Schalten Sie VT-d in der Firmware (BIOS/UEFI) ein, ergänzen Sie intel_iommu=on in GRUB_CMDLINE_LINUX in /etc/default/grub, führen Sie update-grub aus und starten Sie das NAS neu.',
+        amd: 'Schalten Sie AMD-Vi (IOMMU) in der Firmware (BIOS/UEFI) ein und starten Sie das NAS neu; der Kernel nutzt sie dann von selbst.',
+        any: 'Schalten Sie VT-d (Intel) oder AMD-Vi (AMD) in der Firmware (BIOS/UEFI) ein; bei Intel ergänzen Sie außerdem intel_iommu=on in GRUB_CMDLINE_LINUX in /etc/default/grub und führen update-grub aus. Starten Sie dann das NAS neu.',
+      },
+      cmdline: 'Die Kernel-Befehlszeile sagt: {flags}',
+      summary: '{usb} USB, {pci} PCI',
+    },
+    snapshots: {
+      action: 'Snapshots',
+      title: 'Snapshots von {name}',
+      description:
+        'Alle Festplatten der VM zu einem Zeitpunkt, günstig auf ihren Pools gehalten. Zurücksetzen bringt die Festplatten auf diesen Zeitpunkt zurück; eine seither hinzugefügte Festplatte bleibt, wie sie ist.',
+      running:
+        'Die VM läuft: Ein Snapshot jetzt ist so konsistent wie nach einem Stromausfall (absturzkonsistent), es sei denn, der QEMU-Gastagent läuft in ihr und friert vorher ihre Dateisysteme ein.',
+      name: 'Name (optional)',
+      namePlaceholder: 'Vor dem Update',
+      nameInvalid: 'Höchstens 64 Zeichen in einer Zeile.',
+      take: 'Snapshot erstellen',
+      taking: 'Wird erstellt …',
+      empty: 'Noch kein Snapshot.',
+      unnamed: 'Ohne Namen',
+      byHand: 'Von Hand',
+      disks: 'Festplatte {disks} | Festplatten {disks}',
+      size: '{used} seither geändert, {referenced} damals',
+      consistency: {
+        off: 'Im ausgeschalteten Zustand',
+        frozen: 'Dateisysteme eingefroren',
+        crash: 'Absturzkonsistent',
+      },
+      consistencyHint: {
+        off: 'Erstellt, als die VM aus war: so konsistent wie möglich.',
+        frozen:
+          'Der Gastagent hat die Dateisysteme vorher eingefroren: Was geschrieben war, ist auf den Festplatten.',
+        crash:
+          'Als wäre in diesem Moment der Strom ausgefallen: Journalisierende Dateisysteme und Datenbanken erholen sich davon wie von einem Stromausfall.',
+      },
+      rollback: 'Zurücksetzen',
+      rollbackOff: 'Fahren Sie die VM herunter, um sie zurückzusetzen.',
+      rollbackTitle: '{name} auf {when} zurücksetzen?',
+      rollbackText:
+        'Die Festplatten der VM kehren zu diesem Snapshot zurück: Was sich seither geändert hat, geht verloren. Jede Festplatte behält ihre Größe.',
+      rollbackNewer:
+        'Der spätere Snapshot {labels} wird dabei vernichtet. | Die späteren Snapshots {labels} werden dabei vernichtet.',
+      delete: 'Löschen',
+      deleteTitle: 'Snapshot von {when} löschen?',
+      deleteText: 'Der Snapshot jeder Festplatte geht; die VM bleibt, wie sie ist.',
+      more: 'Mehr zum Snapshot von {when}',
+      schedules: 'Zeitpläne',
+      schedulesHint:
+        'Von selbst erstellt, alle fünf Minuten geprüft. Jeder Zeitplan behält seine neuesten; einen von Hand erstellten löscht er nie.',
+      frequencies: {
+        hourly: 'Stündlich',
+        daily: 'Täglich',
+        weekly: 'Wöchentlich',
+        monthly: 'Monatlich',
+      },
+      keep: 'Behalten',
+      keepFor: 'Wie viele Snapshots ({frequency}) behalten werden',
+      keepInvalid: 'Je 1 bis 100 behalten.',
+      saveSchedules: 'Zeitpläne speichern',
+      saved: 'Die Zeitpläne sind gespeichert.',
+    },
+    backup: {
+      action: 'Sichern',
+      title: '{name} sichern',
+      description:
+        'Ihre Festplatten als komprimierte Rohabbilder, ihre UEFI-Einstellungen, ihr TPM und ihre Einstellungen, in einem eigenen Ordner mit einem Manifest.',
+      to: 'Wohin',
+      share: 'Freigabe',
+      drive: 'USB-Laufwerk',
+      folder: 'Ordner in einer Freigabe',
+      browse: 'Durchsuchen',
+      noFolder: 'Wählen Sie einen Ordner in einer Freigabe, in die Sie schreiben dürfen.',
+      driveChoice: 'Laufwerk',
+      driveFolder: 'Ordner auf dem Laufwerk',
+      noDrives: 'Kein USB-Laufwerk ist eingebunden und beschreibbar.',
+      folderInvalid: 'Ein Ordner: Namen getrennt durch /, ohne . oder ..',
+      readable:
+        'Wer diese Freigabe oder dieses Laufwerk lesen darf, kann die Festplatten der VM lesen und was sie enthalten.',
+      running:
+        'Die VM läuft: Die Sicherung kommt aus einem Snapshot dieses Moments, absturzkonsistent, es sei denn, der Gastagent hat ihre Dateisysteme eingefroren.',
+      into: 'Nach {path}/{id}/…',
+      submit: 'Sicherung starten',
+      starting: 'Wird gestartet …',
+    },
+    work: {
+      backup: 'Wird gesichert',
+      restore: 'Wird wiederhergestellt',
+      cancel: 'Abbrechen',
+      cancelLabel: 'Sicherung oder Wiederherstellung von {name} abbrechen',
+    },
+    jobSteps: {
+      snapshotting: 'Snapshot wird erstellt',
+      backing_up: 'Festplatten werden gesichert',
+      restoring: 'Festplatten werden wiederhergestellt',
+      working: 'In Arbeit',
+    },
+    backups: {
+      description:
+        'Die Sicherungen der VMs in Freigaben und auf USB-Laufwerken, auch die inzwischen gelöschter VMs.',
+      empty: 'Noch keine Sicherung.',
+      emptyHint: 'Sichern Sie eine VM über ihre Karte unter Maschinen.',
+      vmGone: 'VM gelöscht',
+      where: '{place}: {folder}',
+      restore: 'Wiederherstellen',
+      delete: 'Löschen',
+      more: 'Mehr zur Sicherung von {name}',
+      deleteTitle: 'Sicherung von {name} vom {when} löschen?',
+      deleteText: 'Ihre Dateien werden aus {place} entfernt; die VM bleibt, wie sie ist.',
+      restoreDialog: {
+        title: '{name} vom {when} wiederherstellen',
+        asNew: 'Als neue VM',
+        asNewHint: 'Eine eigene VM neben den anderen, mit neuen MAC-Adressen.',
+        over: 'Über {name}',
+        overHint: 'Die VM kehrt zu ihrem damaligen Stand zurück; sie muss aus sein.',
+        overGone:
+          'Die VM, von der sie stammt, wurde gelöscht: Stellen Sie sie als neue wieder her.',
+        overRunning: 'Fahren Sie zuerst {name} herunter.',
+        name: 'Name der neuen VM',
+        nameSuffix: '{name} (wiederhergestellt)',
+        location: 'Ihre Festplatten kommen auf',
+        first: 'Den ersten Speicherort',
+        overWarning:
+          'Ihre Festplatten werden mit denen der Sicherung überschrieben, und eine Festplatte, die sie hat und die Sicherung nicht, wird vernichtet.',
+        notRestored:
+          'Images, die nicht mehr in der Bibliothek sind, lassen ihre Laufwerke leer, Karten an inzwischen entfernten Netzen gehen über das NAS, und die USB- und PCI-Geräte des NAS werden nicht wieder zugeordnet.',
+        confirm: 'Geben Sie zur Bestätigung {name} ein',
+        submit: 'Wiederherstellen',
+      },
     },
     consoleWindow: {
       choose: 'Öffnen Sie eine Konsole aus der App Virtuelle Maschinen.',
@@ -4275,6 +4497,7 @@ const de: Messages = {
       'Fahren Sie die virtuelle Maschine zuerst herunter: Ihre Hardware ändert sich nur, solange sie aus ist.',
     image_in_use:
       'Virtuelle Maschinen haben dieses Image in einem Laufwerk; werfen Sie es dort zuerst aus',
+    newer_snapshots: 'Spätere Snapshots würden mit diesem Zurücksetzen vernichtet',
     location_in_use:
       'Auf diesem Speicherort liegt noch etwas: Festplatten virtueller Maschinen oder die Image-Bibliothek. Löschen oder verschieben Sie es zuerst',
     iso_denied: 'Ihr Konto kann dieses ISO nicht lesen.',

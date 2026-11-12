@@ -56,6 +56,7 @@ const CODES = [
   'drive_read_only',
   'host_key_changed',
   'agent_failed',
+  'newer_snapshots',
 ]
 
 describe('problem messages', () => {

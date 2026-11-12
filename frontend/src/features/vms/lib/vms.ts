@@ -113,6 +113,14 @@ export interface VmForm {
   /** The devices it boots from, first first. */
   boot: BootEntry[]
   autostart: boolean
+  /** The host's USB devices, `vendor:product`. */
+  usb: string[]
+  /** The host's PCI devices, by address. */
+  pci: string[]
+  /** A TPM 2.0 (swtpm), as Windows 11 asks for. */
+  tpm: boolean
+  /** Secure Boot with Microsoft's keys; UEFI only. */
+  secureBoot: boolean
 }
 
 /** What the machine allows a VM: all its threads and all its memory. */
@@ -128,12 +136,14 @@ export function limits(plugin: VmPlugin | undefined): { cpus: number; memoryMib:
  * through the NAS and one empty drive, booted from the drive first. Of its
  * memory a VM is offered at most half, in whole steps: the rest stays for
  * the NAS and ZFS's cache, and a value off the field's steps could not be
- * sent.
+ * sent. Windows gets a TPM and Secure Boot, as Windows 11 needs them,
+ * where the machine has them.
  */
 export function presetForm(os: VmOs, plugin: VmPlugin | undefined, name = ''): VmForm {
   const preset = PRESETS[os]
   const most = limits(plugin)
   const half = Math.floor(most.memoryMib / 2 / MEMORY_STEP_MIB) * MEMORY_STEP_MIB
+  const windows = os === 'windows'
   return {
     name,
     os,
@@ -148,6 +158,10 @@ export function presetForm(os: VmOs, plugin: VmPlugin | undefined, name = ''): V
       { kind: 'disk', slot: 0 },
     ],
     autostart: false,
+    usb: [],
+    pci: [],
+    tpm: windows && plugin?.hardware.swtpm !== false,
+    secureBoot: windows && preset.firmware === 'uefi' && plugin?.hardware.secure_boot !== false,
   }
 }
 
@@ -169,7 +183,14 @@ export function withPreset(form: VmForm, os: VmOs, plugin: VmPlugin | undefined)
     drives: form.drives,
     boot: form.boot,
     autostart: form.autostart,
+    usb: form.usb,
+    pci: form.pci,
   }
+}
+
+/** Another firmware: Secure Boot goes with BIOS, which has none. */
+export function withFirmware(form: VmForm, firmware: VmFirmware): VmForm {
+  return { ...form, firmware, secureBoot: firmware === 'uefi' && form.secureBoot }
 }
 
 /** The lowest slot below `max` none of `taken` has. */
@@ -264,7 +285,18 @@ export function toggleBoot(form: VmForm, entry: BootEntry): VmForm {
 }
 
 export type FormProblem =
-  'name' | 'nameTaken' | 'cpus' | 'memory' | 'disk' | 'diskShrunk' | 'boot' | 'image' | 'network'
+  | 'name'
+  | 'nameTaken'
+  | 'cpus'
+  | 'memory'
+  | 'disk'
+  | 'diskShrunk'
+  | 'boot'
+  | 'image'
+  | 'network'
+  | 'secureBootBios'
+  | 'tpmMissing'
+  | 'secureBootMissing'
 
 /**
  * What a card of `kind` may go on: the machine's bridges, internal networks
@@ -343,6 +375,11 @@ export function problems(
   if (form.drives.some((drive) => drive.image !== null && !ready.has(drive.image)))
     found.push('image')
   if (form.nics.some((nic) => nic.kind !== 'user' && !nic.device)) found.push('network')
+  if (form.secureBoot && form.firmware !== 'uefi') found.push('secureBootBios')
+  // What it had stays where the machine lost it since.
+  if (form.tpm && plugin?.hardware.swtpm === false && !before?.tpm) found.push('tpmMissing')
+  if (form.secureBoot && plugin?.hardware.secure_boot === false && !before?.secure_boot)
+    found.push('secureBootMissing')
   return found
 }
 
@@ -354,7 +391,7 @@ export function minimumGib(before: VirtualMachine | undefined, slot: number): nu
 /** The problems a wizard's step (from 0) must have none of before going on. */
 export const STEP_PROBLEMS: FormProblem[][] = [
   ['name', 'nameTaken'],
-  ['cpus', 'memory'],
+  ['cpus', 'memory', 'secureBootBios', 'tpmMissing', 'secureBootMissing'],
   ['disk', 'boot', 'image'],
   ['network'],
 ]
@@ -399,6 +436,10 @@ function devices(form: VmForm) {
     nics: form.nics.map((nic) => ({ slot: nic.slot, model: nic.model, network: network(nic) })),
     drives: form.drives.map((drive) => ({ slot: drive.slot, image: drive.image })),
     boot: form.boot.map((entry) => ({ kind: entry.kind, slot: entry.slot })),
+    usb: [...form.usb],
+    pci: [...form.pci],
+    tpm: form.tpm,
+    secure_boot: form.secureBoot,
   }
 }
 
@@ -446,12 +487,17 @@ export function fromVm(vm: VirtualMachine): VmForm {
     drives: vm.drives.map((drive) => ({ slot: drive.slot, image: drive.image ?? null })),
     boot: vm.boot.map((entry) => ({ kind: entry.kind, slot: entry.slot })),
     autostart: vm.autostart,
+    usb: [...vm.usb],
+    pci: [...vm.pci],
+    tpm: vm.tpm,
+    secureBoot: vm.secure_boot,
   }
 }
 
 /**
  * Whether the form changes the VM's hardware: everything but its name,
- * autostart and the images in its drives, which change while it runs.
+ * autostart, the images in its drives and the host's USB devices, which
+ * change while it runs.
  */
 export function hardwareChanged(form: VmForm, vm: VirtualMachine): boolean {
   const was = fromVm(vm)
@@ -469,7 +515,10 @@ export function hardwareChanged(form: VmForm, vm: VirtualMachine): boolean {
     sorted(form.disks) !== sorted(was.disks) ||
     sorted(form.nics) !== sorted(was.nics) ||
     slots(form.drives) !== slots(was.drives) ||
-    JSON.stringify(form.boot) !== JSON.stringify(was.boot)
+    JSON.stringify(form.boot) !== JSON.stringify(was.boot) ||
+    form.tpm !== was.tpm ||
+    form.secureBoot !== was.secureBoot ||
+    [...form.pci].sort().join() !== [...was.pci].sort().join()
   )
 }
 
@@ -481,7 +530,8 @@ export function removedDisks(form: VmForm, vm: VirtualMachine): number[] {
 }
 
 /** What a VM's card asks for beyond starting, shutting down and its console. */
-export type CardAction = 'force_off' | 'restart' | 'edit' | 'autostart' | 'delete'
+export type CardAction =
+  'force_off' | 'restart' | 'edit' | 'snapshots' | 'backup' | 'autostart' | 'delete'
 
 /** Whether QEMU runs, so the console answers and it can be shut down. */
 export function isOn(state: VmPowerState): boolean {

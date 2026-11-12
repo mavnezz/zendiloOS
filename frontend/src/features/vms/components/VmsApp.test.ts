@@ -22,7 +22,7 @@ const t = (key: string, values: Record<string, unknown> | number = {}) =>
   typeof values === 'number' ? i18n.global.t(key, values) : i18n.global.t(key, values)
 
 const PLUGIN: VmPlugin = {
-  hardware: { kvm: true, cpu_virtualization: 'vmx', iommu: false },
+  hardware: { kvm: true, cpu_virtualization: 'vmx', iommu: false, swtpm: true, secure_boot: true },
   installed: true,
   storage: { pool: 'tank', volume: 1 },
   locations: [{ pool: 'tank', volume: 1 }],
@@ -53,6 +53,10 @@ function vm(id: string, name: string, extra: Partial<VirtualMachine> = {}): Virt
       { kind: 'disk', slot: 0 },
     ],
     autostart: false,
+    usb: [],
+    pci: [],
+    tpm: false,
+    secure_boot: false,
     created_at: 1_790_000_000,
     state: 'shut_off',
     ...extra,

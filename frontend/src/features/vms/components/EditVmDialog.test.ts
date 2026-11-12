@@ -15,7 +15,7 @@ const t = (key: string, values: Record<string, unknown> = {}, plural?: number) =
   plural === undefined ? i18n.global.t(key, values) : i18n.global.t(key, values, plural)
 
 const PLUGIN: VmPlugin = {
-  hardware: { kvm: true, cpu_virtualization: 'vmx', iommu: false },
+  hardware: { kvm: true, cpu_virtualization: 'vmx', iommu: false, swtpm: true, secure_boot: true },
   installed: true,
   storage: { pool: 'tank', volume: 1 },
   locations: [
@@ -73,6 +73,10 @@ function vm(extra: Partial<VirtualMachine> = {}): VirtualMachine {
       { kind: 'disk', slot: 0 },
     ],
     autostart: false,
+    usb: [],
+    pci: [],
+    tpm: false,
+    secure_boot: false,
     created_at: 0,
     state: 'shut_off',
     ...extra,
@@ -93,8 +97,49 @@ function value(selector: string): string {
   return document.querySelector<HTMLInputElement>(selector)!.value
 }
 
+const DEVICES = {
+  iommu: { on: true, cmdline: ['intel_iommu=on'], cpu_vendor: 'intel' },
+  usb: [{ id: '046d:c31c', port: '1-2', manufacturer: 'Logitech', name: 'USB Keyboard' }],
+  pci: [
+    {
+      address: '0000:01:00.0',
+      vendor: '10de',
+      device: '1c82',
+      class: '030000',
+      vendor_name: 'NVIDIA Corporation',
+      device_name: 'GP107',
+      iommu_group: 1,
+      driver: 'nouveau',
+      needed: null,
+    },
+    {
+      address: '0000:01:00.1',
+      vendor: '10de',
+      device: '0fb9',
+      class: '040300',
+      vendor_name: 'NVIDIA Corporation',
+      device_name: 'GP107 Audio',
+      iommu_group: 1,
+      driver: null,
+      needed: null,
+    },
+    {
+      address: '0000:00:17.0',
+      vendor: '8086',
+      device: 'a352',
+      class: '010601',
+      vendor_name: 'Intel Corporation',
+      device_name: 'SATA AHCI',
+      iommu_group: 2,
+      driver: 'ahci',
+      needed: { kind: 'disk', disk: 'sda' },
+    },
+  ],
+}
+
 beforeEach(() => {
   reset()
+  on('GET', '/api/v1/vms/devices', DEVICES)
   on('PUT', '/api/v1/vms/0a1b2c3d4e5f', vm())
 })
 
@@ -144,8 +189,66 @@ describe('editing a VM', () => {
         { kind: 'disk', slot: 0 },
       ],
       autostart: false,
+      usb: [],
+      pci: [],
+      tpm: false,
+      secure_boot: false,
       confirm: null,
     })
+  })
+
+  it('switches a TPM and Secure Boot only while the VM is off, saying the firmware starts afresh', async () => {
+    await mountEdit()
+    await tab('hardware')
+    expect(document.querySelector('[data-testid="vm-fresh-variables"]')).toBeNull()
+    document.querySelector<HTMLButtonElement>('#vm-tpm')!.click()
+    await settle()
+    document.querySelector<HTMLButtonElement>('#vm-secure-boot')!.click()
+    await settle()
+    expect(page()).toContain(t('vms.security.fresh'))
+    await submit('#vm-edit')
+    expect(called('PUT', '/api/v1/vms/0a1b2c3d4e5f')[0]?.body).toMatchObject({
+      tpm: true,
+      secure_boot: true,
+    })
+  })
+
+  it('plugs USB devices in and out while the VM runs, and keeps its PCI devices', async () => {
+    await mountEdit(
+      vm({ state: 'running', usb: ['1234:5678'], pci: ['0000:01:00.0', '0000:01:00.1'] }),
+    )
+    await tab('hardware')
+    expect(document.querySelector<HTMLButtonElement>('#vm-tpm')!.disabled).toBe(true)
+    await tab('devices')
+    // One it was given, unplugged since, stays offered.
+    expect(page()).toContain(t('vms.hostDevices.notPlugged'))
+    expect(document.querySelector<HTMLInputElement>('[data-group="1"] input')!.disabled).toBe(true)
+    expect(page()).toContain(t('vms.hostDevices.pciRunning'))
+    document.querySelector<HTMLInputElement>('[data-usb="046d:c31c"] input')!.click()
+    await settle()
+    document.querySelector<HTMLInputElement>('[data-usb="1234:5678"] input')!.click()
+    await settle()
+    expect(button(t('vms.edit.save')).disabled).toBe(false)
+    await submit('#vm-edit')
+    expect(called('PUT', '/api/v1/vms/0a1b2c3d4e5f')[0]?.body).toMatchObject({
+      usb: ['046d:c31c'],
+      pci: ['0000:01:00.0', '0000:01:00.1'],
+    })
+  })
+
+  it('lets a PCI device the NAS no longer has go', async () => {
+    await mountEdit(vm({ pci: ['0000:09:00.0'] }))
+    await tab('devices')
+    expect(page()).toContain(t('vms.hostDevices.gone'))
+    document.querySelector<HTMLButtonElement>('[data-pci-gone="0000:09:00.0"] button')!.click()
+    await settle()
+    document.querySelector<HTMLInputElement>('[data-group="1"] input')!.click()
+    await settle()
+    await submit('#vm-edit')
+    expect((called('PUT', '/api/v1/vms/0a1b2c3d4e5f')[0]?.body as { pci: string[] }).pci).toEqual([
+      '0000:01:00.0',
+      '0000:01:00.1',
+    ])
   })
 
   it('removes a disk only with the name typed again', async () => {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Database, Disc3, MonitorCog, Network, ScrollText, Server } from 'lucide-vue-next'
+import { Archive, Database, Disc3, MonitorCog, Network, ScrollText, Server } from 'lucide-vue-next'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -10,13 +10,14 @@ import { Button } from '@/shared/ui/button'
 import { AppFrame, type NavGroup } from '@/shared/ui/frame'
 
 import { useVmImages, useVmPlugin, useVms } from '../api'
+import BackupsSection from './BackupsSection.vue'
 import ImagesSection from './ImagesSection.vue'
 import LogSection from './LogSection.vue'
 import MachinesSection from './MachinesSection.vue'
 import NetworksSection from './NetworksSection.vue'
 import StorageSection from './StorageSection.vue'
 
-const SECTIONS = ['machines', 'images', 'storage', 'networks', 'log'] as const
+const SECTIONS = ['machines', 'images', 'storage', 'networks', 'backups', 'log'] as const
 
 const { t } = useI18n()
 const openApp = useOpenApp()
@@ -49,6 +50,7 @@ const groups = computed<NavGroup[]>(() => [
         count: plugin.value?.locations.length,
       },
       { id: 'networks', label: t('vms.sections.networks'), icon: Network },
+      { id: 'backups', label: t('vms.sections.backups'), icon: Archive },
       { id: 'log', label: t('vms.sections.log'), icon: ScrollText },
     ],
   },
@@ -74,6 +76,7 @@ const groups = computed<NavGroup[]>(() => [
       <ImagesSection v-if="section === 'images'" :plugin="plugin" />
       <StorageSection v-else-if="section === 'storage'" :plugin="plugin" />
       <NetworksSection v-else-if="section === 'networks'" :plugin="plugin" :vms="vms ?? []" />
+      <BackupsSection v-else-if="section === 'backups'" :plugin="plugin" />
       <LogSection v-else-if="section === 'log'" />
       <MachinesSection v-else :plugin="plugin" @library="section = 'images'" />
     </template>

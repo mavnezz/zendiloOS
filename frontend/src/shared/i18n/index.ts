@@ -151,6 +151,7 @@ const KNOWN_PROBLEMS = [
   'vm_not_running',
   'vm_running',
   'image_in_use',
+  'newer_snapshots',
   'location_in_use',
   'iso_denied',
   'backup_not_installed',
@@ -233,6 +234,8 @@ export function problemMessage(error: unknown): string {
     'account_in_use',
     // What of a configuration backup does not fit.
     'not_a_backup',
+    // The snapshots a rollback would destroy.
+    'newer_snapshots',
   ]
   if (isKnown(error.code)) {
     const message = t(`errors.${error.code}`)
