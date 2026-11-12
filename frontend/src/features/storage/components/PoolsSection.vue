@@ -29,6 +29,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 
 import { scrubPool, stopScrub, useArrays, useDisks, usePools, useRefreshStorage } from '../api'
 import { formatPoolLayout } from '../format'
+import AbsentPools from './AbsentPools.vue'
 import ArraysSection from './ArraysSection.vue'
 import CreatePoolDialog from './CreatePoolDialog.vue'
 import DestroyPoolDialog from './DestroyPoolDialog.vue'
@@ -53,7 +54,12 @@ const actionError = ref<string | null>(null)
 const managed = (pool: Pool) => props.canManage && pool.volume !== null && pool.volume !== undefined
 
 /** Pool jobs under way: creating takes a minute or more, with nothing to show yet. */
-const POOL_JOBS = ['storage.create_pool', 'storage.destroy_pool', 'storage.replace_disk']
+const POOL_JOBS = [
+  'storage.create_pool',
+  'storage.destroy_pool',
+  'storage.replace_disk',
+  'storage.import_pool',
+]
 const underway = computed(() => jobs.running.filter((job) => POOL_JOBS.includes(job.kind)))
 const now = ref(Date.now() / 1000)
 const ticking = setInterval(() => (now.value = Date.now() / 1000), 1000)
@@ -145,6 +151,7 @@ function scanLine(pool: Pool): string | null {
     <Alert v-if="error" variant="destructive">
       {{ t('storage.poolsUnavailable') }} {{ problemMessage(error) }}
     </Alert>
+    <AbsentPools v-if="canManage" />
     <p
       v-else-if="!isPending && !pools?.length && !underway.length"
       class="text-sm text-muted-foreground"

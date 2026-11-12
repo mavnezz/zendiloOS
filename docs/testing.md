@@ -48,6 +48,7 @@ checks and how to run it.
 | `vm-firewall-test` | the firewall with nftables, Docker's published ports, a change that goes back unless confirmed |
 | `vm-ssh-test` | SSH as a service: port, rules, switching itself off |
 | `vm-config-backup-test` | the configuration backup: downloaded, on a schedule into a share with retention, refusals (passphrase, noise, a newer schema), restored on a fresh third VM instead of its setup with its accounts (UIDs, SMB passwords), name, time zone and SSH (VM 2 and VM 3) |
+| `vm-pool-import-test` | a configuration backup restored on its machine installed afresh (`vm.sh reinstall`: a new system disk and host id, the spare disks kept): the pool found by `zpool import`, offered as this machine's own by the restored host id, imported when asked, its share's file reachable over SMB again and mounted after a reboot; the network's settings set aside without drift; the firewall's defaults until the backup's rules are confirmed, back unconfirmed (VM 3) |
 | `vm-hostname-test` | renaming the machine: the host name, `/etc/hosts`, Samba's NetBIOS name, `<name>.local` through Avahi, the certificate; the name put back |
 | `vm-web-server-test` | the web interface's ports and certificates, ACME |
 | `vm-notify-test` | notifications by e-mail and webhook |

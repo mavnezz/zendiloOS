@@ -75,7 +75,11 @@ async fn a_backup_is_restored_on_another_installation_with_its_database_staged()
     assert_eq!(fs::read(&before).unwrap(), b"before");
     assert_eq!(fs::read(format!("{}-wal", before.display())).unwrap(), b"wal");
     assert!(!fresh.path().join("zendiloos.db-wal").exists());
+    assert!(restore_to_follow_up(fresh.path()), "the start follows the restore up");
     assert_eq!(stage_restored_database(fresh.path(), &live, &fresh.path().join("backup")).unwrap(), None);
+    restore_followed_up(fresh.path()).unwrap();
+    assert!(!restore_to_follow_up(fresh.path()));
+    restore_followed_up(fresh.path()).unwrap();
     let (restored_db, report) = Database::open(&live, &fresh.path().join("backup")).await.unwrap();
     assert!(report.applied.is_empty());
     let actions: Vec<(String, Option<String>, Option<String>)> =

@@ -4,12 +4,12 @@
 use std::collections::BTreeSet;
 
 use async_trait::async_trait;
-use zendiloos_firewall::application::FirewallRepository;
+use zendiloos_firewall::application::{FirewallRepository, RestoredFirewall};
 use zendiloos_firewall::domain::{
     Action, FirewallSettings, KnownService, ProjectPorts, Protocol, Rule, Service, Source, Transport,
     parse_ports, ports_text,
 };
-use zendiloos_kernel::PortError;
+use zendiloos_kernel::{PortError, Timestamp};
 
 use super::Database;
 
@@ -23,6 +23,52 @@ pub struct SqliteFirewall {
 impl SqliteFirewall {
     pub fn new(db: Database) -> Self {
         Self { db }
+    }
+
+    /// At the first start after a restore, before the rules are put in
+    /// force: the settings the restored database keeps are the backed-up
+    /// machine's, so they become the restored ones (replacing any earlier
+    /// restore's) and this machine starts with the defaults, the firewall
+    /// off, as installed afresh. Only settings saved are set aside: done
+    /// twice, the second time leaves the first's.
+    pub async fn set_restored_aside(&self, at: Timestamp) -> Result<bool, PortError> {
+        let at = at.unix_seconds();
+        let mut tx = self.db.pool().begin().await.map_err(db_error)?;
+        let saved = sqlx::query_scalar!("SELECT count(*) FROM firewall_settings")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db_error)?;
+        if saved == 0 {
+            return Ok(false);
+        }
+        for statement in [
+            sqlx::query!("DELETE FROM firewall_restored_rules"),
+            sqlx::query!("DELETE FROM firewall_restored"),
+        ] {
+            statement.execute(&mut *tx).await.map_err(db_error)?;
+        }
+        sqlx::query!(
+            "INSERT INTO firewall_restored (id, restored_at, enabled, fallback)
+             SELECT 1, ?, enabled, fallback FROM firewall_settings WHERE id = 1",
+            at
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        for statement in [
+            sqlx::query!(
+                "INSERT INTO firewall_restored_rules
+                     (position, enabled, interface, service, project, protocol, ports, source, action)
+                 SELECT position, enabled, interface, service, project, protocol, ports, source, action
+                 FROM firewall_rules"
+            ),
+            sqlx::query!("DELETE FROM firewall_rules"),
+            sqlx::query!("DELETE FROM firewall_settings"),
+        ] {
+            statement.execute(&mut *tx).await.map_err(db_error)?;
+        }
+        tx.commit().await.map_err(db_error)?;
+        Ok(true)
     }
 }
 
@@ -141,6 +187,54 @@ impl FirewallRepository for SqliteFirewall {
         tx.commit().await.map_err(db_error)
     }
 
+    async fn restored(&self) -> Result<Option<RestoredFirewall>, PortError> {
+        let restored = sqlx::query!(
+            r#"SELECT restored_at, enabled AS "enabled: bool", fallback FROM firewall_restored WHERE id = 1"#
+        )
+        .fetch_optional(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        let Some(restored) = restored else { return Ok(None) };
+        let rows = sqlx::query!(
+            r#"SELECT enabled AS "enabled: bool", interface, service, project, protocol, ports, source, action
+               FROM firewall_restored_rules ORDER BY position"#
+        )
+        .fetch_all(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        let rules = rows
+            .into_iter()
+            .map(|row| {
+                Ok(Rule {
+                    enabled: row.enabled,
+                    interface: row.interface,
+                    service: service(&row.service, row.project, row.protocol, row.ports)?,
+                    source: Source::parse(&row.source).map_err(|e| stored(e.0))?,
+                    action: action(&row.action)?,
+                })
+            })
+            .collect::<Result<Vec<_>, PortError>>()?;
+        Ok(Some(RestoredFirewall {
+            settings: FirewallSettings {
+                enabled: restored.enabled,
+                fallback: action(&restored.fallback)?,
+                rules,
+            },
+            restored_at: Timestamp::from_unix_seconds(restored.restored_at),
+        }))
+    }
+
+    async fn forget_restored(&self) -> Result<(), PortError> {
+        let mut tx = self.db.pool().begin().await.map_err(db_error)?;
+        for statement in [
+            sqlx::query!("DELETE FROM firewall_restored_rules"),
+            sqlx::query!("DELETE FROM firewall_restored"),
+        ] {
+            statement.execute(&mut *tx).await.map_err(db_error)?;
+        }
+        tx.commit().await.map_err(db_error)
+    }
+
     async fn told_blocked(&self) -> Result<BTreeSet<String>, PortError> {
         let keys = sqlx::query_scalar!("SELECT service FROM firewall_blocked")
             .fetch_all(self.db.pool())
@@ -247,6 +341,42 @@ mod tests {
             .await
             .unwrap();
         assert!(firewall.settings().await.is_err(), "a broken row is said, not dropped");
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_restores_settings_are_set_aside_once_and_the_defaults_hold() {
+        let (_dir, db) = temporary_database().await;
+        let firewall = SqliteFirewall::new(db.clone());
+        let at = Timestamp::from_unix_seconds;
+        assert!(!firewall.set_restored_aside(at(1)).await.unwrap(), "the defaults: nothing to set aside");
+        assert_eq!(firewall.restored().await.unwrap(), None);
+
+        let backed_up = FirewallSettings {
+            enabled: true,
+            fallback: Action::Deny,
+            rules: vec![
+                rule(Service::Known(KnownService::WebInterface), "192.168.7.0/24", Action::Allow),
+                rule(
+                    Service::Ports { protocol: Protocol::Tcp, ports: parse_ports("8080").unwrap() },
+                    "any",
+                    Action::Allow,
+                ),
+            ],
+        };
+        firewall.save(&backed_up).await.unwrap();
+        assert!(firewall.set_restored_aside(at(100)).await.unwrap());
+        assert_eq!(
+            firewall.settings().await.unwrap(),
+            FirewallSettings::default(),
+            "off, as installed afresh"
+        );
+        let restored = firewall.restored().await.unwrap().unwrap();
+        assert_eq!((restored.settings, restored.restored_at), (backed_up, at(100)));
+        assert!(!firewall.set_restored_aside(at(200)).await.unwrap(), "the start repeated");
+        assert_eq!(firewall.restored().await.unwrap().unwrap().restored_at, at(100));
+        firewall.forget_restored().await.unwrap();
+        assert_eq!(firewall.restored().await.unwrap(), None);
         db.close().await;
     }
 

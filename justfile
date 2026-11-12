@@ -260,6 +260,13 @@ vm-hostname-test:
 vm-config-backup-test:
     scripts/vm-config-backup-test.sh
 
+# A pool of the old installation imported after a configuration backup was
+# restored on its machine installed afresh, its share reachable again; the
+# backup's network and firewall settings applied with confirmation (a
+# throwaway third VM, reinstalled on its spare disks; see the script)
+vm-pool-import-test:
+    scripts/vm-pool-import-test.sh
+
 # The web interface's defences in the second VM: TLS, blocked addresses, account lock, sessions
 vm-security-test:
     scripts/vm-security-test.sh

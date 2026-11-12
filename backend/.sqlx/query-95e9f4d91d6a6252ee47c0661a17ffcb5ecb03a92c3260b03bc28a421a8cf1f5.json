@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM network_restored_files",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "95e9f4d91d6a6252ee47c0661a17ffcb5ecb03a92c3260b03bc28a421a8cf1f5"
+}

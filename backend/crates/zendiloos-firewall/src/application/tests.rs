@@ -443,3 +443,52 @@ async fn a_projects_rule_holds_from_the_start_with_the_ports_saved() {
     );
     assert_eq!(s.repository.known_projects().await.unwrap(), site(9090));
 }
+
+/// What a restored backup brought: the web interface from its own network
+/// only, everything else denied.
+fn restored(s: &Setup, source: &str) -> FirewallSettings {
+    let settings = closed(vec![allow(Service::Known(KnownService::WebInterface), source)]);
+    *s.repository.restored.lock().unwrap() =
+        Some(RestoredFirewall { settings: settings.clone(), restored_at: Timestamp::from_unix_seconds(7) });
+    settings
+}
+
+#[tokio::test]
+async fn a_restored_backups_rules_come_in_force_only_once_confirmed() {
+    let s = setup();
+    let none = s.firewall.apply_restored(browser(), false, &alice(), &context()).await;
+    assert!(matches!(none, Err(FirewallError::Refused(_))), "{none:?}");
+    let backed_up = restored(&s, "192.168.1.0/24");
+    let view = s.firewall.view(&context()).await.unwrap();
+    assert_eq!(view.restored.as_ref().map(|r| &r.settings), Some(&backed_up));
+    assert_eq!(view.current, FirewallSettings::default(), "the defaults hold meanwhile");
+
+    // Not confirmed: the rules from before (the defaults) are back, the
+    // backup's still offered.
+    s.firewall.apply_restored(browser(), false, &alice(), &context()).await.unwrap();
+    assert!(s.firewall.view(&context()).await.unwrap().pending.is_some());
+    s.host.time_up();
+    s.firewall.refresh(&context()).await.unwrap();
+    assert_eq!(s.host.rules(), None);
+    assert!(s.firewall.view(&context()).await.unwrap().restored.is_some());
+
+    // Confirmed: this machine's, offered no more.
+    s.firewall.apply_restored(browser(), false, &alice(), &context()).await.unwrap();
+    s.firewall.confirm(&alice(), &context()).await.unwrap();
+    assert_eq!(s.repository.settings().await.unwrap(), backed_up);
+    let view = s.firewall.view(&context()).await.unwrap();
+    assert_eq!(view.restored, None);
+}
+
+#[tokio::test]
+async fn a_restored_backups_rules_that_shut_this_browser_out_are_refused_or_forgotten() {
+    let s = setup();
+    restored(&s, "10.20.0.0/16");
+    let refused = s.firewall.apply_restored(browser(), false, &alice(), &context()).await;
+    assert!(matches!(refused, Err(FirewallError::WouldLockOut)), "another network's: {refused:?}");
+    assert!(s.host.calls().is_empty());
+    s.firewall.forget_restored(&alice(), &context()).await.unwrap();
+    assert_eq!(s.firewall.view(&context()).await.unwrap().restored, None);
+    let actions: Vec<&str> = s.audit.0.lock().unwrap().iter().map(|(action, _)| *action).collect();
+    assert_eq!(actions, ["firewall.forget_restored"]);
+}

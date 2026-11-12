@@ -138,6 +138,8 @@ const KNOWN_PROBLEMS = [
   'acme_not_installed',
   'web_server_failed',
   'would_lock_out',
+  'other_host',
+  'volume_taken',
   'firewall_failed',
   'volume_in_use',
   'volume_busy',

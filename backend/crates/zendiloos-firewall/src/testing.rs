@@ -7,7 +7,9 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
-use crate::application::{FirewallHost, FirewallRepository, HostError, HostRules, HostState, ServiceFacts};
+use crate::application::{
+    FirewallHost, FirewallRepository, HostError, HostRules, HostState, RestoredFirewall, ServiceFacts,
+};
 use crate::domain::{Facts, FirewallSettings, LocalInterface, ProjectPorts, Ruleset};
 
 #[derive(Default)]
@@ -15,6 +17,8 @@ pub struct MemoryFirewall {
     settings: Mutex<Option<FirewallSettings>>,
     told: Mutex<BTreeSet<String>>,
     projects: Mutex<Vec<ProjectPorts>>,
+    /// The settings a restored backup brought.
+    pub restored: Mutex<Option<RestoredFirewall>>,
 }
 
 #[async_trait]
@@ -43,6 +47,15 @@ impl FirewallRepository for MemoryFirewall {
 
     async fn save_known_projects(&self, projects: &[ProjectPorts]) -> Result<(), PortError> {
         projects.clone_into(&mut self.projects.lock().unwrap());
+        Ok(())
+    }
+
+    async fn restored(&self) -> Result<Option<RestoredFirewall>, PortError> {
+        Ok(self.restored.lock().unwrap().clone())
+    }
+
+    async fn forget_restored(&self) -> Result<(), PortError> {
+        *self.restored.lock().unwrap() = None;
         Ok(())
     }
 }

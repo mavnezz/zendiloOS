@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO network_restored_files (name, text) SELECT name, text FROM network_setting_files",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "f92b9b43f6f9951c74e679b7950c6ec64d86b32d8e1907ae958fb079f3ec350d"
+}

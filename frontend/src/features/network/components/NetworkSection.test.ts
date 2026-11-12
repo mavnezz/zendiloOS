@@ -662,3 +662,88 @@ describe('the network', () => {
     expect(page()).toContain('ip failed')
   })
 })
+
+describe("a restored backup's network", () => {
+  const restored = {
+    restored_at: 1_790_000_000,
+    interfaces: [
+      {
+        interface: 'enp9s0',
+        standing: 'missing',
+        device: null,
+        settings: { ipv4: { mode: 'dhcp', keep: null }, ipv6: 'off', dns: [] },
+      },
+      {
+        interface: 'eth1',
+        standing: 'applicable',
+        device: null,
+        settings: {
+          ipv4: { mode: 'static', address: '10.0.0.7', prefix: 8, gateway: '10.0.0.1' },
+          ipv6: 'off',
+          dns: [],
+        },
+      },
+      {
+        interface: 'eth2',
+        standing: 'member_there',
+        device: 'br0',
+        settings: { ipv4: { mode: 'off' }, ipv6: 'off', dns: [] },
+      },
+    ],
+    devices: [
+      {
+        device: {
+          name: 'br0',
+          kind: 'bridge',
+          members: ['eth2'],
+          parent: null,
+          vlan_id: null,
+          mode: null,
+          stp: false,
+        },
+        standing: 'missing',
+      },
+    ],
+  }
+
+  it('offers what has its names here, applies it to be confirmed, and forgets the rest', async () => {
+    on('GET', '/api/v1/network/restored', restored)
+    on(
+      'POST',
+      '/api/v1/network/restored/apply',
+      waiting({ interface: 'eth1', takeover: false, restore: false, device: null, revert_at: 9e9 }),
+    )
+    on('DELETE', '/api/v1/network/restored', null)
+    await mountApp(NetworkSection, { props: { canManage: true } })
+    const section = document.querySelector('[data-restored]')?.textContent ?? ''
+    expect(section).toContain(t('network.restored.title'))
+    expect(section).toContain(t('network.restored.standing.missing'))
+    expect(section).toContain(t('network.restored.standing.member_there', { device: 'br0' }))
+    expect(section).toContain('10.0.0.7/8')
+    const applies = [...document.querySelectorAll('[data-restored] button')].filter(
+      (element) => element.textContent?.trim() === t('network.restored.apply'),
+    )
+    expect(applies).toHaveLength(1)
+    await click(t('network.restored.apply'))
+    expect(called('POST', '/api/v1/network/restored/apply')[0]?.body).toEqual({ name: 'eth1' })
+    await click(t('network.restored.forget'))
+    expect(called('DELETE', '/api/v1/network/restored')).toHaveLength(1)
+  })
+
+  it('says why a restored setting is refused, and is not asked for without the right', async () => {
+    on('GET', '/api/v1/network/restored', restored)
+    on(
+      'POST',
+      '/api/v1/network/restored/apply',
+      problem(409, 'refused', 'there is no interface eth1 here'),
+    )
+    await mountApp(NetworkSection, { props: { canManage: true } })
+    await click(t('network.restored.apply'))
+    expect(page()).toContain('there is no interface eth1 here')
+    reset()
+    on('GET', '/api/v1/network', network)
+    on('GET', '/api/v1/network/setup', managed)
+    await mountApp(NetworkSection, { props: { canManage: false } })
+    expect(called('GET', '/api/v1/network/restored')).toHaveLength(0)
+  })
+})

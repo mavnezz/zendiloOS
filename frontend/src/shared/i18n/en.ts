@@ -453,7 +453,7 @@ const en = {
     restore: {
       title: 'Restore',
       intro:
-        'Puts the configuration of a backup back on this NAS: its accounts (sign in with them afterwards), shares, settings and certificates. zendiloOS starts again with it. The network stays as it is; set it on the Network page, where each change is confirmed. Firewall rules come back as they were.',
+        'Puts the configuration of a backup back on this NAS: its accounts (sign in with them afterwards), shares, settings and certificates. zendiloOS starts again with it. Its network settings and firewall rules are not put in force: the Network page and the Firewall tab offer them, each change confirmed. Pools of the old machine are imported on the Storage page.',
       file: 'Backup',
       submit: 'Restore…',
       confirmTitle: 'Restore this backup?',
@@ -462,7 +462,7 @@ const en = {
       confirmLabel: 'Restore',
       done: 'The backup of {name} made {time} by zendiloOS {version} is restored.',
       port: 'The web interface answers on port {port} once zendiloOS started again.',
-      network: 'Network settings in the backup, not put in force: {files}.',
+      network: 'Network settings in the backup, offered on the Network page: {files}.',
       restarting: 'zendiloOS starts again; this page reloads.',
     },
   },
@@ -1657,6 +1657,7 @@ const en = {
         updates_installed: 'Updates installed',
         updates_failed: 'Update failed',
         network_drift: 'Network files changed outside zendiloOS',
+        pools_not_imported: 'Pools not imported',
         configuration_backup_failed: 'Configuration backup failed',
         certificate_renewed: 'Certificate renewed',
         certificate_renewal_failed: 'Certificate not renewed',
@@ -1671,6 +1672,17 @@ const en = {
   },
   firewall: {
     title: 'Firewall',
+    restored: {
+      title: 'Firewall rules of the restored backup',
+      intro:
+        'The configuration backup restored {at} brought these settings: {summary}. They are not in force, as rules made for another network could keep you out: the defaults of a fresh installation (the firewall off) hold until you apply them. Applied, they go back unless you confirm them within {seconds} seconds.',
+      off: 'the firewall off',
+      on: 'the firewall on with {count} rules, otherwise {fallback}',
+      allow: 'allow',
+      deny: 'deny',
+      apply: 'Apply with confirmation',
+      forget: 'Forget',
+    },
     enable: 'Turn on the firewall',
     description:
       'Decides which addresses reach which services of this NAS, and the ports its Docker containers publish.',
@@ -1869,6 +1881,24 @@ const en = {
       restoreTitle: "zendiloOS's network settings are written back",
       restoreHint:
         'Confirm it, from the address the NAS has now, or the files return as they were in {seconds} seconds.',
+    },
+    restored: {
+      title: 'Network settings of the restored backup',
+      intro:
+        'The configuration backup restored {at} brought these settings. They are not in force: another machine’s interfaces may have other names, and its addresses could cut this NAS off. Apply them one by one; each change goes back unless you confirm it within two minutes.',
+      interfaces: 'Interfaces',
+      devices: 'Bridges, bonds and VLANs',
+      apply: 'Apply',
+      make: 'Make',
+      forget: 'Forget these settings',
+      standing: {
+        applicable: 'Can be applied',
+        in_force: 'In force',
+        missing: 'Skipped: not on this machine',
+        member_there: 'Comes with {device}',
+        member_here: 'Here a member of {device}',
+        taken: 'Here something else has this name',
+      },
     },
     drift: {
       title: "zendiloOS's network files were changed outside it",
@@ -2129,6 +2159,41 @@ const en = {
       understood: 'Erase {disk} and use it as replacement.',
       submit: 'Erase and replace',
     },
+    imports: {
+      title: 'Pools to import',
+      intro:
+        'The configuration names these pools, but they are not imported, as after a configuration backup was restored on a machine installed afresh. zendiloOS imports a pool only when you ask: a pool another machine still uses would be damaged.',
+      hostId:
+        'ZFS knows a pool by the host id of the machine that used it last. A configuration backup brings that id back, so a pool of the machine backed up is imported as this machine’s own.',
+      volume: 'Volume {volume} · {path}',
+      shares: 'Shares: {names}',
+      noShares: 'No shares',
+      otherHost: 'Last used by another machine',
+      cannotImport: 'Cannot be imported',
+      import: 'Import',
+      missingTitle: 'On no disk here',
+      missing: '{name} (volume {volume}): its disks are not in this machine.',
+      foreignTitle: 'Other pools on the disks',
+      foreignIntro:
+        'The configuration does not name them. A pool zendiloOS made on another installation is adopted as a volume of this one; no share of this configuration points to its folders.',
+      adopt: 'Adopt',
+      dialog: {
+        title: 'Import {name}?',
+        adoptTitle: 'Adopt {name}?',
+        description:
+          'ZFS opens the pool; then its volume, its shares, the personal folders, Docker’s data and the virtual machines’ storage are mounted, and Samba and NFS follow.',
+        adoptDescription:
+          'Only a pool zendiloOS made is adopted: it becomes a volume of this machine, its folders as they are.',
+        devices: 'Disks',
+        otherHost:
+          'ZFS says another machine used this pool last and did not export it. Import it only if that machine is switched off for good: a pool two machines use at once is damaged beyond repair.',
+        confirm: 'Type {name} to import it anyway',
+        volume: 'Volume number',
+        submit: 'Import',
+        force: 'Import anyway',
+        adoptSubmit: 'Adopt',
+      },
+    },
     noPools: 'No pools yet.',
     underway: 'Under way; this may take a few minutes.',
     steps: {
@@ -2139,6 +2204,7 @@ const en = {
       destroying_pool: 'Deleting the pool',
       clearing_disks: 'Clearing the disks',
       replacing_disk: 'Adding the new disk',
+      importing_pool: 'Importing the pool',
     },
     poolsUnavailable: 'ZFS is not available, so pools cannot be shown.',
     notManaged: 'Not managed by zendiloOS',
@@ -2728,6 +2794,7 @@ const en = {
       sharing_delete_share: 'Delete share',
       storage_create_pool: 'Create pool',
       storage_destroy_pool: 'Delete pool',
+      storage_import_pool: 'Import pool',
       storage_replace_disk: 'Replace disk',
       storage_scrub: 'Check data',
       apps_install: 'Install app',
@@ -3876,6 +3943,10 @@ const en = {
       title: 'Update failed',
       body: 'Control panel → Updates says why.',
     },
+    pools_not_imported: {
+      title: 'Pools not imported',
+      body: 'The configuration names pools that are not imported ({names}). Storage → Pools imports them.',
+    },
     network_drift: {
       title: 'Network files changed',
       body: "zendiloOS's network files differ from its settings ({names}). Control panel → Network restores the settings or keeps the files.",
@@ -4401,6 +4472,9 @@ const en = {
     acme_not_installed: 'Install the ACME client first.',
     web_server_failed: 'nginx did not take the settings; nothing changed',
     would_lock_out: 'These rules would keep this browser out.',
+    other_host:
+      'Another machine used this pool last. Import it only if that machine is off for good, by typing its name.',
+    volume_taken: 'This volume number is taken by another pool.',
     firewall_failed: 'nftables did not take the rules; nothing changed',
     vms_architecture:
       'Virtual machines are not offered on this machine’s architecture yet, only on amd64 (x86-64).',

@@ -1065,3 +1065,272 @@ async fn an_apps_dataset_goes_with_the_app() {
     assert_eq!(host.run(remove("other")).await, Response::Done, "no dataset: nothing to destroy");
     assert!(!host.calls().contains(&"zfs destroy -r tank/zendiloos.apps/other".to_owned()));
 }
+
+/// Replaces the fake program `name` with one that records its arguments
+/// and then runs `body`.
+fn program(host: &Host, name: &str, body: &str) {
+    let path = host.path(name);
+    let log = host.path("calls.log");
+    fs::write(&path, format!("#!/bin/sh\necho {name} \"$@\" >> {}\n{body}\n", log.display())).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// `zpool`: tank imported; `zpool import -d …` lists media (id 42) and
+/// another media (id 43); importing exits with `status`, saying `said`.
+fn importing(host: &Host, status: u8, said: &str) {
+    program(
+        host,
+        "zpool",
+        &format!(
+            "case \"$1\" in\n\
+             list) echo tank ;;\n\
+             export) ;;\n\
+             import) if [ \"$#\" -eq 3 ]; then printf '   pool: media\\n     id: 42\\n  state: ONLINE\\n config:\\n\\n\\tmedia ONLINE\\n\\n   pool: media\\n     id: 43\\n  state: ONLINE\\n'; else echo \"{said}\" >&2; exit {status}; fi ;;\n\
+             esac"
+        ),
+    );
+}
+
+/// `zfs`: volume 1 in use; the imported media says `volume`.
+fn media_says(host: &Host, volume: &str) {
+    program(
+        host,
+        "zfs",
+        &format!(
+            "case \"$*\" in\n\
+             *'-s local -d 0'*) echo 1 ;;\n\
+             'get -H -o value zendiloos:volume media') echo {volume} ;;\n\
+             *) ;;\n\
+             esac"
+        ),
+    );
+}
+
+fn import(name: &str, id: u64, volume: u16, adopt: bool, force: bool) -> Request {
+    Request::ImportPool {
+        name: PoolName::parse(name).unwrap(),
+        id,
+        volume: VolumeNumber::new(volume).unwrap(),
+        adopt,
+        force,
+    }
+}
+
+#[tokio::test]
+async fn lists_the_pools_on_the_disks_and_none_when_zfs_finds_none() {
+    let host = host(Erasable::Policy(ErasePolicy::None));
+    importing(&host, 0, "");
+    let Response::ImportablePools { zpool_import } = host.run(Request::ImportablePools {}).await else {
+        panic!("not listed")
+    };
+    assert!(zpool_import.contains("pool: media\n     id: 42"), "{zpool_import}");
+    assert_eq!(host.calls(), ["zpool import -d /dev/disk/by-id"], "by-id, as pools are made");
+
+    program(&host, "zpool", "echo 'no pools available to import' >&2; exit 1");
+    assert_eq!(
+        host.run(Request::ImportablePools {}).await,
+        Response::ImportablePools { zpool_import: String::new() }
+    );
+    program(&host, "zpool", "echo 'cannot open /dev/zfs' >&2; exit 1");
+    assert_refused(host.run(Request::ImportablePools {}).await, ErrorCode::Failed, "cannot open");
+}
+
+#[tokio::test]
+async fn imports_a_pool_by_its_identifier_unmounted_as_the_volume_it_says() {
+    let host = host(Erasable::Policy(ErasePolicy::None));
+    importing(&host, 0, "");
+    media_says(&host, "2");
+    assert_eq!(host.run(import("media", 42, 2, false, false)).await, Response::Done);
+    assert_eq!(
+        host.calls(),
+        [
+            "zpool list -H -o name",
+            "zfs get -H -o value -s local -d 0 zendiloos:volume",
+            "zpool import -d /dev/disk/by-id",
+            "zpool import -N -d /dev/disk/by-id 42",
+            "zfs get -H -o value zendiloos:volume media",
+        ]
+    );
+    assert!(!host.path("units/volume2.mount").exists(), "mounted by its own request");
+}
+
+#[tokio::test]
+async fn imports_neither_a_name_nor_a_volume_taken_nor_a_pool_not_listed() {
+    let host = host(Erasable::Policy(ErasePolicy::None));
+    importing(&host, 0, "");
+    media_says(&host, "2");
+    assert_refused(host.run(import("tank", 42, 2, false, false)).await, ErrorCode::Conflict, "");
+    assert_refused(host.run(import("media", 42, 1, false, false)).await, ErrorCode::Conflict, "");
+    // A unit of volume 3 mounts another pool.
+    fs::write(host.path("units/volume3.mount"), "[Mount]\nWhat=cold\n").unwrap();
+    assert_refused(host.run(import("media", 42, 3, false, false)).await, ErrorCode::Conflict, "");
+    assert_refused(
+        host.run(import("media", 44, 2, false, false)).await,
+        ErrorCode::Forbidden,
+        "no pool media",
+    );
+    assert_refused(host.run(import("cold", 42, 2, false, false)).await, ErrorCode::Forbidden, "no pool cold");
+    assert!(!host.calls().iter().any(|call| call.starts_with("zpool import -N")), "nothing imported");
+}
+
+#[tokio::test]
+async fn a_pool_another_machine_used_last_is_imported_only_by_force() {
+    let host = host(Erasable::Policy(ErasePolicy::None));
+    importing(&host, 1, "cannot import 'media': pool was previously in use from another system.");
+    media_says(&host, "2");
+    let refused = host.run(import("media", 42, 2, false, false)).await;
+    assert_refused(
+        refused,
+        ErrorCode::Forbidden,
+        "ZFS does not import media: cannot import 'media': pool was previously in use from another system.",
+    );
+    importing(&host, 0, "");
+    assert_eq!(host.run(import("media", 43, 2, false, true)).await, Response::Done);
+    assert!(
+        host.calls().contains(&"zpool import -N -d /dev/disk/by-id -f 43".to_owned()),
+        "{:#?}",
+        host.calls()
+    );
+}
+
+#[tokio::test]
+async fn a_pool_that_is_another_volume_or_not_zendiloos_s_is_exported_again() {
+    let host = host(Erasable::Policy(ErasePolicy::None));
+    importing(&host, 0, "");
+    media_says(&host, "3");
+    assert_refused(
+        host.run(import("media", 42, 2, false, false)).await,
+        ErrorCode::Forbidden,
+        "media is volume 3, not 2",
+    );
+    assert_eq!(host.calls().last().unwrap(), "zpool export media");
+
+    media_says(&host, "-");
+    let foreign = host.run(import("media", 42, 2, true, false)).await;
+    assert_refused(foreign, ErrorCode::Forbidden, "not made by zendiloOS");
+    assert_eq!(host.calls().last().unwrap(), "zpool export media");
+
+    // Adopted: its volume number becomes the one given.
+    media_says(&host, "3");
+    assert_eq!(host.run(import("media", 42, 2, true, false)).await, Response::Done);
+    assert_eq!(host.calls().last().unwrap(), "zfs set zendiloos:volume=2 media");
+}
+
+/// `zfs`: tank (volume 1) holds photos and the datasets zendiloos keeps.
+fn tank_with_everything(host: &Host) {
+    program(
+        host,
+        "zfs",
+        "case \"$*\" in\n\
+         *'-o name -d 1 tank') printf 'tank\\ntank/photos\\ntank/zendiloos.homes\\ntank/zendiloos.docker\\ntank/zendiloos.vms\\n' ;;\n\
+         *' tank') echo 1 ;;\n\
+         *) echo - ;;\n\
+         esac",
+    );
+}
+
+fn mount_volume(volume: u16, shares: &[&str]) -> Request {
+    Request::MountVolume {
+        pool: PoolName::parse("tank").unwrap(),
+        volume: VolumeNumber::new(volume).unwrap(),
+        shares: shares.iter().map(|name| share(name)).collect(),
+    }
+}
+
+#[tokio::test]
+async fn a_volumes_mounts_are_made_as_creating_them_writes_them_and_once() {
+    let host = host(Erasable::Policy(ErasePolicy::None));
+    tank_with_everything(&host);
+    fs::create_dir_all(host.path("etc-docker")).unwrap();
+    fs::write(host.path("etc-docker/daemon.json"), "{\"data-root\": \"/volume1/@docker\"}\n").unwrap();
+
+    let made = host.run(mount_volume(1, &["photos", "gone"])).await;
+
+    assert_eq!(made, Response::VolumeMounted { missing: vec![share("gone")], changed: true });
+    let units = [
+        "volume1.mount",
+        "volume1-photos.mount",
+        "volume1-\\x40homes.mount",
+        "volume1-\\x40docker.mount",
+        "volume1-\\x40vms.mount",
+    ];
+    let mut expected = vec![
+        "zfs get -H -o value zendiloos:volume tank".to_owned(),
+        "zfs list -H -o name -d 1 tank".to_owned(),
+        format!("systemctl enable --no-reload {}", units.join(" ")),
+        "systemctl daemon-reload".to_owned(),
+    ];
+    expected.extend(units.iter().map(|unit| format!("systemctl start {unit}")));
+    expected.push("systemctl start docker.service".to_owned());
+    assert_eq!(host.calls(), expected, "one reload; Docker starts on its data mounted anew");
+    let read = |unit: &str| fs::read_to_string(host.path("units").join(unit)).unwrap();
+    assert!(read("volume1.mount").contains("What=tank\nWhere=/volume1\nType=zfs\n"));
+    assert!(read("volume1-photos.mount").contains("What=tank/photos\nWhere=/volume1/photos\n"));
+    assert!(read("volume1-\\x40homes.mount").contains("What=tank/zendiloos.homes\nWhere=/volume1/@homes\n"));
+    assert!(read("volume1-\\x40docker.mount").contains("Before=docker.service\n"));
+    assert!(read("volume1-\\x40vms.mount").contains("What=tank/zendiloos.vms\nWhere=/volume1/@vms\n"));
+    assert!(!host.path("units/volume1-gone.mount").exists());
+    let libvirt = fs::read_to_string(host.path("units/libvirtd.service.d/zendiloos.conf")).unwrap();
+    assert!(libvirt.contains("RequiresMountsFor=/volume1/@vms\n"), "{libvirt}");
+    let docker = fs::read_to_string(host.path("units/docker.service.d/zendiloos.conf")).unwrap();
+    assert!(docker.contains("RequiresMountsFor=/volume1/@docker\n"), "{docker}");
+
+    // Again: nothing written, systemd not reloaded, Docker left alone.
+    fs::remove_file(host.path("calls.log")).unwrap();
+    let again = host.run(mount_volume(1, &["photos"])).await;
+    assert_eq!(again, Response::VolumeMounted { missing: Vec::new(), changed: false });
+    let calls = host.calls();
+    assert!(
+        !calls.iter().any(|call| call == "systemctl daemon-reload" || call.contains("docker.service")),
+        "{calls:#?}"
+    );
+    assert!(calls.contains(&"systemctl show --property=NeedDaemonReload --value volume1.mount".to_owned()));
+}
+
+#[tokio::test]
+async fn a_share_made_and_its_mount_made_again_are_the_same_unit() {
+    let host = host(Erasable::Policy(ErasePolicy::None));
+    let created = Request::CreateShare {
+        pool: PoolName::parse("tank").unwrap(),
+        volume: VolumeNumber::new(1).unwrap(),
+        name: share("media"),
+    };
+    assert_eq!(host.run(created).await, Response::Done);
+    let written = fs::read_to_string(host.path("units/volume1-media.mount")).unwrap();
+    program(
+        &host,
+        "zfs",
+        "case \"$*\" in\n*'-o name -d 1 tank') printf 'tank\\ntank/media\\n' ;;\n*' tank') echo 1 ;;\n*) echo - ;;\nesac",
+    );
+    fs::remove_file(host.path("units/volume1.mount")).unwrap();
+    let mounted = host.run(mount_volume(1, &["media"])).await;
+    assert_eq!(
+        mounted,
+        Response::VolumeMounted { missing: Vec::new(), changed: true },
+        "the volume's unit was gone"
+    );
+    assert_eq!(
+        fs::read_to_string(host.path("units/volume1-media.mount")).unwrap(),
+        written,
+        "not written anew"
+    );
+}
+
+#[tokio::test]
+async fn only_a_pool_zendiloos_made_gets_its_mounts_and_a_mount_that_fails_is_told() {
+    let host = host(Erasable::Policy(ErasePolicy::None));
+    tank_with_everything(&host);
+    assert_refused(host.run(mount_volume(2, &[])).await, ErrorCode::Forbidden, "not managed");
+    assert!(!host.path("units/volume2.mount").exists());
+    program(
+        &host,
+        "systemctl",
+        "[ \"$1 $2\" = 'start volume1-photos.mount' ] && { echo 'mount failed' >&2; exit 1; }\nexit 0",
+    );
+    let failed = host.run(mount_volume(1, &["photos"])).await;
+    assert_refused(failed, ErrorCode::Failed, "cannot mount volume1-photos.mount");
+    assert!(
+        host.calls().contains(&"systemctl start volume1-\\x40vms.mount".to_owned()),
+        "the others are mounted"
+    );
+}

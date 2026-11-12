@@ -173,3 +173,66 @@ async fn projects_are_services_and_blocked_ones_are_listed() {
     h.firewall.refresh(&Default::default()).await.unwrap();
     assert_eq!(h.firewall_host.calls().len(), 2, "nothing new while it waits");
 }
+
+/// A restored backup's rules: shown beside the defaults in force, applied
+/// as any change, refused where they would shut this browser out, kept
+/// once confirmed and offered no more.
+#[tokio::test]
+async fn a_restored_backups_rules_are_applied_with_confirmation() {
+    use zendiloos_firewall::application::RestoredFirewall;
+    use zendiloos_firewall::domain::{Action, FirewallSettings, KnownService, Rule, Service, Source};
+    let h = Harness::new();
+    let admin = h.sign_in("alice", Role::Admin).await;
+    assert_eq!(setup(&h, &admin).await.body["restored"], Value::Null);
+    let backed_up = |source: &str| FirewallSettings {
+        enabled: true,
+        fallback: Action::Deny,
+        rules: vec![Rule {
+            enabled: true,
+            interface: None,
+            service: Service::Known(KnownService::WebInterface),
+            source: Source::parse(source).unwrap(),
+            action: Action::Allow,
+        }],
+    };
+    *h.firewall_store.restored.lock().unwrap() = Some(RestoredFirewall {
+        settings: backed_up("10.20.0.0/16"),
+        restored_at: zendiloos_kernel::Timestamp::from_unix_seconds(1_793_000_000),
+    });
+    let shown = setup(&h, &admin).await.body;
+    assert_eq!(shown["restored"]["restored_at"], 1_793_000_000);
+    let first = &shown["restored"]["settings"]["rules"][0];
+    assert_eq!(
+        (first["service"].clone(), first["source"].clone()),
+        (json!("web_interface"), json!("10.20.0.0/16"))
+    );
+    assert_eq!(shown["current"]["enabled"], false, "the defaults are in force");
+
+    let apply = |body: Value| {
+        h.send(json(
+            from_lan(with_csrf(changing(Method::POST, "/api/v1/security/firewall/restored/apply"), &admin)),
+            body,
+        ))
+    };
+    assert_problem(&apply(json!({})).await, StatusCode::CONFLICT, "would_lock_out");
+    *h.firewall_store.restored.lock().unwrap() = Some(RestoredFirewall {
+        settings: backed_up("192.168.1.0/24"),
+        restored_at: zendiloos_kernel::Timestamp::from_unix_seconds(1_793_000_000),
+    });
+    let applied = apply(json!({})).await;
+    assert_eq!(applied.status, StatusCode::ACCEPTED, "{:?}", applied.body);
+    assert!(applied.body["pending"].is_object(), "waits for confirmation");
+    assert_eq!(confirm(&h, &admin).await.status, StatusCode::NO_CONTENT);
+    let kept = setup(&h, &admin).await.body;
+    assert_eq!((kept["current"]["enabled"].clone(), kept["restored"].clone()), (json!(true), Value::Null));
+
+    *h.firewall_store.restored.lock().unwrap() = Some(RestoredFirewall {
+        settings: backed_up("10.20.0.0/16"),
+        restored_at: zendiloos_kernel::Timestamp::from_unix_seconds(1_793_000_000),
+    });
+    let forget = h
+        .send(empty(with_csrf(changing(Method::DELETE, "/api/v1/security/firewall/restored"), &admin)))
+        .await;
+    assert_eq!(forget.status, StatusCode::NO_CONTENT);
+    assert_eq!(setup(&h, &admin).await.body["restored"], Value::Null);
+}

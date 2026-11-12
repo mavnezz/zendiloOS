@@ -58,6 +58,7 @@ const setup = (change: Partial<FirewallSetup> = {}): FirewallSetup => ({
   ],
   interfaces: ['enp1s0'],
   local_networks: ['192.168.1.0/24'],
+  restored: null,
   ...change,
 })
 
@@ -231,5 +232,51 @@ describe('the firewall tab', () => {
     await click(t('common.reset'))
     expect(rows()[0]).toContain('Web interface')
     expect(document.querySelector('footer')).toBeNull()
+  })
+})
+
+describe("a restored backup's firewall rules", () => {
+  const restored = {
+    settings: settings({ fallback: 'deny' }),
+    restored_at: 1_790_000_000,
+  }
+
+  it('shows them beside the defaults and applies them to be confirmed', async () => {
+    on(
+      'GET',
+      '/api/v1/security/firewall',
+      setup({ current: settings({ enabled: false }), restored }),
+    )
+    on('POST', '/api/v1/security/firewall/restored/apply', setup())
+    await mountApp(FirewallTab)
+    const card = document.querySelector('[data-restored]')?.textContent ?? ''
+    expect(card).toContain(t('firewall.restored.title'))
+    expect(card).toContain(
+      t('firewall.restored.on', { count: 2, fallback: t('firewall.restored.deny') }),
+    )
+    await click(t('firewall.restored.apply'))
+    expect(called('POST', '/api/v1/security/firewall/restored/apply')[0]?.body).toEqual({
+      lock_out: false,
+    })
+  })
+
+  it('asks before they shut out this browser, and forgets them', async () => {
+    on('GET', '/api/v1/security/firewall', setup({ restored }))
+    on(
+      'POST',
+      '/api/v1/security/firewall/restored/apply',
+      ({ body }: { body: { lock_out: boolean } }) =>
+        body.lock_out ? setup() : problem(409, 'would_lock_out'),
+    )
+    on('DELETE', '/api/v1/security/firewall/restored', null)
+    await mountApp(FirewallTab)
+    await click(t('firewall.restored.apply'))
+    expect(page()).toContain(t('firewall.lockOut.title'))
+    await click(t('firewall.lockOut.confirm'))
+    expect(called('POST', '/api/v1/security/firewall/restored/apply')[1]?.body).toEqual({
+      lock_out: true,
+    })
+    await click(t('firewall.restored.forget'))
+    expect(called('DELETE', '/api/v1/security/firewall/restored')).toHaveLength(1)
   })
 })

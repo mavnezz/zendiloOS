@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT name, pool FROM shares WHERE deleting = 0 ORDER BY name",
+  "describe": {
+    "columns": [
+      {
+        "name": "name",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "shares",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "pool",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "shares",
+            "name": "pool"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "9f079f7ef93c6405a9eb107b9353d6ded5a11fab88cf6064300327fa6e58957b"
+}

@@ -12,6 +12,8 @@
 #                           needs ZENDILOOS_VM_USB=1 at 'start' and a kernel in the VM with USB
 #   scripts/vm.sh usb-detach <id>    pull it out again
 #   scripts/vm.sh stop      power off
+#   scripts/vm.sh reinstall a fresh system disk from the image, as a machine installed
+#                           afresh; the spare disks (SATA, NVMe) stay as they are, pools and all
 #   scripts/vm.sh destroy   delete the VM's disks (keeps the downloaded image)
 #
 # SSH is forwarded to 127.0.0.1:2222, the web interface to
@@ -253,6 +255,19 @@ stop() {
     kill "$(cat "$dir/qemu.pid")"
 }
 
+# The system disk made anew from the cloud image (a new machine id, host id
+# and host key at its first boot), the spare disks kept: what the disks of
+# a NAS meet when it is installed afresh.
+reinstall() {
+    [[ -f $dir/system.qcow2 ]] || { echo "no VM; run 'create' first" >&2; exit 1; }
+    running && stop
+    say "A fresh system disk; the spare disks stay"
+    rm -f "${dir:?}"/system.qcow2 "${dir:?}"/console.log
+    qemu-img create -q -f qcow2 -F qcow2 -b "$image_dir/$image" "$dir/system.qcow2" 20G
+    cloud_init_seed
+    say "Reinstalled. Next: start, install"
+}
+
 destroy() {
     running && stop
     rm -f "${dir:?}"/system.qcow2 "${dir:?}"/sata-*.qcow2 "${dir:?}"/nvme-*.qcow2 \
@@ -270,6 +285,7 @@ case ${1:-} in
     usb-attach) usb_attach "${2:-}" ;;
     usb-detach) usb_detach "${2:?usage: usb-detach <id>}" ;;
     stop) stop ;;
+    reinstall) reinstall ;;
     destroy) destroy ;;
     *) sed -n '2,/^set /{/^set /d;p}' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

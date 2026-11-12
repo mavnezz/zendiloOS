@@ -3,6 +3,7 @@
 pub mod commands;
 pub mod enclosure;
 mod error;
+pub mod imports;
 pub mod inventory;
 pub mod monitor;
 pub mod ports;
@@ -15,8 +16,8 @@ use std::sync::Arc;
 pub use error::StorageError;
 use ports::{
     ArraySource, BlockDeviceSource, DiskInventoryStore, DiskLocator, EjectedDrives, EnclosureCatalog,
-    EnclosureStore, MachineSource, PlanTokens, PoolAdmin, RemovableHost, SelfTestPlanStore, SmartSource,
-    VolumeOccupants, ZfsSource,
+    EnclosureStore, KnownPools, MachineSource, PlanTokens, PoolAdmin, RemovableHost, SelfTestPlanStore,
+    SmartSource, VolumeObserver, VolumeOccupants, ZfsSource,
 };
 use zendiloos_jobs::Jobs;
 use zendiloos_kernel::{AuditLog, Clock};
@@ -38,6 +39,10 @@ pub struct StoragePorts {
     pub notifier: Notifier,
     pub self_test_plans: Arc<dyn SelfTestPlanStore>,
     pub occupants: Arc<dyn VolumeOccupants>,
+    /// The pools the configuration names.
+    pub known: Arc<dyn KnownPools>,
+    /// Told when a volume's mounts came back.
+    pub volumes: Arc<dyn VolumeObserver>,
     pub removable: Arc<dyn RemovableHost>,
     pub machine: Arc<dyn MachineSource>,
     pub catalog: Arc<dyn EnclosureCatalog>,
@@ -70,6 +75,7 @@ pub struct StorageUseCases {
     pub enclosure: enclosure::Enclosures,
     pub locate: enclosure::Locator,
     pub inventory: inventory::DiskInventory,
+    pub imports: imports::PoolImports,
 }
 
 impl StorageUseCases {
@@ -89,7 +95,7 @@ impl StorageUseCases {
             ports.smart.clone(),
             ports.inventory.clone(),
             slots.clone(),
-            ports.notifier,
+            ports.notifier.clone(),
             ports.clock.clone(),
         ));
         let overview = queries::GetStorageOverview::new(
@@ -138,7 +144,10 @@ impl StorageUseCases {
             ports.tokens,
             ports.smart.clone(),
             ports.occupants,
+            ports.known.clone(),
         ));
+        let imports =
+            imports::PoolImports::new(Arc::clone(&context), ports.known, ports.volumes, ports.notifier);
         Self {
             plan_pool: commands::PlanPool::new(Arc::clone(&context)),
             create_pool: commands::CreatePool::new(Arc::clone(&context)),
@@ -154,6 +163,7 @@ impl StorageUseCases {
             enclosure,
             locate,
             inventory,
+            imports,
             overview,
             list_disks: queries::ListDisks::new(ports.devices.clone(), ports.zfs.clone()),
             get_smart_report: queries::GetSmartReport::new(ports.devices.clone(), ports.smart),

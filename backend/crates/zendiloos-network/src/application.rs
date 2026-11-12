@@ -8,9 +8,10 @@ use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, PortError, R
 use zendiloos_notify::{Level, NewNotification, Notifier};
 
 use crate::domain::{
-    Configuration, Device, DeviceAction, DeviceUpdate, Difference, DifferenceKind, Edit, IfupdownFile,
-    InterfaceSettings, InvalidDevice, InvalidSettings, Ipv4Setting, Network, NetworkdFile, NewDevice, Part,
-    Planning, Refusal, Subject, TakeoverPlan, differences, restoring, takeover_plan,
+    Configuration, Device, DeviceAction, DeviceKind, DeviceUpdate, Difference, DifferenceKind, Edit,
+    IfupdownFile, InterfaceSettings, InvalidDevice, InvalidSettings, Ipv4Setting, Network, NetworkdFile,
+    NewDevice, Part, Planning, Refusal, RestoredConfiguration, Subject, TakeoverPlan, differences,
+    restored_beside, restoring, takeover_plan,
 };
 
 /// How the machine is connected, read from the host.
@@ -126,6 +127,22 @@ pub struct KeptSettings {
     pub said: Option<String>,
 }
 
+/// The network settings a restored configuration backup brought: the
+/// backed-up machine's files as its settings kept them, set aside at the
+/// first start after the restore.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoredSettings {
+    pub files: Vec<NetworkdFile>,
+    pub restored_at: Timestamp,
+}
+
+/// The backup's settings beside this machine's, interface by interface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoredNetwork {
+    pub restored_at: Timestamp,
+    pub configuration: RestoredConfiguration,
+}
+
 /// Where zendiloOS keeps its network settings: its database.
 #[async_trait]
 pub trait SettingsStore: Send + Sync {
@@ -136,6 +153,9 @@ pub trait SettingsStore: Send + Sync {
     async fn keep(&self, files: &[NetworkdFile], at: Timestamp) -> Result<(), PortError>;
     /// Notes what was told of the differences.
     async fn note_said(&self, said: Option<&str>) -> Result<(), PortError>;
+    /// The settings of a restored backup set aside, while there are any.
+    async fn restored(&self) -> Result<Option<RestoredSettings>, PortError>;
+    async fn forget_restored(&self) -> Result<(), PortError>;
 }
 
 /// What looking at the files at the start found.
@@ -509,6 +529,73 @@ impl ConfigureNetwork {
         self.audit("network.keep_files", outcome, "", actor, request).await;
         done?;
         Ok(self.setup(request).await?)
+    }
+
+    /// The network settings of a restored backup beside this machine's,
+    /// while they are kept: what can be applied here, what the files say
+    /// already, what is skipped (no interface of its name here).
+    pub async fn restored(&self, request: &RequestContext) -> Result<Option<RestoredNetwork>, PortError> {
+        let Some(restored) = self.ports.store.restored().await? else { return Ok(None) };
+        let host = self.ports.configurator.state(request).await?;
+        let network = self.ports.source.network().await?;
+        let configuration = Configuration::read(&host.files);
+        let planning = Planning { network: &network, configuration: &configuration };
+        Ok(Some(RestoredNetwork {
+            restored_at: restored.restored_at,
+            configuration: restored_beside(&Configuration::read(&restored.files), &planning),
+        }))
+    }
+
+    /// Applies what the restored backup says of `name` as an ordinary change
+    /// that goes back unless confirmed within two minutes: an interface's
+    /// settings ([`Self::apply`]), or a bridge, bond or VLAN made as the
+    /// backup had it ([`Self::device`]; a bridge's or bond's own settings
+    /// follow once it is there). Refused for an interface this machine has
+    /// no such name for, and for a member of the backup's devices.
+    pub async fn apply_restored(
+        &self,
+        name: &str,
+        actor: &Actor,
+        request: &RequestContext,
+    ) -> Result<NetworkSetup, ConfigureError> {
+        let restored = self.ports.store.restored().await?.ok_or_else(|| {
+            ConfigureError::Refused("there are no network settings of a restored backup".into())
+        })?;
+        let backup = Configuration::read(&restored.files);
+        if let Some(device) = backup.device(name) {
+            let settings = match &device.kind {
+                DeviceKind::Vlan { .. } => backup.link(name).map(|link| link.settings.clone()),
+                DeviceKind::Bridge { .. } | DeviceKind::Bond { .. } => None,
+            };
+            let new = NewDevice {
+                name: device.name.clone(),
+                kind: device.kind.clone(),
+                members: device.members.clone(),
+                settings,
+            };
+            return self.device(DeviceRequest::Make(new), actor, request).await;
+        }
+        let Some(link) = backup.link(name) else {
+            return Err(ConfigureError::Refused(format!("the backup has no settings of {name}")));
+        };
+        if let Some(device) = &link.port_of {
+            return Err(ConfigureError::Refused(format!(
+                "{name} was a member of {device}: make {device} instead"
+            )));
+        }
+        let network = self.ports.source.network().await?;
+        if !network.interfaces.iter().any(|interface| interface.name == name) {
+            return Err(ConfigureError::Refused(format!("there is no interface {name} here")));
+        }
+        self.apply(link.settings.clone(), actor, request).await
+    }
+
+    /// Forgets the network settings of a restored backup.
+    pub async fn forget_restored(&self, actor: &Actor, request: &RequestContext) -> Result<(), PortError> {
+        let forgotten = self.ports.store.forget_restored().await;
+        let outcome = if forgotten.is_ok() { Outcome::Success } else { Outcome::Failure };
+        self.audit("network.forget_restored", outcome, "", actor, request).await;
+        forgotten
     }
 
     pub async fn apply(

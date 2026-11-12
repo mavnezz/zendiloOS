@@ -25,7 +25,11 @@ use crate::extract::{ApiJson, Client};
 use crate::state::ApiState;
 
 pub(super) fn routes() -> OpenApiRouter<ApiState> {
-    OpenApiRouter::new().routes(routes!(firewall_setup, apply_firewall)).routes(routes!(confirm_firewall))
+    OpenApiRouter::new()
+        .routes(routes!(firewall_setup, apply_firewall))
+        .routes(routes!(confirm_firewall))
+        .routes(routes!(apply_restored_firewall))
+        .routes(routes!(forget_restored_firewall))
 }
 
 impl From<FirewallError> for ApiError {
@@ -266,6 +270,18 @@ pub struct FirewallSetup {
     pub interfaces: Vec<String>,
     /// The networks the NAS is in, as sources.
     pub local_networks: Vec<String>,
+    /// The settings a restored configuration backup brought: not in force
+    /// (rules made for another network could shut the browser out) until
+    /// applied and confirmed (`POST /security/firewall/restored/apply`).
+    pub restored: Option<RestoredFirewall>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RestoredFirewall {
+    pub settings: FirewallSettings,
+    /// When they were set aside, at the first start after the restore, in
+    /// Unix seconds.
+    pub restored_at: i64,
 }
 
 fn ports_of(reach: &Reach, transport: Transport) -> String {
@@ -318,6 +334,10 @@ fn setup(view: &FirewallView) -> FirewallSetup {
         services: services(&view.facts),
         interfaces: view.interfaces.clone(),
         local_networks: view.local_networks.iter().map(ToString::to_string).collect(),
+        restored: view.restored.as_ref().map(|restored| RestoredFirewall {
+            settings: (&restored.settings).into(),
+            restored_at: restored.restored_at.unix_seconds(),
+        }),
     }
 }
 
@@ -399,6 +419,64 @@ async fn apply_firewall(
     let connection = Connection { client: client.client_ip, server: reached.server, port: reached.port };
     state.firewall.apply(settings, connection, change.lock_out, &auth.0.actor(), &client).await?;
     Ok((StatusCode::ACCEPTED, Json(setup(&state.firewall.view(&client).await?))))
+}
+
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RestoredFirewallChange {
+    /// Apply them though they would keep out this browser.
+    #[serde(default)]
+    pub lock_out: bool,
+}
+
+/// Applies the settings a restored configuration backup brought, as any
+/// change (`PUT /security/firewall`): the rules from before, the defaults
+/// on a machine installed afresh, return unless confirmed in time; rules
+/// that would keep out the browser asking are refused unless `lock_out` is
+/// set. Once confirmed they are this machine's, offered no more. Needs
+/// `system.manage`.
+#[utoipa::path(
+    post,
+    path = "/security/firewall/restored/apply",
+    tag = "security",
+    security(("session" = [])),
+    request_body = RestoredFirewallChange,
+    responses(
+        (status = ACCEPTED, body = FirewallSetup, description = "Applied; waits for confirmation."),
+        (status = CONFLICT, body = Problem, description = "`would_lock_out`, `change_pending`, `refused`: no settings of a restored backup"),
+        (status = BAD_GATEWAY, body = Problem, description = "`firewall_failed`: nftables refused the rules; nothing changed"),
+    )
+)]
+async fn apply_restored_firewall(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    reached: Reached,
+    ApiJson(change): ApiJson<RestoredFirewallChange>,
+) -> Result<(StatusCode, Json<FirewallSetup>), ApiError> {
+    auth.require(Permission::SystemManage)?;
+    let connection = Connection { client: client.client_ip, server: reached.server, port: reached.port };
+    state.firewall.apply_restored(connection, change.lock_out, &auth.0.actor(), &client).await?;
+    Ok((StatusCode::ACCEPTED, Json(setup(&state.firewall.view(&client).await?))))
+}
+
+/// Forgets the settings a restored configuration backup brought. Needs
+/// `system.manage`.
+#[utoipa::path(
+    delete,
+    path = "/security/firewall/restored",
+    tag = "security",
+    security(("session" = [])),
+    responses((status = NO_CONTENT, description = "Forgotten."))
+)]
+async fn forget_restored_firewall(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+) -> Result<StatusCode, ApiError> {
+    auth.require(Permission::SystemManage)?;
+    state.firewall.forget_restored(&auth.0.actor(), &client).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Keeps the change waiting for confirmation. Needs `system.manage`.

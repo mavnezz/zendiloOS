@@ -402,3 +402,98 @@ describe('the storage pages', () => {
     expect(document.querySelector(`button[aria-label="${t('storage.destroy.button')}"]`)).toBeNull()
   })
 })
+
+describe('pools to import', () => {
+  const found = (name: string, id: string, other_host = false) => ({
+    name,
+    id,
+    state: 'ONLINE',
+    other_host,
+    can_import: true,
+    status: other_host ? 'The pool was last accessed by another system.' : null,
+    action: null,
+    devices: [{ name: 'ata-QEMU_HARDDISK_QM00007-part1', state: 'ONLINE' }],
+  })
+  const job = { id: 7, kind: 'storage.import_pool', state: 'running', created_at: 0, updated_at: 0 }
+
+  beforeEach(() => {
+    on('GET', '/api/v1/storage/pools/absent', {
+      known: [
+        {
+          pool: { name: 'media', volume: 3, mount_point: '/volume3', shares: ['photos', 'films'] },
+          found: found('media', '15378431232141542312'),
+        },
+        {
+          pool: { name: 'old', volume: 4, mount_point: '/volume4', shares: [] },
+          found: found('old', '42', true),
+        },
+      ],
+      missing: [{ name: 'cold', volume: 5, mount_point: '/volume5', shares: [] }],
+      foreign: [found('stray', '99')],
+      free_volume: 6,
+    })
+    on('POST', '/api/v1/storage/pools/import', job)
+  })
+
+  it('lists the pools the configuration names and imports one as its volume', async () => {
+    await open('pools')
+    expect(page()).toContain(t('storage.imports.title'))
+    expect(page()).toContain(t('storage.imports.shares', { names: 'photos, films' }))
+    expect(page()).toContain(t('storage.imports.missing', { name: 'cold', volume: 5 }))
+    expect(page()).toContain(t('storage.imports.otherHost'))
+    document.querySelector<HTMLButtonElement>('li button')!.click()
+    await settle()
+    expect(page()).toContain(t('storage.imports.dialog.title', { name: 'media' }))
+    await submit('[role="dialog"] form')
+    expect(called('POST', '/api/v1/storage/pools/import')[0]?.body).toEqual({
+      name: 'media',
+      id: '15378431232141542312',
+      volume: null,
+      force: false,
+      confirm: null,
+    })
+  })
+
+  it('imports a pool another machine used last only once its name is typed', async () => {
+    await open('pools')
+    document.querySelectorAll<HTMLButtonElement>('li button')[1]!.click()
+    await settle()
+    expect(page()).toContain(t('storage.imports.dialog.otherHost'))
+    const force = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(
+      (button) => button.textContent?.includes(t('storage.imports.dialog.force')),
+    )!
+    expect(force.disabled).toBe(true)
+    await type('#import-confirm', 'old')
+    expect(force.disabled).toBe(false)
+    await submit('[role="dialog"] form')
+    expect(called('POST', '/api/v1/storage/pools/import')[0]?.body).toEqual({
+      name: 'old',
+      id: '42',
+      volume: null,
+      force: true,
+      confirm: 'old',
+    })
+  })
+
+  it('adopts a pool the configuration does not name as a free volume, and says why it cannot', async () => {
+    on('POST', '/api/v1/storage/pools/import', problem(409, 'volume_taken'))
+    await open('pools')
+    await click(new RegExp(t('storage.imports.adopt')))
+    expect(page()).toContain(t('storage.imports.dialog.adoptTitle', { name: 'stray' }))
+    expect(document.querySelector<HTMLInputElement>('#import-volume')!.value).toBe('6')
+    await type('#import-volume', '2')
+    await submit('[role="dialog"] form')
+    expect(called('POST', '/api/v1/storage/pools/import')[0]?.body).toMatchObject({
+      name: 'stray',
+      volume: 2,
+      force: false,
+    })
+    expect(page()).toContain(t('errors.volume_taken'))
+  })
+
+  it('is not shown to those who may not manage storage', async () => {
+    await open('pools', false)
+    expect(page()).not.toContain(t('storage.imports.title'))
+    expect(called('GET', '/api/v1/storage/pools/absent')).toHaveLength(0)
+  })
+})

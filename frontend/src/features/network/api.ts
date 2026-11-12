@@ -1,4 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
+import { type MaybeRefOrGetter, toValue } from 'vue'
 
 import { api, unwrap } from '@/shared/api/client'
 import type {
@@ -26,6 +27,19 @@ export function useNetworkSetup() {
     queryFn: () => unwrap(api.GET('/api/v1/network/setup')),
     // While a change waits, its time runs out on the server.
     refetchInterval: (query) => (query.state.data?.pending ? 3_000 : REFRESH_MS),
+  })
+}
+
+/**
+ * The network settings a restored configuration backup brought, beside this
+ * machine's; `null` when there are none. Only for those who may change the
+ * network.
+ */
+export function useRestoredNetwork(enabled: MaybeRefOrGetter<boolean>) {
+  return useQuery({
+    queryKey: ['network', 'restored'],
+    queryFn: () => unwrap(api.GET('/api/v1/network/restored')),
+    enabled: () => toValue(enabled),
   })
 }
 
@@ -89,6 +103,22 @@ export function useNetworkActions() {
     restore: async () => {
       try {
         return await unwrap(api.POST('/api/v1/network/restore'))
+      } finally {
+        await refresh()
+      }
+    },
+    /** Applies a restored backup's interface or device; to be confirmed. */
+    applyRestored: async (name: string) => {
+      try {
+        return await unwrap(api.POST('/api/v1/network/restored/apply', { body: { name } }))
+      } finally {
+        await refresh()
+      }
+    },
+    /** Forgets a restored backup's network settings. */
+    forgetRestored: async () => {
+      try {
+        await unwrap(api.DELETE('/api/v1/network/restored'))
       } finally {
         await refresh()
       }

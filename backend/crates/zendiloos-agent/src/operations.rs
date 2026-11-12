@@ -269,6 +269,13 @@ impl Operations {
             }
             Request::DestroyPool { name, volume } => self.pools.destroy(name, *volume).await,
             Request::ReplaceDisk { pool, device, disk } => self.pools.replace(pool, *device, disk).await,
+            Request::ImportablePools {} => self.pools.importable().await,
+            Request::ImportPool { name, id, volume, adopt, force } => {
+                self.pools.import(name, *id, *volume, *adopt, *force).await
+            }
+            Request::MountVolume { pool, volume, shares } => {
+                self.pools.mount_volume(pool, *volume, shares).await
+            }
             Request::ScrubPool { pool } => self.pools.scrub(pool).await,
             Request::StopScrub { pool } => self.pools.stop_scrub(pool).await,
             Request::MountRemovable { id } => self.removable.mount(id).await,

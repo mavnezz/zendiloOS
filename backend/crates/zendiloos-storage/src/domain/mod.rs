@@ -3,6 +3,7 @@ mod block_device;
 mod disk;
 mod enclosure;
 mod events;
+mod import;
 mod inventory;
 mod overview;
 mod plan;
@@ -25,6 +26,9 @@ pub use enclosure::{
     place, same_port,
 };
 pub use events::{FILL_THRESHOLDS, StorageEvent, disk_event, pool_events};
+pub use import::{
+    AbsentPools, ImportablePool, KnownImportable, KnownPool, Mismatch, absent_pools, mismatch, used_volumes,
+};
 pub use inventory::{
     CalendarDate, InvalidInventory, InventoryDetails, InventoryRecord, MAX_NOTE_CHARS, MAX_VENDOR_CHARS,
 };

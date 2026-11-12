@@ -18,6 +18,15 @@ use crate::domain::{
     admits, blocked, compile, interface_of, local_networks,
 };
 
+/// The firewall's settings a restored configuration backup brought, set
+/// aside at the first start after the restore instead of being put in force
+/// unconfirmed: this machine starts with the defaults.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoredFirewall {
+    pub settings: FirewallSettings,
+    pub restored_at: Timestamp,
+}
+
 /// The settings and the services told blocked, kept.
 #[async_trait]
 pub trait FirewallRepository: Send + Sync {
@@ -32,6 +41,9 @@ pub trait FirewallRepository: Send + Sync {
     /// so a rule about a project holds from the start.
     async fn known_projects(&self) -> Result<Vec<ProjectPorts>, PortError>;
     async fn save_known_projects(&self, projects: &[ProjectPorts]) -> Result<(), PortError>;
+    /// The settings of a restored backup set aside, while there are any.
+    async fn restored(&self) -> Result<Option<RestoredFirewall>, PortError>;
+    async fn forget_restored(&self) -> Result<(), PortError>;
 }
 
 /// What the NAS runs now, from the other contexts.
@@ -158,6 +170,9 @@ pub struct FirewallView {
     pub interfaces: Vec<String>,
     /// The networks the NAS is in.
     pub local_networks: Vec<Source>,
+    /// The settings a restored backup brought, not in force until applied
+    /// and confirmed.
+    pub restored: Option<RestoredFirewall>,
 }
 
 pub struct FirewallPorts {
@@ -323,7 +338,38 @@ impl Firewall {
             facts,
             local_networks: local_networks(&interfaces),
             interfaces: interfaces.into_iter().map(|i| i.name).collect(),
+            restored: self.ports.repository.restored().await?,
         })
+    }
+
+    /// Applies the settings a restored backup brought, as any change: the
+    /// rules from before (the defaults on a machine installed afresh) return
+    /// unless confirmed within [`CONFIRM_WITHIN_SECONDS`]; refused if they
+    /// would keep out the browser asking, unless `lock_out` says that is
+    /// meant. Confirmed, they are this machine's and the restored ones go.
+    pub async fn apply_restored(
+        &self,
+        connection: Connection,
+        lock_out: bool,
+        actor: &Actor,
+        context: &RequestContext,
+    ) -> Result<(), FirewallError> {
+        let restored = self.ports.repository.restored().await?.ok_or_else(|| {
+            FirewallError::Refused("there are no firewall settings of a restored backup".into())
+        })?;
+        self.apply(restored.settings, connection, lock_out, actor, context).await
+    }
+
+    /// Forgets the settings a restored backup brought.
+    pub async fn forget_restored(
+        &self,
+        actor: &Actor,
+        context: &RequestContext,
+    ) -> Result<(), FirewallError> {
+        let forgotten = self.ports.repository.forget_restored().await;
+        let outcome = if forgotten.is_ok() { Outcome::Success } else { Outcome::Failure };
+        self.record("firewall.forget_restored", outcome, String::new(), actor, context).await;
+        Ok(forgotten?)
     }
 
     /// Applies new settings; the rules from before return by themselves
@@ -396,6 +442,16 @@ impl Firewall {
         confirmed?;
         self.ports.repository.save(&settings).await?;
         state.pending = None;
+        // The restored backup's settings, now this machine's: offered no more.
+        match self.ports.repository.restored().await {
+            Ok(Some(restored)) if restored.settings == settings => {
+                if let Err(error) = self.ports.repository.forget_restored().await {
+                    tracing::warn!(%error, "firewall: cannot forget the restored settings confirmed");
+                }
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "firewall: cannot read the restored settings"),
+        }
         // The host keeps the change's rules as it was given them last.
         state.applied = state
             .applied

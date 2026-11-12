@@ -35,6 +35,8 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(plan_device))
         .routes(routes!(restore_network))
         .routes(routes!(keep_network_files))
+        .routes(routes!(restored_network, forget_restored_network))
+        .routes(routes!(apply_restored_network))
 }
 
 impl From<ConfigureError> for ApiError {
@@ -655,6 +657,171 @@ async fn restore_network(
     auth.require(Permission::SystemManage)?;
     let setup = state.network.configure.restore(&auth.0.actor(), &client).await?;
     Ok((StatusCode::ACCEPTED, Json(setup_dto(setup))))
+}
+
+/// How a restored backup's interface or device stands on this machine.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RestoredStanding {
+    /// It can be applied here.
+    Applicable,
+    /// The files here say so already.
+    InForce,
+    /// There is no interface of this name here, or not every member or
+    /// parent it is on: skipped.
+    Missing,
+    /// In the backup a member of `device`: it comes with the device.
+    MemberThere,
+    /// Here a member of `device`, whose settings are the device's.
+    MemberHere,
+    /// Here an interface or device of this name is something else.
+    Taken,
+}
+
+fn standing(standing: net::Standing) -> (RestoredStanding, Option<String>) {
+    match standing {
+        net::Standing::Applicable => (RestoredStanding::Applicable, None),
+        net::Standing::InForce => (RestoredStanding::InForce, None),
+        net::Standing::Missing => (RestoredStanding::Missing, None),
+        net::Standing::MemberThere(device) => (RestoredStanding::MemberThere, Some(device)),
+        net::Standing::MemberHere(device) => (RestoredStanding::MemberHere, Some(device)),
+        net::Standing::Taken => (RestoredStanding::Taken, None),
+    }
+}
+
+/// An interface's settings in a restored backup.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RestoredInterface {
+    pub interface: String,
+    pub settings: PlannedSettings,
+    pub standing: RestoredStanding,
+    /// The bridge or bond of `member_there` and `member_here`.
+    pub device: Option<String>,
+}
+
+/// A bridge, bond or VLAN of a restored backup.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RestoredDevice {
+    pub device: NetworkDevice,
+    pub standing: RestoredStanding,
+}
+
+/// The network settings a restored configuration backup brought, beside
+/// this machine's.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RestoredNetwork {
+    /// Unix seconds: when they were set aside, at the first start after
+    /// the restore.
+    pub restored_at: i64,
+    pub interfaces: Vec<RestoredInterface>,
+    pub devices: Vec<RestoredDevice>,
+}
+
+/// The network settings a restored configuration backup brought, interface
+/// by interface and device by device, beside this machine's: they are not
+/// put in force by the restore (other hardware has other names, and a fixed
+/// address from elsewhere would cut the NAS off), but applied here one by
+/// one. `null` when there are none. Needs `system.manage`.
+#[utoipa::path(
+    get,
+    path = "/network/restored",
+    tag = "network",
+    security(("session" = [])),
+    responses(
+        (status = OK, body = Option<RestoredNetwork>),
+        (status = FORBIDDEN, body = Problem, description = "`forbidden`"),
+    )
+)]
+async fn restored_network(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+) -> Result<Json<Option<RestoredNetwork>>, ApiError> {
+    auth.require(Permission::SystemManage)?;
+    let restored = state.network.configure.restored(&client).await.map_err(ApiError::internal)?;
+    Ok(Json(restored.map(|restored| {
+        RestoredNetwork {
+            restored_at: restored.restored_at.unix_seconds(),
+            interfaces: restored
+                .configuration
+                .links
+                .into_iter()
+                .map(|link| {
+                    let (standing, device) = standing(link.standing);
+                    RestoredInterface {
+                        settings: planned(&link.settings),
+                        interface: link.settings.interface,
+                        standing,
+                        device,
+                    }
+                })
+                .collect(),
+            devices: restored
+                .configuration
+                .devices
+                .into_iter()
+                .map(|device| RestoredDevice {
+                    standing: standing(device.standing).0,
+                    device: device_dto(device.device),
+                })
+                .collect(),
+        }
+    })))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ApplyRestoredInput {
+    /// The interface or the bridge, bond or VLAN.
+    pub name: String,
+}
+
+/// Applies what a restored backup says of one interface (its addresses,
+/// as `POST /network/interfaces/{name}` does) or one bridge, bond or VLAN
+/// (made as `POST /network/devices` makes one) as an ordinary change:
+/// unless it is confirmed within two minutes (`POST /network/confirm`, from
+/// the address the NAS then has), the files are as they were. Refused for
+/// an interface this machine has no such name for and for a member of the
+/// backup's bridges and bonds. Needs `system.manage`.
+#[utoipa::path(
+    post,
+    path = "/network/restored/apply",
+    tag = "network",
+    security(("session" = [])),
+    request_body = ApplyRestoredInput,
+    responses(
+        (status = ACCEPTED, body = NetworkSetup, description = "Applied; waits for confirmation."),
+        (status = CONFLICT, body = Problem, description = "`change_pending`, `network_drift`, `device_in_use`, or `refused`: no such interface here, a member, no restored settings"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`: the detail says why"),
+    )
+)]
+async fn apply_restored_network(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    ApiJson(input): ApiJson<ApplyRestoredInput>,
+) -> Result<(StatusCode, Json<NetworkSetup>), ApiError> {
+    auth.require(Permission::SystemManage)?;
+    let setup = state.network.configure.apply_restored(&input.name, &auth.0.actor(), &client).await?;
+    Ok((StatusCode::ACCEPTED, Json(setup_dto(setup))))
+}
+
+/// Forgets the network settings of a restored backup. Needs `system.manage`.
+#[utoipa::path(
+    delete,
+    path = "/network/restored",
+    tag = "network",
+    security(("session" = [])),
+    responses((status = NO_CONTENT, description = "Forgotten."))
+)]
+async fn forget_restored_network(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+) -> Result<StatusCode, ApiError> {
+    auth.require(Permission::SystemManage)?;
+    state.network.configure.forget_restored(&auth.0.actor(), &client).await.map_err(ApiError::internal)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Keeps zendiloOS's files as they are as its settings, where they differ

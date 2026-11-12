@@ -1,0 +1,10 @@
+   pool: tank
+     id: 15378431232141542312
+  state: ONLINE
+ action: The pool can be imported using its name or numeric identifier.
+ config:
+
+	tank                                 ONLINE
+	  mirror-0                           ONLINE
+	    ata-QEMU_HARDDISK_QM00007-part1  ONLINE
+	    ata-QEMU_HARDDISK_QM00009-part1  ONLINE

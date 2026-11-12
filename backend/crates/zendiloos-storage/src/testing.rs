@@ -13,16 +13,17 @@ use zendiloos_kernel::{AuditLog, Clock, PortError, RequestContext};
 
 use crate::application::ports::{
     AdminError, ArraySource, BlockDeviceSource, DiskInventoryStore, DiskLocator, EjectedDrives,
-    EnclosureCatalog, EnclosureStore, MachineSource, NewPool, PlanTokens, PoolAdmin, RemovableHost, SeenDisk,
-    SelfTestPlanStore, SmartSource, Steps, VolumeOccupants, ZfsSource,
+    EnclosureCatalog, EnclosureStore, KnownPools, MachineSource, Mounted, NewPool, PlanTokens, PoolAdmin,
+    PoolImport, RemovableHost, SeenDisk, SelfTestPlanStore, SmartSource, Steps, VolumeObserver,
+    VolumeOccupants, ZfsSource,
 };
 use crate::application::{StoragePorts, StorageUseCases};
 use crate::domain::{
     Array, ArrayMember, Binding, BlockDevice, Chassis, ChassisStyle, DeviceKind, DmiMatch, EnclosureChoice,
-    EnclosureModel, Filesystem, FrontPanel, InventoryDetails, InventoryRecord, Layout, Machine, MemberState,
-    Numbering, Occupant, Orientation, PanelSide, Pool, PoolDevice, PoolLayout, PoolSpace, Scan, ScanKind,
-    ScanState, SelfTestKind, Slot, SlotForm, SlotGroup, Slots, SmartData, SmartProtocol, SmartReport,
-    SpaceUsage, VdevState, VolumeNumber,
+    EnclosureModel, Filesystem, FrontPanel, ImportablePool, InventoryDetails, InventoryRecord, KnownPool,
+    Layout, Machine, MemberState, Numbering, Occupant, Orientation, PanelSide, Pool, PoolDevice, PoolLayout,
+    PoolSpace, Scan, ScanKind, ScanState, SelfTestKind, Slot, SlotForm, SlotGroup, Slots, SmartData,
+    SmartProtocol, SmartReport, SpaceUsage, VdevState, VolumeNumber,
 };
 
 #[derive(Default)]
@@ -73,6 +74,16 @@ pub struct FakeStorage {
     /// While set, each SMART read waits for a permit of it (and gives it
     /// back), as a slow disk would.
     pub smart_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
+    /// The pools the configuration names.
+    pub known: Mutex<Vec<KnownPool>>,
+    /// What `zpool import` finds on the disks.
+    pub importable: Mutex<Vec<ImportablePool>>,
+    /// `tank` is not imported while set, as on a machine installed afresh.
+    pub tank_absent: Mutex<bool>,
+    /// Making sure of a volume's mounts writes units anew while set.
+    pub mounts_change: Mutex<bool>,
+    /// The volumes whose mounts came back, as told.
+    pub volumes_back: Mutex<Vec<u16>>,
     tokens: AtomicU64,
 }
 
@@ -221,6 +232,8 @@ impl FakeStorage {
             notifier,
             self_test_plans: Arc::new(MemorySelfTestPlans::default()),
             occupants: fake.clone(),
+            known: fake.clone(),
+            volumes: fake.clone(),
             removable: fake.clone(),
             machine: fake.clone(),
             catalog: Arc::new(TestCatalog),
@@ -348,6 +361,57 @@ impl PoolAdmin for FakeStorage {
             scan.state = ScanState::Canceled;
         }
         Ok(())
+    }
+
+    async fn importable(&self, _: &RequestContext) -> Result<Vec<ImportablePool>, PortError> {
+        Ok(self.importable.lock().unwrap().clone())
+    }
+
+    async fn import_pool(
+        &self,
+        pool: &PoolImport,
+        steps: &dyn Steps,
+        _: &RequestContext,
+    ) -> Result<(), AdminError> {
+        steps.step("importing_pool", None);
+        self.record(format!(
+            "import {} {} {} adopt={} force={}",
+            pool.name,
+            pool.id,
+            pool.volume.get(),
+            pool.adopt,
+            pool.force
+        ));
+        self.importable.lock().unwrap().retain(|found| found.id != pool.id);
+        if pool.name.as_str() == "tank" {
+            *self.tank_absent.lock().unwrap() = false;
+        }
+        Ok(())
+    }
+
+    async fn mount_volume(
+        &self,
+        pool: &crate::domain::PoolName,
+        volume: VolumeNumber,
+        shares: &[String],
+        _: &RequestContext,
+    ) -> Result<Mounted, AdminError> {
+        self.record(format!("mount {pool} {} {}", volume.get(), shares.join(",")));
+        Ok(Mounted { missing: Vec::new(), changed: *self.mounts_change.lock().unwrap() })
+    }
+}
+
+#[async_trait]
+impl KnownPools for FakeStorage {
+    async fn known(&self) -> Result<Vec<KnownPool>, PortError> {
+        Ok(self.known.lock().unwrap().clone())
+    }
+}
+
+#[async_trait]
+impl VolumeObserver for FakeStorage {
+    async fn volume_back(&self, volume: VolumeNumber, _: &RequestContext) {
+        self.volumes_back.lock().unwrap().push(volume.get());
     }
 }
 
@@ -626,6 +690,9 @@ impl ZfsSource for FakeStorage {
             checksum_errors: 0,
             replacing: None,
         };
+        if *self.tank_absent.lock().unwrap() {
+            return Ok(Vec::new());
+        }
         Ok(vec![Pool {
             name: "tank".to_owned(),
             guid: "9846106214133009000".to_owned(),

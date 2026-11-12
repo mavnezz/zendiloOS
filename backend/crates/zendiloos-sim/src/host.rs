@@ -349,11 +349,20 @@ fn merge(target: &mut Value, extra: &Value) {
 const TB4: u64 = 4_000_787_030_016;
 const GIB: u64 = 1024 * 1024 * 1024;
 
+/// A pool on the disks that is not imported, as on a machine installed
+/// afresh; `other_host`: another machine used it last.
+#[derive(Debug, Clone)]
+pub(crate) struct Importable {
+    pub pool: Pool,
+    pub other_host: bool,
+}
+
 /// The whole simulated machine.
 #[derive(Debug, Clone)]
 pub(crate) struct Host {
     pub disks: Vec<Disk>,
     pub pools: Vec<Pool>,
+    pub importable: Vec<Importable>,
 }
 
 impl Host {
@@ -450,6 +459,7 @@ impl Host {
                 stick,
             ],
             pools: Vec::new(),
+            importable: Vec::new(),
         };
         host.add_pool("tank", Layout::Mirror, &["sda", "sdb"], Some(1), 1_310 * GIB, 0x88a1_3c2e_5b0a_4c8e);
         host.add_pool("backup", Layout::Mirror, &["sdc", "sdd"], Some(2), 2_480 * GIB, 0x6f1d_3c2e_9d1f_2a7b);
@@ -607,6 +617,95 @@ impl Host {
         let guid = 0x1000_0000_0000_u64 + u64::from(volume) * 7919 + self.pools.len() as u64;
         self.add_pool(name, layout, &names, Some(volume), 0, guid);
         Ok(())
+    }
+
+    /// Takes `name` out of the pools imported, its disks as they are: what
+    /// a machine installed afresh finds.
+    pub fn export(&mut self, name: &str, other_host: bool) {
+        if let Some(index) = self.pools.iter().position(|pool| pool.name == name) {
+            let pool = self.pools.remove(index);
+            self.importable.push(Importable { pool, other_host });
+        }
+    }
+
+    /// What `zpool import` lists of the pools not imported.
+    pub fn zpool_import(&self) -> String {
+        let mut text = String::new();
+        for Importable { pool, other_host } in &self.importable {
+            text.push_str(&format!("   pool: {}\n     id: {}\n  state: ONLINE\n", pool.name, pool.guid));
+            if *other_host {
+                text.push_str(
+                    " status: The pool was last accessed by another system.\n \
+                     action: The pool can be imported using its name or numeric identifier and\n\
+                     \tthe '-f' flag.\n   see: https://openzfs.github.io/openzfs-docs/msg/ZFS-8000-EY\n",
+                );
+            } else {
+                text.push_str(" action: The pool can be imported using its name or numeric identifier.\n");
+            }
+            text.push_str(&format!(" config:\n\n\t{}\tONLINE\n", pool.name));
+            for member in &pool.members {
+                let device = member.path.rsplit('/').next().unwrap_or(&member.path);
+                text.push_str(&format!("\t  {device}\tONLINE\n"));
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    /// Imports a pool as the agent would: by name and identifier, refused
+    /// without `force` when another machine used it last, only one
+    /// zendiloOS made, as `volume` (with `adopt` made so).
+    pub fn import(
+        &mut self,
+        name: &str,
+        id: u64,
+        volume: u16,
+        adopt: bool,
+        force: bool,
+    ) -> Result<(), Refusal> {
+        if self.pools.iter().any(|pool| pool.name == name || pool.volume == Some(volume)) {
+            return Err(Refusal::Conflict);
+        }
+        let index = self
+            .importable
+            .iter()
+            .position(|found| found.pool.name == name && found.pool.guid == id)
+            .ok_or_else(|| {
+                Refusal::Refused(format!("there is no pool {name} with this identifier to import"))
+            })?;
+        let found = &self.importable[index];
+        if found.other_host && !force {
+            return Err(Refusal::Refused(format!(
+                "ZFS does not import {name}: cannot import '{name}': pool was previously in use from another system."
+            )));
+        }
+        match found.pool.volume {
+            Some(number) if number == volume || adopt => {}
+            Some(number) => return Err(Refusal::Refused(format!("{name} is volume {number}, not {volume}"))),
+            None => {
+                return Err(Refusal::Refused(format!(
+                    "{name} was not made by zendiloOS (it has no zendiloos:volume)"
+                )));
+            }
+        }
+        let mut pool = self.importable.remove(index).pool;
+        pool.volume = Some(volume);
+        self.pools.push(pool);
+        Ok(())
+    }
+
+    /// The shares of `names` whose datasets `pool`, volume `volume`, lacks.
+    pub fn mount_volume(&self, pool: &str, volume: u16, names: &[&str]) -> Result<Vec<String>, Refusal> {
+        let pool = self
+            .pools
+            .iter()
+            .find(|found| found.name == pool && found.volume == Some(volume))
+            .ok_or_else(|| Refusal::Refused(format!("pool {pool} is not managed by zendiloos")))?;
+        Ok(names
+            .iter()
+            .filter(|name| !pool.shares.iter().any(|share| share == *name))
+            .map(|name| (*name).to_owned())
+            .collect())
     }
 
     pub fn destroy(&mut self, name: &str, volume: u16) -> Result<(), Refusal> {

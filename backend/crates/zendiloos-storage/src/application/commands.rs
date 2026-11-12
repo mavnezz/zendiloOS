@@ -14,8 +14,8 @@ use zendiloos_kernel::{
 
 use crate::application::StorageError;
 use crate::application::ports::{
-    AdminError, BlockDeviceSource, NewPool, PlanTokens, PoolAdmin, SmartSource, Steps, VolumeOccupants,
-    ZfsSource,
+    AdminError, BlockDeviceSource, KnownPools, NewPool, PlanTokens, PoolAdmin, SmartSource, Steps,
+    VolumeOccupants, ZfsSource,
 };
 use crate::application::queries::inventory;
 use crate::domain::{self, PoolLayout, PoolName, PoolPlan, ReplacePlan};
@@ -46,6 +46,7 @@ pub(crate) struct Context {
     pub(crate) tokens: Arc<dyn PlanTokens>,
     pub(crate) smart: Arc<dyn SmartSource>,
     pub(crate) occupants: Arc<dyn VolumeOccupants>,
+    pub(crate) known: Arc<dyn KnownPools>,
     plans: Mutex<HashMap<String, Stored>>,
     /// Storage jobs run one at a time; later ones wait.
     changes: Arc<tokio::sync::Mutex<()>>,
@@ -63,6 +64,7 @@ impl Context {
         tokens: Arc<dyn PlanTokens>,
         smart: Arc<dyn SmartSource>,
         occupants: Arc<dyn VolumeOccupants>,
+        known: Arc<dyn KnownPools>,
     ) -> Self {
         Self {
             devices,
@@ -74,6 +76,7 @@ impl Context {
             tokens,
             smart,
             occupants,
+            known,
             plans: Mutex::new(HashMap::new()),
             changes: Arc::new(tokio::sync::Mutex::new(())),
         }
@@ -113,7 +116,9 @@ impl Context {
     ) -> Result<PoolPlan, StorageError> {
         let (devices, pools) = inventory(self.devices.as_ref(), self.zfs.as_ref(), request).await?;
         let disks_now = domain::disks(&devices, &pools);
-        Ok(domain::plan_pool(name, layout, disks, &disks_now, &pools)?)
+        // A volume the configuration names stays its pool's, imported or not.
+        let reserved: Vec<_> = self.known.known().await?.into_iter().map(|pool| pool.volume).collect();
+        Ok(domain::plan_pool(name, layout, disks, &disks_now, &pools, &reserved)?)
     }
 
     async fn audit(
@@ -132,7 +137,7 @@ impl Context {
 
     /// Runs `work` as a job, after other storage jobs, and audits its end;
     /// the steps it reports become the job's.
-    async fn job<F, Fut>(
+    pub(crate) async fn job<F, Fut>(
         self: &Arc<Self>,
         kind: &'static str,
         target: String,

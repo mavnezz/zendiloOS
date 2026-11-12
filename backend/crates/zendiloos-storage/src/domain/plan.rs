@@ -196,13 +196,15 @@ pub fn is_usable(disk: &Disk) -> bool {
 }
 
 /// Plans a new pool on `chosen` (kernel names) from the current `disks`
-/// and `pools`.
+/// and `pools`; its volume number is none of theirs nor of `reserved`, the
+/// volumes the configuration names whose pools are not imported.
 pub fn plan_pool(
     name: &str,
     layout: PoolLayout,
     chosen: &[String],
     disks: &[Disk],
     pools: &[Pool],
+    reserved: &[VolumeNumber],
 ) -> Result<PoolPlan, PlanError> {
     let name = PoolName::parse(name)?;
     if matches!(layout, PoolLayout::Other(_))
@@ -229,8 +231,9 @@ pub fn plan_pool(
             .ok_or_else(|| PlanError::DiskNotFound(chosen_name.clone()))?;
         planned_disks.push(planned(disk)?);
     }
-    let volume = VolumeNumber::first_free(pools.iter().filter_map(|pool| pool.volume))
-        .ok_or(PlanError::NoVolumeNumber)?;
+    let volume =
+        VolumeNumber::first_free(pools.iter().filter_map(|pool| pool.volume).chain(reserved.iter().copied()))
+            .ok_or(PlanError::NoVolumeNumber)?;
 
     let smallest = planned_disks.iter().map(|d| d.size_bytes).min().unwrap_or(0);
     let largest = planned_disks.iter().map(|d| d.size_bytes).max().unwrap_or(0);
@@ -347,7 +350,7 @@ mod tests {
     #[test]
     fn plans_a_mirror_on_unused_disks() {
         let disks = [disk("sda", DiskUsage::Unused), disk("sdb", DiskUsage::Unused)];
-        let plan = plan_pool("tank", PoolLayout::Mirror, &names(&["sda", "sdb"]), &disks, &[]).unwrap();
+        let plan = plan_pool("tank", PoolLayout::Mirror, &names(&["sda", "sdb"]), &disks, &[], &[]).unwrap();
         assert_eq!(plan.volume, VolumeNumber::new(1).unwrap());
         assert_eq!(plan.capacity_bytes, TB - DISK_RESERVE_BYTES);
         assert_eq!(plan.redundancy, 1);
@@ -372,14 +375,21 @@ mod tests {
             &names(&["sda", "sdc"]),
             &[disk("sda", DiskUsage::Unused), old],
             &[],
+            &[],
         )
         .unwrap();
         assert_eq!(plan.disks[1].erases, ["ntfs \"Backup\""]);
         assert_eq!(plan.warnings, [PlanWarning::MixedSizes { unused_bytes: TB }, PlanWarning::ErasesData]);
 
-        let single =
-            plan_pool("solo", PoolLayout::Single, &names(&["sda"]), &[disk("sda", DiskUsage::Unused)], &[])
-                .unwrap();
+        let single = plan_pool(
+            "solo",
+            PoolLayout::Single,
+            &names(&["sda"]),
+            &[disk("sda", DiskUsage::Unused)],
+            &[],
+            &[],
+        )
+        .unwrap();
         assert_eq!(single.warnings, [PlanWarning::NoRedundancy]);
     }
 
@@ -393,7 +403,7 @@ mod tests {
             disk("sdc", DiskUsage::Unused),
             disk("sdg", DiskUsage::Removable),
         ];
-        let plan = |layout, chosen: &[&str]| plan_pool("new", layout, &names(chosen), &disks, &[]);
+        let plan = |layout, chosen: &[&str]| plan_pool("new", layout, &names(chosen), &disks, &[], &[]);
         let unusable = |disk: &str, reason| Err(PlanError::DiskUnusable { disk: disk.into(), reason });
         assert_eq!(plan(PoolLayout::Mirror, &["nvme0n1", "sdb"]), unusable("nvme0n1", Unusable::System));
         assert_eq!(plan(PoolLayout::Mirror, &["sda", "sdb"]), unusable("sda", Unusable::PoolMember));
@@ -449,10 +459,15 @@ mod tests {
     fn takes_the_lowest_free_volume_and_a_free_name() {
         let disks = [disk("sdb", DiskUsage::Unused)];
         let pools = [pool("tank", Some(1), &[]), pool("old", None, &[]), pool("backup", Some(3), &[])];
-        let plan = plan_pool("media", PoolLayout::Single, &names(&["sdb"]), &disks, &pools).unwrap();
+        let plan = plan_pool("media", PoolLayout::Single, &names(&["sdb"]), &disks, &pools, &[]).unwrap();
         assert_eq!(plan.volume.get(), 2);
+        // Volume 2's pool is named by shares, but not imported: 4 is free.
+        let reserved = [VolumeNumber::new(2).unwrap()];
+        let plan =
+            plan_pool("media", PoolLayout::Single, &names(&["sdb"]), &disks, &pools, &reserved).unwrap();
+        assert_eq!(plan.volume.get(), 4);
         assert_eq!(
-            plan_pool("tank", PoolLayout::Single, &names(&["sdb"]), &disks, &pools),
+            plan_pool("tank", PoolLayout::Single, &names(&["sdb"]), &disks, &pools, &[]),
             Err(PlanError::NameTaken)
         );
     }
