@@ -9,7 +9,8 @@
 #   2. a backup downloaded with a passphrase: age's format; a passphrase too
 #      short refused
 #   3. a scheduled backup into a share's folder, run now, the newest two
-#      kept of three, written as the administrator
+#      kept of three, written as the file manager writes for the
+#      administrator
 #   4. restores refused: the wrong passphrase, something not a backup
 #   On a fresh third VM (the target, installed but never set up):
 #   5. the backup restored instead of the first setup, with the setup code;
@@ -157,8 +158,10 @@ for run in 1 2 3; do
 done
 count=$(on "$source_vm" "sudo ls $folder | grep -c '^zendiloos-config-.*\\.tar\\.zst\\.age$'")
 [[ $count == 2 ]] || fail "$count backups in $folder"
-owner=$(on "$source_vm" "sudo stat -c %U $folder/\$(sudo ls $folder | tail -1)")
-[[ $owner == "$user" ]] || fail "written as $owner"
+# As the file manager writes: the folder's owner and the group
+# zendiloos-files (architecture 4.4), with the administrator's access.
+owner=$(on "$source_vm" "sudo stat -c %U:%G $folder/\$(sudo ls $folder | tail -1)")
+[[ $owner == "$(on "$source_vm" "sudo stat -c %U $folder"):zendiloos-files" ]] || fail "written as $owner"
 call "$source_vm" GET /configuration/backup | jq -e '.last_run.succeeded' >/dev/null || fail "the last run is not noted"
 check "two kept in $folder, written as $owner"
 on "$source_vm" "sudo rm -rf /volume$share_volume/$share_name/zendiloOS-test"
