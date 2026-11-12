@@ -951,7 +951,8 @@ mod tests {
              *--configure*) [ -e $R/configure-fails ] && { echo 'dpkg: error processing package zfs-dkms' >&2; exit 1; }\n\
                [ -e $R/stays ] || rm -f $R/audit ;;\n\
              --print-architecture) echo amd64 ;;\n\
-             --compare-versions*) exit 1 ;;\n\
+             --compare-versions*) [ \"$2\" != \"$4\" ] && \\\n\
+               [ \"$(printf '%s\\n%s\\n' \"$2\" \"$4\" | sort -V | tail -n 1)\" = \"$2\" ] && exit 0; exit 1 ;;\n\
              esac\nexit 0",
         );
         let dpkg_deb = script(
