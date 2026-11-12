@@ -305,7 +305,8 @@ say "1. The hardware check sees KVM; libvirt and QEMU are installed as a job"
 plugin=$(call GET /vms/plugin)
 jq -e '.hardware.kvm == true' <<<"$plugin" >/dev/null || fail "no KVM in the VM (nested KVM off?): $plugin"
 note "CPU: $(jq -r '.hardware.cpu_virtualization // "no flag"' <<<"$plugin"), IOMMU: $(jq -r .hardware.iommu <<<"$plugin"), $(jq -r .cores <<<"$plugin") threads"
-if jq -e '.installed == false' <<<"$plugin" >/dev/null; then
+# A plugin installed before VMs had a TPM installs again, for swtpm.
+if jq -e '.installed == false or .hardware.swtpm == false' <<<"$plugin" >/dev/null; then
     [[ $(status POST /vms/plugin/install) == 202 ]] || fail "install: $(cat "$work/last")"
     job=$(jq -r .id "$work/last")
     job_succeeded "$job" 1800
@@ -317,7 +318,8 @@ else
 fi
 [[ $(status POST /vms/plugin/install) == 409 ]] && jq -e '.code == "vms_installed"' "$work/last" >/dev/null \
     || fail "a second install was not refused: $(cat "$work/last")"
-for package in libvirt-daemon libvirt-daemon-driver-qemu libvirt-clients qemu-system-x86 qemu-utils ovmf passt; do
+for package in libvirt-daemon libvirt-daemon-driver-qemu libvirt-clients qemu-system-x86 qemu-utils ovmf passt \
+    swtpm swtpm-tools; do
     vm "dpkg-query -W -f='\${Status}' $package 2>/dev/null | grep -q 'install ok installed'" || fail "$package is not installed"
 done
 for package in libvirt-daemon-system libvirt-daemon-config-network libvirt-daemon-config-nwfilter \

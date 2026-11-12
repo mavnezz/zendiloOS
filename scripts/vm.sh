@@ -8,6 +8,9 @@
 #   scripts/vm.sh removable-attach <image> <id> [ro|rw] [serial]  plug a raw disk image in as a removable
 #                           drive, with the serial number ZDL-RM-<id> or the one given
 #   scripts/vm.sh removable-detach <id>          pull it out again, unannounced
+#   scripts/vm.sh usb-attach <id>    plug an emulated USB device (QEMU's tablet, 0627:0001) in;
+#                           needs ZENDILOOS_VM_USB=1 at 'start' and a kernel in the VM with USB
+#   scripts/vm.sh usb-detach <id>    pull it out again
 #   scripts/vm.sh stop      power off
 #   scripts/vm.sh destroy   delete the VM's disks (keeps the downloaded image)
 #
@@ -29,6 +32,11 @@
 # the host nor the internet, with its DHCP server), so a bond of them has a
 # switch to talk to. Their MAC addresses are fixed (52:54:00:5b:0<VM>:0<n>).
 # Without it, the VM is as always.
+#
+# With ZENDILOOS_VM_USB=1 at 'start', the VM has a USB controller (QEMU's
+# xHCI), into which usb-attach plugs devices, for USB passthrough to VMs
+# inside it. The cloud image's kernel has no USB drivers: install
+# linux-image-amd64 in the VM and boot it for the controller to show.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -116,6 +124,8 @@ start() {
         disks+=(-drive "file=$dir/sata-$i.qcow2,if=none,id=sata$i,format=qcow2"
                 -device "ide-hd,drive=sata$i,bus=ide.$((i - 1)),serial=ZDL-SATA-$i")
     done
+    local usb=()
+    [[ ${ZENDILOOS_VM_USB:-} == 1 ]] && usb=(-device qemu-xhci,id=xhci)
     local lan=()
     [[ -n $lan_bridge ]] && lan=(-netdev "bridge,id=lan,br=$lan_bridge" -device "virtio-net-pci,netdev=lan,mac=$lan_mac")
     local extra=()
@@ -138,6 +148,7 @@ start() {
         -device virtio-net-pci,netdev=net0 \
         "${lan[@]}" \
         "${extra[@]}" \
+        "${usb[@]}" \
         -device virtio-scsi-pci,id=scsi \
         -monitor "unix:$dir/monitor.sock,server,nowait" \
         -display none -serial "file:$dir/console.log" \
@@ -213,6 +224,21 @@ removable_attach() {
     [[ -z $out ]] || { echo "device_add: $out" >&2; exit 1; }
 }
 
+# QEMU's emulated tablet as a USB device plugged in, on the controller
+# ZENDILOOS_VM_USB=1 gave the VM.
+usb_attach() {
+    [[ $1 =~ ^[a-z0-9]+$ ]] || { echo "usage: usb-attach <id>" >&2; exit 1; }
+    local out
+    out=$(monitor "device_add usb-tablet,bus=xhci.0,id=$1")
+    [[ -z $out ]] || { echo "device_add: $out (started without ZENDILOOS_VM_USB=1?)" >&2; exit 1; }
+}
+
+usb_detach() {
+    local out
+    out=$(monitor "device_del $1")
+    [[ -z $out ]] || { echo "device_del: $out" >&2; exit 1; }
+}
+
 # Pulled out without warning; the drive goes with the device.
 removable_detach() {
     local out
@@ -241,6 +267,8 @@ case ${1:-} in
     ssh) shift; exec ssh "${ssh_opts[@]}" debian@127.0.0.1 "$@" ;;
     removable-attach) removable_attach "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
     removable-detach) removable_detach "${2:?usage: removable-detach <id>}" ;;
+    usb-attach) usb_attach "${2:-}" ;;
+    usb-detach) usb_detach "${2:?usage: usb-detach <id>}" ;;
     stop) stop ;;
     destroy) destroy ;;
     *) sed -n '2,/^set /{/^set /d;p}' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;

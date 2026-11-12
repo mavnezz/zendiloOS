@@ -58,6 +58,7 @@ checks and how to run it.
 | `vm-docker-volumes-test` | Docker's volumes backed up, kept and restored |
 | `vm-app-center-test` | an app from the catalog becoming an administrator's own project |
 | `vm-vms-test` | virtual machines: the plugin, VMs with several disks and cards, editing, the image library, the console, live load |
+| `vm-vm-backup-test` | VMs' snapshots of all disks at once, rolled back and compared by checksum, backups into a share restored as a new VM and over the old one, a backup canceled; a TPM and Secure Boot with Microsoft's keys; the IOMMU reported, USB passthrough where the test VM has USB (PCI passthrough skipped: the test VM has no IOMMU) |
 | `vm-backup-test` | backup tasks: the plugin, mirrors and versions between pools, a USB drive when plugged in, an rsync daemon and SSH with a pinned host key, a pull, restores, an encrypted backup with rclone |
 | `vm-update-test` | updates of Debian and zendiloOS through the interface, signed releases, refusals, a newer kernel without its ZFS module never started |
 | `vm-upgrade-test` | a machine set up with an older package keeps its accounts, pools, shares and files when a newer one is installed |

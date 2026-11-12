@@ -160,7 +160,7 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 | `zendiloos-network` | interfaces, addresses, default routes, name servers; an interface's IP settings and name servers through systemd-networkd, and bridges, bonds and VLANs made, changed and removed, each change with confirmation (6); the network taken over from ifupdown in a job, with confirmation (6); its settings as confirmed kept in the database and compared with the files at the start (6) | kernel, jobs, notify |
 | `zendiloos-certificates` | the ACME client plugin (acme.sh): accounts, challenges and certificates from Let's Encrypt, renewed daily; the web interface's ports and certificate, changed with confirmation (4.11) | kernel, jobs, notify |
 | `zendiloos-firewall` | the firewall: one ordered list of rules (interface, service or ports, source, allow or deny) and what happens when none matches, enforced by nftables for the NAS and the ports Docker publishes, changed with confirmation; services nobody reaches, told (4.12) | kernel, notify |
-| `zendiloos-vms` | virtual machines: the plugin (libvirt and QEMU installed, their storage in locations on one or more pools, the hardware check), VMs from an OS preset with their disks (each on its location), network cards (through the NAS, on a host bridge, directly on a card, on an internal network) and CD drives, made in a job and changed (hardware only while off), the image library (ISOs copied from a share or uploaded), what running VMs use, their state from libvirt and their consoles (4.13) | kernel, jobs |
+| `zendiloos-vms` | virtual machines: the plugin (libvirt, QEMU and swtpm installed, their storage in locations on one or more pools, the hardware check), VMs from an OS preset with their disks (each on its location), network cards (through the NAS, on a host bridge, directly on a card, on an internal network), CD drives, a TPM, Secure Boot and the host's USB and PCI devices, made in a job and changed (hardware only while off), snapshots of their disks by hand and on schedules, backups into a share or onto a removable drive and restores, as jobs, the image library (ISOs copied from a share or uploaded), what running VMs use, their state from libvirt and their consoles (4.13) | kernel, jobs |
 | `zendiloos-backup` | backup tasks: the plugin (rsync, the SSH client and rclone installed, the NAS's SSH key), tasks from a share to another share or a removable drive, to an rsync server (daemon or SSH with the host key pinned) or from one, to Google Drive or OneDrive (accounts signed in to with OAuth), encrypted with rclone's crypt if wished, mirrors and dated versions with retention, schedules and "when its drive is plugged in", runs as jobs with their log and transfer lists, restores (4.14) | kernel, jobs, notify |
 | `zendiloos-recovery` | the configuration backup: the archive made of the database, the host's files and settings and the accounts' Linux users, encrypted with a passphrase; downloaded, or written on a schedule into a folder of a share or a removable drive with the newest kept; restored on this or a fresh installation, also instead of the first setup (4.15) | kernel, jobs, notify |
 | `zendiloos-infra` | all secondary adapters, SQLite migrations | kernel, jobs, notify, contexts, agent-proto, exec; in tests also sim |
@@ -434,8 +434,8 @@ simple to audit.
   `useradd`, `userdel`, `groupadd`, `groupdel`, `gpasswd`, `smbpasswd`,
   `testparm`, `exportfs`, `smbcontrol`, `sshd`, `docker`, `dockerd`,
   `setsid`, `openssl`, `nginx`, `nft`, `virsh`, `ssh-keygen`, `ssh-keyscan` (and, in transient units,
-  `systemd-tmpfiles`, this binary as `copy-vm-iso` and `receive-vm-image`,
-  4.13, as `backup-unit`, which runs `rsync` and through it `ssh`, and `rclone`, 4.14, and `ip link
+  `systemd-tmpfiles`, this binary as `copy-vm-iso`, `receive-vm-image`,
+  `back-up-vm`, `restore-vm` and `remove-vm-backup`, 4.13, as `backup-unit`, which runs `rsync` and through it `ssh`, and `rclone`, 4.14, and `ip link
   delete` for a network device zendiloOS made that goes, 6).
   `zendiloos-docker-bridges.service`, a unit of the package, runs
   `iptables` and `ip6tables` as this binary's `docker-bridges` (4.12).
@@ -2630,15 +2630,21 @@ given against the NAS's, and a card per VM with its own load) and one for
 the image library. Every value is checked as in the other contexts,
 nothing a client sends reaches a command line or a domain's XML as text,
 and zendiloosd gains no privilege. Its context is `zendiloos-vms`
-(migrations 0049, 0050 and 0051). Besides Machines and Images the app has
-pages for the VMs' storage, their networks and their log.
+(migrations 0049, 0050, 0051, 0060, 0061 and 0062). Besides Machines and
+Images the app has pages for the VMs' storage, their networks, their
+backups and their log; a VM's card opens its snapshots.
 
 **The hardware check.** The plugin's page says whether the CPU can run VMs
 (`/dev/kvm` is there, with the flag `vmx` for Intel VT-x or `svm` for
-AMD-V in `/proc/cpuinfo`) and whether an IOMMU is on (`/sys/class/iommu`
-lists one: only needed to hand a device to a VM, which is not offered yet),
-each with a line of explanation; the agent reads them (`VmHost`), as it
-reads the machine's other facts, so the simulation can give them too.
+AMD-V in `/proc/cpuinfo`), whether an IOMMU is on (`/sys/kernel/iommu_groups`
+lists groups: needed to hand a PCI device to a VM), with what the kernel's
+command line says of it (`intel_iommu=`, `amd_iommu=`, `iommu=`) and how to
+switch it on for the CPU's maker (VT-d or AMD-Vi in the firmware, and on
+Intel `intel_iommu=on` in `GRUB_CMDLINE_LINUX` of `/etc/default/grub`,
+`update-grub`, a restart), and whether swtpm and OVMF with Microsoft's keys
+are there, each with a line of explanation; the agent reads them (`VmHost`,
+`VmHostDevices`), as it reads the machine's other facts, so the simulation
+can give them too.
 Without KVM the installation is refused (`kvm_missing`): QEMU would run,
 but at the speed of an emulator.
 
@@ -2658,7 +2664,8 @@ A VM's name is zendiloOS's alone and never reaches libvirt.
 **The packages, and no network of libvirt's.** The task `install-vms` runs
 `apt-get install --no-install-recommends libvirt-daemon
 libvirt-daemon-driver-qemu libvirt-clients qemu-system-x86 qemu-utils ovmf
-passt`. Not `libvirt-daemon-system`, as one would expect: in Debian 13
+passt swtpm swtpm-tools`. A plugin installed before VMs had a TPM lacks
+swtpm: its page offers to install again, which brings it. Not `libvirt-daemon-system`, as one would expect: in Debian 13
 (libvirt 11.3) it *depends* on `libvirt-daemon-config-network`, which
 defines libvirt's default network (the bridge `virbr0` with
 192.168.122.0/24, its own dnsmasq and NAT rules it writes into the
@@ -2672,7 +2679,7 @@ enabling the daemon, the agent does when the storage is set up
 and `libvirtd.service` enabled, the daemon restarted);
 Debian 13 runs the monolithic `libvirtd`. The QEMU driver's own
 dependencies bring `systemd-container`; its recommendations (swtpm, passt)
-are left to the list above.
+are in the list above.
 
 **The storage, in locations.** Setting up puts the first location, the
 dataset `<pool>/zendiloos.vms` on a pool zendiloOS made (`setuid`,
@@ -2712,7 +2719,8 @@ yet.
 fills in vCPUs, memory, the first disk's size, the firmware, the disks'
 bus and the cards' model, vCPUs up to the machine's threads and memory up
 to its total (the administrator weighs what the NAS keeps), UEFI (OVMF,
-Secure Boot off) or BIOS (SeaBIOS), and its devices: 1 to 8 disks, each in
+with Secure Boot if chosen) or BIOS (SeaBIOS), a TPM 2.0 or none, and its
+devices: 1 to 8 disks, each in
 a slot (0 to 7, its zvol `<id>-disk<slot>`) on a location, with a size of
 1 GiB to 64 TiB and a bus, virtio (Linux) or SATA (systems that bring no
 virtio drivers, Windows' installer among them); up to 4 network cards,
@@ -2981,15 +2989,146 @@ long as their licence is kept and their source named, which
 one of noVNC's own files would have to be published under MPL-2.0; none
 is made. Decided deliberately, as `deny.toml` asks of any other licence.
 
-**[Later]** Snapshots and backups of a VM's zvols, moving the storage to
-another pool, handing devices to a VM (the IOMMU), a TPM and Secure Boot
-with Microsoft's keys for Windows 11, rules of the firewall for VMs on a
-bridge (what is bridged to them is not filtered), counting the traffic of
-cards through passt, what libvirt-guests does at a shutdown (Debian's
-default: guests shut down), moving a disk or the image library to
+**A TPM and Secure Boot (Windows 11).** A VM may have a software TPM 2.0,
+swtpm from Debian, as libvirt starts it (`<tpm model='tpm-crb'>` with an
+`emulator` backend of version 2.0). Its state stays where libvirt keeps it,
+`/var/lib/libvirt/swtpm/<uuid>/tpm2/`: keyed by the domain's UUID, which a
+redefinition keeps (4.13, a VM), in `/var/lib`, which no package upgrade
+touches, set up and handed to swtpm's account (`tss`) by libvirt with
+swtpm_setup and its AppArmor profile; on a VM's location it would need
+both done by hand. It goes with the domain (`undefine --tpm`) and comes
+with a backup. UEFI may boot with Secure Boot and Microsoft's keys
+enrolled: libvirt picks the firmware QEMU describes with `secure-boot` and
+`enrolled-keys` (Debian 13's `40-edk2-x86_64-secure-enrolled.json`, that
+is `OVMF_CODE_4M.ms.fd` with `OVMF_VARS_4M.ms.fd`), on q35 with SMM on
+(`<smm state='on'/>`), as Secure Boot needs; the agent refuses Secure
+Boot while no such firmware is described, and a TPM without swtpm. The
+Windows preset has both (Windows 11 needs them), the others may switch
+them on; Secure Boot needs UEFI. Both are hardware, changed only while the
+VM is off. Another firmware or Secure Boot switched leaves the UEFI
+variables of the old firmware behind: the agent notes it beside the
+domain's XML (`zendiloos-<id>.reset-nvram`) and starts the VM next with
+`virsh start --reset-nvram`, so they start afresh from the new template
+(boot entries go; Windows boots from its fallback path).
+
+**The host's devices.** A VM may be given up to 8 USB and 8 PCI devices
+of the host's (`GET /vms/devices`: USB from `/sys/bus/usb/devices`, hubs
+aside, PCI from `/sys/bus/pci/devices` with its IOMMU group, its driver and
+its names from the PCI ID database). USB goes by vendor and product
+(`<hostdev type='usb'>` with `<vendor>` and `<product>`): that stays when a
+device is plugged in elsewhere or again, where its bus and device number
+change; libvirt cannot tell two devices of the same vendor and product
+apart, so with two plugged in the agent refuses to start the VM and says
+to unplug one. USB devices change while the VM runs, plugged in and out
+at once (`virsh attach-device` and `detach-device --live`); a new one must
+be plugged in, one it had may be unplugged meanwhile. PCI goes by address,
+only while the IOMMU is on, only while the VM is off, and through
+libvirt's `managed='yes'`: libvirt binds the device to `vfio-pci` when the
+VM starts and gives it back to its driver when it stops; nothing is bound
+at boot. The devices of an IOMMU group go together: the interface shows
+the whole group and adds it at once, and zendiloosd and the agent refuse a
+device without the rest of its group (PCI-to-PCI bridges aside, which stay
+with the host as VFIO allows). Never handed over, nor any device of its
+group: a bridge of the bus, the graphics card the firmware set up for the
+console (`boot_vga`), a controller with a disk in use below it (a holder,
+mounted, swap, or claimed as ZFS's pools claim theirs: an `O_EXCL` open
+fails), and a network card systemd-networkd says the host uses (its link's
+`Path` names the device and its `OperationalState` is `routable`,
+`degraded`, `enslaved` or `degraded-carrier`), every network card where
+systemd-networkd does not answer. Before each start the agent checks again
+that every device the domain names is there, a USB device exactly once,
+and the PCI devices may still go, and refuses with a clear reason
+otherwise. The interface warns that a PCI device leaves the host while the
+VM runs.
+
+**Snapshots.** A VM's snapshot is a ZFS snapshot of every disk of it,
+`<pool>/zendiloos.vms/<id>-disk<N>@zdl-YYYY-MM-DD_HH.MM.SS` (UTC, as the
+shares' are named), taken by one `zfs snapshot` per pool, which takes all
+its snapshots in one transaction; its name, the schedules it was taken for
+and how consistent it is are ZFS properties (`zendiloos:note`,
+`zendiloos:schedule`, `zendiloos:consistency`), so nothing about them is
+kept anywhere else. Taken while the VM is off, it is as consistent as it
+gets; while it runs, the agent first asks the QEMU guest agent to freeze
+the guest's file systems (`virsh domfsfreeze`, thawed right after) and,
+without it, the snapshot is crash-consistent, as after a power cut, which
+the interface says; a running VM with disks on more than one pool is then
+paused for the moment of the snapshots (`virsh suspend`, `resume`), so they
+are of one moment. A rollback (`zfs rollback`) is only for a VM that is
+shut off, and only to the newest snapshot unless the administrator agrees
+that the newer ones go (`zfs rollback -r`; the API refuses with
+`newer_snapshots` naming them); each disk keeps the size it has, as disks
+only grow, and a disk added since stays as it is. Schedules take them
+hourly, daily, weekly or monthly and keep the newest 1 to 100 of each, as
+the shares' schedules do (`vm_snapshot_schedules`, migration 0062), looked
+at every five minutes; one taken by hand is never let go by a schedule. A
+VM's snapshots go with it and with its disks (`zfs destroy -r`). Audited:
+`vms.snapshot`, `vms.rollback`, `vms.snapshot_delete`,
+`vms.snapshot_schedules`.
+
+**Backups.** A VM is backed up into a share or onto a removable drive
+(`POST /vms/{id}/backups`), in a job with its progress, also while it runs:
+a snapshot of its disks is taken for the backup (as above, so the backup is
+as consistent as that snapshot) and goes again afterwards. Into
+`<folder>/<id>/<YYYYMMDD-HHMMSS>/` go each disk as a raw image compressed
+with zstd (`disk<N>.raw.zst`), the UEFI variables (`nvram.fd`, libvirt's
+`/var/lib/libvirt/qemu/nvram/zendiloos-<id>_VARS.fd`), the TPM's state
+(`tpm2-00.permall`) and a manifest (`manifest.json`) with zendiloOS's
+settings of the VM (not libvirt's XML, which the agent makes from them),
+every file's size and SHA-256 and how consistent it is. A raw image rather
+than a `zfs send` stream: any machine reads it back with Debian's `zstd`,
+it goes onto a zvol of any pool or into another hypervisor (`qemu-img`),
+and a restore never hands a stream from a share users may write to the
+kernel's `zfs receive`, only bytes into the guest's own disk; zeros, what
+a sparse zvol mostly holds, cost almost nothing compressed. What it costs:
+each disk is read whole (holes read quickly), and there are no incremental
+backups. The agent makes the snapshots' devices show for the time of the
+backup (`snapdev=visible`, then inherited again) and runs the work in a
+transient unit of its own (this binary as `back-up-vm`,
+`zendiloos-vm-backup-<id>.service`), outside its sandbox: the system read
+only but the share or drive, no device but zvols, read only
+(`DeviceAllow=block-zvol r`), `CAP_DAC_READ_SEARCH` and `CAP_DAC_OVERRIDE`.
+Its files are written under hidden names and made writable by root only,
+the manifest put in place last, as Docker's volumes' are (4.9); whoever may
+read the share may read the VM's disks, which the interface says. Once
+written, the backup is recorded (`vm_backups`, migration 0062) and stays
+recorded when its VM goes. A backup or restore can be canceled (`POST
+/vms/{id}/backups/cancel`): zendiloosd ends its request, the agent stops
+the unit and waits for it (`EndVmWork` makes sure), and the job ends as
+`canceled`; meanwhile the VM is neither changed nor deleted nor snapshotted
+on schedule, and the agent refuses as long as the unit runs.
+
+A backup is restored (`POST /vms/backups/{id}/restore`) as a new VM, of a
+name given, its disks on a location chosen, with new MAC addresses, or
+over the VM it came from, which must be shut off, with its name typed
+again: it gets the backup's settings back (its disks at least the size they
+have, a disk the backup has not destroyed, its cards' MAC addresses as
+they were). Images no longer in the library leave their drives empty, a
+card on a network the machine no longer has goes through the NAS, and the
+host's USB and PCI devices are not given again. The agent defines a new VM
+first; over an old one it snapshots its disks first, makes or grows them,
+and defines the domain anew only once the files are in. The unit
+(`restore-vm`, `DeviceAllow=block-zvol rw`, writable libvirt's folders of
+the UEFI variables and the TPM states) opens each file beneath the share's
+root without following a link, refuses one others may write, and checks
+its SHA-256 and size against the record while it reads; it writes runs of
+zeros as holes (`fallocate` punching them, which a zvol frees) and punches
+what lies after the image, so a disk stays sparse. Should anything fail, a
+new VM goes again with its disks, and an old one's disks return to the
+snapshot from before; once restored, that snapshot goes. A backup is
+deleted with its files (`remove-vm-backup`, its folder once empty).
+Audited: `vms.backup`, `vms.backup_cancel`, `vms.restore`,
+`vms.backup_delete`.
+
+**[Later]** Moving the storage to another pool, rules of the firewall for
+VMs on a bridge (what is bridged to them is not filtered), counting the
+traffic of cards through passt, what libvirt-guests does at a shutdown
+(Debian's default: guests shut down), moving a disk or the image library to
 another location, a host-only network (an internal network with an
-address of the NAS's), and a way for the NAS to reach VMs directly on a
-card (a macvlan of the host's own).
+address of the NAS's), a way for the NAS to reach VMs directly on a
+card (a macvlan of the host's own), incremental backups of VMs (`zfs
+send -i` or changed blocks), backups of VMs on a schedule and to servers
+and clouds, finding VMs' backups on a drive again to record them, and PCI
+devices hot-plugged.
 
 ### 4.14 Backup
 
