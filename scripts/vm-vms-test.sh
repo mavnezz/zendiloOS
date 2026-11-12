@@ -535,13 +535,16 @@ in_drive() {
 ejected=$(jq '.drives = [{slot: 0, image: null}]' <<<"$change")
 [[ $(status PUT "/vms/$big_id" "$ejected") == 200 ]] || fail "eject: $(cat "$work/last")"
 [[ $(in_drive) == "-" ]] || fail "still in the running guest's drive: $(in_drive)"
-if vm "sudo virsh -c qemu:///system dumpxml --inactive $domain" | grep -q "$isos/$image.iso"; then
+# Read whole first: grep -q stopping early breaks the pipe, which pipefail
+# counts (and a negated check would then pass).
+defined=$(vm "sudo virsh -c qemu:///system dumpxml --inactive $domain")
+if grep -q "$isos/$image.iso" <<<"$defined"; then
     fail "still in the definition"
 fi
 [[ $(status PUT "/vms/$big_id" "$change") == 200 ]] || fail "insert: $(cat "$work/last")"
 [[ $(in_drive) == "$isos/$image.iso" ]] || fail "not in the running guest's drive: $(in_drive)"
-vm "sudo virsh -c qemu:///system dumpxml --inactive $domain" | grep -q "<source file='$isos/$image.iso'/>" \
-    || fail "not in the definition"
+defined=$(vm "sudo virsh -c qemu:///system dumpxml --inactive $domain")
+grep -q "<source file='$isos/$image.iso'/>" <<<"$defined" || fail "not in the definition"
 
 say "11. Its load comes on the live WebSocket"
 sample=""
