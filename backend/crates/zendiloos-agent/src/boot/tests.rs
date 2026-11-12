@@ -89,6 +89,7 @@ pub(crate) fn machine(root: &Path, kernels: &[&str], with_zfs: &[&str]) -> Boot 
     for kernel in kernels {
         fs::create_dir_all(modules.join(kernel).join("updates/dkms")).unwrap();
         fs::write(modules.join(kernel).join("modules.dep"), "").unwrap();
+        fs::write(boot.join(format!("vmlinuz-{kernel}")), "").unwrap();
     }
     for kernel in with_zfs {
         fs::write(modules.join(kernel).join("updates/dkms/zfs.ko.xz"), "").unwrap();

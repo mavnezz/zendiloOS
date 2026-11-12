@@ -650,7 +650,7 @@ impl Debian {
             return Err(format!("apt-get --simulate upgrade failed ({})", output.status));
         };
         let running_kernel = rustix::system::uname().release().to_string_lossy().into_owned();
-        let newest_kernel = self.newest_kernel(&self.modules)?;
+        let newest_kernel = self.newest_kernel(&self.modules, &self.boot.boot)?;
         let zfs_ready = newest_kernel.as_deref().is_none_or(|kernel| has_zfs(&self.modules.join(kernel)));
         // Chosen at every look, a check's too: the kernels may have changed
         // since (installed by hand, a module built by hand), and the page
@@ -675,8 +675,13 @@ impl Debian {
         Ok(audit_lists_something(&output.stdout))
     }
 
-    /// The newest kernel with modules, by dpkg's order of versions.
-    fn newest_kernel(&self, modules: &Path) -> Result<Option<String>, String> {
+    /// The newest kernel that can start, by dpkg's order of versions: with
+    /// its modules, and its image in `boot` where GRUB's configuration finds
+    /// it. A kernel's package removed can leave its modules behind (Debian's
+    /// kernels from 7.x come as `linux-image`, `linux-binary` and
+    /// `linux-modules`, and removing the first keeps the others), which
+    /// start nothing and need no ZFS.
+    fn newest_kernel(&self, modules: &Path, boot: &Path) -> Result<Option<String>, String> {
         let entries = match fs::read_dir(modules) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -686,6 +691,9 @@ impl Debian {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             if !entry.path().join("modules.dep").exists() && !entry.path().join("kernel").is_dir() {
+                continue;
+            }
+            if !boot.join(format!("vmlinuz-{name}")).exists() {
                 continue;
             }
             newest = match newest {
@@ -1475,20 +1483,26 @@ mod tests {
             eprintln!("skipped: dpkg orders the versions, and it is not here");
             return;
         }
-        let modules = tempfile::tempdir().unwrap();
-        assert_eq!(Debian::default().newest_kernel(&modules.path().join("missing")).unwrap(), None);
-        for (kernel, modules_dep) in
-            [("6.12.38+deb13-amd64", true), ("6.12.57+deb13-amd64", true), ("6.99.0-unpacked", false)]
-        {
+        let (modules, boot) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let newest = |modules: &Path| Debian::default().newest_kernel(modules, boot.path()).unwrap();
+        assert_eq!(newest(&modules.path().join("missing")), None);
+        // The last: modules a removed kernel's package left behind, without
+        // an image to start.
+        for (kernel, modules_dep, image) in [
+            ("6.12.38+deb13-amd64", true, true),
+            ("6.12.57+deb13-amd64", true, true),
+            ("6.99.0-unpacked", false, true),
+            ("7.2.12+deb13-cloud-amd64", true, false),
+        ] {
             fs::create_dir_all(modules.path().join(kernel)).unwrap();
             if modules_dep {
                 fs::write(modules.path().join(kernel).join("modules.dep"), "").unwrap();
             }
+            if image {
+                fs::write(boot.path().join(format!("vmlinuz-{kernel}")), "").unwrap();
+            }
         }
-        assert_eq!(
-            Debian::default().newest_kernel(modules.path()).unwrap().as_deref(),
-            Some("6.12.57+deb13-amd64")
-        );
+        assert_eq!(newest(modules.path()).as_deref(), Some("6.12.57+deb13-amd64"));
         assert!(Debian::default().newer("1.10", "1.9").unwrap());
         assert!(!Debian::default().newer("1.0~rc1", "1.0").unwrap());
     }
