@@ -541,6 +541,7 @@ impl Harness {
             catalogs.clone(),
             identity.audit.clone(),
             identity.clock.clone(),
+            "amd64",
         );
         let app_host = Arc::new(zendiloos_apps::testing::FakeAppHost::default());
         let installed = Arc::new(zendiloos_apps::testing::MemoryInstalled::default());
@@ -4283,6 +4284,8 @@ async fn administrators_browse_catalogs_and_add_their_own() {
     let names: Vec<&str> =
         listed.body.as_array().unwrap().iter().map(|a| a["name"].as_str().unwrap()).collect();
     assert_eq!(names, ["Immich", "Jellyfin"]);
+    // Their images are amd64's, which the test's NAS is.
+    assert!(listed.body.as_array().unwrap().iter().all(|app| app["runs_here"] == true), "{:?}", listed.body);
     let source = listed.body[0]["source_id"].as_i64().unwrap();
     let forbidden = h.send(empty(with_cookie(get("/api/v1/apps/catalog"), &user))).await;
     assert_problem(&forbidden, StatusCode::FORBIDDEN, "forbidden");

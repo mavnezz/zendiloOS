@@ -502,7 +502,7 @@
         "tags": [
           "apps"
         ],
-        "summary": "Fills in an app's Compose file, its template, with the values given and\nthe caller as the account its containers run as; the devices the machine\nlacks are left out. Refused if the template, as Compose reads it with the\ncatalog's stand-in values in the project's folder, breaks its catalog's\npolicy. Nothing is made yet. Needs `containers.manage`.",
+        "summary": "Fills in an app's Compose file, its template, with the values given and\nthe caller as the account its containers run as; the devices the machine\nlacks are left out. Refused for an app whose images are not made for the\nNAS's architecture, and if the template, as Compose reads it with the\ncatalog's stand-in values in the project's folder, breaks its catalog's\npolicy. Nothing is made yet. Needs `containers.manage`.",
         "operationId": "fill_template",
         "parameters": [
           {
@@ -545,6 +545,16 @@
           },
           "404": {
             "description": "`not_found`: no such app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`app_architecture`: the app's images are not made for the NAS's architecture (the detail names it)",
             "content": {
               "application/json": {
                 "schema": {
@@ -14887,7 +14897,7 @@
             }
           },
           "409": {
-            "description": "`kvm_missing`: the machine cannot run VMs; `vms_installed`",
+            "description": "`vms_architecture`: VMs are not offered on the machine's architecture (the detail names it); `kvm_missing`: the machine cannot run VMs; `vms_installed`",
             "content": {
               "application/json": {
                 "schema": {
@@ -17996,7 +18006,8 @@
           "categories",
           "permissions",
           "translations",
-          "digest"
+          "digest",
+          "runs_here"
         ],
         "properties": {
           "categories": {
@@ -18022,6 +18033,10 @@
           "permissions": {
             "$ref": "#/components/schemas/AppPermissions",
             "description": "Exceptions from the policy, confirmed when installing."
+          },
+          "runs_here": {
+            "type": "boolean",
+            "description": "Its images are made for the NAS's architecture; one that is not\ncannot be installed (`app_architecture`)."
           },
           "source_id": {
             "type": "integer",
@@ -28762,12 +28777,22 @@
         "type": "object",
         "description": "What the machine's CPU and firmware offer.",
         "required": [
+          "architecture",
+          "architecture_supported",
           "kvm",
           "iommu",
           "swtpm",
           "secure_boot"
         ],
         "properties": {
+          "architecture": {
+            "type": "string",
+            "description": "Debian's name of the machine's architecture: `amd64`, `arm64`."
+          },
+          "architecture_supported": {
+            "type": "boolean",
+            "description": "zendiloOS offers VMs on that architecture: on amd64 only for now\n(`vms_architecture` otherwise)."
+          },
           "cpu_virtualization": {
             "type": [
               "string",

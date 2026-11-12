@@ -369,6 +369,7 @@ impl Vms {
         let meminfo = fs::read_to_string(&self.paths.meminfo).unwrap_or_default();
         let iommu = devices::iommu(&self.paths.devices, &cpuinfo).on;
         Ok(Response::VmHost {
+            architecture: zendiloos_agent_proto::ARCHITECTURE.to_owned(),
             kvm: self.paths.kvm.exists(),
             cpu_virtualization,
             iommu,

@@ -38,6 +38,7 @@ const CODES = [
   'volume_busy',
   'containers_held',
   'plan_paused',
+  'vms_architecture',
   'kvm_missing',
   'vms_not_installed',
   'vms_installed',
@@ -57,6 +58,7 @@ const CODES = [
   'host_key_changed',
   'agent_failed',
   'newer_snapshots',
+  'app_architecture',
 ]
 
 describe('problem messages', () => {

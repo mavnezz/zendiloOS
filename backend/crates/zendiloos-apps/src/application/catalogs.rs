@@ -12,6 +12,8 @@ use crate::domain::{CatalogApp, InvalidSource, Refresh, Source, index_address};
 pub struct ListedApp {
     pub source: Source,
     pub app: CatalogApp,
+    /// It runs on the NAS's architecture ([`CatalogApp::runs_on`]).
+    pub runs_here: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -55,6 +57,9 @@ pub enum AppsError {
     /// A job is working on the app, or it is not in a state for this.
     #[error("the app is busy or not ready for this")]
     Busy,
+    /// Its images are not made for the NAS's architecture.
+    #[error("the app runs on {}, not on {machine}", .runs_on.join(", "))]
+    Architecture { runs_on: Vec<String>, machine: String },
     #[error("the confirmation does not match the app's id")]
     ConfirmationMismatch,
     /// Docker or another program on the host failed, in its words.
@@ -92,6 +97,8 @@ pub struct Catalogs {
     reader: Arc<dyn CatalogReader>,
     audit: Arc<dyn AuditLog>,
     clock: Arc<dyn Clock>,
+    /// Debian's name of the NAS's architecture, which apps must run on.
+    architecture: String,
 }
 
 impl Catalogs {
@@ -100,8 +107,19 @@ impl Catalogs {
         reader: Arc<dyn CatalogReader>,
         audit: Arc<dyn AuditLog>,
         clock: Arc<dyn Clock>,
+        architecture: &str,
     ) -> Self {
-        Self { sources, reader, audit, clock }
+        Self { sources, reader, audit, clock, architecture: architecture.to_owned() }
+    }
+
+    /// Debian's name of the NAS's architecture.
+    pub fn architecture(&self) -> &str {
+        &self.architecture
+    }
+
+    fn listed(&self, source: Source, app: CatalogApp) -> ListedApp {
+        let runs_here = app.runs_on(&self.architecture);
+        ListedApp { source, app, runs_here }
     }
 
     async fn audit(
@@ -207,9 +225,7 @@ impl Catalogs {
         for source in self.sources.list().await? {
             let Some(text) = self.sources.index(source.id).await? else { continue };
             match self.reader.read(&text) {
-                Ok(read) => {
-                    listed.extend(read.apps.into_iter().map(|app| ListedApp { source: source.clone(), app }))
-                }
+                Ok(read) => listed.extend(read.apps.into_iter().map(|app| self.listed(source.clone(), app))),
                 Err(error) => {
                     tracing::warn!(source = source.index, %error, "apps: the kept catalog no longer reads")
                 }
@@ -226,12 +242,12 @@ impl Catalogs {
         let text = self.sources.index(source.id).await?.ok_or(AppsError::AppNotFound)?;
         let app =
             self.reader.read(&text)?.apps.into_iter().find(|a| a.id == id).ok_or(AppsError::AppNotFound)?;
-        Ok(ListedApp { source, app })
+        Ok(self.listed(source, app))
     }
 
     /// The app's icon: kept for its digest, fetched once.
     pub async fn icon(&self, source: i64, id: &str) -> Result<Vec<u8>, AppsError> {
-        let ListedApp { source, app } = self.app(source, id).await?;
+        let ListedApp { source, app, .. } = self.app(source, id).await?;
         if let Some(png) = self.sources.icon(source.id, &app.id, &app.digest).await? {
             return Ok(png);
         }
@@ -278,8 +294,13 @@ mod tests {
         let reader = Arc::new(FakeReader::default());
         reader.serve(OFFICIAL_INDEX, vec![app("jellyfin", "Jellyfin"), app("immich", "Immich")]);
         let audit = Arc::new(Audit::default());
-        let catalogs =
-            Catalogs::new(Arc::new(MemorySources::default()), reader.clone(), audit.clone(), Arc::new(Fixed));
+        let catalogs = Catalogs::new(
+            Arc::new(MemorySources::default()),
+            reader.clone(),
+            audit.clone(),
+            Arc::new(Fixed),
+            "amd64",
+        );
         (catalogs, reader, audit)
     }
 

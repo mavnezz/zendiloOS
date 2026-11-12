@@ -119,6 +119,8 @@ pub struct CatalogApp {
     /// Where the app's code is.
     pub source_code: String,
     pub license: String,
+    /// Debian's (and Docker's) names of the architectures its images have
+    /// (`amd64`, `arm64`), which the catalog checks against the registries.
     pub architectures: Vec<String>,
     pub notes: Option<String>,
     pub web: Option<Web>,
@@ -137,4 +139,11 @@ pub struct CatalogApp {
     pub icon: String,
     /// Changes whenever any file of the app changes: an update.
     pub digest: String,
+}
+
+impl CatalogApp {
+    /// Its images run on a machine of `architecture`: the catalog lists it.
+    pub fn runs_on(&self, architecture: &str) -> bool {
+        self.architectures.iter().any(|listed| listed == architecture)
+    }
 }

@@ -117,7 +117,13 @@ describe('the desktop', () => {
 
   it('lists Virtual machines once the plugin is set up, and never its console', async () => {
     const plugin = {
-      hardware: { kvm: true, cpu_virtualization: 'vmx', iommu: false },
+      hardware: {
+        architecture: 'amd64',
+        architecture_supported: true,
+        kvm: true,
+        cpu_virtualization: 'vmx',
+        iommu: false,
+      },
       installed: true,
       storage: null,
       pools: [],

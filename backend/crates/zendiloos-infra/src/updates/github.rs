@@ -40,7 +40,8 @@ pub struct GitHubReleases {
     api: String,
     /// `owner/name`.
     repository: String,
-    /// Debian's name of this machine's architecture.
+    /// Debian's name of this machine's architecture
+    /// ([`zendiloos_agent_proto::ARCHITECTURE`]).
     arch: String,
     /// Where releases are downloaded to (`/var/lib/zendiloos/updates`).
     spool: PathBuf,
@@ -49,12 +50,10 @@ pub struct GitHubReleases {
 }
 
 impl GitHubReleases {
+    /// For the package of the architecture this build runs on: a release
+    /// holds one for each.
     pub fn new(api: &str, repository: &str, spool: PathBuf) -> Self {
-        let arch = match std::env::consts::ARCH {
-            "x86_64" => "amd64",
-            "aarch64" => "arm64",
-            other => other,
-        };
+        let arch = zendiloos_agent_proto::ARCHITECTURE;
         Self {
             tls: https::client_config(),
             api: api.trim_end_matches('/').to_owned(),
@@ -317,5 +316,26 @@ mod tests {
         assert_eq!(dev.published_at, Some(Timestamp::from_unix_seconds(1_793_959_200)));
         assert_eq!(releases(answer, "arm64").unwrap()[0].tag, "v0.2.0");
         assert!(releases(b"{\"message\":\"Not Found\"}", "amd64").is_err());
+    }
+
+    #[test]
+    fn each_machine_takes_the_package_of_its_architecture() {
+        let answer = br#"[{"tag_name":"v0.6.0","prerelease":false,"draft":false,"assets":[
+             {"name":"zendiloos-amd64-netinst.iso","browser_download_url":"https://x/amd64.iso","size":1},
+             {"name":"zendiloos-arm64-netinst.iso","browser_download_url":"https://x/arm64.iso","size":1},
+             {"name":"zendiloos_0.6.0_amd64.cdx.json","browser_download_url":"https://x/amd64.cdx.json","size":1},
+             {"name":"zendiloos_0.6.0_amd64.deb","browser_download_url":"https://x/amd64.deb","size":1},
+             {"name":"zendiloos_0.6.0_arm64.cdx.json","browser_download_url":"https://x/arm64.cdx.json","size":1},
+             {"name":"zendiloos_0.6.0_arm64.deb","browser_download_url":"https://x/arm64.deb","size":1},
+             {"name":"SHA256SUMS","browser_download_url":"https://x/s","size":1},
+             {"name":"SHA256SUMS.minisig","browser_download_url":"https://x/m","size":1}]}]"#;
+        for arch in ["amd64", "arm64"] {
+            let found = releases(answer, arch).unwrap();
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].version, "0.6.0");
+            assert_eq!(found[0].package.name, format!("zendiloos_0.6.0_{arch}.deb"));
+            assert_eq!(found[0].package.address, format!("https://x/{arch}.deb"));
+        }
+        assert!(releases(answer, "riscv64").unwrap().is_empty());
     }
 }

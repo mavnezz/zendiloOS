@@ -16,7 +16,8 @@ pub enum PackageTask {
     /// libvirt's daemon with only its QEMU driver, `virsh`, QEMU, OVMF and
     /// passt from Debian, for virtual machines; without recommended
     /// packages, so libvirt's own network (a bridge, dnsmasq and firewall
-    /// rules) and its network filters never come along.
+    /// rules) and its network filters never come along. On amd64 only: the
+    /// runner refuses it elsewhere.
     InstallVms,
     /// rsync, the SSH client and rclone from Debian, for backup tasks;
     /// without recommended packages.
@@ -147,6 +148,12 @@ impl ReleasePackage {
     pub fn version(&self) -> &str {
         let inner = &self.0["zendiloos_".len()..self.0.len() - ".deb".len()];
         inner.rsplit_once('_').map_or(inner, |(version, _)| version)
+    }
+
+    /// The architecture in the name, Debian's word for it: `amd64`.
+    pub fn arch(&self) -> &str {
+        let inner = &self.0["zendiloos_".len()..self.0.len() - ".deb".len()];
+        inner.rsplit_once('_').map_or("", |(_, arch)| arch)
     }
 
     /// Which kind of build the version names (`scripts/release-version.sh`):
@@ -299,9 +306,9 @@ mod tests {
     #[test]
     fn release_packages_are_plain_file_names() {
         let package = ReleasePackage::parse("zendiloos_0.2.0~rc.1_amd64.deb").unwrap();
-        assert_eq!(package.version(), "0.2.0~rc.1");
+        assert_eq!((package.version(), package.arch()), ("0.2.0~rc.1", "amd64"));
         let dev = ReleasePackage::parse("zendiloos_0.2.0+dev.20261106.gabc1234_arm64.deb").unwrap();
-        assert_eq!(dev.version(), "0.2.0+dev.20261106.gabc1234");
+        assert_eq!((dev.version(), dev.arch()), ("0.2.0+dev.20261106.gabc1234", "arm64"));
         for bad in [
             "zendiloos_0.2.0_amd64.deb/../x",
             "../zendiloos_0.2.0_amd64.deb",

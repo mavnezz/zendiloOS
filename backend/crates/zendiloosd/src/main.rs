@@ -196,6 +196,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         Arc::new(HttpsCatalogs::new()),
         audit.clone(),
         Arc::new(SystemClock),
+        zendiloos_agent_proto::ARCHITECTURE,
     );
     let catalog_refresh = spawn_catalog_refresh(apps.clone());
     let agent_for_sharing = agent.clone();

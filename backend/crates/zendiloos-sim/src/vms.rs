@@ -131,7 +131,9 @@ impl SimVms {
     pub(crate) fn handle(&mut self, request: &Request) -> Option<Response> {
         let not_installed = || error(ErrorCode::Forbidden, "refused: libvirt and QEMU are not installed");
         Some(match request {
+            // An Intel machine, wherever the simulation runs.
             Request::VmHost {} => Response::VmHost {
+                architecture: "amd64".into(),
                 kvm: true,
                 cpu_virtualization: Some("vmx".into()),
                 iommu: true,

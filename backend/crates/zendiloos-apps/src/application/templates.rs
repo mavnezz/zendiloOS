@@ -95,6 +95,10 @@ impl Templates {
         context: &RequestContext,
     ) -> Result<String, AppsError> {
         let listed = self.ports.catalogs.app(request.source, &request.app).await?;
+        if !listed.runs_here {
+            let machine = self.ports.catalogs.architecture().to_owned();
+            return Err(AppsError::Architecture { runs_on: listed.app.architectures, machine });
+        }
         let app = listed.app;
         let usable = self.ports.shares.usable(actor).await?;
         let by_name: BTreeMap<&str, &UsableShare> =
@@ -362,10 +366,23 @@ mod tests {
     }
 
     async fn setup_with_policy(apps: Vec<CatalogApp>) -> (Templates, Arc<Host>, Arc<Projects>, Arc<Policy>) {
+        setup_on("amd64", apps).await
+    }
+
+    /// On a NAS of `architecture`.
+    async fn setup_on(
+        architecture: &str,
+        apps: Vec<CatalogApp>,
+    ) -> (Templates, Arc<Host>, Arc<Projects>, Arc<Policy>) {
         let reader = Arc::new(FakeReader::default());
         reader.serve(OFFICIAL_INDEX, apps);
-        let catalogs =
-            Catalogs::new(Arc::new(MemorySources::default()), reader, Arc::new(NoAudit), Arc::new(Fixed));
+        let catalogs = Catalogs::new(
+            Arc::new(MemorySources::default()),
+            reader,
+            Arc::new(NoAudit),
+            Arc::new(Fixed),
+            architecture,
+        );
         catalogs.refresh().await.unwrap();
         let host = Arc::new(Host::default());
         let projects = Arc::new(Projects::default());
@@ -441,6 +458,25 @@ mod tests {
         );
         let unknown = FillRequest { app: "plex".into(), ..request(&[]) };
         assert!(matches!(templates.fill(unknown, &alice(), &context).await, Err(AppsError::AppNotFound)));
+    }
+
+    #[tokio::test]
+    async fn an_app_not_made_for_the_nas_is_not_filled_in() {
+        // Its images are amd64's only; the NAS is arm64.
+        let (templates, _, _, policy) = setup_on("arm64", vec![jellyfin()]).await;
+        let listed = templates.ports.catalogs.apps().await.unwrap();
+        assert!(!listed[0].runs_here);
+        let picked = request(&[("media", "media/Films"), ("cache", "docker")]);
+        let refused = templates.fill(picked.clone(), &alice(), &RequestContext::default()).await;
+        let Err(AppsError::Architecture { runs_on, machine }) = refused else { panic!("{refused:?}") };
+        assert_eq!((runs_on, machine.as_str()), (vec!["amd64".to_owned()], "arm64"));
+        assert!(policy.0.lock().unwrap().is_empty(), "refused before the policy is asked");
+
+        let mut both = jellyfin();
+        both.architectures.push("arm64".into());
+        let (templates, _, _, _) = setup_on("arm64", vec![both]).await;
+        assert!(templates.ports.catalogs.apps().await.unwrap()[0].runs_here);
+        assert!(templates.fill(picked, &alice(), &RequestContext::default()).await.is_ok());
     }
 
     #[tokio::test]

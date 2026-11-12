@@ -118,6 +118,19 @@ pub const RECYCLE_DIRECTORY: &str = ".recycle";
 
 /// Agent and API come from the same release; any difference is refused.
 pub const PROTOCOL_VERSION: u32 = 1;
+
+/// Debian's name of the architecture this build of zendiloOS runs on, which
+/// is its package's (`zendiloos_<version>_<arch>.deb`): `amd64` or `arm64`.
+#[cfg(target_arch = "x86_64")]
+pub const ARCHITECTURE: &str = "amd64";
+/// Debian's name of the architecture this build of zendiloOS runs on, which
+/// is its package's (`zendiloos_<version>_<arch>.deb`): `amd64` or `arm64`.
+#[cfg(target_arch = "aarch64")]
+pub const ARCHITECTURE: &str = "arm64";
+/// Debian's name of the architecture this build of zendiloOS runs on; none
+/// other has a package, so Rust's name stands for it.
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub const ARCHITECTURE: &str = std::env::consts::ARCH;
 /// Largest request the agent reads: room for the largest project's
 /// configuration ([`ProjectConfig::MAX_BYTES`]) and the request around it.
 pub const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;
@@ -1506,6 +1519,8 @@ pub enum Response {
         config: String,
     },
     VmHost {
+        /// Debian's name of the machine's architecture ([`ARCHITECTURE`]).
+        architecture: String,
         /// `/dev/kvm` is there: the kernel's KVM module is loaded.
         kvm: bool,
         /// The CPU's virtualisation as `/proc/cpuinfo` names it: `vmx`

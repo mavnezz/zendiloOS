@@ -17,7 +17,15 @@ const t = (key: string, values: Record<string, unknown> = {}) => i18n.global.t(k
 
 function plugin(extra: Partial<VmPlugin> = {}): VmPlugin {
   return {
-    hardware: { kvm: true, cpu_virtualization: 'svm', iommu: true, swtpm: true, secure_boot: true },
+    hardware: {
+      architecture: 'amd64',
+      architecture_supported: true,
+      kvm: true,
+      cpu_virtualization: 'svm',
+      iommu: true,
+      swtpm: true,
+      secure_boot: true,
+    },
     installed: false,
     storage: null,
     locations: [],
@@ -79,6 +87,8 @@ describe('the Virtual machines plugin', () => {
       '/api/v1/vms/plugin',
       plugin({
         hardware: {
+          architecture: 'amd64',
+          architecture_supported: true,
           kvm: false,
           cpu_virtualization: null,
           iommu: false,
@@ -103,6 +113,8 @@ describe('the Virtual machines plugin', () => {
         installed: true,
         storage: { pool: 'tank', volume: 1 },
         hardware: {
+          architecture: 'amd64',
+          architecture_supported: true,
           kvm: true,
           cpu_virtualization: 'vmx',
           iommu: true,
@@ -127,6 +139,28 @@ describe('the Virtual machines plugin', () => {
     await click(t('appStore.vms.reinstall'))
     expect(called('POST', '/api/v1/vms/plugin/install')).toHaveLength(1)
     expect(document.querySelector('[data-testid="vms-reinstall"]')).toBeNull()
+  })
+
+  it('refuses to install on an architecture VMs are not offered on, and says why', async () => {
+    on(
+      'GET',
+      '/api/v1/vms/plugin',
+      plugin({
+        hardware: {
+          architecture: 'arm64',
+          architecture_supported: false,
+          kvm: true,
+          cpu_virtualization: null,
+          iommu: false,
+          swtpm: false,
+          secure_boot: false,
+        },
+      }),
+    )
+    await mountApp(VmsSection)
+    expect(button(t('appStore.install')).disabled).toBe(true)
+    expect(page()).toContain(t('appStore.vms.notOnArchitecture', { architecture: 'arm64' }))
+    expect(page()).not.toContain(t('appStore.vms.noKvm'))
   })
 
   it('puts the storage on the pool picked once installed', async () => {

@@ -18,6 +18,7 @@ function app(id: string, name: string, extra: Partial<CatalogApp> = {}): Catalog
     version: '1.0',
     tagline: `${name} on the NAS`,
     categories: ['media'],
+    runs_here: true,
     permissions: { devices: [], capabilities: [], host_network: false, docker_socket: false },
     translations: {},
     digest: `sha256:${id}`,

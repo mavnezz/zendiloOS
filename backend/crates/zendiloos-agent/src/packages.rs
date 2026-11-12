@@ -327,6 +327,12 @@ impl Debian {
                 self.apt(&["install", "--yes", "acme.sh"])
             }
             PackageTask::InstallVms => {
+                // The domains zendiloOS writes are a PC's (q35, OVMF): QEMU
+                // and its firmware for x86 only, on amd64 only.
+                let arch = run_text(&self.dpkg, &["--print-architecture"])?;
+                if arch != "amd64" {
+                    return Err(format!("virtual machines are not offered on {arch} yet, only on amd64"));
+                }
                 lists(&mut step)?;
                 step("install")?;
                 // Not libvirt-daemon-system: it depends on the packages
@@ -364,6 +370,11 @@ impl Debian {
                 Ok(())
             }
             PackageTask::Update => {
+                // A package for another machine is refused before anything
+                // runs; install_release looks inside it too.
+                if let Some(release) = release {
+                    self.for_this_machine(&release.package)?;
+                }
                 lists(&mut step)?;
                 step("debian")?;
                 self.started_safely(self.apt(&["--with-new-pkgs", "--yes", "upgrade"]))?;
@@ -455,6 +466,15 @@ impl Debian {
         Ok(())
     }
 
+    /// The machine's architecture, which the package's name must name.
+    fn for_this_machine(&self, release: &ReleasePackage) -> Result<String, String> {
+        let arch = run_text(&self.dpkg, &["--print-architecture"])?;
+        if release.arch() != arch {
+            return Err(format!("the release's package is for {}, this machine is {arch}", release.arch()));
+        }
+        Ok(arch)
+    }
+
     /// Copies the release out of the download folder, checks it and
     /// installs it.
     fn install_release(&self, paths: &HostPaths, install: &ReleaseInstall) -> Result<(), String> {
@@ -476,7 +496,10 @@ impl Debian {
         if field("Version")? != release.version() {
             return Err("the release's package has another version than its name says".into());
         }
-        let arch = run_text(&self.dpkg, &["--print-architecture"])?;
+        // A release holds a package for each architecture, all of them in
+        // the signed checksums: the one for this machine, by its name (what
+        // the checksums list) and by what it says itself.
+        let arch = self.for_this_machine(release)?;
         if field("Architecture")? != arch {
             return Err(format!("the release's package is not for {arch}"));
         }
@@ -925,8 +948,9 @@ mod tests {
     /// `simulate-fails` is there), every other apt-get fails while
     /// `apt-fails` is there; `dpkg --audit` prints `audit` while it is
     /// there, `dpkg --configure -a` removes it (unless `stays` is there,
-    /// or fails while `configure-fails` is); `dpkg-deb` reads a zendiloos
-    /// 9.9.9 for amd64, `dpkg-query` knows no zendiloos. One kernel, with
+    /// or fails while `configure-fails` is); the machine is amd64, or what
+    /// `arch` says; `dpkg-deb` reads a zendiloos 9.9.9 for amd64 (or what
+    /// `package-arch` says), `dpkg-query` knows no zendiloos. One kernel, with
     /// ZFS built for it, which GRUB lists (`crate::boot`'s machine).
     fn fake_debian(root: &Path) -> Debian {
         let log = root.join("debian.log");
@@ -954,14 +978,15 @@ mod tests {
              --audit) [ -e $R/audit ] && cat $R/audit ;;\n\
              *--configure*) [ -e $R/configure-fails ] && { echo 'dpkg: error processing package zfs-dkms' >&2; exit 1; }\n\
                [ -e $R/stays ] || rm -f $R/audit ;;\n\
-             --print-architecture) echo amd64 ;;\n\
+             --print-architecture) cat $R/arch 2>/dev/null || echo amd64 ;;\n\
              --compare-versions*) [ \"$2\" != \"$4\" ] && \\\n\
                [ \"$(printf '%s\\n%s\\n' \"$2\" \"$4\" | sort -V | tail -n 1)\" = \"$2\" ] && exit 0; exit 1 ;;\n\
              esac\nexit 0",
         );
         let dpkg_deb = script(
             "dpkg-deb",
-            "case \"$3\" in Package) echo zendiloos ;; Version) echo 9.9.9 ;; Architecture) echo amd64 ;; esac",
+            "case \"$3\" in Package) echo zendiloos ;; Version) echo 9.9.9 ;;\n\
+             Architecture) cat $R/package-arch 2>/dev/null || echo amd64 ;; esac",
         );
         let dpkg_query = script("dpkg-query", "[ -e $R/resolved-installed ] && echo 'install ok installed'");
         let systemctl = script("systemctl", "exit 0");
@@ -1015,8 +1040,9 @@ mod tests {
         assert!(apt[0].ends_with("update") && apt[1].ends_with("--with-new-pkgs --yes upgrade"), "{apt:?}");
         assert!(apt[2].contains("install --yes") && apt[2].ends_with("release/zendiloos_9.9.9_amd64.deb"));
         assert!(apt[3].ends_with("Debug::NoLocking=1 --with-new-pkgs upgrade"), "a simulated one: {apt:?}");
+        assert_eq!(calls[0], "dpkg --print-architecture", "the package is this machine's");
         assert!(
-            calls[0].starts_with("dpkg") && calls[0].ends_with("--configure -a"),
+            calls[1].starts_with("dpkg") && calls[1].ends_with("--configure -a"),
             "what was cut off first"
         );
         let run = recorded(&paths, STATE_FILE);
@@ -1034,6 +1060,33 @@ mod tests {
         fs::remove_file(root.path().join("modules/6.12.57+deb13-amd64/updates/dkms/zfs.ko.xz")).unwrap();
         let missing = run_with(&paths, &debian, "ab02", "update", None, None).unwrap_err();
         assert!(missing.contains("ZFS module is missing for kernel 6.12.57+deb13-amd64"), "{missing}");
+        assert_eq!(recorded(&paths, UPDATE_FILE).state, PackageRunState::Failed);
+    }
+
+    #[test]
+    fn a_package_for_another_architecture_is_never_installed() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, debian) = host(root.path());
+        let release = Some("zendiloos_9.9.9_amd64.deb");
+        let installed_it = || {
+            called(root.path())
+                .iter()
+                .any(|call| call.starts_with("apt-get") && call.contains("release/zendiloos_"))
+        };
+
+        // On an arm64 NAS, the release's amd64 package, signed and listed
+        // as it is, is not its own.
+        fs::write(root.path().join("arch"), "arm64\n").unwrap();
+        let refused = run_with(&paths, &debian, "ab01", "update", release, Some("stable")).unwrap_err();
+        assert!(refused.contains("is for amd64, this machine is arm64"), "{refused}");
+        assert!(!called(root.path()).iter().any(|call| call.starts_with("apt-get")), "before anything ran");
+
+        // Named for amd64, but built for arm64.
+        fs::remove_file(root.path().join("arch")).unwrap();
+        fs::write(root.path().join("package-arch"), "arm64\n").unwrap();
+        let refused = run_with(&paths, &debian, "ab02", "update", release, Some("stable")).unwrap_err();
+        assert!(refused.contains("not for amd64"), "{refused}");
+        assert!(!installed_it());
         assert_eq!(recorded(&paths, UPDATE_FILE).state, PackageRunState::Failed);
     }
 
@@ -1184,6 +1237,14 @@ mod tests {
         for unwanted in ["libvirt-daemon-system", "config-network", "driver-network", "nwfilter", "dnsmasq"] {
             assert!(!installs[2].contains(unwanted), "{unwanted}: {installs:?}");
         }
+        // Nor QEMU for x86 on arm64, where zendiloOS offers no VMs yet.
+        fs::write(root.path().join("arch"), "arm64\n").unwrap();
+        let refused = run_with(&paths, &debian, "ab06", "install-vms", None, None).unwrap_err();
+        assert!(refused.contains("not offered on arm64"), "{refused}");
+        let after: Vec<String> =
+            called(root.path()).into_iter().filter(|call| call.contains(" install ")).collect();
+        assert_eq!(after.len(), installs.len(), "{after:?}");
+        fs::remove_file(root.path().join("arch")).unwrap();
         assert!(!paths.packages.join(UPDATE_FILE).exists(), "no update");
 
         fs::write(root.path().join("apt-fails"), "").unwrap();
