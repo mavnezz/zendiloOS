@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO vms (id, name, os, cpus, memory_mib, firmware, autostart, boot, created_at, ready, tpm,\n                              secure_boot)\n             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 12
+    },
+    "nullable": []
+  },
+  "hash": "722cbfa2c670f91b43df3494d6c3a6a3cec134ebd2cbabc1527b0ee83928acf3"
+}

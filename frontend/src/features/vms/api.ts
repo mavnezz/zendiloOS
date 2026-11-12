@@ -5,9 +5,14 @@ import { ApiProblem, api, csrfToken, unwrap } from '@/shared/api/client'
 import { live } from '@/shared/api/live'
 import type {
   CreateVmRequest,
+  Job,
+  RestoredVm,
   UpdateVmRequest,
   VirtualMachine,
+  VmBackupTarget,
   VmImage,
+  VmRestoreAs,
+  VmSnapshotSchedule,
   VmStats,
 } from '@/shared/api/types'
 
@@ -237,4 +242,138 @@ export function consoleUrl(
 ): string {
   const scheme = page.protocol === 'https:' ? 'wss' : 'ws'
   return `${scheme}://${page.host}/api/v1/vms/${encodeURIComponent(vm)}/console`
+}
+
+/** The host's USB and PCI devices and the IOMMU, for a VM to be given. */
+export function useVmDevices(enabled: () => boolean = () => true) {
+  return useQuery({
+    queryKey: ['vms', 'devices'],
+    queryFn: () => unwrap(api.GET('/api/v1/vms/devices')),
+    enabled: computed(enabled),
+    refetchInterval: 15_000,
+  })
+}
+
+/** A VM's snapshots, newest first, and its schedules. */
+export function useVmSnapshots(vm: () => string | null) {
+  return useQuery({
+    queryKey: computed(() => ['vms', 'snapshots', vm()]),
+    queryFn: () =>
+      unwrap(api.GET('/api/v1/vms/{id}/snapshots', { params: { path: { id: vm()! } } })),
+    enabled: computed(() => vm() !== null),
+  })
+}
+
+/** Snapshots taken, rolled back and deleted, schedules set; each reads them again. */
+export function useSnapshotActions() {
+  const client = useQueryClient()
+  async function refreshing<T>(vm: string, request: Promise<T>): Promise<T> {
+    try {
+      return await request
+    } finally {
+      await client.invalidateQueries({ queryKey: ['vms', 'snapshots', vm] })
+    }
+  }
+  const id = (vm: string) => ({ id: vm })
+  return {
+    take: (vm: string, name: string) =>
+      refreshing(
+        vm,
+        unwrap(
+          api.POST('/api/v1/vms/{id}/snapshots', { params: { path: id(vm) }, body: { name } }),
+        ),
+      ),
+    rollback: (vm: string, label: string, newer: boolean) =>
+      refreshing(
+        vm,
+        unwrap(
+          api.POST('/api/v1/vms/{id}/snapshots/{label}/rollback', {
+            params: { path: { id: vm, label } },
+            body: { newer },
+          }),
+        ),
+      ),
+    remove: (vm: string, label: string) =>
+      refreshing(
+        vm,
+        unwrap(
+          api.POST('/api/v1/vms/{id}/snapshots/{label}/delete', {
+            params: { path: { id: vm, label } },
+          }),
+        ),
+      ),
+    setSchedules: (vm: string, schedules: VmSnapshotSchedule[]) =>
+      refreshing(
+        vm,
+        unwrap(
+          api.PUT('/api/v1/vms/{id}/snapshots/schedules', {
+            params: { path: id(vm) },
+            body: { schedules },
+          }),
+        ),
+      ),
+  }
+}
+
+/** Every VM's backups, newest first: asked again often while `busy` says one is made. */
+export function useVmBackups(
+  enabled: () => boolean = () => true,
+  busy: () => boolean = () => false,
+) {
+  return useQuery({
+    queryKey: ['vms', 'backups'],
+    queryFn: () => unwrap(api.GET('/api/v1/vms/backups')),
+    enabled: computed(enabled),
+    refetchInterval: () => (busy() ? 3000 : 30_000),
+  })
+}
+
+/** The removable drives plugged in, as storage has them: where a backup can go. */
+export function useVmDrives(enabled: () => boolean = () => true) {
+  return useQuery({
+    queryKey: ['storage', 'removable'],
+    queryFn: () => unwrap(api.GET('/api/v1/storage/removable')),
+    enabled: computed(enabled),
+    refetchInterval: 10_000,
+  })
+}
+
+/** Backups made, canceled, restored and deleted; each reads the VMs and backups again. */
+export function useBackupActions() {
+  const client = useQueryClient()
+  async function refreshing<T>(request: Promise<T>): Promise<T> {
+    try {
+      return await request
+    } finally {
+      await client.invalidateQueries({ queryKey: ['vms'] })
+    }
+  }
+  return {
+    backUp: (vm: string, target: VmBackupTarget, folder: string): Promise<Job> =>
+      refreshing(
+        unwrap(
+          api.POST('/api/v1/vms/{id}/backups', {
+            params: { path: { id: vm } },
+            body: { target, folder },
+          }),
+        ),
+      ),
+    cancel: (vm: string) =>
+      refreshing(
+        unwrap(api.POST('/api/v1/vms/{id}/backups/cancel', { params: { path: { id: vm } } })),
+      ),
+    restore: (backup: number, as: VmRestoreAs): Promise<RestoredVm> =>
+      refreshing(
+        unwrap(
+          api.POST('/api/v1/vms/backups/{backup}/restore', {
+            params: { path: { backup } },
+            body: { as },
+          }),
+        ),
+      ),
+    remove: (backup: number) =>
+      refreshing(
+        unwrap(api.POST('/api/v1/vms/backups/{backup}/delete', { params: { path: { backup } } })),
+      ),
+  }
 }

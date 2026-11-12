@@ -37,6 +37,7 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(list_vm_locations, add_vm_location))
         .routes(routes!(remove_vm_location))
         .merge(super::vm_images::routes())
+        .merge(super::vm_backups::routes())
 }
 
 impl From<VmsError> for ApiError {
@@ -63,6 +64,9 @@ impl From<VmsError> for ApiError {
             VmsError::ImageInUse(names) => {
                 rejected(StatusCode::CONFLICT, "image_in_use", Some(names.join(", ")))
             }
+            VmsError::NewerSnapshots(labels) => {
+                rejected(StatusCode::CONFLICT, "newer_snapshots", Some(labels.join(", ")))
+            }
             VmsError::Refused(detail) => rejected(StatusCode::CONFLICT, "refused", Some(detail)),
             VmsError::HostFailed(detail) => rejected(StatusCode::BAD_GATEWAY, "agent_failed", Some(detail)),
             VmsError::Port(e) => ApiError::internal(e),
@@ -78,9 +82,14 @@ pub struct VmHardware {
     /// `vmx` (Intel VT-x) or `svm` (AMD-V); none if the CPU has neither,
     /// or it is off in the firmware.
     pub cpu_virtualization: Option<String>,
-    /// An IOMMU is on (VT-d, AMD-Vi): devices could be handed to a VM
-    /// later.
+    /// An IOMMU is on (VT-d, AMD-Vi): devices of the host's can be handed
+    /// to a VM.
     pub iommu: bool,
+    /// swtpm is installed: VMs can have a TPM 2.0. Missing on a plugin
+    /// installed before; installing again brings it.
+    pub swtpm: bool,
+    /// OVMF with Microsoft's keys enrolled is there, for Secure Boot.
+    pub secure_boot: bool,
 }
 
 /// A location of the VMs' storage, or a pool zendiloOS made, by its name
@@ -154,6 +163,8 @@ fn plugin_dto(plugin: vms::VmPlugin) -> VmPlugin {
             kvm: facts.kvm,
             cpu_virtualization: facts.cpu_virtualization,
             iommu: facts.iommu,
+            swtpm: facts.swtpm,
+            secure_boot: facts.secure_boot,
         },
         installed: facts.installed,
         storage,
@@ -179,7 +190,7 @@ pub enum VmOs {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum VmFirmware {
-    /// OVMF, Secure Boot off.
+    /// OVMF; Secure Boot as the VM's `secure_boot` says.
     Uefi,
     Bios,
 }
@@ -319,6 +330,14 @@ pub struct VirtualMachine {
     /// The devices it boots from, first first.
     pub boot: Vec<VmBootDevice>,
     pub autostart: bool,
+    /// The host's USB devices it is given, `vendor:product` (`046d:c31c`).
+    pub usb: Vec<String>,
+    /// The host's PCI devices it is given, by address (`0000:01:00.0`).
+    pub pci: Vec<String>,
+    /// A TPM 2.0 (swtpm).
+    pub tpm: bool,
+    /// Secure Boot with Microsoft's keys enrolled.
+    pub secure_boot: bool,
     pub created_at: i64,
     pub state: VmPowerState,
 }
@@ -408,9 +427,24 @@ fn vm_dto(view: vms::VmView) -> VirtualMachine {
             })
             .collect(),
         autostart: settings.autostart,
+        usb: settings.usb.iter().map(|device| device.id()).collect(),
+        pci: settings.pci,
+        tpm: settings.tpm,
+        secure_boot: settings.secure_boot,
         created_at: vm.created_at.unix_seconds(),
         state: state_dto(view.state),
     }
+}
+
+/// The USB devices asked for, by `vendor:product`.
+fn usb(devices: &[String]) -> Result<Vec<domain::UsbDevice>, ApiError> {
+    devices
+        .iter()
+        .map(|text| {
+            domain::UsbDevice::parse(text)
+                .ok_or_else(|| ApiError::InvalidInput(format!("{text} is no USB device's vendor:product")))
+        })
+        .collect()
 }
 
 /// The disks asked for; where each goes the use case decides from its pool.
@@ -562,6 +596,19 @@ pub struct CreateVmRequest {
     pub boot: Vec<VmBootDevice>,
     #[serde(default)]
     pub autostart: bool,
+    /// The host's USB devices, `vendor:product`; up to 8.
+    #[serde(default)]
+    pub usb: Vec<String>,
+    /// The host's PCI devices by address, each with the rest of its IOMMU
+    /// group; up to 8.
+    #[serde(default)]
+    pub pci: Vec<String>,
+    /// A TPM 2.0 (swtpm); none if left out.
+    #[serde(default)]
+    pub tpm: bool,
+    /// Secure Boot with Microsoft's keys; UEFI only.
+    #[serde(default)]
+    pub secure_boot: bool,
 }
 
 /// A VM recorded, and the job that makes it.
@@ -607,6 +654,10 @@ async fn create_vm(
         drives: drives(request.drives),
         boot: boot(request.boot),
         autostart: request.autostart,
+        usb: usb(&request.usb)?,
+        pci: request.pci,
+        tpm: request.tpm,
+        secure_boot: request.secure_boot,
     };
     let (view, job) = state.vms.create(vms::NewVm { settings }, &auth.0.actor(), &client).await?;
     Ok((StatusCode::ACCEPTED, Json(CreatedVm { vm: vm_dto(view), job: job.into() })))
@@ -647,14 +698,25 @@ pub struct UpdateVmRequest {
     pub drives: Vec<VmDrive>,
     pub boot: Vec<VmBootDevice>,
     pub autostart: bool,
+    /// USB devices change while it runs: plugged in and out at once.
+    #[serde(default)]
+    pub usb: Vec<String>,
+    /// PCI devices, a TPM and Secure Boot change only while it is off.
+    #[serde(default)]
+    pub pci: Vec<String>,
+    #[serde(default)]
+    pub tpm: bool,
+    #[serde(default)]
+    pub secure_boot: bool,
     /// The VM's name, typed again: needed when a disk is removed.
     #[serde(default)]
     pub confirm: Option<String>,
 }
 
 /// Changes a VM, its domain defined anew from its settings. Its name,
-/// autostart and the images in its drives change while it runs (a medium
-/// at once); anything else only while it is shut off. Needs `vms.manage`.
+/// autostart, the images in its drives and the host's USB devices change
+/// while it runs (a medium and a USB device at once); anything else only
+/// while it is shut off. Needs `vms.manage`.
 #[utoipa::path(
     put,
     path = "/vms/{id}",
@@ -687,6 +749,10 @@ async fn update_vm(
         drives: drives(request.drives),
         boot: boot(request.boot),
         autostart: request.autostart,
+        usb: usb(&request.usb)?,
+        pci: request.pci,
+        tpm: request.tpm,
+        secure_boot: request.secure_boot,
     };
     let view = state.vms.update(&id, change, request.confirm.as_deref(), &auth.0.actor(), &client).await?;
     Ok(Json(vm_dto(view)))

@@ -22,6 +22,7 @@ mod system;
 pub(crate) mod terminal;
 mod two_factor;
 mod updates;
+mod vm_backups;
 pub(crate) mod vm_console;
 mod vm_images;
 mod vms;

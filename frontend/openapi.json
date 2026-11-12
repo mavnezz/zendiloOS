@@ -14227,6 +14227,183 @@
         ]
       }
     },
+    "/api/v1/vms/backups": {
+      "get": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Every VM's backups, newest first; those of VMs that went too. Needs\n`vms.manage`.",
+        "operationId": "list_vm_backups",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VmBackup"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/backups/{backup}/delete": {
+      "post": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Deletes a backup: its files, then its record. Needs `vms.manage`.",
+        "operationId": "delete_vm_backup",
+        "parameters": [
+          {
+            "name": "backup",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`refused`: the share or drive cannot be used",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/backups/{backup}/restore": {
+      "post": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Restores a backup, as a job: every file checked against its SHA-256 as\nrecorded; a failure removes a new VM again, or returns the old one's\ndisks to what they were. Images no longer in the library leave their\ndrives empty, cards on networks that went go through the NAS, and the\nhost's USB and PCI devices are not given again. Needs `vms.manage`.",
+        "operationId": "restore_vm_backup",
+        "parameters": [
+          {
+            "name": "backup",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreVmBackupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestoredVm"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such backup, or its VM went",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`vm_running`; `name_taken`; `refused`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`confirmation_mismatch`; `invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/devices": {
+      "get": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "The host's USB and PCI devices with the PCI devices' IOMMU groups, why\nthe host keeps those it needs, and the IOMMU. Needs `vms.manage`.",
+        "operationId": "vm_host_devices",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VmHostDevices"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/vms/images": {
       "get": {
         "tags": [
@@ -14830,7 +15007,7 @@
         "tags": [
           "vms"
         ],
-        "summary": "Changes a VM, its domain defined anew from its settings. Its name,\nautostart and the images in its drives change while it runs (a medium\nat once); anything else only while it is shut off. Needs `vms.manage`.",
+        "summary": "Changes a VM, its domain defined anew from its settings. Its name,\nautostart, the images in its drives and the host's USB devices change\nwhile it runs (a medium and a USB device at once); anything else only\nwhile it is shut off. Needs `vms.manage`.",
         "operationId": "update_vm",
         "parameters": [
           {
@@ -14949,6 +15126,118 @@
           },
           "409": {
             "description": "`vm_creating`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/{id}/backups": {
+      "post": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Backs the VM up, as a job: a snapshot of its disks taken (so it may\nrun: the backup is as consistent as that snapshot), each disk as a\ncompressed raw image, its UEFI variables, its TPM's state and its\nsettings with a manifest. Needs `vms.manage`.",
+        "operationId": "back_up_vm",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackUpVmRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such VM or share",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`vm_creating`; `refused`: it is being changed, backed up or restored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`: a folder or drive that is none",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/{id}/backups/cancel": {
+      "post": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Cancels the backup or restore the VM is in: its job ends as\n`canceled`, the agent stops its unit, nothing half-written is kept, and a\nrestore over the VM returns its disks to what they were. Needs\n`vms.manage`.",
+        "operationId": "cancel_vm_backup",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "409": {
+            "description": "`refused`: none runs",
             "content": {
               "application/json": {
                 "schema": {
@@ -15181,6 +15470,300 @@
           },
           "409": {
             "description": "`vm_creating`; `refused`: libvirt's reason",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/{id}/snapshots": {
+      "get": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "The VM's snapshots and schedules. Needs `vms.manage`.",
+        "operationId": "list_vm_snapshots",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VmSnapshots"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Takes a snapshot of all the VM's disks at once. While it runs, the\nsnapshot is crash-consistent unless the QEMU guest agent froze its file\nsystems. Needs `vms.manage`.",
+        "operationId": "take_vm_snapshot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TakeVmSnapshotRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VmSnapshot"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`vm_creating`; `refused`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/{id}/snapshots/schedules": {
+      "put": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Replaces how often the VM is snapshotted and how many of each to keep;\nlooked at every five minutes. Snapshots of a schedule that goes stay.\nNeeds `vms.manage`.",
+        "operationId": "set_vm_snapshot_schedules",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VmSnapshotSchedulesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VmSnapshotSchedule"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`: 1 to 100 kept, one per frequency",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/{id}/snapshots/{label}/delete": {
+      "post": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Deletes the snapshot of every disk of the VM. Needs `vms.manage`.",
+        "operationId": "delete_vm_snapshot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "label",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/vms/{id}/snapshots/{label}/rollback": {
+      "post": {
+        "tags": [
+          "vms"
+        ],
+        "summary": "Returns the VM's disks to the snapshot; the VM must be shut off. A disk\nkeeps its size, and one added since stays as it is. Needs `vms.manage`.",
+        "operationId": "rollback_vm_snapshot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "label",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RollbackVmSnapshotRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VmRollback"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`newer_snapshots`: the detail names the snapshots that would go; `vm_running`; `refused`",
             "content": {
               "application/json": {
                 "schema": {
@@ -16093,6 +16676,22 @@
             "type": "string"
           }
         }
+      },
+      "BackUpVmRequest": {
+        "type": "object",
+        "required": [
+          "target"
+        ],
+        "properties": {
+          "folder": {
+            "type": "string",
+            "description": "A folder of the share or drive; the backup goes into\n`<folder>/<id>/<YYYYMMDD-HHMMSS>`. None: its root."
+          },
+          "target": {
+            "$ref": "#/components/schemas/VmBackupTarget"
+          }
+        },
+        "additionalProperties": false
       },
       "BackupCloudAccount": {
         "type": "object",
@@ -18762,6 +19361,28 @@
           },
           "os": {
             "$ref": "#/components/schemas/VmOs"
+          },
+          "pci": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The host's PCI devices by address, each with the rest of its IOMMU\ngroup; up to 8."
+          },
+          "secure_boot": {
+            "type": "boolean",
+            "description": "Secure Boot with Microsoft's keys; UEFI only."
+          },
+          "tpm": {
+            "type": "boolean",
+            "description": "A TPM 2.0 (swtpm); none if left out."
+          },
+          "usb": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The host's USB devices, `vendor:product`; up to 8."
           }
         },
         "additionalProperties": false
@@ -25072,6 +25693,18 @@
           }
         }
       },
+      "RestoreVmBackupRequest": {
+        "type": "object",
+        "required": [
+          "as"
+        ],
+        "properties": {
+          "as": {
+            "$ref": "#/components/schemas/VmRestoreAs"
+          }
+        },
+        "additionalProperties": false
+      },
       "RestoredEntries": {
         "type": "object",
         "required": [
@@ -25087,6 +25720,22 @@
           }
         }
       },
+      "RestoredVm": {
+        "type": "object",
+        "description": "The VM a restore makes or restores, and its job.",
+        "required": [
+          "vm",
+          "job"
+        ],
+        "properties": {
+          "job": {
+            "$ref": "#/components/schemas/Job"
+          },
+          "vm": {
+            "type": "string"
+          }
+        }
+      },
       "RollbackRequest": {
         "type": "object",
         "required": [
@@ -25096,6 +25745,16 @@
           "confirm": {
             "type": "string",
             "description": "The share's name, typed by the user."
+          }
+        },
+        "additionalProperties": false
+      },
+      "RollbackVmSnapshotRequest": {
+        "type": "object",
+        "properties": {
+          "newer": {
+            "type": "boolean",
+            "description": "The snapshots taken after it go with it (`zfs rollback -r`): only if\ntrue, else a rollback to any but the newest is refused."
           }
         },
         "additionalProperties": false
@@ -26655,6 +27314,16 @@
         },
         "additionalProperties": false
       },
+      "TakeVmSnapshotRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Up to 64 characters; none: shown by its time."
+          }
+        },
+        "additionalProperties": false
+      },
       "TemperatureMetrics": {
         "type": "object",
         "required": [
@@ -27380,6 +28049,26 @@
               "$ref": "#/components/schemas/VmNicChoice"
             },
             "description": "A card of a slot it had keeps its MAC address."
+          },
+          "pci": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "PCI devices, a TPM and Secure Boot change only while it is off."
+          },
+          "secure_boot": {
+            "type": "boolean"
+          },
+          "tpm": {
+            "type": "boolean"
+          },
+          "usb": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "USB devices change while it runs: plugged in and out at once."
           }
         },
         "additionalProperties": false
@@ -27596,6 +28285,10 @@
           "drives",
           "boot",
           "autostart",
+          "usb",
+          "pci",
+          "tpm",
+          "secure_boot",
           "created_at",
           "state"
         ],
@@ -27655,8 +28348,30 @@
           "os": {
             "$ref": "#/components/schemas/VmOs"
           },
+          "pci": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The host's PCI devices it is given, by address (`0000:01:00.0`)."
+          },
+          "secure_boot": {
+            "type": "boolean",
+            "description": "Secure Boot with Microsoft's keys enrolled."
+          },
           "state": {
             "$ref": "#/components/schemas/VmPowerState"
+          },
+          "tpm": {
+            "type": "boolean",
+            "description": "A TPM 2.0 (swtpm)."
+          },
+          "usb": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The host's USB devices it is given, `vendor:product` (`046d:c31c`)."
           }
         }
       },
@@ -27671,6 +28386,229 @@
           }
         },
         "additionalProperties": false
+      },
+      "VmBackup": {
+        "type": "object",
+        "description": "A backup of a VM.",
+        "required": [
+          "id",
+          "vm",
+          "vm_exists",
+          "vm_name",
+          "target",
+          "place",
+          "folder",
+          "taken_at",
+          "consistency",
+          "bytes",
+          "files",
+          "os",
+          "cpus",
+          "memory_mib",
+          "disks_gib",
+          "tpm",
+          "secure_boot"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What its files hold in all.",
+            "minimum": 0
+          },
+          "consistency": {
+            "$ref": "#/components/schemas/VmConsistency"
+          },
+          "cpus": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "disks_gib": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmBackupFile"
+            }
+          },
+          "folder": {
+            "type": "string",
+            "description": "Its folder beneath the share's or drive's root, with `manifest.json`."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "memory_mib": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "os": {
+            "$ref": "#/components/schemas/VmOs",
+            "description": "The VM's settings then: its system, vCPUs, memory and disks."
+          },
+          "place": {
+            "type": "string",
+            "description": "The share's name, or the drive's id."
+          },
+          "secure_boot": {
+            "type": "boolean"
+          },
+          "taken_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "target": {
+            "$ref": "#/components/schemas/VmBackupTarget"
+          },
+          "tpm": {
+            "type": "boolean"
+          },
+          "vm": {
+            "type": "string",
+            "description": "The VM it came from, and whether it is still there."
+          },
+          "vm_exists": {
+            "type": "boolean"
+          },
+          "vm_name": {
+            "type": "string"
+          }
+        }
+      },
+      "VmBackupFile": {
+        "type": "object",
+        "required": [
+          "part",
+          "bytes",
+          "sha256"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "part": {
+            "$ref": "#/components/schemas/VmBackupFilePart"
+          },
+          "sha256": {
+            "type": "string"
+          }
+        }
+      },
+      "VmBackupFilePart": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "A disk's raw image, compressed with zstd: `disk<N>.raw.zst`.",
+            "required": [
+              "slot",
+              "volsize",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "disk"
+                ]
+              },
+              "slot": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "volsize": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The UEFI variables: `nvram.fd`.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "nvram"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The TPM's state: `tpm2-00.permall`.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "tpm"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "What a file of a backup holds."
+      },
+      "VmBackupTarget": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "share_id",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "share"
+                ]
+              },
+              "share_id": {
+                "type": "integer",
+                "format": "int64"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A removable drive, mounted, by its id.",
+            "required": [
+              "drive",
+              "kind"
+            ],
+            "properties": {
+              "drive": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "drive"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Where a backup goes or is."
       },
       "VmBootDevice": {
         "type": "object",
@@ -27696,6 +28634,15 @@
         "enum": [
           "disk",
           "drive"
+        ]
+      },
+      "VmConsistency": {
+        "type": "string",
+        "description": "How consistent a snapshot or backup is.",
+        "enum": [
+          "off",
+          "frozen",
+          "crash"
         ]
       },
       "VmDisk": {
@@ -27816,7 +28763,9 @@
         "description": "What the machine's CPU and firmware offer.",
         "required": [
           "kvm",
-          "iommu"
+          "iommu",
+          "swtpm",
+          "secure_boot"
         ],
         "properties": {
           "cpu_virtualization": {
@@ -27828,11 +28777,215 @@
           },
           "iommu": {
             "type": "boolean",
-            "description": "An IOMMU is on (VT-d, AMD-Vi): devices could be handed to a VM\nlater."
+            "description": "An IOMMU is on (VT-d, AMD-Vi): devices of the host's can be handed\nto a VM."
           },
           "kvm": {
             "type": "boolean",
             "description": "`/dev/kvm` is there: the kernel can run VMs with the CPU's help."
+          },
+          "secure_boot": {
+            "type": "boolean",
+            "description": "OVMF with Microsoft's keys enrolled is there, for Secure Boot."
+          },
+          "swtpm": {
+            "type": "boolean",
+            "description": "swtpm is installed: VMs can have a TPM 2.0. Missing on a plugin\ninstalled before; installing again brings it."
+          }
+        }
+      },
+      "VmHostDevices": {
+        "type": "object",
+        "description": "The host's devices a VM can be given.",
+        "required": [
+          "iommu",
+          "usb",
+          "pci"
+        ],
+        "properties": {
+          "iommu": {
+            "$ref": "#/components/schemas/VmIommu"
+          },
+          "pci": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmHostPci"
+            }
+          },
+          "usb": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmHostUsb"
+            }
+          }
+        }
+      },
+      "VmHostNeeds": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "A disk on it is in use: in a pool, mounted, the system's.",
+            "required": [
+              "disk",
+              "kind"
+            ],
+            "properties": {
+              "disk": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "disk"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The console's graphics.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "console"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The host's network is on it; which card, if known.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "interface": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "network"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A bridge of the PCI bus.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "bridge"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Why the host keeps a PCI device."
+      },
+      "VmHostPci": {
+        "type": "object",
+        "description": "A PCI function of the host's.",
+        "required": [
+          "address",
+          "vendor",
+          "device",
+          "class"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "`0000:01:00.0`."
+          },
+          "class": {
+            "type": "string",
+            "description": "Class, subclass and interface in hex: `020000` is an Ethernet card."
+          },
+          "device": {
+            "type": "string"
+          },
+          "device_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "driver": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "iommu_group": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The devices of one group go to a VM together.",
+            "minimum": 0
+          },
+          "needed": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/VmHostNeeds",
+                "description": "Why the host keeps it; such a device, and every one of its group, is\nnot handed over."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "vendor": {
+            "type": "string",
+            "description": "In hex: `8086`."
+          },
+          "vendor_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "VmHostUsb": {
+        "type": "object",
+        "description": "A USB device plugged into the host.",
+        "required": [
+          "id",
+          "port"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "`vendor:product` in hex, `046d:c31c`: how a VM is given it."
+          },
+          "manufacturer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "port": {
+            "type": "string",
+            "description": "Where it is plugged in: `1-2.3`."
           }
         }
       },
@@ -27930,6 +29083,34 @@
           }
         ],
         "description": "Where an image came from."
+      },
+      "VmIommu": {
+        "type": "object",
+        "description": "The IOMMU, and what helps to switch it on.",
+        "required": [
+          "on",
+          "cmdline"
+        ],
+        "properties": {
+          "cmdline": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What the kernel's command line says of it (`intel_iommu=on`, …)."
+          },
+          "cpu_vendor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`intel`, `amd` or none: which hint switches it on."
+          },
+          "on": {
+            "type": "boolean",
+            "description": "`/sys/kernel/iommu_groups` lists groups: PCI devices can be handed\nto VMs."
+          }
+        }
       },
       "VmLoad": {
         "type": "object",
@@ -28387,6 +29568,198 @@
           "creating",
           "unknown"
         ]
+      },
+      "VmRestoreAs": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "A new VM of that name, its disks on the location of `pool` (the\nfirst if none); new MAC addresses.",
+            "required": [
+              "name",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "new"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "pool": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Over the VM it came from, which must be shut off; its name typed\nagain. A disk it has that the backup has not is destroyed.",
+            "required": [
+              "confirm",
+              "kind"
+            ],
+            "properties": {
+              "confirm": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "over"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "How a backup is restored."
+      },
+      "VmRollback": {
+        "type": "object",
+        "description": "What a rollback destroyed.",
+        "required": [
+          "removed"
+        ],
+        "properties": {
+          "removed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The labels of the snapshots after it, gone."
+          }
+        }
+      },
+      "VmSnapshot": {
+        "type": "object",
+        "description": "A snapshot of all of a VM's disks at one moment.",
+        "required": [
+          "label",
+          "taken_at",
+          "schedules",
+          "consistency",
+          "disks",
+          "used_bytes",
+          "referenced_bytes"
+        ],
+        "properties": {
+          "consistency": {
+            "$ref": "#/components/schemas/VmConsistency"
+          },
+          "disks": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "The slots of the disks it has; a disk added later is not in it."
+          },
+          "label": {
+            "type": "string",
+            "description": "`zdl-YYYY-MM-DD_HH.MM.SS`, UTC: how it is named in ZFS."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "referenced_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What the disks held then.",
+            "minimum": 0
+          },
+          "schedules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmSnapshotFrequency"
+            },
+            "description": "The schedules it was taken for; none: by hand."
+          },
+          "taken_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "used_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What it costs: data changed since.",
+            "minimum": 0
+          }
+        }
+      },
+      "VmSnapshotFrequency": {
+        "type": "string",
+        "enum": [
+          "hourly",
+          "daily",
+          "weekly",
+          "monthly"
+        ]
+      },
+      "VmSnapshotSchedule": {
+        "type": "object",
+        "description": "A schedule: how often, and how many of its snapshots to keep.",
+        "required": [
+          "frequency",
+          "keep"
+        ],
+        "properties": {
+          "frequency": {
+            "$ref": "#/components/schemas/VmSnapshotFrequency"
+          },
+          "keep": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1 to 100.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "VmSnapshotSchedulesRequest": {
+        "type": "object",
+        "required": [
+          "schedules"
+        ],
+        "properties": {
+          "schedules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmSnapshotSchedule"
+            },
+            "description": "One per frequency."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VmSnapshots": {
+        "type": "object",
+        "description": "A VM's snapshots, newest first, and its schedules.",
+        "required": [
+          "snapshots",
+          "schedules"
+        ],
+        "properties": {
+          "schedules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmSnapshotSchedule"
+            }
+          },
+          "snapshots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmSnapshot"
+            }
+          }
+        }
       },
       "VmStats": {
         "type": "object",

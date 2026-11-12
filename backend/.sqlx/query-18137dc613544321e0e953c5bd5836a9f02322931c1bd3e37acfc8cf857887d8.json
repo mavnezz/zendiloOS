@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO vm_snapshot_schedules (vm, frequency, keep) VALUES (?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "18137dc613544321e0e953c5bd5836a9f02322931c1bd3e37acfc8cf857887d8"
+}

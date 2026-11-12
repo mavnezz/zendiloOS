@@ -902,6 +902,16 @@ impl AgentTransport for SimulatedAgent {
             | Request::DeleteVm { .. }
             | Request::VmStates {}
             | Request::VmStats {}
+            | Request::VmHostDevices {}
+            | Request::ChangeVmUsb { .. }
+            | Request::SnapshotVm { .. }
+            | Request::VmSnapshots {}
+            | Request::DestroyVmSnapshot { .. }
+            | Request::RollbackVmSnapshot { .. }
+            | Request::BackUpVm { .. }
+            | Request::RestoreVm { .. }
+            | Request::EndVmWork { .. }
+            | Request::RemoveVmBackup { .. }
             | Request::OpenVmConsole { .. } => {
                 self.vms.lock().unwrap_or_else(PoisonError::into_inner).handle(&request).unwrap_or_else(
                     || error(ErrorCode::InvalidRequest, "not a request about virtual machines"),

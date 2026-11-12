@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO vm_backups (vm, vm_name, place, share_id, share, volume, drive, folder, taken_at, consistency,\n                                     files, settings)\n             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 12
+    },
+    "nullable": []
+  },
+  "hash": "332c3f805a2cab7b9db0dd40569eaf69deb2267bd4f239f98777fba5b4b9e6da"
+}

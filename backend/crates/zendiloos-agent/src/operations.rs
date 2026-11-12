@@ -168,8 +168,10 @@ impl Operations {
                     systemctl: Program::new(&tools.systemctl)?,
                     systemd_run: Program::new(&tools.systemd_run)?,
                     busctl: Program::new(&tools.busctl)?,
+                    udevadm: Program::new(&tools.udevadm)?,
                     libvirtd: tools.libvirtd.clone(),
                     qemu: tools.qemu.clone(),
+                    swtpm: tools.swtpm.clone(),
                     tmpfiles: tools.systemd_tmpfiles.clone(),
                     rm: tools.rm.clone(),
                 },
@@ -220,6 +222,7 @@ impl Operations {
             self.firewall.restore_unconfirmed().await;
             self.volumes.recover().await;
             self.backups.recover().await;
+            self.vms.recover().await;
         }
     }
 
@@ -307,6 +310,26 @@ impl Operations {
             Request::DeleteVm { id } => self.vms.delete(id).await,
             Request::VmStates {} => self.vms.states().await,
             Request::VmStats {} => self.vms.stats().await,
+            Request::VmHostDevices {} => self.vms.host_devices().await,
+            Request::ChangeVmUsb { spec, attach, detach } => self.vms.change_usb(spec, attach, detach).await,
+            Request::SnapshotVm { id, label, schedules, note } => {
+                self.vms.snapshot(id, label, schedules, note.as_ref()).await
+            }
+            Request::VmSnapshots {} => self.vms.snapshots().await,
+            Request::DestroyVmSnapshot { id, label } => self.vms.destroy_snapshot(id, label).await,
+            Request::RollbackVmSnapshot { id, label, newer } => {
+                self.vms.rollback_snapshot(id, label, *newer).await
+            }
+            Request::BackUpVm { id, root, folder, stem, label, settings } => {
+                self.vms.back_up(id, root, folder, stem, label, settings).await
+            }
+            Request::RestoreVm { spec, root, folder, files, over, remove, label } => {
+                self.vms.restore(spec, root, folder, files, *over, remove, label).await
+            }
+            Request::EndVmWork { id } => self.vms.end_work(id).await,
+            Request::RemoveVmBackup { root, folder, files } => {
+                self.vms.remove_backup(root, folder, files).await
+            }
             Request::BackupFacts {} => Ok(self.backups.facts()),
             Request::MakeBackupKey {} => self.backups.make_key().await,
             Request::ScanBackupHostKeys { host, port } => self.backups.scan(host, *port).await,

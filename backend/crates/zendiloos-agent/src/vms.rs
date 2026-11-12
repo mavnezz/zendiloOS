@@ -27,6 +27,15 @@
 //! `/run/zendiloos-vms` (`libvirt-qemu`'s, made by systemd-tmpfiles). The
 //! agent opens it without following a link, connects, and hands the socket
 //! to zendiloosd, as it hands a terminal's master.
+//!
+//! A VM may have a TPM 2.0 (swtpm, whose state libvirt keeps in
+//! `/var/lib/libvirt/swtpm/<uuid>`, which a redefinition keeps as it keeps
+//! the UUID) and UEFI with Secure Boot and Microsoft's keys enrolled
+//! (Debian's `OVMF_CODE_4M.ms.fd` and `OVMF_VARS_4M.ms.fd`, which libvirt
+//! picks from the firmware QEMU describes), and be given USB and PCI
+//! devices of the host's ([`devices`]). Its disks are snapshotted together
+//! ([`snapshots`]) and backed up into a share or onto a removable drive, and
+//! restored, by units of their own ([`backups`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -39,7 +48,8 @@ use std::time::{Duration, Instant};
 use zendiloos_agent_proto::{
     InterfaceName, PoolName, Response, VM_CONSOLES, VM_IMAGE_UPLOAD_MAX, VM_IMAGES_DIRECTORY, VMS_DATASET,
     VMS_DIRECTORY, VmAction, VmBoot, VmDisk, VmDiskBus, VmDiskSlot, VmDriveSlot, VmFirmware, VmId,
-    VmImageFile, VmImageId, VmIsoSource, VmNetwork, VmNicModel, VmOs, VmSpec, VmStorage, VolumeNumber,
+    VmImageFile, VmImageId, VmIsoSource, VmNetwork, VmNicModel, VmOs, VmSpec, VmStorage, VmUsbDevice,
+    VolumeNumber,
 };
 use zendiloos_exec::{ExecError, Limits, Program, Surroundings};
 
@@ -48,6 +58,7 @@ use crate::pools::HostPaths;
 use crate::vm_iso::IsoJob;
 use crate::vm_upload::UploadJob;
 use crate::volume_archive::{UnitLine, encode};
+pub use devices::DevicePaths;
 
 /// libvirt's system instance; `virsh` is always told so, whatever its
 /// environment would say.
@@ -76,6 +87,15 @@ const COPY_CAPABILITIES: &str = "CAP_DAC_READ_SEARCH";
 const MARKER: &str = "# Written by zendiloOS";
 /// What libvirt calls the states in which QEMU runs.
 const ON: [&str; 6] = ["running", "idle", "blocked", "paused", "in shutdown", "pmsuspended"];
+/// What a firmware's description says of OVMF with Microsoft's keys
+/// enrolled, which Secure Boot needs.
+const ENROLLED: [&str; 2] = ["\"enrolled-keys\"", "\"secure-boot\""];
+/// A firmware's description read at most.
+const MAX_DESCRIPTOR: u64 = 64 * 1024;
+
+pub(crate) mod backups;
+pub(crate) mod devices;
+mod snapshots;
 
 /// Where the agent looks at the machine and keeps the domains' XML; other
 /// than the real places only in tests.
@@ -84,7 +104,20 @@ pub struct VmPaths {
     pub kvm: PathBuf,
     pub cpuinfo: PathBuf,
     pub meminfo: PathBuf,
-    pub iommu: PathBuf,
+    /// The host's devices a VM can be given, the IOMMU's groups among them.
+    pub devices: DevicePaths,
+    /// The firmware QEMU describes, `/usr/share/qemu/firmware`: OVMF with
+    /// Microsoft's keys enrolled is there for Secure Boot.
+    pub firmware: PathBuf,
+    /// libvirt's copies of the VMs' UEFI variables, `<domain>_VARS.fd`.
+    pub nvram: PathBuf,
+    /// The TPMs' states, `<uuid>/tpm2/` each, as swtpm keeps them.
+    pub swtpm: PathBuf,
+    /// Where systemd keeps transient units' files: those of backups and
+    /// restores left running when the agent starts are there.
+    pub transient: PathBuf,
+    /// The accounts: swtpm's, whose a TPM's restored state becomes.
+    pub passwd: PathBuf,
     /// The XML of each domain defined: `zendiloos-<id>.xml`.
     pub domains: PathBuf,
     /// Where the consoles' sockets are ([`VM_CONSOLES`]).
@@ -112,7 +145,12 @@ impl Default for VmPaths {
             kvm: PathBuf::from("/dev/kvm"),
             cpuinfo: PathBuf::from("/proc/cpuinfo"),
             meminfo: PathBuf::from("/proc/meminfo"),
-            iommu: PathBuf::from("/sys/class/iommu"),
+            devices: DevicePaths::default(),
+            firmware: PathBuf::from("/usr/share/qemu/firmware"),
+            nvram: PathBuf::from("/var/lib/libvirt/qemu/nvram"),
+            swtpm: PathBuf::from("/var/lib/libvirt/swtpm"),
+            transient: PathBuf::from("/run/systemd/transient"),
+            passwd: PathBuf::from("/etc/passwd"),
             domains: PathBuf::from("/etc/zendiloos/vms"),
             consoles: PathBuf::from(VM_CONSOLES),
             tmpfiles: PathBuf::from("/etc/tmpfiles.d/zendiloos-vms.conf"),
@@ -133,9 +171,13 @@ pub(crate) struct VmTools {
     pub systemd_run: Program,
     /// Asks systemd-networkd whether a VM's bridge is one of the host's.
     pub busctl: Program,
-    /// Only looked for: libvirt's daemon and QEMU, which libvirt runs.
+    /// Waits for a snapshot's device to show, for a backup.
+    pub udevadm: Program,
+    /// Only looked for: libvirt's daemon and QEMU, which libvirt runs, and
+    /// swtpm, which it starts for a TPM.
     pub libvirtd: PathBuf,
     pub qemu: PathBuf,
+    pub swtpm: PathBuf,
     /// Run in transient units.
     pub tmpfiles: PathBuf,
     pub rm: PathBuf,
@@ -325,15 +367,46 @@ impl Vms {
         }
         let (cores, cpu_virtualization) = cpu_facts(&cpuinfo);
         let meminfo = fs::read_to_string(&self.paths.meminfo).unwrap_or_default();
-        let iommu = fs::read_dir(&self.paths.iommu).is_ok_and(|mut entries| entries.next().is_some());
+        let iommu = devices::iommu(&self.paths.devices, &cpuinfo).on;
         Ok(Response::VmHost {
             kvm: self.paths.kvm.exists(),
             cpu_virtualization,
             iommu,
             installed: self.installed(),
+            swtpm: self.tools.swtpm.exists(),
+            secure_boot: self.secure_boot_firmware(),
             cores,
             memory_bytes: memory_bytes(&meminfo),
             locations: vms_locations(&self.host),
+        })
+    }
+
+    /// Whether QEMU describes an OVMF with Microsoft's keys enrolled and
+    /// Secure Boot (Debian's `40-edk2-x86_64-secure-enrolled.json`), which
+    /// libvirt picks for a VM with Secure Boot.
+    fn secure_boot_firmware(&self) -> bool {
+        let Ok(entries) = fs::read_dir(&self.paths.firmware) else { return false };
+        entries.flatten().filter(|entry| entry.file_name().to_string_lossy().ends_with(".json")).any(
+            |entry| {
+                let mut text = String::new();
+                fs::File::open(entry.path())
+                    .and_then(|file| file.take(MAX_DESCRIPTOR).read_to_string(&mut text))
+                    .is_ok()
+                    && ENROLLED.iter().all(|feature| text.contains(feature))
+            },
+        )
+    }
+
+    /// The host's USB and PCI devices, and the IOMMU.
+    pub(crate) async fn host_devices(&self) -> Result<Response, OperationError> {
+        let mut cpuinfo = String::new();
+        if let Ok(file) = fs::File::open(&self.paths.cpuinfo) {
+            let _ = file.take(MAX_CPUINFO).read_to_string(&mut cpuinfo);
+        }
+        Ok(Response::VmHostDevices {
+            iommu: devices::iommu(&self.paths.devices, &cpuinfo),
+            usb: devices::usb_devices(&self.paths.devices),
+            pci: devices::pci_devices(&self.paths.devices, &self.host, &self.tools.busctl).await,
         })
     }
 
@@ -731,6 +804,12 @@ impl Vms {
         self.paths.domains.join(format!("{}.xml", id.domain()))
     }
 
+    /// Marks a domain whose UEFI variables start afresh at its next start
+    /// (`virsh start --reset-nvram`).
+    fn reset_marker(&self, id: &VmId) -> PathBuf {
+        self.paths.domains.join(format!("{}.reset-nvram", id.domain()))
+    }
+
     /// What libvirt says the domain does (`running`, `shut off`, …); none
     /// if it is not defined.
     async fn domain_state(&self, id: &VmId) -> Result<Option<String>, OperationError> {
@@ -808,6 +887,51 @@ impl Vms {
                 VmNetwork::Bridge { .. } | VmNetwork::Direct { .. } | VmNetwork::Internal { .. } => {}
             }
         }
+        if spec.tpm() && !self.tools.swtpm.exists() {
+            return Err(refused("swtpm is not installed: install the plugin's packages for a TPM first"));
+        }
+        if spec.secure_boot() && !self.secure_boot_firmware() {
+            return Err(refused(
+                "there is no OVMF with Microsoft's keys enrolled for Secure Boot: install Debian's ovmf",
+            ));
+        }
+        if !spec.pci().is_empty() {
+            let iommu = devices::iommu(&self.paths.devices, "").on;
+            let found = devices::pci_devices(&self.paths.devices, &self.host, &self.tools.busctl).await;
+            devices::check_pci(spec.pci(), &found, iommu)?;
+        }
+        Ok(())
+    }
+
+    /// Before a start: the host's devices the domain is given are there,
+    /// each USB device once (libvirt could not tell two apart), and the
+    /// PCI devices may still go to it.
+    async fn check_handed_over(&self, id: &VmId) -> Result<(), OperationError> {
+        let Ok(xml) = fs::read_to_string(self.domain_file(id)) else { return Ok(()) };
+        let (usb, pci) = devices::handed_over(&xml);
+        for device in usb {
+            match devices::usb_count(&self.paths.devices, device) {
+                1 => {}
+                0 => {
+                    return Err(refused(format!(
+                        "the USB device {} the virtual machine is given is not plugged in",
+                        device.id()
+                    )));
+                }
+                _ => {
+                    return Err(refused(format!(
+                        "more than one USB device {} is plugged in, and they cannot be told apart: unplug \
+                         all but one",
+                        device.id()
+                    )));
+                }
+            }
+        }
+        if !pci.is_empty() {
+            let iommu = devices::iommu(&self.paths.devices, "").on;
+            let found = devices::pci_devices(&self.paths.devices, &self.host, &self.tools.busctl).await;
+            devices::check_pci(&pci, &found, iommu)?;
+        }
         Ok(())
     }
 
@@ -862,6 +986,7 @@ impl Vms {
         let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_installed()?;
         self.locations_of(spec).await?;
+        self.not_busy(&spec.id).await?;
         match self.domain_state(&spec.id).await? {
             None => return Err(refused(format!("there is no virtual machine {}", spec.id.as_str()))),
             Some(state) if state != "shut off" => {
@@ -924,7 +1049,7 @@ impl Vms {
         }
         for slot in remove {
             for zvol in self.zvols_in(&spec.id, *slot).await? {
-                run(&self.tools.zfs, &["destroy", &zvol], SLOW).await?;
+                run(&self.tools.zfs, &["destroy", "-r", &zvol], SLOW).await?;
             }
         }
         Ok(Response::Done)
@@ -970,6 +1095,71 @@ impl Vms {
         Err(OperationError::Failed(format!("the medium did not change while the VM runs: {complaint}")))
     }
 
+    /// Gives the VM the USB devices `spec` names: the domain defined anew
+    /// and, while it runs, `detach` pulled out of it and `attach` plugged
+    /// in at once, each present exactly once.
+    pub(crate) async fn change_usb(
+        &self,
+        spec: &VmSpec,
+        attach: &[VmUsbDevice],
+        detach: &[VmUsbDevice],
+    ) -> Result<Response, OperationError> {
+        let _serial = crate::waiting::lock(&self.serial).await?;
+        self.require_installed()?;
+        self.locations_of(spec).await?;
+        let Some(state) = self.domain_state(&spec.id).await? else {
+            return Err(refused(format!("there is no virtual machine {}", spec.id.as_str())));
+        };
+        if attach.iter().any(|device| !spec.usb().contains(device))
+            || detach.iter().any(|device| spec.usb().contains(device))
+        {
+            return Err(refused("the USB devices plugged in or out are not those the VM is given"));
+        }
+        let running = ON.contains(&state.as_str());
+        if running {
+            for device in attach {
+                if devices::usb_count(&self.paths.devices, *device) != 1 {
+                    return Err(refused(format!(
+                        "the USB device {} is not plugged in exactly once",
+                        device.id()
+                    )));
+                }
+            }
+        }
+        self.check_devices(spec).await?;
+        self.define_domain(spec, true).await?;
+        if !running {
+            return Ok(Response::Done);
+        }
+        let domain = spec.id.domain();
+        let file = self.paths.domains.join(format!("{domain}.usb.xml"));
+        let path = file.to_string_lossy().into_owned();
+        let plugged = async {
+            for (device, command) in detach
+                .iter()
+                .map(|device| (device, "detach-device"))
+                .chain(attach.iter().map(|device| (device, "attach-device")))
+            {
+                crate::durable::replace(&file, usb_hostdev(*device, "").as_bytes())?;
+                let output =
+                    zendiloos_exec::run(&self.tools.virsh, virsh(&[command, &domain, &path, "--live"]), SLOW)
+                        .await?;
+                if !output.status.success() {
+                    let complaint = output.stderr.trim().trim_start_matches("error: ").replace('\n', " ");
+                    return Err(OperationError::Failed(format!(
+                        "the USB device {} was not plugged {} while the VM runs: {complaint}",
+                        device.id(),
+                        if command == "attach-device" { "in" } else { "out" }
+                    )));
+                }
+            }
+            Ok(())
+        }
+        .await;
+        let _ = fs::remove_file(&file);
+        plugged.map(|()| Response::Done)
+    }
+
     /// Writes the domain's XML and defines it; the file kept is libvirt's
     /// definition, also when libvirt refuses the new one. `existing`: the
     /// domain is defined already, and autostart follows `spec` either way.
@@ -986,6 +1176,10 @@ impl Vms {
         fs::create_dir_all(&self.paths.domains)
             .map_err(|e| OperationError::Write(self.paths.domains.clone(), e))?;
         let file = self.domain_file(&spec.id);
+        // Another firmware, or Secure Boot switched: the UEFI variables
+        // start afresh from the new firmware's template at the next start.
+        let before = fs::read_to_string(&file).ok();
+        let fresh_nvram = existing && before.is_some_and(|before| os_section(&before) != os_section(&xml));
         let new = file.with_extension("xml.new");
         crate::durable::replace(&new, xml.as_bytes())?;
         let path = new.to_string_lossy().into_owned();
@@ -994,6 +1188,9 @@ impl Vms {
             return Err(error);
         }
         fs::rename(&new, &file).map_err(|e| OperationError::Write(file.clone(), e))?;
+        if fresh_nvram {
+            crate::durable::replace(&self.reset_marker(&spec.id), b"")?;
+        }
         let domain = spec.id.domain();
         if spec.autostart {
             run(&self.tools.virsh, &virsh(&["autostart", &domain]), QUICK).await?;
@@ -1025,11 +1222,13 @@ impl Vms {
     pub(crate) async fn control(&self, id: &VmId, action: VmAction) -> Result<Response, OperationError> {
         self.require_defined(id).await?;
         let domain = id.domain();
+        let reset = self.reset_marker(id);
         let args: Vec<&str> = match action {
             VmAction::Start => {
+                self.check_handed_over(id).await?;
                 // Gone after a restart until systemd-tmpfiles made it again.
                 self.make_consoles().await?;
-                vec!["start", &domain]
+                if reset.exists() { vec!["start", "--reset-nvram", &domain] } else { vec!["start", &domain] }
             }
             VmAction::Shutdown => vec!["shutdown", "--mode", "acpi", &domain],
             VmAction::ForceOff => vec!["destroy", &domain],
@@ -1037,6 +1236,9 @@ impl Vms {
         };
         let output = zendiloos_exec::run(&self.tools.virsh, virsh(&args), SLOW).await?;
         if output.status.success() {
+            if action == VmAction::Start {
+                let _ = fs::remove_file(&reset);
+            }
             return Ok(Response::Done);
         }
         // libvirt's own words: "domain is already active", "domain is not running".
@@ -1049,6 +1251,7 @@ impl Vms {
     /// is no failure, so a VM whose creation failed halfway goes too.
     pub(crate) async fn delete(&self, id: &VmId) -> Result<Response, OperationError> {
         let _serial = crate::waiting::lock(&self.serial).await?;
+        self.not_busy(id).await?;
         if vms_locations(&self.host).is_empty() {
             return Err(refused("the virtual machines' storage is not set up"));
         }
@@ -1056,15 +1259,19 @@ impl Vms {
         if self.installed() && self.defined(id).await? {
             // Not running is fine; anything else shows in undefine.
             let _ = zendiloos_exec::run(&self.tools.virsh, virsh(&["destroy", &domain]), SLOW).await;
-            let undefine = ["undefine", "--nvram", "--managed-save", "--snapshots-metadata", domain.as_str()];
+            let undefine =
+                ["undefine", "--nvram", "--tpm", "--managed-save", "--snapshots-metadata", domain.as_str()];
             run(&self.tools.virsh, &virsh(&undefine), QUICK).await?;
         }
         for slot in (0..).map_while(|slot| VmDiskSlot::new(slot).ok()) {
             for zvol in self.zvols_in(id, slot).await? {
-                run(&self.tools.zfs, &["destroy", &zvol], SLOW).await?;
+                // Its snapshots with it.
+                run(&self.tools.zfs, &["destroy", "-r", &zvol], SLOW).await?;
             }
         }
-        for file in [self.domain_file(id), self.domain_file(id).with_extension("xml.new")] {
+        for file in
+            [self.domain_file(id), self.domain_file(id).with_extension("xml.new"), self.reset_marker(id)]
+        {
             match fs::remove_file(&file) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -1341,6 +1548,22 @@ fn drive_target(slot: VmDriveSlot) -> String {
     target("sd", 8 + slot.get())
 }
 
+/// A USB device of the host's as a domain is given it, indented by `indent`.
+fn usb_hostdev(device: VmUsbDevice, indent: &str) -> String {
+    format!(
+        "{indent}<hostdev mode='subsystem' type='usb' managed='yes'>\n{indent}  <source>\n{indent}    \
+         <vendor id='0x{:04x}'/>\n{indent}    <product id='0x{:04x}'/>\n{indent}  </source>\n{indent}</hostdev>\n",
+        device.vendor, device.product
+    )
+}
+
+/// The `<os>` element of a domain's XML: another one means another firmware.
+fn os_section(xml: &str) -> &str {
+    let start = xml.find("<os").unwrap_or(0);
+    let end = xml.find("</os>").map_or(start, |end| end + 5);
+    &xml[start..end.max(start)]
+}
+
 /// The domain's XML, from the checked spec alone.
 pub(crate) fn domain_xml(spec: &VmSpec, places: &Places) -> String {
     let windows = spec.os == VmOs::Windows;
@@ -1354,14 +1577,21 @@ pub(crate) fn domain_xml(spec: &VmSpec, places: &Places) -> String {
         .unwrap_or_default();
     let memory = spec.memory.mib();
     let cpus = spec.cpus.get();
-    let os = match spec.firmware {
-        // Secure Boot off: it would need keys enrolled and SMM; Windows 11's
-        // TPM is not there either (later).
-        VmFirmware::Uefi => "  <os firmware='efi'>\n    <type arch='x86_64' machine='q35'>hvm</type>\n    \
+    let os = match (spec.firmware, spec.secure_boot()) {
+        // OVMF with Microsoft's keys enrolled, as libvirt picks it from the
+        // firmware QEMU describes (Debian's OVMF_CODE_4M.ms.fd and
+        // OVMF_VARS_4M.ms.fd); Secure Boot needs SMM, below.
+        (VmFirmware::Uefi, true) => "  <os firmware='efi'>\n    <type arch='x86_64' machine='q35'>hvm</type>\n    \
+             <firmware>\n      <feature enabled='yes' name='enrolled-keys'/>\n      \
+             <feature enabled='yes' name='secure-boot'/>\n    </firmware>\n    <loader secure='yes'/>\n  </os>\n"
+            .to_owned(),
+        (VmFirmware::Uefi, false) => "  <os firmware='efi'>\n    <type arch='x86_64' machine='q35'>hvm</type>\n    \
              <firmware>\n      <feature enabled='no' name='secure-boot'/>\n    </firmware>\n  </os>\n"
             .to_owned(),
-        VmFirmware::Bios => "  <os>\n    <type arch='x86_64' machine='q35'>hvm</type>\n  </os>\n".to_owned(),
+        (VmFirmware::Bios, _) => "  <os>\n    <type arch='x86_64' machine='q35'>hvm</type>\n  </os>\n".to_owned(),
     };
+    let smm =
+        if spec.firmware == VmFirmware::Uefi && spec.secure_boot() { "    <smm state='on'/>\n" } else { "" };
     let hyperv = if windows {
         "    <hyperv mode='custom'>\n      <relaxed state='on'/>\n      <vapic state='on'/>\n      \
          <spinlocks state='on' retries='8191'/>\n    </hyperv>\n"
@@ -1446,6 +1676,30 @@ pub(crate) fn domain_xml(spec: &VmSpec, places: &Places) -> String {
             ),
         });
     }
+    // The host's USB devices by vendor and product, its PCI devices by
+    // address: libvirt binds them to vfio-pci while the VM runs.
+    for device in spec.usb() {
+        devices.push_str(&usb_hostdev(*device, "    "));
+    }
+    for address in spec.pci() {
+        let (domain, bus, slot, function) = address.parts();
+        devices.push_str(&format!(
+            "    <hostdev mode='subsystem' type='pci' managed='yes'>\n      <source>\n        \
+             <address domain='0x{domain:04x}' bus='0x{bus:02x}' slot='0x{slot:02x}' function='0x{function:x}'/>\n      \
+             </source>\n    </hostdev>\n"
+        ));
+    }
+    if spec.tpm() {
+        // swtpm, its state in /var/lib/libvirt/swtpm/<uuid>.
+        devices.push_str(
+            "    <tpm model='tpm-crb'>\n      <backend type='emulator' version='2.0'/>\n    </tpm>\n",
+        );
+    }
+    // The QEMU guest agent's channel: a snapshot freezes the guest's file
+    // systems through it, if the guest runs the agent.
+    devices.push_str(
+        "    <channel type='unix'>\n      <target type='virtio' name='org.qemu.guest_agent.0'/>\n    </channel>\n",
+    );
     devices.push_str("    <input type='tablet' bus='usb'/>\n");
     devices.push_str(&format!(
         "    <graphics type='vnc'>\n      <listen type='socket' socket='{}'/>\n    </graphics>\n",
@@ -1468,7 +1722,7 @@ pub(crate) fn domain_xml(spec: &VmSpec, places: &Places) -> String {
         "<!-- Written by zendiloOS from the VM's settings; changed only there. -->\n\
          <domain type='kvm'>\n  <name>{name}</name>\n{uuid}  \
          <memory unit='MiB'>{memory}</memory>\n  <currentMemory unit='MiB'>{memory}</currentMemory>\n  \
-         <vcpu placement='static'>{cpus}</vcpu>\n{os}  <features>\n    <acpi/>\n    <apic/>\n{hyperv}  </features>\n  \
+         <vcpu placement='static'>{cpus}</vcpu>\n{os}  <features>\n    <acpi/>\n    <apic/>\n{smm}{hyperv}  </features>\n  \
          <cpu mode='host-passthrough' check='none'/>\n  <clock offset='{clock}'/>\n  \
          <on_poweroff>destroy</on_poweroff>\n  <on_reboot>restart</on_reboot>\n  <on_crash>destroy</on_crash>\n  \
          <pm>\n    <suspend-to-mem enabled='no'/>\n    <suspend-to-disk enabled='no'/>\n  </pm>\n  \
@@ -1479,7 +1733,7 @@ pub(crate) fn domain_xml(spec: &VmSpec, places: &Places) -> String {
 #[cfg(test)]
 mod tests {
     use zendiloos_agent_proto::{
-        MacAddress, VmCpus, VmDevices, VmDisk, VmDiskSize, VmDrive, VmMemory, VmNic, VmNicSlot,
+        MacAddress, VmCpus, VmDevices, VmDisk, VmDiskSize, VmDrive, VmMemory, VmNic, VmNicSlot, VmUsbDevice,
     };
 
     use super::*;
@@ -1537,6 +1791,7 @@ mod tests {
                 VmBoot::Drive(VmDriveSlot::new(0).unwrap()),
                 VmBoot::Disk(VmDiskSlot::new(0).unwrap()),
             ],
+            ..VmDevices::default()
         }
     }
 
@@ -1676,6 +1931,7 @@ mod tests {
                 VmBoot::Disk(VmDiskSlot::new(2).unwrap()),
                 VmBoot::Drive(VmDriveSlot::new(1).unwrap()),
             ],
+            ..VmDevices::default()
         };
         let xml = xml(&spec(VmOs::Linux, VmFirmware::Uefi, devices));
         let at = |part: &str| xml.find(part).unwrap_or_else(|| panic!("{part} missing in\n{xml}"));
@@ -1709,12 +1965,87 @@ mod tests {
             nics: vec![nic(0, VmNicModel::E1000e, VmNetwork::User)],
             drives: vec![],
             boot: vec![VmBoot::Disk(VmDiskSlot::new(0).unwrap())],
+            ..VmDevices::default()
         };
         let xml = xml(&spec(VmOs::Windows, VmFirmware::Uefi, devices));
         assert!(xml.contains("<target dev='sda' bus='sata'/>\n      <boot order='1'/>"), "{xml}");
         assert!(xml.contains("<clock offset='localtime'/>") && xml.contains("<hyperv mode='custom'>"));
         assert!(xml.contains("<model type='vga'/>") && xml.contains("<memballoon model='none'/>"));
         assert!(!xml.contains("device='cdrom'"), "no drive, no drive");
+    }
+
+    /// Windows 11: a TPM 2.0 through swtpm, and Secure Boot with
+    /// Microsoft's keys, which libvirt picks from the firmware QEMU
+    /// describes, with SMM as it needs.
+    #[test]
+    fn a_tpm_and_secure_boot_with_microsofts_keys() {
+        let devices = VmDevices { tpm: true, secure_boot: true, ..linux() };
+        let xml = xml(&spec(VmOs::Windows, VmFirmware::Uefi, devices));
+        for part in [
+            "<os firmware='efi'>\n    <type arch='x86_64' machine='q35'>hvm</type>\n    <firmware>\n      \
+             <feature enabled='yes' name='enrolled-keys'/>\n      <feature enabled='yes' name='secure-boot'/>\n    \
+             </firmware>\n    <loader secure='yes'/>\n  </os>",
+            "<features>\n    <acpi/>\n    <apic/>\n    <smm state='on'/>\n",
+            "<tpm model='tpm-crb'>\n      <backend type='emulator' version='2.0'/>\n    </tpm>",
+        ] {
+            assert!(xml.contains(part), "{part} missing in\n{xml}");
+        }
+        // Without them: neither, and Secure Boot said to be off.
+        let plain = self::xml(&spec(VmOs::Windows, VmFirmware::Uefi, linux()));
+        assert!(plain.contains("<feature enabled='no' name='secure-boot'/>"), "{plain}");
+        for absent in ["<tpm", "<smm", "enrolled-keys", "secure='yes'"] {
+            assert!(!plain.contains(absent), "{absent} in\n{plain}");
+        }
+        // A TPM with BIOS is fine; Secure Boot is not.
+        let bios = self::xml(&spec(VmOs::Other, VmFirmware::Bios, VmDevices { tpm: true, ..linux() }));
+        assert!(bios.contains("<tpm model='tpm-crb'>") && !bios.contains("firmware="), "{bios}");
+        let refused = VmSpec::new(
+            VmId::parse("0a1b2c3d4e5f").unwrap(),
+            VmOs::Other,
+            VmCpus::new(1).unwrap(),
+            VmMemory::new(512).unwrap(),
+            VmFirmware::Bios,
+            VmDevices { secure_boot: true, ..linux() },
+            false,
+            VolumeNumber::new(1).unwrap(),
+        );
+        assert!(refused.unwrap_err().to_string().contains("Secure Boot needs UEFI"));
+    }
+
+    /// The host's devices: USB by vendor and product, PCI by address and
+    /// managed by libvirt (bound to vfio-pci only while the VM runs); every
+    /// VM has the guest agent's channel.
+    #[test]
+    fn the_hosts_devices_and_the_guest_agents_channel() {
+        let devices = VmDevices {
+            usb: vec![VmUsbDevice { vendor: 0x046d, product: 0xc31c }],
+            pci: vec![zendiloos_agent_proto::PciAddress::parse("0000:0a:1f.3").unwrap()],
+            ..linux()
+        };
+        let xml = xml(&spec(VmOs::Linux, VmFirmware::Uefi, devices));
+        for part in [
+            "<hostdev mode='subsystem' type='usb' managed='yes'>\n      <source>\n        <vendor id='0x046d'/>\n        \
+             <product id='0xc31c'/>\n      </source>\n    </hostdev>",
+            "<hostdev mode='subsystem' type='pci' managed='yes'>\n      <source>\n        \
+             <address domain='0x0000' bus='0x0a' slot='0x1f' function='0x3'/>\n      </source>\n    </hostdev>",
+            "<channel type='unix'>\n      <target type='virtio' name='org.qemu.guest_agent.0'/>\n    </channel>",
+        ] {
+            assert!(xml.contains(part), "{part} missing in\n{xml}");
+        }
+        let (usb, pci) = devices::handed_over(&xml);
+        assert_eq!(usb, [VmUsbDevice { vendor: 0x046d, product: 0xc31c }]);
+        assert_eq!(pci[0].as_str(), "0000:0a:1f.3");
+        assert!(!self::xml(&spec(VmOs::Linux, VmFirmware::Uefi, linux())).contains("<hostdev"));
+    }
+
+    #[test]
+    fn another_firmware_is_another_os_section() {
+        let uefi = xml(&spec(VmOs::Linux, VmFirmware::Uefi, linux()));
+        let secure = xml(&spec(VmOs::Linux, VmFirmware::Uefi, VmDevices { secure_boot: true, ..linux() }));
+        let more = xml(&spec(VmOs::Linux, VmFirmware::Uefi, VmDevices { tpm: true, ..linux() }));
+        assert_ne!(os_section(&uefi), os_section(&secure));
+        assert_eq!(os_section(&uefi), os_section(&more), "a TPM is no other firmware");
+        assert!(os_section(&uefi).starts_with("<os firmware='efi'>") && os_section(&uefi).ends_with("</os>"));
     }
 
     #[test]

@@ -79,6 +79,10 @@ fn change_of(vm: &Vm) -> VmChange {
         drives: settings.drives,
         boot: settings.boot,
         autostart: settings.autostart,
+        usb: settings.usb,
+        pci: settings.pci,
+        tpm: settings.tpm,
+        secure_boot: settings.secure_boot,
     }
 }
 

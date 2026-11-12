@@ -42,8 +42,8 @@ const START_BYTES: u64 = MIB;
 /// The ZFS user property that marks pools zendiloos created.
 const VOLUME_PROPERTY: &str = "zendiloos:volume";
 /// Snapshot properties: the schedules it was taken for, and a note.
-const SCHEDULE_PROPERTY: &str = "zendiloos:schedule";
-const NOTE_PROPERTY: &str = "zendiloos:note";
+pub(crate) const SCHEDULE_PROPERTY: &str = "zendiloos:schedule";
+pub(crate) const NOTE_PROPERTY: &str = "zendiloos:note";
 const PARTITION_NAME: &str = "zendiloos";
 /// The GPT type OpenZFS uses for its partitions.
 const PARTITION_TYPE: &str = "BF01";

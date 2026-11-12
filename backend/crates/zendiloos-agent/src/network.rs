@@ -812,6 +812,41 @@ pub(crate) async fn networkd_kind(busctl: &Program, index: i32) -> Option<(Optio
     link_kind(&output.stdout)
 }
 
+/// The host's links as systemd-networkd knows them (`ListLinks`): index
+/// and name. `None` if it does not answer, or not as JSON.
+pub(crate) async fn networkd_links(busctl: &Program) -> Option<Vec<(i32, String)>> {
+    let asked = [&["--json=short"][..], MANAGER_CALL, &["ListLinks"]].concat();
+    let output = zendiloos_exec::run(busctl, &asked, LIMITS).await.ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // `{"type":"a(iso)","data":[[[1,"lo","/org/…/_31"],…]]}`
+    let answer: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let links = answer.get("data")?.get(0)?.as_array()?;
+    Some(
+        links
+            .iter()
+            .filter_map(|link| {
+                let index = i32::try_from(link.get(0)?.as_i64()?).ok()?;
+                Some((index, link.get(1)?.as_str()?.to_owned()))
+            })
+            .collect(),
+    )
+}
+
+/// systemd-networkd's description of the host's link `index`
+/// (`DescribeLink`), as JSON; `None` if it does not answer, or not so.
+pub(crate) async fn networkd_description(busctl: &Program, index: i32) -> Option<serde_json::Value> {
+    let index = index.to_string();
+    let asked = [&["--json=short"][..], MANAGER_CALL, &["DescribeLink", "i", index.as_str()]].concat();
+    let output = zendiloos_exec::run(busctl, &asked, LIMITS).await.ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let answer: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    serde_json::from_str(answer.get("data")?.get(0)?.as_str()?).ok()
+}
+
 /// `{"type":"s","data":["{\"Kind\":\"bridge\",\"Type\":\"bridge\",…}"]}`: the
 /// kind and type the description inside names.
 fn link_kind(answer: &[u8]) -> Option<(Option<String>, Option<String>)> {

@@ -298,6 +298,11 @@ vm-web-server-test:
 vm-vms-test:
     scripts/vm-vms-test.sh
 
+# Snapshots, backups and restores of VMs, a TPM and Secure Boot, the IOMMU
+# and USB passthrough, in the second test VM (see the script)
+vm-vm-backup-test:
+    scripts/vm-vm-backup-test.sh
+
 # Backup tasks in the second VM: the plugin installed, a share on apps backed up to tank as a mirror and as versions (hard links, retention), to a USB-like drive when it is plugged in, to a test rsync daemon and over SSH on the VM itself (password never in ps, host key pinned), pulled back, a version restored and compared, links out of the source never followed
 vm-backup-test:
     scripts/vm-backup-test.sh

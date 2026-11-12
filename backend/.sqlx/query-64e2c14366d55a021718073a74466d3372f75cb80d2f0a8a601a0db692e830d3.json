@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM vm_snapshot_schedules WHERE vm = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "64e2c14366d55a021718073a74466d3372f75cb80d2f0a8a601a0db692e830d3"
+}

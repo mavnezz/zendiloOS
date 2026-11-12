@@ -20,7 +20,7 @@ const t = (key: string, values: Record<string, unknown> | number = {}) =>
   typeof values === 'number' ? i18n.global.t(key, values) : i18n.global.t(key, values)
 
 const PLUGIN: VmPlugin = {
-  hardware: { kvm: true, cpu_virtualization: 'vmx', iommu: false },
+  hardware: { kvm: true, cpu_virtualization: 'vmx', iommu: false, swtpm: true, secure_boot: true },
   installed: true,
   storage: { pool: 'tank', volume: 1 },
   locations: [
@@ -89,8 +89,49 @@ async function next(): Promise<void> {
   await click(t('vms.wizard.next'))
 }
 
+const DEVICES = {
+  iommu: { on: true, cmdline: ['intel_iommu=on'], cpu_vendor: 'intel' },
+  usb: [{ id: '046d:c31c', port: '1-2', manufacturer: 'Logitech', name: 'USB Keyboard' }],
+  pci: [
+    {
+      address: '0000:01:00.0',
+      vendor: '10de',
+      device: '1c82',
+      class: '030000',
+      vendor_name: 'NVIDIA Corporation',
+      device_name: 'GP107',
+      iommu_group: 1,
+      driver: 'nouveau',
+      needed: null,
+    },
+    {
+      address: '0000:01:00.1',
+      vendor: '10de',
+      device: '0fb9',
+      class: '040300',
+      vendor_name: 'NVIDIA Corporation',
+      device_name: 'GP107 Audio',
+      iommu_group: 1,
+      driver: null,
+      needed: null,
+    },
+    {
+      address: '0000:00:17.0',
+      vendor: '8086',
+      device: 'a352',
+      class: '010601',
+      vendor_name: 'Intel Corporation',
+      device_name: 'SATA AHCI',
+      iommu_group: 2,
+      driver: 'ahci',
+      needed: { kind: 'disk', disk: 'sda' },
+    },
+  ],
+}
+
 beforeEach(() => {
   reset()
+  on('GET', '/api/v1/vms/devices', DEVICES)
   on('GET', '/api/v1/files/shares', [
     { id: 3, name: 'media', access: 'read', home: false },
     { id: 4, name: 'docs', access: 'read_write', home: false },
@@ -198,6 +239,10 @@ describe('the wizard for a new VM', () => {
         { kind: 'disk', slot: 1 },
       ],
       autostart: false,
+      usb: [],
+      pci: [],
+      tpm: false,
+      secure_boot: false,
     })
     expect(useJobsStore().list.map((job) => job.id)).toContain(7)
     expect(wrapper.emitted('created')).toHaveLength(1)
@@ -219,6 +264,63 @@ describe('the wizard for a new VM', () => {
       { slot: 0, model: 'virtio', network: { kind: 'internal', network: 'vmnet0' } },
       { slot: 1, model: 'virtio', network: { kind: 'direct', card: 'bond0' } },
     ])
+  })
+
+  it('gives Windows a TPM and Secure Boot, which BIOS cannot have, and the NAS’s devices', async () => {
+    on('POST', '/api/v1/vms', { vm: {}, job: JOB })
+    await mountWizard()
+    await type('#vm-name', 'Windows 11')
+    radio('data-os', 'windows').dispatchEvent(new Event('change'))
+    await settle()
+    await next()
+    const tpm = document.querySelector<HTMLButtonElement>('#vm-tpm')!
+    const secure = document.querySelector<HTMLButtonElement>('#vm-secure-boot')!
+    expect([tpm.getAttribute('aria-checked'), secure.getAttribute('aria-checked')]).toEqual([
+      'true',
+      'true',
+    ])
+    radio('data-firmware', 'bios').dispatchEvent(new Event('change'))
+    await settle()
+    expect(secure.getAttribute('aria-checked')).toBe('false')
+    expect(secure.disabled).toBe(true)
+    expect(page()).toContain(t('vms.security.secureBootBios'))
+    radio('data-firmware', 'uefi').dispatchEvent(new Event('change'))
+    await settle()
+    secure.click()
+    await settle()
+    await next()
+    await next()
+    // The keyboard, and the graphics card with its sound; the disks' controller stays.
+    document.querySelector<HTMLInputElement>('[data-usb="046d:c31c"] input')!.click()
+    await settle()
+    document.querySelector<HTMLInputElement>('[data-group="1"] input')!.click()
+    await settle()
+    expect(document.querySelector<HTMLInputElement>('[data-group="2"] input')!.disabled).toBe(true)
+    expect(page()).toContain(t('vms.hostDevices.needs.disk', { disk: 'sda' }))
+    expect(page()).toContain(t('vms.hostDevices.pciWarning'))
+    expect(page()).toContain(t('vms.hostDevices.summary', { usb: 1, pci: 2 }))
+    await submit('#vm-wizard')
+    expect(called('POST', '/api/v1/vms')[0]?.body).toMatchObject({
+      os: 'windows',
+      firmware: 'uefi',
+      tpm: true,
+      secure_boot: true,
+      usb: ['046d:c31c'],
+      pci: ['0000:01:00.0', '0000:01:00.1'],
+    })
+  })
+
+  it('says how to switch the IOMMU on where it is off', async () => {
+    on('GET', '/api/v1/vms/devices', {
+      ...DEVICES,
+      iommu: { on: false, cmdline: [], cpu_vendor: 'amd' },
+    })
+    await mountWizard()
+    await type('#vm-name', 'box')
+    for (let step = 0; step < 3; step++) await next()
+    expect(page()).toContain(t('vms.hostDevices.iommuOff'))
+    expect(page()).toContain(t('vms.hostDevices.iommuHint.amd'))
+    expect(document.querySelector('[data-group="1"]')).toBeNull()
   })
 
   it('leads to the library while it has no image', async () => {

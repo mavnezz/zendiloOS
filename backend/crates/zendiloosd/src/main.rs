@@ -55,7 +55,8 @@ use zendiloos_infra::sqlite::{
     SqliteFirewall, SqliteGroups, SqliteInstalledApps, SqliteJobs, SqliteNetworkSettings,
     SqliteNotifications, SqliteOperators, SqlitePreferences, SqliteProjects, SqliteSecurity,
     SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares, SqliteSystemUpdates,
-    SqliteTwoFactor, SqliteUpdateSettings, SqliteVmImages, SqliteVmLocations, SqliteVms, SqliteVolumeBackups,
+    SqliteTwoFactor, SqliteUpdateSettings, SqliteVmBackups, SqliteVmImages, SqliteVmLocations,
+    SqliteVmSchedules, SqliteVms, SqliteVolumeBackups,
 };
 use zendiloos_infra::updates::{GitHubReleases, installed_notes};
 use zendiloos_jobs::Jobs;
@@ -386,6 +387,9 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         repository: Arc::new(SqliteVms::new(database.clone())),
         images: Arc::new(SqliteVmImages::new(database.clone())),
         locations: Arc::new(SqliteVmLocations::new(database.clone())),
+        schedules: Arc::new(SqliteVmSchedules::new(database.clone())),
+        backups: Arc::new(SqliteVmBackups::new(database.clone())),
+        shares: Arc::new(zendiloos_infra::vms::SharesForVmBackups::new(sharing.clone())),
         // The bridges, internal networks and cards VMs may go on, as
         // zendiloosd reads the host's network and zendiloOS's files.
         host: Arc::new(AgentVms::new(agent.clone(), network.clone())),
@@ -456,6 +460,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let configuration_backups = spawn_configuration_backups(recovery.clone());
 
     let snapshots = spawn_snapshot_schedules(sharing.clone());
+    let vm_snapshots = spawn_vm_snapshot_schedules(vms.clone());
     let migrations = spawn_permission_migrations(sharing.clone());
     let self_tests = spawn_self_test_schedule(storage.self_test_schedule.clone());
     let use_cases = UseCases {
@@ -520,6 +525,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     firewall_upkeep.abort();
     monitor.abort();
     snapshots.abort();
+    vm_snapshots.abort();
     backup_schedule.abort();
     configuration_backups.abort();
     migrations.abort();
@@ -748,6 +754,19 @@ fn spawn_snapshot_schedules(sharing: SharingUseCases) -> JoinHandle<()> {
         loop {
             every_five_minutes.tick().await;
             sharing.take_due_snapshots().await;
+        }
+    })
+}
+
+/// Takes scheduled snapshots of VMs and lets go of old ones, as for shares:
+/// every five minutes, a missed one on the first look.
+fn spawn_vm_snapshot_schedules(vms: Vms) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut every = tokio::time::interval(zendiloos_vms::application::SNAPSHOTS_EVERY);
+        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            every.tick().await;
+            vms.take_due_snapshots().await;
         }
     })
 }

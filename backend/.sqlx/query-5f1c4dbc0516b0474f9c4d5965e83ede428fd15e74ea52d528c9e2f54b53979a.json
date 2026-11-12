@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT vm AS \"vm!\", frequency, keep FROM vm_snapshot_schedules ORDER BY vm",
+  "describe": {
+    "columns": [
+      {
+        "name": "vm!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_snapshot_schedules",
+            "name": "vm"
+          }
+        }
+      },
+      {
+        "name": "frequency",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_snapshot_schedules",
+            "name": "frequency"
+          }
+        }
+      },
+      {
+        "name": "keep",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "vm_snapshot_schedules",
+            "name": "keep"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "5f1c4dbc0516b0474f9c4d5965e83ede428fd15e74ea52d528c9e2f54b53979a"
+}

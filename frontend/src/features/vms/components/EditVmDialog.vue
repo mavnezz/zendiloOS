@@ -27,10 +27,13 @@ import {
   updateRequest,
   type FormProblem,
   type VmForm,
+  withFirmware,
 } from '../lib/vms'
+import DevicesEditor from './DevicesEditor.vue'
 import DisksEditor from './DisksEditor.vue'
 import MediaEditor from './MediaEditor.vue'
 import NicsEditor from './NicsEditor.vue'
+import SecurityEditor from './SecurityEditor.vue'
 
 /**
  * Changes a VM. While it is not shut off, only its name, autostart and the
@@ -46,7 +49,7 @@ const props = defineProps<{
 const open = defineModel<boolean>('open', { default: false })
 const emit = defineEmits<{ library: [] }>()
 
-const TABS = ['general', 'hardware', 'disks', 'network', 'media'] as const
+const TABS = ['general', 'hardware', 'disks', 'network', 'media', 'devices'] as const
 const FIRMWARE: VmFirmware[] = ['uefi', 'bios']
 const CARD =
   'relative rounded-lg border transition-colors has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/50'
@@ -208,11 +211,12 @@ const tabs = computed(() => TABS.map((id) => ({ id, label: t(`vms.edit.tabs.${id
               "
             >
               <input
-                v-model="form.firmware"
                 type="radio"
                 name="vm-edit-firmware"
                 class="sr-only"
                 :value="firmware"
+                :checked="form.firmware === firmware"
+                @change="form = withFirmware(form, firmware)"
               />
               <span
                 v-if="form.firmware === firmware"
@@ -236,7 +240,18 @@ const tabs = computed(() => TABS.map((id) => ({ id, label: t(`vms.edit.tabs.${id
           <TriangleAlert />
           {{ t('vms.edit.firmwareWarning') }}
         </Alert>
+        <SecurityEditor v-model:form="form" :plugin="plugin" :before="vm" :disabled="fixed" />
+        <p v-if="has('secureBootBios')" class="text-xs text-destructive">
+          {{ t('vms.wizard.invalid.secureBootBios') }}
+        </p>
       </template>
+
+      <DevicesEditor
+        v-else-if="tab === 'devices'"
+        v-model:form="form"
+        :before="vm"
+        :fixed="fixed"
+      />
 
       <template v-else-if="tab === 'disks'">
         <DisksEditor

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO vm_host_devices (vm, kind, device) VALUES (?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "7ecf0a0690b514369fde35e805e33119005f6e56a2ff49be791ebcf35394be1c"
+}

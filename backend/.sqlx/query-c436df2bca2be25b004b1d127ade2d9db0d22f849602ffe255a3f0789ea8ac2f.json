@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE vms SET name = ?, cpus = ?, memory_mib = ?, firmware = ?, autostart = ?, boot = ?, tpm = ?,\n                            secure_boot = ?\n             WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": []
+  },
+  "hash": "c436df2bca2be25b004b1d127ade2d9db0d22f849602ffe255a3f0789ea8ac2f"
+}

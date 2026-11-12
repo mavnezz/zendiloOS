@@ -1,0 +1,170 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", vm, vm_name, place, share_id, share, volume, drive, folder, taken_at, consistency,\n                      files, settings\n               FROM vm_backups WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "vm_backups",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "vm",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_backups",
+            "name": "vm"
+          }
+        }
+      },
+      {
+        "name": "vm_name",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_backups",
+            "name": "vm_name"
+          }
+        }
+      },
+      {
+        "name": "place",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_backups",
+            "name": "place"
+          }
+        }
+      },
+      {
+        "name": "share_id",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "vm_backups",
+            "name": "share_id"
+          }
+        }
+      },
+      {
+        "name": "share",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_backups",
+            "name": "share"
+          }
+        }
+      },
+      {
+        "name": "volume",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "vm_backups",
+            "name": "volume"
+          }
+        }
+      },
+      {
+        "name": "drive",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_backups",
+            "name": "drive"
+          }
+        }
+      },
+      {
+        "name": "folder",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_backups",
+            "name": "folder"
+          }
+        }
+      },
+      {
+        "name": "taken_at",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "vm_backups",
+            "name": "taken_at"
+          }
+        }
+      },
+      {
+        "name": "consistency",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_backups",
+            "name": "consistency"
+          }
+        }
+      },
+      {
+        "name": "files",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_backups",
+            "name": "files"
+          }
+        }
+      },
+      {
+        "name": "settings",
+        "ordinal": 12,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_backups",
+            "name": "settings"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2422f347458965ca43e93187b8758f72eaaa1b1c72ac2d50264c699b10d4865f"
+}

@@ -28,11 +28,14 @@ import {
   request,
   type FormProblem,
   type VmForm,
+  withFirmware,
   withPreset,
 } from '../lib/vms'
+import DevicesEditor from './DevicesEditor.vue'
 import DisksEditor from './DisksEditor.vue'
 import MediaEditor from './MediaEditor.vue'
 import NicsEditor from './NicsEditor.vue'
+import SecurityEditor from './SecurityEditor.vue'
 
 /**
  * Makes a VM in four steps; `taken`: the names of the VMs there are,
@@ -121,6 +124,21 @@ const reviewRows = computed(() => [
   [
     t('vms.wizard.media'),
     form.value.drives.map((drive) => imageName(drive.image)).join(', ') || '–',
+  ],
+  [
+    t('vms.wizard.security'),
+    [
+      form.value.tpm ? t('vms.security.tpm') : null,
+      form.value.secureBoot ? t('vms.security.secureBoot') : null,
+    ]
+      .filter(Boolean)
+      .join(', ') || t('vms.wizard.none'),
+  ],
+  [
+    t('vms.wizard.hostDevices'),
+    form.value.usb.length || form.value.pci.length
+      ? t('vms.hostDevices.summary', { usb: form.value.usb.length, pci: form.value.pci.length })
+      : t('vms.wizard.none'),
   ],
 ])
 </script>
@@ -247,11 +265,12 @@ const reviewRows = computed(() => [
               "
             >
               <input
-                v-model="form.firmware"
                 type="radio"
                 name="vm-firmware"
                 class="sr-only"
                 :value="firmware"
+                :checked="form.firmware === firmware"
+                @change="form = withFirmware(form, firmware)"
               />
               <span class="font-semibold">{{ t(`vms.wizard.${firmware}`) }}</span>
               <span class="text-xs text-muted-foreground">{{
@@ -260,6 +279,7 @@ const reviewRows = computed(() => [
             </label>
           </div>
         </fieldset>
+        <SecurityEditor v-model:form="form" :plugin="plugin" />
       </template>
 
       <template v-else-if="step === 2">
@@ -280,6 +300,10 @@ const reviewRows = computed(() => [
           <p v-if="has('network')" class="text-xs text-destructive">
             {{ t('vms.wizard.invalid.network') }}
           </p>
+        </fieldset>
+        <fieldset class="grid gap-2">
+          <legend class="mb-2 text-sm font-medium">{{ t('vms.wizard.hostDevices') }}</legend>
+          <DevicesEditor v-model:form="form" />
         </fieldset>
         <div class="flex items-center gap-3">
           <Switch id="vm-autostart" v-model="form.autostart" />

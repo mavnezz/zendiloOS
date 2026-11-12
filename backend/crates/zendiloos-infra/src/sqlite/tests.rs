@@ -71,8 +71,8 @@ async fn creates_a_private_database_and_applies_all_migrations() {
         OpenReport {
             created: true,
             schema_before: None,
-            schema_after: 55,
-            applied: (1..=55).collect(),
+            schema_after: 58,
+            applied: (1..=58).collect(),
             backup: None
         }
     );
@@ -153,11 +153,14 @@ async fn creates_a_private_database_and_applies_all_migrations() {
             "shares",
             "system_update_settings",
             "system_update_state",
+            "vm_backups",
             "vm_disks",
             "vm_drives",
+            "vm_host_devices",
             "vm_images",
             "vm_locations",
             "vm_nics",
+            "vm_snapshot_schedules",
             "vms",
             "web_server"
         ]
@@ -176,8 +179,8 @@ async fn reopening_an_up_to_date_database_changes_nothing() {
         report,
         OpenReport {
             created: false,
-            schema_before: Some(55),
-            schema_after: 55,
+            schema_before: Some(58),
+            schema_after: 58,
             applied: vec![],
             backup: None
         }
@@ -463,8 +466,9 @@ async fn the_vms_of_one_location_keep_their_disks_and_cards_where_they_were() {
 
     let (db, report) = open(&env).await;
     // And the notifications' queue, the backup tasks', the network's
-    // settings and the configuration backup's after it.
-    assert_eq!(report.applied, [51, 52, 53, 54, 55]);
+    // settings, the configuration backup's, and the VMs' TPM, Secure Boot,
+    // host devices, snapshot schedules and backups after it.
+    assert_eq!(report.applied, [51, 52, 53, 54, 55, 56, 57, 58]);
     let cold = Location { pool: "cold".into(), volume: 2 };
     let tank = Location { pool: "tank".into(), volume: 1 };
     let locations = super::SqliteVmLocations::new(db.clone()).list().await.unwrap();

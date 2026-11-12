@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useQueryClient } from '@tanstack/vue-query'
-import { ChevronDown, Cpu, LoaderCircle, MonitorCog } from 'lucide-vue-next'
+import { ChevronDown, Cpu, KeyRound, LoaderCircle, MonitorCog, ShieldCheck } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -33,6 +33,8 @@ const installing = computed(() => job.value?.state === 'running')
 const failed = computed(() => (job.value?.state === 'failed' ? job.value : null))
 const kvm = computed(() => plugin.value?.hardware.kvm === true)
 const ready = computed(() => vmsReady(plugin.value))
+/** Installed before VMs had a TPM: installing again brings swtpm. */
+const lacksTpm = computed(() => plugin.value?.installed === true && !plugin.value.hardware.swtpm)
 
 // Once a run ends, what the plugin is now.
 watch(
@@ -166,9 +168,64 @@ const select =
             <span class="text-muted-foreground">{{
               plugin?.hardware.iommu ? t('appStore.vms.iommuOn') : t('appStore.vms.iommuOff')
             }}</span>
+            <span
+              v-if="plugin && !plugin.hardware.iommu"
+              class="text-xs text-muted-foreground"
+              data-testid="vms-iommu-hint"
+              >{{ t('appStore.vms.iommuHint') }}</span
+            >
+          </span>
+        </li>
+        <li
+          v-if="plugin?.installed"
+          class="flex items-start gap-3 rounded-lg border p-3"
+          data-testid="vms-tpm"
+        >
+          <KeyRound class="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+          <span class="grid min-w-0 flex-1 gap-0.5">
+            <span class="flex flex-wrap items-center gap-2 font-medium">
+              {{ t('appStore.vms.tpm') }}
+              <Badge :variant="plugin.hardware.swtpm ? 'success' : 'warning'">{{
+                plugin.hardware.swtpm ? t('appStore.vms.ready') : '–'
+              }}</Badge>
+            </span>
+            <span class="text-muted-foreground">{{
+              plugin.hardware.swtpm ? t('appStore.vms.tpmOn') : t('appStore.vms.tpmOff')
+            }}</span>
+          </span>
+          <Button
+            v-if="lacksTpm && !installing"
+            size="sm"
+            variant="outline"
+            data-testid="vms-reinstall"
+            @click="install"
+            >{{ t('appStore.vms.reinstall') }}</Button
+          >
+        </li>
+        <li
+          v-if="plugin?.installed"
+          class="flex items-start gap-3 rounded-lg border p-3"
+          data-testid="vms-secure-boot"
+        >
+          <ShieldCheck class="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+          <span class="grid min-w-0 flex-1 gap-0.5">
+            <span class="flex flex-wrap items-center gap-2 font-medium">
+              {{ t('appStore.vms.secureBoot') }}
+              <Badge :variant="plugin.hardware.secure_boot ? 'success' : 'warning'">{{
+                plugin.hardware.secure_boot ? t('appStore.vms.ready') : '–'
+              }}</Badge>
+            </span>
+            <span class="text-muted-foreground">{{
+              plugin.hardware.secure_boot
+                ? t('appStore.vms.secureBootOn')
+                : t('appStore.vms.secureBootOff')
+            }}</span>
           </span>
         </li>
       </ul>
+      <p v-if="lacksTpm" class="px-2 text-xs text-muted-foreground">
+        {{ t('appStore.vms.reinstallHint') }}
+      </p>
     </section>
 
     <dl class="grid grid-cols-2 gap-y-4 border-y py-4 text-sm @2xl:grid-cols-4">
