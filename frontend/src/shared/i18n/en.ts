@@ -14,6 +14,7 @@ const en = {
     docker: 'Docker',
     vms: 'Virtual machines',
     'vm-console': 'VM console',
+    backup: 'Backup',
   },
   folderPicker: {
     pickFolder: 'Choose a folder',
