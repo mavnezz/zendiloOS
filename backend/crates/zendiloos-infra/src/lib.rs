@@ -9,6 +9,8 @@
 
 pub mod agent;
 pub mod apps;
+pub mod backup;
+pub mod backup_sign_in;
 mod blocking;
 mod clock;
 pub mod containers;

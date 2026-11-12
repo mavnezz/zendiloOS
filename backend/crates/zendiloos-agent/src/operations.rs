@@ -14,6 +14,7 @@ use zendiloos_fileops::FileError;
 use crate::accounts::{AccountFiles, Accounts};
 use crate::acme::{Acme, AcmePaths};
 use crate::apps::Apps;
+use crate::backup::{BackupPaths, BackupTools, Backups};
 use crate::config::Tools;
 use crate::docker::Docker;
 use crate::emmc::Emmc;
@@ -47,6 +48,7 @@ pub struct Paths {
     pub web_server: WebServerPaths,
     pub firewall: FirewallPaths,
     pub vms: VmPaths,
+    pub backup: BackupPaths,
 }
 
 const MDSTAT: &str = "/proc/mdstat";
@@ -88,6 +90,7 @@ pub struct Operations {
     enclosure: Enclosure,
     emmc: Emmc,
     vms: Vms,
+    backups: Backups,
     console_issue: std::path::PathBuf,
     role: Role,
 }
@@ -153,6 +156,19 @@ impl Operations {
                 paths.vms.clone(),
                 paths.host.clone(),
             ),
+            backups: Backups::new(
+                BackupTools {
+                    systemd_run: Program::new(&tools.systemd_run)?,
+                    systemctl: Program::new(&tools.systemctl)?,
+                    rsync: tools.rsync.clone(),
+                    rclone: tools.rclone.clone(),
+                    ssh: tools.ssh.clone(),
+                    ssh_keygen: tools.ssh_keygen.clone(),
+                    ssh_keyscan: tools.ssh_keyscan.clone(),
+                },
+                paths.backup.clone(),
+                paths.host.clone(),
+            ),
             console_issue: paths.host.console_issue.clone(),
             sharing: Sharing::new(tools, paths.host.clone(), paths.accounts.clone())?,
             apps: Apps::new(
@@ -183,6 +199,7 @@ impl Operations {
             self.web_server.restore_unconfirmed().await;
             self.firewall.restore_unconfirmed().await;
             self.volumes.recover().await;
+            self.backups.recover().await;
         }
     }
 
@@ -270,6 +287,16 @@ impl Operations {
             Request::DeleteVm { id } => self.vms.delete(id).await,
             Request::VmStates {} => self.vms.states().await,
             Request::VmStats {} => self.vms.stats().await,
+            Request::BackupFacts {} => Ok(self.backups.facts()),
+            Request::MakeBackupKey {} => self.backups.make_key().await,
+            Request::ScanBackupHostKeys { host, port } => self.backups.scan(host, *port).await,
+            Request::ListBackup { at, inside, secrets } => self.backups.list(at, inside, secrets).await,
+            Request::RunBackup { run, secrets } => self.backups.run(run, secrets).await,
+            Request::StopBackup { task } => self.backups.stop(*task).await,
+            Request::PruneBackup { task, at, names, secrets } => {
+                self.backups.prune(*task, at, names, secrets).await
+            }
+            Request::RestoreBackup { restore, secrets } => self.backups.restore(restore, secrets).await,
             Request::StartApp { app } => self.apps.start(app).await,
             Request::StopApp { app } => self.apps.stop(app).await,
             Request::RemoveApp { app, pool, volume } => match self.apps.remove(app).await {

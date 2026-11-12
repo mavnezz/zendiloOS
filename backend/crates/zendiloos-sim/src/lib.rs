@@ -16,6 +16,7 @@
 //! without taking on the user's credentials: nothing is refused for lack of
 //! permissions.
 
+mod backup;
 mod compose;
 mod docker;
 mod host;
@@ -84,6 +85,7 @@ pub struct SimulatedAgent {
     firewall: Mutex<SimFirewall>,
     /// libvirt's domains and the VMs' storage; nothing runs.
     vms: Mutex<vms::SimVms>,
+    backup: Mutex<backup::SimBackup>,
 }
 
 #[derive(Debug, Default)]
@@ -203,6 +205,7 @@ impl SimPackages {
             PackageTask::InstallDocker
             | PackageTask::InstallAcme
             | PackageTask::InstallVms
+            | PackageTask::InstallBackup
             | PackageTask::InstallNetworkd => &[(0, "lists"), (1, "install"), (3, "")],
             PackageTask::Check => &[(0, "lists"), (2, "")],
             PackageTask::Update if run.release.is_some() => {
@@ -224,6 +227,7 @@ impl SimPackages {
                     PackageTask::InstallDocker
                         | PackageTask::InstallAcme
                         | PackageTask::InstallVms
+                        | PackageTask::InstallBackup
                         | PackageTask::InstallNetworkd
                 ) {
                     let done = run.task == PackageTask::Update;
@@ -397,6 +401,7 @@ impl SimulatedAgent {
             acme: Mutex::default(),
             firewall: Mutex::default(),
             vms: Mutex::default(),
+            backup: Mutex::default(),
         }
     }
 
@@ -757,6 +762,11 @@ impl AgentTransport for SimulatedAgent {
                     self.vms.lock().unwrap_or_else(PoisonError::into_inner).installed = true;
                 }
                 if run.as_ref().is_some_and(|run| {
+                    run.state == PackageRunState::Succeeded && run.task == PackageTask::InstallBackup
+                }) {
+                    self.backup.lock().unwrap_or_else(PoisonError::into_inner).installed = true;
+                }
+                if run.as_ref().is_some_and(|run| {
                     run.state == PackageRunState::Succeeded && run.task == PackageTask::InstallNetworkd
                 }) {
                     packages.resolved = true;
@@ -888,6 +898,19 @@ impl AgentTransport for SimulatedAgent {
                     || error(ErrorCode::InvalidRequest, "not a request about virtual machines"),
                 )
             }
+            Request::BackupFacts {}
+            | Request::MakeBackupKey {}
+            | Request::ScanBackupHostKeys { .. }
+            | Request::ListBackup { .. }
+            | Request::RunBackup { .. }
+            | Request::StopBackup { .. }
+            | Request::PruneBackup { .. }
+            | Request::RestoreBackup { .. } => self
+                .backup
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .handle(&request)
+                .unwrap_or_else(|| error(ErrorCode::InvalidRequest, "not a request about backups")),
             Request::AppLogs { app, .. } => Response::AppLogs {
                 text: format!(
                     "2026-11-06T12:00:00.000000000Z {}-app-1  | simulated: started\n",

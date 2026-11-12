@@ -32,12 +32,16 @@ pub enum Permission {
     ContainersManage,
     /// Virtual machines: the plugin, VMs and their consoles.
     VmsManage,
+    /// Backup tasks: the plugin, tasks, their runs and log, restores. A
+    /// backup reads whole shares whatever their rules say, and a restore
+    /// writes into them: an administrator's alone.
+    BackupManage,
     /// Own password, sessions and preferences.
     AccountSelf,
 }
 
 impl Permission {
-    pub const ALL: [Permission; 12] = [
+    pub const ALL: [Permission; 13] = [
         Permission::SystemView,
         Permission::SystemManage,
         Permission::LogsView,
@@ -49,6 +53,7 @@ impl Permission {
         Permission::FilesWrite,
         Permission::ContainersManage,
         Permission::VmsManage,
+        Permission::BackupManage,
         Permission::AccountSelf,
     ];
 
@@ -66,6 +71,7 @@ impl Permission {
             Permission::FilesWrite => "files.write",
             Permission::ContainersManage => "containers.manage",
             Permission::VmsManage => "vms.manage",
+            Permission::BackupManage => "backup.manage",
             Permission::AccountSelf => "account.self",
         }
     }

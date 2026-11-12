@@ -52,10 +52,17 @@ const vms = useQuery({
   queryFn: () => unwrap(api.GET('/api/v1/vms/plugin')),
   enabled: computed(() => session.can('vms.manage')),
 })
+/** Whether backup tasks can run: rsync installed. */
+const backup = useQuery({
+  queryKey: ['backup', 'plugin'],
+  queryFn: () => unwrap(api.GET('/api/v1/backup/plugin')),
+  enabled: computed(() => session.can('backup.manage')),
+})
 /** Whether what an app needs is on the NAS. */
 function present(app: AppDefinition): boolean {
   if (app.requires === 'docker') return Boolean(docker.data.value?.installed)
   if (app.requires === 'vms') return Boolean(vms.data.value?.installed && vms.data.value.storage)
+  if (app.requires === 'backup') return Boolean(backup.data.value?.installed)
   return true
 }
 /** Only apps this account may use and the NAS has; the server enforces the same. */

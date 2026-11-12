@@ -153,7 +153,19 @@ const KNOWN_PROBLEMS = [
   'image_in_use',
   'location_in_use',
   'iso_denied',
+  'backup_not_installed',
+  'backup_installed',
+  'folder_taken',
+  'task_running',
+  'task_not_running',
+  'restore_running',
+  'share_missing',
+  'drive_missing',
+  'drive_read_only',
+  'host_key_changed',
   'agent_failed',
+  'account_in_use',
+  'cloud_sign_in_expired',
 ] as const
 
 function isKnown(code: string): code is (typeof KNOWN_PROBLEMS)[number] {
@@ -206,8 +218,14 @@ export function problemMessage(error: unknown): string {
     'location_in_use',
     // The containers a backup or restore keeps stopped.
     'containers_held',
+    // The task that backs up into the folder already.
+    'folder_taken',
+    // ssh's words about the key it was offered.
+    'host_key_changed',
     // libvirt's or apt's words.
     'agent_failed',
+    // The tasks that back up into a cloud account.
+    'account_in_use',
   ]
   if (isKnown(error.code)) {
     const message = t(`errors.${error.code}`)

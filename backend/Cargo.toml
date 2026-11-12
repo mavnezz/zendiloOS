@@ -17,6 +17,7 @@ zendiloos-agent = { path = "crates/zendiloos-agent" }
 zendiloos-agent-proto = { path = "crates/zendiloos-agent-proto" }
 zendiloos-api = { path = "crates/zendiloos-api" }
 zendiloos-apps = { path = "crates/zendiloos-apps" }
+zendiloos-backup = { path = "crates/zendiloos-backup" }
 zendiloos-containers = { path = "crates/zendiloos-containers" }
 zendiloos-updates = { path = "crates/zendiloos-updates" }
 zendiloos-exec = { path = "crates/zendiloos-exec" }

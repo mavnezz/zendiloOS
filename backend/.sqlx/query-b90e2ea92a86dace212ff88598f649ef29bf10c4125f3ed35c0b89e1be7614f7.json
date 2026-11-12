@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM backup_runs WHERE started_at < ? AND outcome <> 'running'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "b90e2ea92a86dace212ff88598f649ef29bf10c4125f3ed35c0b89e1be7614f7"
+}

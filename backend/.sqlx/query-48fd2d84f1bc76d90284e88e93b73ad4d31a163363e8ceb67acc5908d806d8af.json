@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE backup_tasks SET last_plug = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "48fd2d84f1bc76d90284e88e93b73ad4d31a163363e8ceb67acc5908d806d8af"
+}

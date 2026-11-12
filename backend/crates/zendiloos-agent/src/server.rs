@@ -34,6 +34,9 @@ const MAX_CONCURRENT_BURSTS: usize = 2;
 /// one at a time; the second place is for ending one or removing an old
 /// archive meanwhile.
 const MAX_CONCURRENT_VOLUME_WORK: usize = 2;
+/// Backup tasks' runs, restores and retention at once, beside everything
+/// else: each up to a day in a unit of its own, one per task.
+const MAX_CONCURRENT_BACKUP_WORK: usize = 4;
 
 /// Accepts connections from one account and answers one request each.
 #[derive(Debug, Clone)]
@@ -45,6 +48,7 @@ pub struct Server {
     walk_permits: Arc<Semaphore>,
     burst_permits: Arc<Semaphore>,
     volume_permits: Arc<Semaphore>,
+    backup_permits: Arc<Semaphore>,
     /// Counting the volumes' data, one at a time.
     count_permit: Arc<Semaphore>,
     /// One long place per user at a time.
@@ -64,6 +68,7 @@ impl Server {
             walk_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_WALKS)),
             burst_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_BURSTS)),
             volume_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_VOLUME_WORK)),
+            backup_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_BACKUP_WORK)),
             count_permit: Arc::new(Semaphore::new(1)),
             users: Arc::default(),
             stopping: Arc::new(watch::channel(false).0),
@@ -139,6 +144,8 @@ impl Server {
             &self.burst_permits
         } else if envelope.request.is_volume_work() {
             &self.volume_permits
+        } else if envelope.request.is_backup_work() {
+            &self.backup_permits
         } else if envelope.request.is_count() {
             &self.count_permit
         } else if envelope.request.is_long() {

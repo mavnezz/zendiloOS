@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT token, client_secret FROM backup_cloud_accounts WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "token",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "backup_cloud_accounts",
+            "name": "token"
+          }
+        }
+      },
+      {
+        "name": "client_secret",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "backup_cloud_accounts",
+            "name": "client_secret"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "8330fa7fd1125a7e190d927f8384bbcafdc73c6383303d4a35edd937e51ba7af"
+}

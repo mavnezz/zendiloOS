@@ -56,6 +56,9 @@ const VMS_PACKAGES: [&str; 7] = [
     "ovmf",
     "passt",
 ];
+/// What backup tasks need: rsync, and the SSH client with ssh-keygen and
+/// ssh-keyscan (most systems have it already).
+const BACKUP_PACKAGES: [&str; 3] = ["rsync", "openssh-client", "rclone"];
 /// Lines of apt's output kept for a failure.
 const TAIL: usize = 15;
 /// The files of a release beside its package.
@@ -328,6 +331,13 @@ impl Debian {
                 // reason: the daemon recommends every driver.
                 let mut args = vec!["install", "--yes", "--no-install-recommends"];
                 args.extend(VMS_PACKAGES);
+                self.apt(&args)
+            }
+            PackageTask::InstallBackup => {
+                lists(&mut step)?;
+                step("install")?;
+                let mut args = vec!["install", "--yes", "--no-install-recommends"];
+                args.extend(BACKUP_PACKAGES);
                 self.apt(&args)
             }
             PackageTask::InstallNetworkd => {
@@ -1090,6 +1100,7 @@ mod tests {
         run_with(&paths, &debian, "ab01", "install-docker", None, None).unwrap();
         run_with(&paths, &debian, "ab02", "install-acme", None, None).unwrap();
         run_with(&paths, &debian, "ab04", "install-vms", None, None).unwrap();
+        run_with(&paths, &debian, "ab05", "install-backup", None, None).unwrap();
         let installs: Vec<String> =
             called(root.path()).into_iter().filter(|call| call.contains(" install ")).collect();
         assert!(installs[0].ends_with("install --yes docker.io docker-compose"), "{installs:?}");
@@ -1099,6 +1110,10 @@ mod tests {
                 "install --yes --no-install-recommends libvirt-daemon libvirt-daemon-driver-qemu \
                  libvirt-clients qemu-system-x86 qemu-utils ovmf passt"
             ),
+            "{installs:?}"
+        );
+        assert!(
+            installs[3].ends_with("install --yes --no-install-recommends rsync openssh-client rclone"),
             "{installs:?}"
         );
         // Never what brings libvirt's own network and filters along.

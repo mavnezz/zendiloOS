@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE backup_runs SET outcome = 'interrupted', finished_at = ? WHERE outcome = 'running'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "7c3f3a834ebff63d46eb86cd36f256a6f563a78354901d2621988e30f4282d70"
+}

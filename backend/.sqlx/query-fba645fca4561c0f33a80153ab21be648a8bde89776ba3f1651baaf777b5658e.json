@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO backup_cloud_accounts (name, provider, client_id, client_secret, token, drive_id,\n                 drive_type, created_at)\n             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "fba645fca4561c0f33a80153ab21be648a8bde89776ba3f1651baaf777b5658e"
+}

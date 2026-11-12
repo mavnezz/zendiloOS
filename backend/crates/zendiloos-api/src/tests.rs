@@ -302,6 +302,9 @@ pub(crate) struct Harness {
     pub(crate) firewall: zendiloos_firewall::application::Firewall,
     /// libvirt pretended: KVM there, nothing installed at first.
     pub(crate) vm_host: Arc<zendiloos_vms::testing::FakeVmHost>,
+    /// rsync pretended, not installed at first; drives a test plugs in.
+    pub(crate) backup_host: Arc<zendiloos_backup::testing::FakeHost>,
+    pub(crate) backup_drives: Arc<zendiloos_backup::testing::FakeDrives>,
     /// The network's host, pretended: managed by systemd-networkd unless a
     /// test gives it ifupdown.
     pub(crate) network_host: Arc<zendiloos_network::testing::FakeConfigurator>,
@@ -565,11 +568,30 @@ impl Harness {
             audit: identity.audit.clone(),
             clock: identity.clock.clone(),
         });
+        let backup_host = Arc::new(zendiloos_backup::testing::FakeHost::default());
+        *backup_host.installed.lock().unwrap() = false;
+        let backup_drives = Arc::new(zendiloos_backup::testing::FakeDrives::default());
+        let backup =
+            zendiloos_backup::application::Backups::new(zendiloos_backup::application::BackupPorts {
+                tasks: Arc::new(zendiloos_backup::testing::MemoryTasks::default()),
+                runs: Arc::new(zendiloos_backup::testing::MemoryRuns::default()),
+                settings: Arc::new(zendiloos_backup::testing::MemorySettings::default()),
+                host: backup_host.clone(),
+                shares: Arc::new(zendiloos_backup::testing::FakeShares::default()),
+                drives: backup_drives.clone(),
+                accounts: Arc::new(zendiloos_backup::testing::MemoryAccounts::default()),
+                sign_in: Arc::new(zendiloos_backup::testing::FakeSignIn::default()),
+                jobs: jobs.clone(),
+                notifier: notifier.clone(),
+                audit: identity.audit.clone(),
+                clock: identity.clock.clone(),
+            });
         let network_host = Arc::new(zendiloos_network::testing::FakeConfigurator::default());
         let network_source = Arc::new(SettableNetwork::default());
         let network_users = Arc::new(FakeUsers::default());
         let use_cases = UseCases {
             vms,
+            backup,
             certificates,
             firewall: firewall.clone(),
             containers: docker_test.containers,
@@ -649,6 +671,8 @@ impl Harness {
             firewall_facts,
             firewall,
             vm_host,
+            backup_host,
+            backup_drives,
             network_host,
             network_source,
             network_users,
@@ -1747,6 +1771,27 @@ fn openapi_documents_every_route() {
             "/api/v1/auth/two-factor/disable",
             "/api/v1/auth/two-factor/recovery-codes",
             "/api/v1/auth/two-factor/setup",
+            "/api/v1/backup/accounts",
+            "/api/v1/backup/accounts/sign-in",
+            "/api/v1/backup/accounts/sign-in/{flow}",
+            "/api/v1/backup/accounts/{id}",
+            "/api/v1/backup/key",
+            "/api/v1/backup/plugin",
+            "/api/v1/backup/plugin/install",
+            "/api/v1/backup/runs",
+            "/api/v1/backup/runs/{id}/transfers",
+            "/api/v1/backup/servers/check",
+            "/api/v1/backup/servers/host-keys",
+            "/api/v1/backup/settings",
+            "/api/v1/backup/shares/{id}/readers",
+            "/api/v1/backup/tasks",
+            "/api/v1/backup/tasks/{id}",
+            "/api/v1/backup/tasks/{id}/browse",
+            "/api/v1/backup/tasks/{id}/restore",
+            "/api/v1/backup/tasks/{id}/run",
+            "/api/v1/backup/tasks/{id}/runs",
+            "/api/v1/backup/tasks/{id}/stop",
+            "/api/v1/backup/tasks/{id}/versions",
             "/api/v1/certificates",
             "/api/v1/certificates/accounts",
             "/api/v1/certificates/accounts/{id}",

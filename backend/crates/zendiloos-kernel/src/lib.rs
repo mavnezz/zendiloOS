@@ -4,6 +4,7 @@
 //! here performs I/O.
 
 mod audit;
+pub mod calendar;
 mod error;
 mod request;
 mod secret;

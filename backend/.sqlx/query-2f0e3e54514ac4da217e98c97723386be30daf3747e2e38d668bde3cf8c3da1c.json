@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE backup_tasks SET server_password = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "2f0e3e54514ac4da217e98c97723386be30daf3747e2e38d668bde3cf8c3da1c"
+}

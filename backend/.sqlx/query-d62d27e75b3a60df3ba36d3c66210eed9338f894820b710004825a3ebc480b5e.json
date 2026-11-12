@@ -1,0 +1,170 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", task_id, cause, started_by, started_at, finished_at, outcome, files, bytes,\n                      version, error, transfers, job_id\n               FROM backup_runs WHERE ?1 IS NULL OR task_id = ?1 ORDER BY id DESC LIMIT ?2",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "backup_runs",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "task_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "backup_runs",
+            "name": "task_id"
+          }
+        }
+      },
+      {
+        "name": "cause",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "backup_runs",
+            "name": "cause"
+          }
+        }
+      },
+      {
+        "name": "started_by",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "backup_runs",
+            "name": "started_by"
+          }
+        }
+      },
+      {
+        "name": "started_at",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "backup_runs",
+            "name": "started_at"
+          }
+        }
+      },
+      {
+        "name": "finished_at",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "backup_runs",
+            "name": "finished_at"
+          }
+        }
+      },
+      {
+        "name": "outcome",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "backup_runs",
+            "name": "outcome"
+          }
+        }
+      },
+      {
+        "name": "files",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "backup_runs",
+            "name": "files"
+          }
+        }
+      },
+      {
+        "name": "bytes",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "backup_runs",
+            "name": "bytes"
+          }
+        }
+      },
+      {
+        "name": "version",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "backup_runs",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "name": "error",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "backup_runs",
+            "name": "error"
+          }
+        }
+      },
+      {
+        "name": "transfers",
+        "ordinal": 11,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "backup_runs",
+            "name": "transfers"
+          }
+        }
+      },
+      {
+        "name": "job_id",
+        "ordinal": 12,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "backup_runs",
+            "name": "job_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "d62d27e75b3a60df3ba36d3c66210eed9338f894820b710004825a3ebc480b5e"
+}

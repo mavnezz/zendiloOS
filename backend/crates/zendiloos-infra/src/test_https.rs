@@ -63,6 +63,8 @@ pub(crate) struct Asked {
     pub(crate) path: String,
     /// The header lines, as sent, lowercase.
     pub(crate) headers: String,
+    /// What came after them, as far as `Content-Length` said.
+    pub(crate) body: String,
 }
 
 /// Serves https on 127.0.0.1 until the test ends; `answer` gives the whole
@@ -93,14 +95,28 @@ pub(crate) async fn serve(answer: impl Fn(&Asked) -> Vec<u8> + Send + Sync + 'st
                         Ok(n) => read.extend_from_slice(&buffer[..n]),
                     }
                 }
-                let text = String::from_utf8_lossy(&read).into_owned();
-                let (head, _) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
-                let (line, headers) = head.split_once("\r\n").unwrap_or((head, ""));
+                let end = read.windows(4).position(|w| w == b"\r\n\r\n").unwrap_or(0) + 4;
+                let head = String::from_utf8_lossy(&read[..end - 4]).into_owned();
+                let (line, headers) = head.split_once("\r\n").unwrap_or((&head, ""));
+                let headers = headers.to_lowercase();
+                let length: usize = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .and_then(|length| length.trim().parse().ok())
+                    .unwrap_or(0);
+                while read.len() < end + length {
+                    match stream.read(&mut buffer).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => read.extend_from_slice(&buffer[..n]),
+                    }
+                }
+                let body = String::from_utf8_lossy(&read[end..read.len().min(end + length)]).into_owned();
                 let mut parts = line.split(' ');
                 let asked = Asked {
                     method: parts.next().unwrap_or_default().to_owned(),
                     path: parts.next().unwrap_or_default().to_owned(),
-                    headers: headers.to_lowercase(),
+                    headers,
+                    body,
                 };
                 let _ = stream.write_all(&answer(&asked)).await;
                 let _ = stream.shutdown().await;

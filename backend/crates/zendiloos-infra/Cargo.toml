@@ -25,6 +25,7 @@ zendiloos-network.workspace = true
 zendiloos-storage.workspace = true
 zendiloos-system.workspace = true
 zendiloos-vms.workspace = true
+zendiloos-backup.workspace = true
 argon2.workspace = true
 async-trait.workspace = true
 base64.workspace = true
@@ -63,6 +64,7 @@ zendiloos-storage = { workspace = true, features = ["testing"] }
 zendiloos-jobs = { workspace = true, features = ["testing"] }
 zendiloos-notify = { workspace = true, features = ["testing"] }
 zendiloos-vms = { workspace = true, features = ["testing"] }
+zendiloos-backup = { workspace = true, features = ["testing"] }
 zendiloos-network = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 tokio.workspace = true

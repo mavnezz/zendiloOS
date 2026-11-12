@@ -105,6 +105,14 @@ pub struct Tools {
     pub qemu: PathBuf,
     /// Run in a transient unit: makes the folder of the VMs' consoles.
     pub systemd_tmpfiles: PathBuf,
+    /// The backup plugin's: rsync, rclone and the SSH client run in a
+    /// backup's unit, ssh-keygen makes the NAS's key, ssh-keyscan reads a
+    /// server's; all may be missing until the plugin is installed.
+    pub rsync: PathBuf,
+    pub rclone: PathBuf,
+    pub ssh: PathBuf,
+    pub ssh_keygen: PathBuf,
+    pub ssh_keyscan: PathBuf,
 }
 
 impl Default for Tools {
@@ -146,6 +154,11 @@ impl Default for Tools {
             libvirtd: PathBuf::from("/usr/sbin/libvirtd"),
             qemu: PathBuf::from("/usr/bin/qemu-system-x86_64"),
             systemd_tmpfiles: PathBuf::from("/usr/bin/systemd-tmpfiles"),
+            rsync: PathBuf::from("/usr/bin/rsync"),
+            rclone: PathBuf::from("/usr/bin/rclone"),
+            ssh: PathBuf::from("/usr/bin/ssh"),
+            ssh_keygen: PathBuf::from("/usr/bin/ssh-keygen"),
+            ssh_keyscan: PathBuf::from("/usr/bin/ssh-keyscan"),
         }
     }
 }

@@ -5,6 +5,7 @@
 mod accounts;
 mod acme;
 mod apps;
+mod backup;
 mod docker;
 mod docker_data;
 mod engine;
@@ -33,6 +34,7 @@ use zendiloos_system::domain::PowerAction;
 pub use accounts::AgentSystemAccounts;
 pub use acme::AgentAcme;
 pub use apps::AgentApps;
+pub use backup::AgentBackup;
 pub use docker_data::AgentDockerData;
 pub use engine::AgentDockerEngine;
 pub use files::AgentFiles;

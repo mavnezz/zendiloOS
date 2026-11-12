@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", name, provider, client_id, drive_id, drive_type, created_at\n               FROM backup_cloud_accounts ORDER BY name",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "backup_cloud_accounts",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "backup_cloud_accounts",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "provider",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "backup_cloud_accounts",
+            "name": "provider"
+          }
+        }
+      },
+      {
+        "name": "client_id",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "backup_cloud_accounts",
+            "name": "client_id"
+          }
+        }
+      },
+      {
+        "name": "drive_id",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "backup_cloud_accounts",
+            "name": "drive_id"
+          }
+        }
+      },
+      {
+        "name": "drive_type",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "backup_cloud_accounts",
+            "name": "drive_type"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "backup_cloud_accounts",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "1ff4799327077a19752aad8fb7dc72aa12c42e535f0b0f8602f2525650b84916"
+}

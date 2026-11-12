@@ -9,8 +9,8 @@ use tokio::signal::unix::{SignalKind, signal};
 use zendiloos_agent::config::Config;
 use zendiloos_agent::{
     HostPaths, Operations, Server, VolumeJob, docker_bridges, lower_file_overrides, passwd, pin_project,
-    pin_shares, power_off_drive, run_iso_job, run_packages, run_upload_job, run_volume_job, serve,
-    unpin_project, unpin_shares,
+    pin_shares, power_off_drive, run_backup_unit, run_iso_job, run_packages, run_upload_job, run_volume_job,
+    serve, unpin_project, unpin_shares,
 };
 use zendiloos_agent_proto::{AppName, DiskName, ProjectName, Role};
 
@@ -64,6 +64,9 @@ enum Command {
     /// Receive an image uploaded into the library of virtual machines from
     /// standard input, a pipe zendiloosd writes (likewise)
     ReceiveVmImage { job: String },
+    /// A backup task's work: rsync between its places (a job of the system
+    /// agent's, in a unit of its own), its secrets read from standard input
+    BackupUnit { job: String },
     /// Let frames within the bridges zendiloOS made pass Docker's FORWARD
     /// chain, and nothing more (zendiloos-docker-bridges.service)
     DockerBridges,
@@ -139,6 +142,13 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         return Ok(());
     }
+    if let Some(Command::BackupUnit { job }) = &cli.command {
+        let done = run_backup_unit(job, &mut std::io::stdin().lock(), &mut std::io::stdout()).await;
+        if !done {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if let Some(Command::DockerBridges) = &cli.command {
         let directory = zendiloos_agent::NetworkPaths::default().directory;
         let report = docker_bridges::sync(&directory, &docker_bridges::Family::debian())
@@ -177,6 +187,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             | Command::ScanVolumeBackups { .. }
             | Command::CopyVmIso { .. }
             | Command::ReceiveVmImage { .. }
+            | Command::BackupUnit { .. }
             | Command::DockerBridges => unreachable!("handled above"),
         };
         outcome.map_err(|error| anyhow::anyhow!("{name}: {error}"))?;

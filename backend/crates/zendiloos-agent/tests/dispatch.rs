@@ -86,6 +86,11 @@ impl Host {
             libvirtd: "/bin/false".into(),
             qemu: "/bin/false".into(),
             systemd_tmpfiles: "/bin/false".into(),
+            rsync: "/bin/false".into(),
+            ssh: "/bin/false".into(),
+            ssh_keygen: "/bin/false".into(),
+            ssh_keyscan: "/bin/false".into(),
+            rclone: "/bin/false".into(),
             dockerd: p("dockerd"),
         };
         let at = |name: &str| self.path(name);
@@ -142,6 +147,7 @@ impl Host {
             },
             firewall: FirewallPaths { directory: at("firewall") },
             vms: Default::default(),
+            backup: Default::default(),
         };
         Operations::with_paths(role, &tools, Erasable::Policy(ErasePolicy::None), paths).unwrap()
     }

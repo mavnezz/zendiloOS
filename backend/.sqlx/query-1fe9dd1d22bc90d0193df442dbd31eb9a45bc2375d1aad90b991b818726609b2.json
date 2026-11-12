@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO backup_tasks (name, folder, source_kind, source_share, source_path, target_kind,\n                 target_share, target_drive, target_account, target_path, server_transport, server_host, server_port,\n                 server_user, server_module, server_host_key, server_fingerprint, server_password, mode,\n                 keep_changed_days, keep_last, keep_days, schedule, schedule_weekday, schedule_hour, schedule_minute,\n                 on_plug, excludes, hidden, bwlimit_kib, notify_success, encrypted, created_at, since, last_plug)\n             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,\n                     ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 35
+    },
+    "nullable": []
+  },
+  "hash": "1fe9dd1d22bc90d0193df442dbd31eb9a45bc2375d1aad90b991b818726609b2"
+}

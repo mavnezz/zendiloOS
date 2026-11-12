@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO backup_transfers (run_id, seq, change, path) VALUES (?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "5060e0937068a34d75191fe0d249c7dda0aad6a0df26400dc63ec4b9d16c2c65"
+}

@@ -48,6 +48,7 @@ pub const API_V1: &str = "/api/v1";
         (name = "files", description = "The file manager: share contents as the signed-in user"),
         (name = "certificates", description = "The ACME client plugin: accounts, challenges and certificates"),
         (name = "vms", description = "Virtual machines: the plugin, VMs through libvirt and their state"),
+        (name = "backup", description = "Backup tasks: the plugin, tasks to places on the NAS and rsync servers, their log, restores"),
     ),
     components(schemas(
         routes::live::LiveRequest,

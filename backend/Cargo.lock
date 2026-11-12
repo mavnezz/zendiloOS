@@ -3064,6 +3064,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "zendiloos-apps",
+ "zendiloos-backup",
  "zendiloos-certificates",
  "zendiloos-containers",
  "zendiloos-firewall",
@@ -3097,6 +3098,19 @@ version = "0.4.0"
 dependencies = [
  "serde_json",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "zendiloos-backup"
+version = "0.4.0"
+dependencies = [
+ "async-trait",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "zendiloos-jobs",
+ "zendiloos-kernel",
+ "zendiloos-notify",
 ]
 
 [[package]]
@@ -3211,6 +3225,7 @@ dependencies = [
  "tracing",
  "zendiloos-agent-proto",
  "zendiloos-apps",
+ "zendiloos-backup",
  "zendiloos-catalog",
  "zendiloos-certificates",
  "zendiloos-containers",
@@ -3373,6 +3388,7 @@ dependencies = [
  "zendiloos-agent-proto",
  "zendiloos-api",
  "zendiloos-apps",
+ "zendiloos-backup",
  "zendiloos-certificates",
  "zendiloos-containers",
  "zendiloos-firewall",
