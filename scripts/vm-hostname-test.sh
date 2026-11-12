@@ -65,7 +65,11 @@ reloads_since() {
     vm "sudo journalctl -q --after-cursor '$1' _PID=1 -g 'Reload requested from client' -o cat" \
         | grep -c 'unit zendiloos-agent.service' || true
 }
-restarted_since() { vm "sudo journalctl -q --after-cursor '$2' -u '$1' -o cat" | grep -q '^Started'; }
+restarted_since() {
+    local lines
+    lines=$(vm "sudo journalctl -q --after-cursor '$2' -u '$1' -o cat")
+    grep -q '^Started' <<<"$lines"
+}
 
 original=
 restore() {
@@ -112,10 +116,12 @@ vm "getent hosts '$new' >/dev/null" || fail "$new does not resolve on the VM"
 [[ $(netbios) == "${new^^}" ]] || fail "Samba's NetBIOS name is $(netbios)"
 if vm "systemctl is-active --quiet avahi-daemon"; then
     wait_for "$new.local through Avahi" "vm \"avahi-resolve -4 -n '$new.local'\" | grep -q '$new.local'"
-    ! vm "avahi-resolve -4 -n '$original.local' 2>/dev/null" | grep -q . \
-        || fail "Avahi still answers for $original.local"
-    vm "avahi-browse -tpr _smb._tcp 2>/dev/null" | grep -q "${new^^}" \
-        || fail "Samba's Bonjour service is not called ${new^^}: $(vm 'avahi-browse -tpr _smb._tcp')"
+    old_answer=$(vm "avahi-resolve -4 -n '$original.local' 2>/dev/null" || true)
+    [[ -z $old_answer ]] || fail "Avahi still answers for $original.local: $old_answer"
+    # Read whole first: grep -q stops at the first match, and avahi-browse
+    # writing on would end with a broken pipe, which pipefail counts.
+    browsed=$(vm "avahi-browse -tpr _smb._tcp 2>/dev/null")
+    grep -q "${new^^}" <<<"$browsed" || fail "Samba's Bonjour service is not called ${new^^}: $browsed"
 else
     say "   (Avahi does not run: Bonjour left out)"
 fi
