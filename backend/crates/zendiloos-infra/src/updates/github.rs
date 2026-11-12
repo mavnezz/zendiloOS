@@ -8,6 +8,12 @@
 //! tried again after a pause when the failure may pass: an answer of 5xx,
 //! 408 or 429, a connection that could not be made, broke off or timed
 //! out. Only once its tries ran out does the update fail, saying why.
+//!
+//! GitHub turns a `~` in an asset's name into `.`: a test release's package
+//! `zendiloos_0.5.0~rc.1_amd64.deb` is listed as `zendiloos_0.5.0.rc.1_amd64.deb`,
+//! while `SHA256SUMS` and the signature name the version with its `~`. The
+//! version is read back as it was ([`listed_version`]) and the package saved
+//! under its own name, which the agent's checks go by.
 
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::PathBuf;
@@ -129,8 +135,9 @@ fn releases(text: &[u8], arch: &str) -> Result<Vec<Release>, String> {
                     size: asset.size,
                 })
             };
-            let package = asset(&|name| package_version(name, arch).is_some())?;
-            let version = package_version(&package.name, arch)?.to_owned();
+            let listed = asset(&|name| package_version(name, arch).is_some())?;
+            let version = listed_version(package_version(&listed.name, arch)?);
+            let package = Asset { name: format!("zendiloos_{version}_{arch}.deb"), ..listed };
             Some(Release {
                 channel: channel_of(&release.tag_name, release.prerelease),
                 tag: release.tag_name.clone(),
@@ -147,6 +154,27 @@ fn releases(text: &[u8], arch: &str) -> Result<Vec<Release>, String> {
             })
         })
         .collect())
+}
+
+/// A package's version as it was before GitHub listed it: a version of
+/// zendiloOS has three numbers, then a `~` before the name of a test release
+/// (`rc.1`, `beta.2`) and a `+` before a development build's (`0.5.0`,
+/// `0.5.0~rc.1`, `0.5.0~rc.1+dev.…`), never a fourth part that begins with a
+/// letter; such a `.` is GitHub's for the `~`.
+fn listed_version(version: &str) -> String {
+    let numeric = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    let mut parts = version.splitn(4, '.');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(major), Some(minor), Some(patch), Some(name))
+            if numeric(major)
+                && numeric(minor)
+                && numeric(patch)
+                && name.starts_with(|c: char| c.is_ascii_alphabetic()) =>
+        {
+            format!("{major}.{minor}.{patch}~{name}")
+        }
+        _ => version.to_owned(),
+    }
 }
 
 #[async_trait]
@@ -316,6 +344,48 @@ mod tests {
         assert_eq!(dev.published_at, Some(Timestamp::from_unix_seconds(1_793_959_200)));
         assert_eq!(releases(answer, "arm64").unwrap()[0].tag, "v0.2.0");
         assert!(releases(b"{\"message\":\"Not Found\"}", "amd64").is_err());
+    }
+
+    #[test]
+    fn a_test_release_s_version_is_read_back_as_it_was_before_github_listed_it() {
+        // As GitHub listed v0.5.0-rc.1: its `~` became `.`.
+        let answer = br#"[{"tag_name":"v0.5.0-rc.1","prerelease":true,"draft":false,"assets":[
+             {"name":"zendiloos_0.5.0.rc.1_amd64.deb","browser_download_url":"https://x/zendiloos_0.5.0.rc.1_amd64.deb","size":1},
+             {"name":"SHA256SUMS","browser_download_url":"https://x/s","size":1},
+             {"name":"SHA256SUMS.minisig","browser_download_url":"https://x/m","size":1}]}]"#;
+        let found = releases(answer, "amd64").unwrap();
+        assert_eq!((found[0].channel, found[0].version.as_str()), (Channel::Test, "0.5.0~rc.1"));
+        assert_eq!(found[0].package.name, "zendiloos_0.5.0~rc.1_amd64.deb", "the name SHA256SUMS lists");
+        assert_eq!(found[0].package.address, "https://x/zendiloos_0.5.0.rc.1_amd64.deb", "GitHub's");
+        for (listed, was) in [
+            ("0.5.0.rc.1", "0.5.0~rc.1"),
+            ("0.5.0.beta.2", "0.5.0~beta.2"),
+            ("0.5.0.rc.1+dev.20261112.gabc", "0.5.0~rc.1+dev.20261112.gabc"),
+            ("0.5.0~rc.1", "0.5.0~rc.1"),
+            ("0.5.0", "0.5.0"),
+            ("0.5.0+dev.20261112.gabc", "0.5.0+dev.20261112.gabc"),
+            ("10.20.30.rc.4", "10.20.30~rc.4"),
+            ("0.5.0.1", "0.5.0.1"),
+            ("0.5", "0.5"),
+            ("1:0.5.0.rc.1", "1:0.5.0.rc.1"),
+        ] {
+            assert_eq!(listed_version(listed), was, "{listed}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_test_release_s_package_is_saved_under_its_own_name() {
+        let (github, mut release, spool) = releases_from(vec![
+            ("/SHA256SUMS", vec!["200 OK"]),
+            ("/SHA256SUMS.minisig", vec!["200 OK"]),
+            ("/zendiloos_0.5.0.rc.1_amd64.deb", vec!["200 OK"]),
+        ])
+        .await;
+        release.package.address =
+            release.package.address.replace("zendiloos_0.5.0_amd64.deb", "zendiloos_0.5.0.rc.1_amd64.deb");
+        release.package.name = "zendiloos_0.5.0~rc.1_amd64.deb".into();
+        github.download(&release).await.unwrap();
+        assert!(spool.path().join("updates/zendiloos_0.5.0~rc.1_amd64.deb").exists());
     }
 
     #[test]
