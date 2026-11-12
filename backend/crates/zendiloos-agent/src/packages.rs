@@ -148,6 +148,17 @@ impl Packages {
         let going =
             |run: &Option<PackageRun>| run.as_ref().is_some_and(|run| run.state == PackageRunState::Running);
         let active = (going(&run) || going(&update)) && self.active().await;
+        if !active && (going(&run) || going(&update)) {
+            // The run may have ended between its record being read and its
+            // unit asked about: it writes its end before its unit stops, so
+            // read now, the record says how it ended (a check takes only
+            // seconds, and was told as cut off with its report lost).
+            run = self.recorded(STATE_FILE)?;
+            update = self.recorded(UPDATE_FILE).unwrap_or_else(|error| {
+                tracing::warn!(%error, "packages: the last update's record cannot be read");
+                None
+            });
+        }
         let latest = run.as_ref().map(|run| run.id.clone());
         if let Some(run) = run.as_mut().filter(|run| run.state == PackageRunState::Running && !active) {
             unseen(run);
@@ -327,6 +338,12 @@ impl Debian {
                 self.apt(&["install", "--yes", "acme.sh"])
             }
             PackageTask::InstallVms => {
+                // The domains zendiloOS writes are a PC's (q35, OVMF): QEMU
+                // and its firmware for x86 only, on amd64 only.
+                let arch = run_text(&self.dpkg, &["--print-architecture"])?;
+                if arch != "amd64" {
+                    return Err(format!("virtual machines are not offered on {arch} yet, only on amd64"));
+                }
                 lists(&mut step)?;
                 step("install")?;
                 // Not libvirt-daemon-system: it depends on the packages
@@ -364,6 +381,11 @@ impl Debian {
                 Ok(())
             }
             PackageTask::Update => {
+                // A package for another machine is refused before anything
+                // runs; install_release looks inside it too.
+                if let Some(release) = release {
+                    self.for_this_machine(&release.package)?;
+                }
                 lists(&mut step)?;
                 step("debian")?;
                 self.started_safely(self.apt(&["--with-new-pkgs", "--yes", "upgrade"]))?;
@@ -455,6 +477,15 @@ impl Debian {
         Ok(())
     }
 
+    /// The machine's architecture, which the package's name must name.
+    fn for_this_machine(&self, release: &ReleasePackage) -> Result<String, String> {
+        let arch = run_text(&self.dpkg, &["--print-architecture"])?;
+        if release.arch() != arch {
+            return Err(format!("the release's package is for {}, this machine is {arch}", release.arch()));
+        }
+        Ok(arch)
+    }
+
     /// Copies the release out of the download folder, checks it and
     /// installs it.
     fn install_release(&self, paths: &HostPaths, install: &ReleaseInstall) -> Result<(), String> {
@@ -476,7 +507,10 @@ impl Debian {
         if field("Version")? != release.version() {
             return Err("the release's package has another version than its name says".into());
         }
-        let arch = run_text(&self.dpkg, &["--print-architecture"])?;
+        // A release holds a package for each architecture, all of them in
+        // the signed checksums: the one for this machine, by its name (what
+        // the checksums list) and by what it says itself.
+        let arch = self.for_this_machine(release)?;
         if field("Architecture")? != arch {
             return Err(format!("the release's package is not for {arch}"));
         }
@@ -627,7 +661,7 @@ impl Debian {
             return Err(format!("apt-get --simulate upgrade failed ({})", output.status));
         };
         let running_kernel = rustix::system::uname().release().to_string_lossy().into_owned();
-        let newest_kernel = self.newest_kernel(&self.modules)?;
+        let newest_kernel = self.newest_kernel(&self.modules, &self.boot.boot)?;
         let zfs_ready = newest_kernel.as_deref().is_none_or(|kernel| has_zfs(&self.modules.join(kernel)));
         // Chosen at every look, a check's too: the kernels may have changed
         // since (installed by hand, a module built by hand), and the page
@@ -652,8 +686,13 @@ impl Debian {
         Ok(audit_lists_something(&output.stdout))
     }
 
-    /// The newest kernel with modules, by dpkg's order of versions.
-    fn newest_kernel(&self, modules: &Path) -> Result<Option<String>, String> {
+    /// The newest kernel that can start, by dpkg's order of versions: with
+    /// its modules, and its image in `boot` where GRUB's configuration finds
+    /// it. A kernel's package removed can leave its modules behind (Debian's
+    /// kernels from 7.x come as `linux-image`, `linux-binary` and
+    /// `linux-modules`, and removing the first keeps the others), which
+    /// start nothing and need no ZFS.
+    fn newest_kernel(&self, modules: &Path, boot: &Path) -> Result<Option<String>, String> {
         let entries = match fs::read_dir(modules) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -663,6 +702,9 @@ impl Debian {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             if !entry.path().join("modules.dep").exists() && !entry.path().join("kernel").is_dir() {
+                continue;
+            }
+            if !boot.join(format!("vmlinuz-{name}")).exists() {
                 continue;
             }
             newest = match newest {
@@ -925,8 +967,9 @@ mod tests {
     /// `simulate-fails` is there), every other apt-get fails while
     /// `apt-fails` is there; `dpkg --audit` prints `audit` while it is
     /// there, `dpkg --configure -a` removes it (unless `stays` is there,
-    /// or fails while `configure-fails` is); `dpkg-deb` reads a zendiloos
-    /// 9.9.9 for amd64, `dpkg-query` knows no zendiloos. One kernel, with
+    /// or fails while `configure-fails` is); the machine is amd64, or what
+    /// `arch` says; `dpkg-deb` reads a zendiloos 9.9.9 for amd64 (or what
+    /// `package-arch` says), `dpkg-query` knows no zendiloos. One kernel, with
     /// ZFS built for it, which GRUB lists (`crate::boot`'s machine).
     fn fake_debian(root: &Path) -> Debian {
         let log = root.join("debian.log");
@@ -954,14 +997,15 @@ mod tests {
              --audit) [ -e $R/audit ] && cat $R/audit ;;\n\
              *--configure*) [ -e $R/configure-fails ] && { echo 'dpkg: error processing package zfs-dkms' >&2; exit 1; }\n\
                [ -e $R/stays ] || rm -f $R/audit ;;\n\
-             --print-architecture) echo amd64 ;;\n\
+             --print-architecture) cat $R/arch 2>/dev/null || echo amd64 ;;\n\
              --compare-versions*) [ \"$2\" != \"$4\" ] && \\\n\
                [ \"$(printf '%s\\n%s\\n' \"$2\" \"$4\" | sort -V | tail -n 1)\" = \"$2\" ] && exit 0; exit 1 ;;\n\
              esac\nexit 0",
         );
         let dpkg_deb = script(
             "dpkg-deb",
-            "case \"$3\" in Package) echo zendiloos ;; Version) echo 9.9.9 ;; Architecture) echo amd64 ;; esac",
+            "case \"$3\" in Package) echo zendiloos ;; Version) echo 9.9.9 ;;\n\
+             Architecture) cat $R/package-arch 2>/dev/null || echo amd64 ;; esac",
         );
         let dpkg_query = script("dpkg-query", "[ -e $R/resolved-installed ] && echo 'install ok installed'");
         let systemctl = script("systemctl", "exit 0");
@@ -1015,8 +1059,9 @@ mod tests {
         assert!(apt[0].ends_with("update") && apt[1].ends_with("--with-new-pkgs --yes upgrade"), "{apt:?}");
         assert!(apt[2].contains("install --yes") && apt[2].ends_with("release/zendiloos_9.9.9_amd64.deb"));
         assert!(apt[3].ends_with("Debug::NoLocking=1 --with-new-pkgs upgrade"), "a simulated one: {apt:?}");
+        assert_eq!(calls[0], "dpkg --print-architecture", "the package is this machine's");
         assert!(
-            calls[0].starts_with("dpkg") && calls[0].ends_with("--configure -a"),
+            calls[1].starts_with("dpkg") && calls[1].ends_with("--configure -a"),
             "what was cut off first"
         );
         let run = recorded(&paths, STATE_FILE);
@@ -1034,6 +1079,33 @@ mod tests {
         fs::remove_file(root.path().join("modules/6.12.57+deb13-amd64/updates/dkms/zfs.ko.xz")).unwrap();
         let missing = run_with(&paths, &debian, "ab02", "update", None, None).unwrap_err();
         assert!(missing.contains("ZFS module is missing for kernel 6.12.57+deb13-amd64"), "{missing}");
+        assert_eq!(recorded(&paths, UPDATE_FILE).state, PackageRunState::Failed);
+    }
+
+    #[test]
+    fn a_package_for_another_architecture_is_never_installed() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, debian) = host(root.path());
+        let release = Some("zendiloos_9.9.9_amd64.deb");
+        let installed_it = || {
+            called(root.path())
+                .iter()
+                .any(|call| call.starts_with("apt-get") && call.contains("release/zendiloos_"))
+        };
+
+        // On an arm64 NAS, the release's amd64 package, signed and listed
+        // as it is, is not its own.
+        fs::write(root.path().join("arch"), "arm64\n").unwrap();
+        let refused = run_with(&paths, &debian, "ab01", "update", release, Some("stable")).unwrap_err();
+        assert!(refused.contains("is for amd64, this machine is arm64"), "{refused}");
+        assert!(!called(root.path()).iter().any(|call| call.starts_with("apt-get")), "before anything ran");
+
+        // Named for amd64, but built for arm64.
+        fs::remove_file(root.path().join("arch")).unwrap();
+        fs::write(root.path().join("package-arch"), "arm64\n").unwrap();
+        let refused = run_with(&paths, &debian, "ab02", "update", release, Some("stable")).unwrap_err();
+        assert!(refused.contains("not for amd64"), "{refused}");
+        assert!(!installed_it());
         assert_eq!(recorded(&paths, UPDATE_FILE).state, PackageRunState::Failed);
     }
 
@@ -1184,6 +1256,14 @@ mod tests {
         for unwanted in ["libvirt-daemon-system", "config-network", "driver-network", "nwfilter", "dnsmasq"] {
             assert!(!installs[2].contains(unwanted), "{unwanted}: {installs:?}");
         }
+        // Nor QEMU for x86 on arm64, where zendiloOS offers no VMs yet.
+        fs::write(root.path().join("arch"), "arm64\n").unwrap();
+        let refused = run_with(&paths, &debian, "ab06", "install-vms", None, None).unwrap_err();
+        assert!(refused.contains("not offered on arm64"), "{refused}");
+        let after: Vec<String> =
+            called(root.path()).into_iter().filter(|call| call.contains(" install ")).collect();
+        assert_eq!(after.len(), installs.len(), "{after:?}");
+        fs::remove_file(root.path().join("arch")).unwrap();
         assert!(!paths.packages.join(UPDATE_FILE).exists(), "no update");
 
         fs::write(root.path().join("apt-fails"), "").unwrap();
@@ -1414,20 +1494,26 @@ mod tests {
             eprintln!("skipped: dpkg orders the versions, and it is not here");
             return;
         }
-        let modules = tempfile::tempdir().unwrap();
-        assert_eq!(Debian::default().newest_kernel(&modules.path().join("missing")).unwrap(), None);
-        for (kernel, modules_dep) in
-            [("6.12.38+deb13-amd64", true), ("6.12.57+deb13-amd64", true), ("6.99.0-unpacked", false)]
-        {
+        let (modules, boot) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let newest = |modules: &Path| Debian::default().newest_kernel(modules, boot.path()).unwrap();
+        assert_eq!(newest(&modules.path().join("missing")), None);
+        // The last: modules a removed kernel's package left behind, without
+        // an image to start.
+        for (kernel, modules_dep, image) in [
+            ("6.12.38+deb13-amd64", true, true),
+            ("6.12.57+deb13-amd64", true, true),
+            ("6.99.0-unpacked", false, true),
+            ("7.2.12+deb13-cloud-amd64", true, false),
+        ] {
             fs::create_dir_all(modules.path().join(kernel)).unwrap();
             if modules_dep {
                 fs::write(modules.path().join(kernel).join("modules.dep"), "").unwrap();
             }
+            if image {
+                fs::write(boot.path().join(format!("vmlinuz-{kernel}")), "").unwrap();
+            }
         }
-        assert_eq!(
-            Debian::default().newest_kernel(modules.path()).unwrap().as_deref(),
-            Some("6.12.57+deb13-amd64")
-        );
+        assert_eq!(newest(modules.path()).as_deref(), Some("6.12.57+deb13-amd64"));
         assert!(Debian::default().newer("1.10", "1.9").unwrap());
         assert!(!Debian::default().newer("1.0~rc1", "1.0").unwrap());
     }
@@ -1545,6 +1631,31 @@ mod tests {
 
         fs::write(root.path().join("state").join(STATE_FILE), "{").unwrap();
         assert!(packages.state().await.unwrap_err().to_string().contains("cannot be read"));
+    }
+
+    /// A run that ends between its record being read and its unit asked
+    /// about wrote its end first: it ended as it says, not unseen.
+    #[tokio::test]
+    async fn a_run_that_ends_while_it_is_looked_at_ends_as_it_says() {
+        let root = tempfile::tempdir().unwrap();
+        let packages = packages(root.path());
+        let mut check = run(PackageTask::Check);
+        record(&root.path().join("state"), &check).unwrap();
+        (check.state, check.finished_at) = (PackageRunState::Succeeded, Some(2));
+        record(&root.path().join("ended"), &check).unwrap();
+        // Asked about once the record was read, the unit has stopped and the
+        // run has written its end meanwhile.
+        fs::write(
+            root.path().join("systemctl"),
+            format!(
+                "#!/bin/sh\ncp {} {}\nexit 3\n",
+                root.path().join("ended").join(STATE_FILE).display(),
+                root.path().join("state").join(STATE_FILE).display()
+            ),
+        )
+        .unwrap();
+        let Response::Packages { run: Some(ended), .. } = packages.state().await.unwrap() else { panic!() };
+        assert_eq!((ended.state, ended.error), (PackageRunState::Succeeded, None));
     }
 
     #[tokio::test]

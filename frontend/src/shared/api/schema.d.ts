@@ -155,7 +155,8 @@ export interface paths {
         /**
          * Fills in an app's Compose file, its template, with the values given and
          *     the caller as the account its containers run as; the devices the machine
-         *     lacks are left out. Refused if the template, as Compose reads it with the
+         *     lacks are left out. Refused for an app whose images are not made for the
+         *     NAS's architecture, and if the template, as Compose reads it with the
          *     catalog's stand-in values in the project's folder, breaks its catalog's
          *     policy. Nothing is made yet. Needs `containers.manage`.
          */
@@ -5664,6 +5665,11 @@ export interface components {
             official: boolean;
             /** @description Exceptions from the policy, confirmed when installing. */
             permissions: components["schemas"]["AppPermissions"];
+            /**
+             * @description Its images are made for the NAS's architecture; one that is not
+             *     cannot be installed (`app_architecture`).
+             */
+            runs_here: boolean;
             /** Format: int64 */
             source_id: number;
             tagline: string;
@@ -9365,6 +9371,13 @@ export interface components {
         VmFirmware: "uefi" | "bios";
         /** @description What the machine's CPU and firmware offer. */
         VmHardware: {
+            /** @description Debian's name of the machine's architecture: `amd64`, `arm64`. */
+            architecture: string;
+            /**
+             * @description zendiloOS offers VMs on that architecture: on amd64 only for now
+             *     (`vms_architecture` otherwise).
+             */
+            architecture_supported: boolean;
             /**
              * @description `vmx` (Intel VT-x) or `svm` (AMD-V); none if the CPU has neither,
              *     or it is off in the firmware.
@@ -10246,6 +10259,15 @@ export interface operations {
             };
             /** @description `not_found`: no such app */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `app_architecture`: the app's images are not made for the NAS's architecture (the detail names it) */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -20548,7 +20570,7 @@ export interface operations {
                     "application/json": components["schemas"]["Job"];
                 };
             };
-            /** @description `kvm_missing`: the machine cannot run VMs; `vms_installed` */
+            /** @description `vms_architecture`: VMs are not offered on the machine's architecture (the detail names it); `kvm_missing`: the machine cannot run VMs; `vms_installed` */
             409: {
                 headers: {
                     [name: string]: unknown;

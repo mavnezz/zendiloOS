@@ -31,6 +31,8 @@ const showCompose = ref(false)
 /** Whether a project was made from the app here, or it was installed the earlier way. */
 const presence = computed(() => presenceOf({ source_id: props.source, id: props.id }))
 const dockerReady = computed(() => Boolean(docker.value?.volume && docker.value.running))
+/** Its images are made for this NAS's architecture; otherwise it cannot be installed. */
+const runsHere = computed(() => app.value?.runs_here !== false)
 const catalog = computed(() => {
   if (app.value?.official) return t('appStore.sources.official')
   const source = sources.value?.find((s) => s.id === props.source)
@@ -49,7 +51,7 @@ const asksMore = computed(() => Boolean(app.value) && asksForMore(app.value!.per
 watch(
   [app, dockerReady],
   ([known, ready]) => {
-    if (props.install && known && ready) installing.value = true
+    if (props.install && known && ready && known.runs_here) installing.value = true
   },
   { immediate: true },
 )
@@ -116,8 +118,14 @@ const heading = 'text-base font-semibold'
             size="lg"
             :variant="presence.kind === 'install' ? 'default' : 'ghost'"
             class="rounded-full px-6"
-            :disabled="!dockerReady"
-            :title="dockerReady ? undefined : t('appStore.dockerFirst')"
+            :disabled="!dockerReady || !runsHere"
+            :title="
+              !runsHere
+                ? t('appStore.notForThisNas')
+                : dockerReady
+                  ? undefined
+                  : t('appStore.dockerFirst')
+            "
             @click="installing = true"
           >
             {{ presence.kind === 'install' ? t('appStore.install') : t('appStore.installAgain') }}
@@ -164,6 +172,9 @@ const heading = 'text-base font-semibold'
         </div>
       </dl>
 
+      <Alert v-if="!runsHere" variant="destructive" data-testid="app-architecture">
+        {{ t('appStore.notForThisNasLong', { architectures: app.architectures.join(', ') }) }}
+      </Alert>
       <Alert v-if="!app.official" class="border-amber-500/60">
         <ShieldAlert class="text-amber-600" />
         {{ t('appStore.unofficialHint') }}

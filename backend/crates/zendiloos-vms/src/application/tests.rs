@@ -94,6 +94,16 @@ async fn the_plugin_installs_only_where_kvm_is() {
     assert!(matches!(test.vms.install(&alice(), &context()).await, Err(VmsError::NoKvm)));
     assert!(test.host.calls().is_empty());
 
+    // Not on arm64 yet, KVM or not: the domains zendiloOS writes are a PC's.
+    let arm = FakeVmHost::default();
+    arm.facts.lock().unwrap().architecture = "arm64".into();
+    let test = TestVms::new(arm);
+    let plugin = test.vms.plugin(&context()).await.unwrap();
+    assert!(plugin.facts.kvm && !plugin.facts.architecture_supported());
+    let refused = test.vms.install(&alice(), &context()).await;
+    assert!(matches!(refused, Err(VmsError::Architecture(ref arch)) if arch == "arm64"), "{refused:?}");
+    assert!(test.host.calls().is_empty());
+
     let test = TestVms::new(FakeVmHost::default());
     let plugin = test.vms.plugin(&context()).await.unwrap();
     assert!(plugin.facts.kvm && !plugin.facts.installed && plugin.library().is_none());

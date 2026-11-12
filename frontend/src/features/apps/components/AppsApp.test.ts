@@ -28,6 +28,7 @@ function app(id: string, extra: Partial<CatalogApp> = {}): CatalogApp {
     version: '1.0',
     tagline: `${id} on the NAS`,
     categories: ['media'],
+    runs_here: true,
     permissions: none,
     translations: {},
     digest: `sha256:${id}`,
@@ -196,6 +197,23 @@ describe('the App Center', () => {
     expect(wrapper.findComponent({ name: 'InstallDialog' }).props('open')).toBe(true)
     await press(t('appStore.back'))
     expect(wrapper.findComponent({ name: 'AppDetail' }).exists()).toBe(false)
+  })
+
+  it('says so of an app not made for the NAS, which cannot be installed', async () => {
+    on(
+      'GET',
+      '/api/v1/apps/catalog/1/immich',
+      detail('immich', { runs_here: false, architectures: ['amd64'] }),
+    )
+    const wrapper = await open('all')
+    wrapper.findComponent({ name: 'StoreSection' }).vm.$emit('open', { source_id: 1, id: 'immich' })
+    await settle()
+
+    expect(page()).toContain(t('appStore.notForThisNasLong', { architectures: 'amd64' }))
+    const install = [...document.querySelectorAll('button')].find(
+      (button) => button.textContent?.trim() === t('appStore.install'),
+    )
+    expect(install?.disabled).toBe(true)
   })
 
   it('opens an app made into a project, and makes another from it', async () => {

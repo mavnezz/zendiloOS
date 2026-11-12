@@ -125,6 +125,9 @@ const en = {
     isInstalled: 'Installed',
     installFailed: 'Failed',
     dockerFirst: 'Install Docker first (the Docker item).',
+    notForThisNas: 'Not made for this NAS’s architecture',
+    notForThisNasLong:
+      'Its images are made for {architectures} only, not for this NAS’s architecture, so it cannot be installed here.',
     configTitle: 'Install configuration',
     configFor: '{name} · folder: {place}',
     pleaseChoose: 'Please choose',
@@ -248,6 +251,8 @@ const en = {
       putThere: 'Put it there',
       noPool: 'Create a pool first: the VMs’ disks go there.',
       noKvm: 'This machine cannot run virtual machines, so the plugin cannot be installed.',
+      notOnArchitecture:
+        'Virtual machines are not offered on {architecture} yet: zendiloOS runs them on amd64 (x86-64) only for now, so the plugin cannot be installed.',
       about:
         'Virtual machines run other operating systems on the NAS: a Linux server, Windows, a firewall. libvirt and QEMU come from Debian; each VM gets a disk of its own on a pool and a console in the browser.',
       aboutNetwork:
@@ -4380,6 +4385,7 @@ const en = {
     against_catalog_policy:
       'The app breaks the rules of its catalog, whatever it says of its permissions; the App Center does not install it',
     app_busy: 'The app is busy or not in a state for this.',
+    app_architecture: 'The app’s images are not made for this NAS’s architecture.',
     host_failed: 'Docker could not do it',
     share_used_by_apps: 'Apps use this share; remove them first',
     share_used_by_projects:
@@ -4396,6 +4402,8 @@ const en = {
     web_server_failed: 'nginx did not take the settings; nothing changed',
     would_lock_out: 'These rules would keep this browser out.',
     firewall_failed: 'nftables did not take the rules; nothing changed',
+    vms_architecture:
+      'Virtual machines are not offered on this machine’s architecture yet, only on amd64 (x86-64).',
     kvm_missing: 'This machine cannot run virtual machines: there is no /dev/kvm.',
     vms_not_installed: 'Install the Virtual machines plugin first.',
     vms_installed: 'libvirt and QEMU are installed already.',

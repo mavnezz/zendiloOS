@@ -44,12 +44,13 @@ const acmeState = computed<{ text: string; variant: 'success' | 'secondary' | 'w
 })
 
 const { data: vms } = useVmPlugin()
-/** The virtual machines' plugin in a word: not possible without KVM. */
+/** The virtual machines' plugin in a word: not possible without KVM, nor
+ * on an architecture VMs are not offered on. */
 const vmsState = computed<{ text: string; variant: 'success' | 'secondary' | 'warning' }>(() => {
   if (running('vms.install')) return { text: t('appStore.plugins.installing'), variant: 'warning' }
   if (!vms.value) return { text: '–', variant: 'secondary' }
   if (!vms.value.installed)
-    return vms.value.hardware.kvm
+    return vms.value.hardware.kvm && vms.value.hardware.architecture_supported
       ? { text: t('appStore.vms.notInstalled'), variant: 'secondary' }
       : { text: t('appStore.vms.notPossible'), variant: 'secondary' }
   if (!vmsReady(vms.value)) return { text: t('appStore.plugins.needsSetUp'), variant: 'warning' }

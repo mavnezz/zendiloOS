@@ -15,12 +15,14 @@ the [issues](https://github.com/mavnezz/zendiloOS/issues).
 | Architecture tests | module boundaries | `zendiloos-architecture`; `just check` |
 | Development on a workstation | interface and API without root | `just dev` with the simulated agent: fake disks, arrays, users |
 | Debian 13 test VMs | the real agent, real tools, destructive operations | QEMU/KVM with Debian's cloud image, 4 SATA and 1 NVMe disk; `just vm-*-test` below |
-| Installation ISO | the installer and the first setup | a fresh QEMU machine installed from the ISO, unattended (`just iso-test`) |
+| Installation ISO | the installer and the first setup | a fresh QEMU machine installed from the ISO, unattended (`just iso-test`, for arm64 `just iso-test arm64`; on GitHub the workflow *ISO test*, by hand) |
 | Real hardware | compatibility, performance, everyday use | not yet (see below) |
 
-CI runs `just check` on every push and pull request, and builds the package
-and the ISO. The VM tests are run by hand before changes are merged; they
-are not part of CI yet.
+CI runs `just check` on every push and pull request, runs the backend's
+tests once more on an arm64 machine, and builds the packages for amd64 and
+arm64 and, for a release, the ISOs. The VM tests and the installation from
+the ISO are run by hand before changes are merged; they are not part of CI
+yet.
 
 ## The VM tests
 
@@ -64,10 +66,56 @@ checks and how to run it.
 | `vm-upgrade-test` | a machine set up with an older package keeps its accounts, pools, shares and files when a newer one is installed |
 | `iso-test` | installing from the ISO, the rescue entry in its menus, the first setup, a pool, the network managed by systemd-networkd, a configuration backup restored |
 
+## arm64
+
+What is tested of the arm64 build, and how:
+
+- **The backend's tests run natively on arm64** in CI (*Rust on arm64*, on
+  GitHub's `ubuntu-24.04-arm`, warnings failing too): what can differ
+  between the architectures (ioctl numbers and struct sizes through
+  `rustix`, the `zendiloos-exec` sandbox, `stat` fields, the C the crates
+  bring) runs there, not only compiled. A release waits for it. `just
+  check`, with the coverage, the frontend and the other gates, runs on
+  amd64 only: the same code.
+- **The package** is cross-compiled for arm64 in CI as on a workstation
+  (`just deb arm64`); its programs are `aarch64` ELF files, its
+  dependencies told by `dpkg-shlibdeps` from arm64's C library.
+- **The update runner** takes only the package of its own architecture:
+  the agent's tests refuse an amd64 package on an arm64 machine and a
+  package whose name and `Architecture` disagree; zendiloosd picks each
+  architecture's package from a release that holds both.
+- **The installation ISO** for arm64 (`just iso-test arm64`, or the
+  workflow *ISO test* with `arm64`) installs into QEMU's `virt` machine with
+  UEFI (AAVMF) and runs the same checks as amd64's. Without KVM, on an x86
+  machine and on GitHub's arm64 runners alike, QEMU emulates the CPU
+  (TCG), which is far slower. Measured once on an x86 workstation (six
+  cores, four of them emulating; 2026-11-12): the installer took 76
+  minutes from its start to GRUB (the CD found on virtio-scsi, the disk
+  partitioned for UEFI, the base system, `linux-headers-arm64`, the
+  upgrade, SSH); zendiloOS's package, DKMS building ZFS and the first start
+  come after that and were not waited for. The whole run takes some hours,
+  so it is not part of CI: run it by hand (the workflow gives it 5½ hours)
+  before a release that changes the installer, the package's dependencies
+  or the ISO.
+- **Not offered on arm64 and refused there**: virtual machines (the plugin
+  says so, the runner refuses to install QEMU for x86), and apps of a
+  catalog whose images are not made for arm64.
+
+Not tested on arm64 yet: the installation from the ISO to its end (the
+package installed, ZFS built, the first start and the checks after it;
+the workflow *ISO test* with `arm64` does it), the programs running on
+arm64 (only the tests have), real boards (the firmware, U-Boot's UEFI
+without boot entries, SATA controllers and network cards of the boards), the VM
+tests (the test VMs are amd64's), Docker apps actually running on arm64,
+and updating an arm64 NAS from one release to the next (the checks are the
+same as amd64's and tested in the agent's tests; the whole path needs an
+arm64 release first).
+
 ## Not tested yet
 
 - **Real hardware.** zendiloOS has run only in QEMU machines. Trial
-  operation on a real NAS with data one can lose is still to come.
+  operation on a real NAS with data one can lose is still to come; on
+  arm64 no real board at all (see [arm64](#arm64)).
 - **Windows and macOS as clients.** SMB has been tested with `smbclient`
   inside the test VM, and discovery (WS-Discovery, Bonjour) is set up, but
   no Windows or macOS machine has used a share yet.

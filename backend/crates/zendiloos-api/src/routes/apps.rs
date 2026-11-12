@@ -70,6 +70,9 @@ impl From<AppsError> for ApiError {
             }
             AppsError::InvalidPlace(detail) => ApiError::InvalidInput(detail),
             AppsError::Busy => rejected(StatusCode::CONFLICT, "app_busy", None),
+            AppsError::Architecture { machine, .. } => {
+                rejected(StatusCode::CONFLICT, "app_architecture", Some(machine))
+            }
             AppsError::ConfirmationMismatch => {
                 rejected(StatusCode::UNPROCESSABLE_ENTITY, "confirmation_mismatch", None)
             }
@@ -233,6 +236,9 @@ pub struct CatalogApp {
     pub translations: BTreeMap<String, AppTexts>,
     /// Changes with every new version.
     pub digest: String,
+    /// Its images are made for the NAS's architecture; one that is not
+    /// cannot be installed (`app_architecture`).
+    pub runs_here: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -318,6 +324,7 @@ fn summary(listed: &ListedApp) -> CatalogApp {
         permissions: permissions_dto(&app.permissions),
         translations: texts_dto(app.translations.clone()),
         digest: app.digest.clone(),
+        runs_here: listed.runs_here,
     }
 }
 
@@ -468,7 +475,8 @@ pub struct FilledTemplate {
 
 /// Fills in an app's Compose file, its template, with the values given and
 /// the caller as the account its containers run as; the devices the machine
-/// lacks are left out. Refused if the template, as Compose reads it with the
+/// lacks are left out. Refused for an app whose images are not made for the
+/// NAS's architecture, and if the template, as Compose reads it with the
 /// catalog's stand-in values in the project's folder, breaks its catalog's
 /// policy. Nothing is made yet. Needs `containers.manage`.
 #[utoipa::path(
@@ -481,6 +489,7 @@ pub struct FilledTemplate {
     responses(
         (status = OK, body = FilledTemplate),
         (status = NOT_FOUND, body = Problem, description = "`not_found`: no such app"),
+        (status = CONFLICT, body = Problem, description = "`app_architecture`: the app's images are not made for the NAS's architecture (the detail names it)"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_app_value`: the field and why; `template_unfillable`; `against_catalog_policy`: what it breaks; `invalid_input`: no place for the project"),
     )
 )]

@@ -331,6 +331,7 @@ impl Default for FakeVmHost {
     fn default() -> Self {
         Self {
             facts: Mutex::new(HostFacts {
+                architecture: "amd64".into(),
                 kvm: true,
                 cpu_virtualization: Some("vmx".into()),
                 iommu: false,

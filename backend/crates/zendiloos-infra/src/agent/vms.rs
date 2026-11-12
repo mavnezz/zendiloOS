@@ -543,6 +543,7 @@ impl VmHost for AgentVms {
     async fn facts(&self, context: &RequestContext) -> Result<HostFacts, PortError> {
         match call(self.transport(), Request::VmHost {}, context).await? {
             Response::VmHost {
+                architecture,
                 kvm,
                 cpu_virtualization,
                 iommu,
@@ -553,6 +554,7 @@ impl VmHost for AgentVms {
                 memory_bytes,
                 locations,
             } => Ok(HostFacts {
+                architecture,
                 kvm,
                 cpu_virtualization: cpu_virtualization.filter(|flag| flag == "vmx" || flag == "svm"),
                 iommu,

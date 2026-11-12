@@ -32,6 +32,8 @@ const job = computed(() => jobs.list.find((job) => job.kind === 'vms.install'))
 const installing = computed(() => job.value?.state === 'running')
 const failed = computed(() => (job.value?.state === 'failed' ? job.value : null))
 const kvm = computed(() => plugin.value?.hardware.kvm === true)
+/** VMs are offered on this NAS's architecture (amd64 only for now). */
+const supported = computed(() => plugin.value?.hardware.architecture_supported !== false)
 const ready = computed(() => vmsReady(plugin.value))
 /** Installed before VMs had a TPM: installing again brings swtpm. */
 const lacksTpm = computed(() => plugin.value?.installed === true && !plugin.value.hardware.swtpm)
@@ -119,7 +121,7 @@ const select =
         v-else-if="plugin && !plugin.installed"
         size="lg"
         class="rounded-full px-6"
-        :disabled="!kvm"
+        :disabled="!kvm || !supported"
         @click="install"
         >{{ t('appStore.install') }}</Button
       >
@@ -266,7 +268,10 @@ const select =
       </div>
     </dl>
 
-    <Alert v-if="plugin && !kvm && !plugin.installed" variant="destructive">{{
+    <Alert v-if="plugin && !supported && !plugin.installed" variant="destructive">{{
+      t('appStore.vms.notOnArchitecture', { architecture: plugin.hardware.architecture })
+    }}</Alert>
+    <Alert v-else-if="plugin && !kvm && !plugin.installed" variant="destructive">{{
       t('appStore.vms.noKvm')
     }}</Alert>
     <Alert v-if="plugin?.installed && !plugin.storage && !plugin.pools.length">

@@ -134,10 +134,22 @@ check_now() {
 }
 test_kernel=""
 
+# Purges the test kernel and every package of its version: Debian's kernels
+# from 7.x come as linux-image, linux-binary and linux-modules (with their
+# headers and kbuild), and purging linux-image alone leaves the others, and
+# the kernel's modules, behind.
+purge_kernel() {
+    local base=${1#linux-image-} installed packages
+    base=${base%%-*}
+    installed=$(vm "dpkg-query -W -f='\${Package} \${db:Status-Abbrev}\n'")
+    packages=$(awk -v base="-$base" '$2 ~ /^[ir]/ && index($1, base) {print $1}' <<<"$installed" | tr '\n' ' ')
+    [[ -z $packages ]] || vm "sudo DEBIAN_FRONTEND=noninteractive apt-get -q -y purge $packages >/dev/null 2>&1"
+}
+
 cleanup() {
     set +e
     if [[ -n $test_kernel ]]; then
-        vm "sudo DEBIAN_FRONTEND=noninteractive apt-get -q -y purge $test_kernel >/dev/null 2>&1"
+        purge_kernel "$test_kernel"
     fi
     vm 'if [ -e /etc/apt/sources.list.d/zdl-backports.list ]; then
             sudo rm -f /etc/apt/sources.list.d/zdl-backports.list && sudo apt-get -q update >/dev/null 2>&1
@@ -322,7 +334,9 @@ check_now
 [[ $(grub_default) == *"$(grub_entry_of "$kept")"* ]] || fail "a check left GRUB's default on $new: $(grub_default)"
 
 # The kernel removed: its hook chooses again, the default stays.
-vm "sudo DEBIAN_FRONTEND=noninteractive apt-get -q -y purge $test_kernel >/dev/null 2>&1" || fail "$test_kernel cannot be purged"
+purge_kernel "$test_kernel" || fail "$test_kernel cannot be purged"
+left=$(vm "dpkg-query -W -f='\${Package} \${db:Status-Abbrev}\n'" | awk -v base="-${new%%-*}" '$2 ~ /^i/ && index($1, base) {print $1}')
+[[ -z $left ]] || fail "packages of $new stay: $left"
 test_kernel=""
 [[ $(grub_default) == *"$(grub_entry_of "$kept")"* ]] || fail "GRUB's default after the removal: $(grub_default)"
 if vm "grep -q 'vmlinuz-$new ' /boot/grub/grub.cfg"; then fail "GRUB still lists $new"; fi

@@ -1,13 +1,14 @@
 #!/usr/bin/env node
-// The overview of the licences zendiloOS's package carries, docs/licences.md,
-// made from the software bill of materials (scripts/sbom.sh sources), and
-// its check (`just licences-check`, part of `just check`): every licence of
-// a crate or of a package in the web interface's bundle is one that
-// backend/deny.toml allows, or an exception named here for one package; and
-// docs/licences.md says what the sources bring now.
+// The overview of the licences zendiloOS's packages carry, docs/licences.md,
+// made from the software bills of materials of its architectures
+// (scripts/sbom.sh sources), and its check (`just licences-check`, part of
+// `just check`): every licence of a crate or of a package in the web
+// interface's bundle is one that backend/deny.toml allows, or an exception
+// named here for one package; and docs/licences.md says what the sources
+// bring now.
 //
-// Usage: node scripts/licences.mjs SBOM            prints the overview
-//        node scripts/licences.mjs --check SBOM    checks both, quietly
+// Usage: node scripts/licences.mjs SBOM...            prints the overview
+//        node scripts/licences.mjs --check SBOM...    checks both, quietly
 
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -132,8 +133,34 @@ function table(components, heading) {
   return [`| Licence | ${heading} | Which |`, '| --- | --- | --- |', ...rows].join('\n')
 }
 
-function overview(sbom, allowed) {
-  const components = sbom.components ?? []
+/** Debian's name of the architecture an SBOM is for, as scripts/sbom.sh notes it. */
+const architecture = (sbom) =>
+  (sbom.metadata?.properties ?? []).find((property) => property.name === 'zendiloos:architecture')
+    ?.value ?? 'amd64'
+/** How the page names an architecture. */
+const ARCHITECTURES = { amd64: 'x86-64', arm64: 'arm64' }
+const named = (arch) => ARCHITECTURES[arch] ?? arch
+
+/** The components of all the SBOMs, each once, and the crates only some have. */
+function merged(sboms) {
+  const byRef = new Map()
+  const inBuilds = new Map()
+  for (const sbom of sboms) {
+    for (const component of sbom.components ?? []) {
+      const ref = component['bom-ref'] ?? `${component.name}@${component.version}`
+      byRef.set(ref, component)
+      inBuilds.set(ref, [...(inBuilds.get(ref) ?? []), architecture(sbom)])
+    }
+  }
+  const some = [...byRef.entries()]
+    .filter(([ref, component]) => part(component) === 'programs' && inBuilds.get(ref).length < sboms.length)
+    .map(([ref, component]) => ({ component, builds: inBuilds.get(ref) }))
+  return { components: [...byRef.values()], some }
+}
+
+function overview(sboms, allowed) {
+  const { components, some } = merged(sboms)
+  const builds = sboms.map((sbom) => named(architecture(sbom))).join(' and ')
   const own = (component) => component.name.startsWith('zendiloos')
   const crates = components.filter((c) => part(c) === 'programs' && !own(c))
   const ownCrates = components.filter((c) => part(c) === 'programs' && own(c))
@@ -161,9 +188,11 @@ ${exceptions}
 
 ## The programs
 
-zendiloosd and zendiloos-agent, built for x86-64 Linux, hold ${crates.length} crates of
+zendiloosd and zendiloos-agent, built for ${builds} Linux, hold ${crates.length} crates of
 others (build scripts and what only they use aside), and ${ownCrates.length} of zendiloOS's
-own (Apache-2.0).
+own (Apache-2.0).${some
+    .map(({ component, builds: only }) => `\n${component.name} ${component.version} is in the build for ${only.map(named).join(' and ')} only.`)
+    .join('')}
 
 ${table(crates, 'Crates')}
 
@@ -191,8 +220,9 @@ ${Object.entries(debian)
 }
 
 /** What breaks the rules: a licence deny.toml does not allow, and no exception. */
-function breaches(sbom, allowed) {
-  return (sbom.components ?? [])
+function breaches(sboms, allowed) {
+  return merged(sboms)
+    .components
     .filter((component) => ['programs', 'web interface'].includes(part(component)))
     .filter((component) => {
       const id = licence(component)
@@ -207,20 +237,20 @@ function breaches(sbom, allowed) {
 
 function main(args) {
   const check = args[0] === '--check'
-  const file = check ? args[1] : args[0]
-  if (!file) {
-    console.error('usage: node scripts/licences.mjs [--check] SBOM')
+  const files = check ? args.slice(1) : args
+  if (files.length === 0) {
+    console.error('usage: node scripts/licences.mjs [--check] SBOM...')
     process.exit(2)
   }
-  const sbom = JSON.parse(readFileSync(file, 'utf8'))
+  const sboms = files.map((file) => JSON.parse(readFileSync(file, 'utf8')))
   const allowed = allowedLicences()
-  const text = overview(sbom, allowed)
+  const text = overview(sboms, allowed)
   if (!check) {
     process.stdout.write(text)
     return
   }
   let failed = false
-  for (const breach of breaches(sbom, allowed)) {
+  for (const breach of breaches(sboms, allowed)) {
     console.error(`licences: ${breach}, which backend/deny.toml does not allow`)
     failed = true
   }

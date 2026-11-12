@@ -49,6 +49,9 @@ impl From<VmsError> for ApiError {
                 rejected(StatusCode::CONFLICT, "location_in_use", Some(users.join(", ")))
             }
             VmsError::Invalid(e) => ApiError::InvalidInput(e.0),
+            VmsError::Architecture(architecture) => {
+                rejected(StatusCode::CONFLICT, "vms_architecture", Some(architecture))
+            }
             VmsError::NoKvm => rejected(StatusCode::CONFLICT, "kvm_missing", None),
             VmsError::NotInstalled => rejected(StatusCode::CONFLICT, "vms_not_installed", None),
             VmsError::Installed => rejected(StatusCode::CONFLICT, "vms_installed", None),
@@ -77,6 +80,11 @@ impl From<VmsError> for ApiError {
 /// What the machine's CPU and firmware offer.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct VmHardware {
+    /// Debian's name of the machine's architecture: `amd64`, `arm64`.
+    pub architecture: String,
+    /// zendiloOS offers VMs on that architecture: on amd64 only for now
+    /// (`vms_architecture` otherwise).
+    pub architecture_supported: bool,
     /// `/dev/kvm` is there: the kernel can run VMs with the CPU's help.
     pub kvm: bool,
     /// `vmx` (Intel VT-x) or `svm` (AMD-V); none if the CPU has neither,
@@ -160,6 +168,8 @@ fn plugin_dto(plugin: vms::VmPlugin) -> VmPlugin {
     let facts = plugin.facts;
     VmPlugin {
         hardware: VmHardware {
+            architecture_supported: facts.architecture_supported(),
+            architecture: facts.architecture,
             kvm: facts.kvm,
             cpu_virtualization: facts.cpu_virtualization,
             iommu: facts.iommu,
@@ -523,7 +533,7 @@ async fn vm_plugin(
     security(("session" = [])),
     responses(
         (status = ACCEPTED, body = Job),
-        (status = CONFLICT, body = Problem, description = "`kvm_missing`: the machine cannot run VMs; `vms_installed`"),
+        (status = CONFLICT, body = Problem, description = "`vms_architecture`: VMs are not offered on the machine's architecture (the detail names it); `kvm_missing`: the machine cannot run VMs; `vms_installed`"),
     )
 )]
 async fn install_vm_plugin(

@@ -15,7 +15,15 @@ const t = (key: string, values: Record<string, unknown> = {}, plural?: number) =
   plural === undefined ? i18n.global.t(key, values) : i18n.global.t(key, values, plural)
 
 const PLUGIN: VmPlugin = {
-  hardware: { kvm: true, cpu_virtualization: 'vmx', iommu: false, swtpm: true, secure_boot: true },
+  hardware: {
+    architecture: 'amd64',
+    architecture_supported: true,
+    kvm: true,
+    cpu_virtualization: 'vmx',
+    iommu: false,
+    swtpm: true,
+    secure_boot: true,
+  },
   installed: true,
   storage: { pool: 'tank', volume: 1 },
   locations: [

@@ -133,26 +133,32 @@ web-check:
     npm run -s build
 
 # The software bill of materials of what the sources bring, the crates and
-# the web interface's bundle (scripts/sbom.sh), after the frontend's
-# production build: dev/sbom/zendiloos.cdx.json. A release's adds its
-# package and Debian's (CI, docs/releases.md).
+# the web interface's bundle (scripts/sbom.sh), for each architecture,
+# after the frontend's production build: dev/sbom/zendiloos-<arch>.cdx.json.
+# A release's adds its package and Debian's (CI, docs/releases.md).
 sbom:
     mkdir -p dev/sbom
-    scripts/sbom.sh sources dev/sbom/zendiloos.cdx.json
+    scripts/sbom.sh sources dev/sbom/zendiloos-amd64.cdx.json amd64
+    scripts/sbom.sh sources dev/sbom/zendiloos-arm64.cdx.json arm64
 
-# Write docs/licences.md anew from the SBOM, after a production build
+# Write docs/licences.md anew from the SBOMs, after a production build
 licences:
     cd frontend && npm run -s build
     just sbom
-    node scripts/licences.mjs dev/sbom/zendiloos.cdx.json > docs/licences.md
+    node scripts/licences.mjs dev/sbom/zendiloos-amd64.cdx.json dev/sbom/zendiloos-arm64.cdx.json > docs/licences.md
 
 # Fail if a licence is not one backend/deny.toml allows (or an exception in
 # scripts/licences.mjs), or docs/licences.md is stale; after web-check's build
 licences-check: sbom
-    node scripts/licences.mjs --check dev/sbom/zendiloos.cdx.json
+    node scripts/licences.mjs --check dev/sbom/zendiloos-amd64.cdx.json dev/sbom/zendiloos-arm64.cdx.json
 
-# Build the Debian package in a debian:trixie container; the result lands in dist/
-deb:
+# Debian's name of this machine's architecture, which `deb` and `iso` build
+# for unless ZENDILOOS_ARCH or the recipe's argument names the other one
+host_arch := if arch() == "aarch64" { "arm64" } else { "amd64" }
+
+# Build the Debian package in a debian:trixie container, for amd64 or arm64
+# (the other one cross-compiled); the result lands in dist/
+deb arch=env("ZENDILOOS_ARCH", host_arch):
     docker build -t zendiloos-build -f packaging/build.Dockerfile .
     mkdir -p dist
     docker run --rm \
@@ -161,16 +167,18 @@ deb:
         -v zendiloos-build-target:/build/zendiloos/backend/target \
         -v zendiloos-build-npm:/root/.npm \
         -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" -e ZENDILOOS_VERSION="${ZENDILOOS_VERSION:-}" \
+        -e ZENDILOOS_ARCH={{ quote(arch) }} \
         zendiloos-build /src/packaging/build-deb.sh
 
-# The installation ISO for the newest package in dist/: Debian 13's netinst
-# image with an entry "Install zendiloOS" (docs/releases.md)
-iso:
-    scripts/build-iso.sh "$(ls -t dist/zendiloos_*_amd64.deb | head -1)" dist
+# The installation ISO for the newest package in dist/ of the architecture:
+# Debian 13's netinst image with an entry "Install zendiloOS" (docs/releases.md)
+iso arch=env("ZENDILOOS_ARCH", host_arch):
+    scripts/build-iso.sh "$(ls -t dist/zendiloos_*_{{ arch }}.deb | head -1)" dist
 
-# Installs from the newest ISO in dist/ into a fresh QEMU machine, unattended
-iso-test:
-    scripts/iso-test.sh
+# Installs from the newest ISO in dist/ of the architecture into a fresh
+# QEMU machine, unattended; arm64 without KVM is emulated and slow
+iso-test arch=env("ZENDILOOS_ARCH", host_arch):
+    scripts/iso-test.sh "$(ls -t dist/zendiloos-*-{{ arch }}-netinst.iso | head -1)"
 
 # The ISO's switch from ifupdown to systemd-networkd (packaging/iso/network.sh)
 # against what Debian's installer writes, in a directory of its own
@@ -182,12 +190,18 @@ iso-network-test:
 release-key secret="~/.minisign/zendiloos-release.key":
     minisign -G -p packaging/release-signing.pub -s {{ secret }}
 
-# Signs the package in dist/: SHA256SUMS and SHA256SUMS.minisig beside it
+# Signs the packages in dist/, of one version and its architectures:
+# SHA256SUMS and SHA256SUMS.minisig beside them
 sign-release secret="~/.minisign/zendiloos-release.key":
-    cd dist && sha256sum zendiloos_*.deb > SHA256SUMS
-    minisign -S -s {{ secret }} -m dist/SHA256SUMS -t "zendiloos $(ls dist/zendiloos_*.deb | sed 's/.*zendiloos_\(.*\)_.*/\1/')"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version=$(ls dist/zendiloos_*.deb | sed 's/.*zendiloos_\(.*\)_.*/\1/' | sort -u)
+    [[ $version != *$'\n'* ]] || { echo "dist/ holds packages of several versions: $version" >&2; exit 1; }
+    (cd dist && sha256sum zendiloos_*.deb > SHA256SUMS)
+    minisign -S -s {{ secret }} -m dist/SHA256SUMS -t "zendiloos $version"
 
-# Package of an earlier commit or tag into dist/<ref>/, e.g. for the upgrade test
+# Package of an earlier commit or tag into dist/<ref>/, e.g. for the upgrade
+# test; for this machine's architecture or ZENDILOOS_ARCH
 deb-at ref:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -201,7 +215,7 @@ deb-at ref:
         -v zendiloos-build-cargo:/opt/cargo/registry \
         -v zendiloos-build-target:/build/zendiloos/backend/target \
         -v zendiloos-build-npm:/root/.npm \
-        -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+        -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" -e ZENDILOOS_ARCH="${ZENDILOOS_ARCH:-}" \
         zendiloos-build /src/packaging/build-deb.sh
 
 # Licenses, security advisories and sources of the Rust dependencies

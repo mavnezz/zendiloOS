@@ -377,6 +377,7 @@ async fn add_cold(host: &Host) {
 async fn the_machine_says_what_it_offers() {
     let host = host(true);
     let Response::VmHost {
+        architecture,
         kvm,
         cpu_virtualization,
         iommu,
@@ -390,6 +391,7 @@ async fn the_machine_says_what_it_offers() {
     else {
         panic!("no facts")
     };
+    assert_eq!(architecture, zendiloos_agent_proto::ARCHITECTURE);
     assert!(kvm && installed && !iommu);
     assert!(swtpm && !secure_boot, "swtpm there, no OVMF with Microsoft's keys");
     assert_eq!(cpu_virtualization.as_deref(), Some("vmx"));

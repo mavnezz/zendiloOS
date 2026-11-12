@@ -98,7 +98,10 @@ async fn the_plugin_says_what_the_machine_offers_and_needs_kvm() {
     assert_eq!(plugin.status, StatusCode::OK);
     assert_eq!(
         plugin.body["hardware"],
-        json!({ "kvm": true, "cpu_virtualization": "vmx", "iommu": false, "swtpm": true, "secure_boot": true })
+        json!({
+            "architecture": "amd64", "architecture_supported": true,
+            "kvm": true, "cpu_virtualization": "vmx", "iommu": false, "swtpm": true, "secure_boot": true
+        })
     );
     assert_eq!((plugin.body["installed"].as_bool(), plugin.body["cores"].as_u64()), (Some(false), Some(2)));
     assert_eq!(plugin.body["storage"], Value::Null);
@@ -125,6 +128,15 @@ async fn the_plugin_says_what_the_machine_offers_and_needs_kvm() {
     let refused = send(&h, &admin, Method::POST, "/api/v1/vms/plugin/install", Value::Null).await;
     assert_problem(&refused, StatusCode::CONFLICT, "kvm_missing");
     h.vm_host.facts.lock().unwrap().kvm = true;
+
+    // Not offered on arm64 yet, and said so.
+    h.vm_host.facts.lock().unwrap().architecture = "arm64".into();
+    let plugin = read(&h, &admin, "/api/v1/vms/plugin").await;
+    assert_eq!(plugin.body["hardware"]["architecture_supported"], json!(false));
+    let refused = send(&h, &admin, Method::POST, "/api/v1/vms/plugin/install", Value::Null).await;
+    assert_problem(&refused, StatusCode::CONFLICT, "vms_architecture");
+    assert_eq!(refused.body["detail"], json!("arm64"));
+    h.vm_host.facts.lock().unwrap().architecture = "amd64".into();
 
     ready(&h, &admin).await;
     let plugin = read(&h, &admin, "/api/v1/vms/plugin").await;

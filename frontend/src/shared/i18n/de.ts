@@ -128,6 +128,9 @@ const de: Messages = {
     isInstalled: 'Installiert',
     installFailed: 'Fehlgeschlagen',
     dockerFirst: 'Installieren Sie zuerst Docker (Menüpunkt Docker).',
+    notForThisNas: 'Nicht für die Architektur dieses NAS gemacht',
+    notForThisNasLong:
+      'Ihre Images gibt es nur für {architectures}, nicht für die Architektur dieses NAS; daher lässt sie sich hier nicht installieren.',
     configTitle: 'Installationskonfiguration',
     configFor: '{name} · Ordner: {place}',
     pleaseChoose: 'Bitte auswählen',
@@ -259,6 +262,8 @@ const de: Messages = {
       noPool: 'Legen Sie zuerst einen Pool an: Dort liegen die Festplatten der VMs.',
       noKvm:
         'Diese Maschine kann keine virtuellen Maschinen betreiben, daher lässt sich das Plugin nicht installieren.',
+      notOnArchitecture:
+        'Virtuelle Maschinen gibt es für {architecture} noch nicht: zendiloOS betreibt sie vorerst nur auf amd64 (x86-64), daher lässt sich das Plugin nicht installieren.',
       about:
         'Virtuelle Maschinen betreiben andere Betriebssysteme auf dem NAS: einen Linux-Server, Windows, eine Firewall. libvirt und QEMU kommen aus Debian; jede VM bekommt eine eigene Festplatte auf einem Pool und eine Konsole im Browser.',
       aboutNetwork:
@@ -4471,6 +4476,7 @@ const de: Messages = {
     against_catalog_policy:
       'Die App verstößt gegen die Regeln ihres Katalogs, was immer sie über ihre Berechtigungen sagt; das App Center installiert sie nicht',
     app_busy: 'Die App ist beschäftigt oder nicht in dem Zustand dafür.',
+    app_architecture: 'Die Images der App gibt es nicht für die Architektur dieses NAS.',
     host_failed: 'Docker konnte es nicht ausführen',
     share_used_by_apps: 'Apps nutzen diese Freigabe; entfernen Sie sie zuerst',
     share_used_by_projects:
@@ -4487,6 +4493,8 @@ const de: Messages = {
     web_server_failed: 'nginx hat die Einstellungen nicht übernommen; nichts wurde geändert',
     would_lock_out: 'Diese Regeln würden diesen Browser aussperren.',
     firewall_failed: 'nftables hat die Regeln nicht übernommen; nichts wurde geändert',
+    vms_architecture:
+      'Virtuelle Maschinen gibt es für die Architektur dieser Maschine noch nicht, nur für amd64 (x86-64).',
     kvm_missing: 'Diese Maschine kann keine virtuellen Maschinen betreiben: Es gibt kein /dev/kvm.',
     vms_not_installed: 'Installieren Sie zuerst das Plugin Virtuelle Maschinen.',
     vms_installed: 'libvirt und QEMU sind bereits installiert.',

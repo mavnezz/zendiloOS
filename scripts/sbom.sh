@@ -8,10 +8,15 @@
 # the package asks for: their versions are those of Debian 13's mirror at
 # installation.
 #
-# Usage: scripts/sbom.sh sources OUT
-#          what the sources bring, after the frontend's build
+# One for each architecture: the crates are those of its target (a few are
+# for one of them only), the package and Debian's packages its own.
+#
+# Usage: scripts/sbom.sh sources OUT [ARCH]
+#          what the sources bring for ARCH (amd64, the default, or arm64),
+#          after the frontend's build
 #        scripts/sbom.sh package DEB SOURCES OUT
-#          SOURCES with the package DEB and the Debian packages it names
+#          SOURCES, of DEB's architecture, with the package DEB and the
+#          Debian packages it names
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -28,7 +33,12 @@ cleanup() {
 trap cleanup EXIT
 
 sources() {
-    local out=$1 version time
+    local out=$1 arch=$2 target version time
+    case $arch in
+        amd64) target=x86_64-unknown-linux-gnu ;;
+        arm64) target=aarch64-unknown-linux-gnu ;;
+        *) fail "no zendiloOS for $arch" ;;
+    esac
     [[ -f $root/frontend/dist/licences.json ]] || fail "frontend/dist/licences.json is missing: build the frontend first"
     command -v cargo-cyclonedx >/dev/null || fail "cargo-cyclonedx is missing: scripts/install-tools.sh cargo-cyclonedx"
     version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "$root/backend/Cargo.toml")
@@ -38,13 +48,13 @@ sources() {
     # taken, the others go. Build scripts and their dependencies run on the
     # machine that builds; they are not in what is shipped.
     (cd "$root/backend" && SOURCE_DATE_EPOCH=$time cargo cyclonedx --manifest-path crates/zendiloosd/Cargo.toml \
-        --format json --spec-version 1.5 --target x86_64-unknown-linux-gnu --no-build-deps --quiet)
+        --format json --spec-version 1.5 --target "$target" --no-build-deps --quiet)
     for crate in zendiloosd zendiloos-agent; do
         mv "$root/backend/crates/$crate/$crate.cdx.json" "$work/$crate.json"
     done
     jq -n --slurpfile daemon "$work/zendiloosd.json" --slurpfile agent "$work/zendiloos-agent.json" \
         --slurpfile web "$root/frontend/dist/licences.json" --arg version "$version" --arg root "$root" \
-        --argjson time "$time" '
+        --arg arch "$arch" --argjson time "$time" '
         def npm: {
             type: "library",
             "bom-ref": "pkg:npm/\(.name | sub("^@"; "%40"))@\(.version)",
@@ -70,7 +80,8 @@ sources() {
                     version: $version,
                     licenses: [{expression: "Apache-2.0"}],
                     externalReferences: [{type: "vcs", url: "https://github.com/mavnezz/zendiloOS"}]
-                }
+                },
+                properties: [{name: "zendiloos:architecture", value: $arch}]
             },
             components: (([$d.metadata.component, $a.metadata.component] | map(rust))
                 + ($d.components + $a.components | unique_by(."bom-ref") | map(rust)) + $npm),
@@ -88,6 +99,9 @@ package() {
     [[ -f $deb ]] || fail "$deb is no package"
     version=$(dpkg-deb --field "$deb" Version)
     arch=$(dpkg-deb --field "$deb" Architecture)
+    [[ $(jq -r '.metadata.properties[]? | select(.name == "zendiloos:architecture") | .value' "$sources") == "$arch" ]] \
+        || fail "$sources is not what the sources bring for $arch"
+
     sum=$(sha256sum "$deb" | cut -d' ' -f1)
     {
         for field in Depends Recommends Suggests; do
@@ -124,7 +138,7 @@ package() {
 }
 
 case ${1:-} in
-    sources) [[ $# == 2 ]] || fail "usage: $0 sources OUT"; sources "$2" ;;
+    sources) [[ $# == 2 || $# == 3 ]] || fail "usage: $0 sources OUT [ARCH]"; sources "$2" "${3:-amd64}" ;;
     package) [[ $# == 4 ]] || fail "usage: $0 package DEB SOURCES OUT"; package "$2" "$3" "$4" ;;
-    *) fail "usage: $0 sources OUT | package DEB SOURCES OUT" ;;
+    *) fail "usage: $0 sources OUT [ARCH] | package DEB SOURCES OUT" ;;
 esac

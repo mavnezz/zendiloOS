@@ -71,6 +71,7 @@ const immich: CatalogAppDetail = {
   version: '2.0',
   tagline: 'Photos from your phone',
   categories: ['photos'],
+  runs_here: true,
   permissions: {
     devices: ['/dev/dri'],
     capabilities: [],

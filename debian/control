@@ -31,13 +31,13 @@ Recommends: avahi-daemon,
             wsdd2
 Suggests: docker-compose,
           docker.io,
-          libvirt-clients,
-          libvirt-daemon-driver-qemu,
+          libvirt-clients [amd64],
+          libvirt-daemon-driver-qemu [amd64],
           openssh-client,
-          ovmf,
-          passt,
-          qemu-system-x86,
-          qemu-utils,
+          ovmf [amd64],
+          passt [amd64],
+          qemu-system-x86 [amd64],
+          qemu-utils [amd64],
           rclone,
           rsync
 Description: web-managed NAS operating system
@@ -46,6 +46,9 @@ Description: web-managed NAS operating system
  .
  ZFS comes from Debian's contrib section and is built for the installed
  kernel (DKMS), which needs the kernel's header package.
+ .
+ Virtual machines, the App Center's plugin, run on amd64 only for now;
+ libvirt and QEMU are suggested there alone.
  .
  This package contains the management service (zendiloosd), the
  privileged agent that carries out root operations on its behalf, the web

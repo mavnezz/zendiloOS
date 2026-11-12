@@ -131,6 +131,8 @@ pub struct VmPool {
 /// What the machine offers VMs.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct HostFacts {
+    /// Debian's name of the machine's architecture: `amd64`, `arm64`.
+    pub architecture: String,
     /// `/dev/kvm` is there.
     pub kvm: bool,
     /// `vmx` (Intel VT-x) or `svm` (AMD-V).
@@ -146,6 +148,18 @@ pub struct HostFacts {
     pub limits: HostLimits,
     /// The locations of the VMs' storage the host has, by volume.
     pub locations: Vec<Location>,
+}
+
+/// The architectures zendiloOS runs VMs on. The domains it writes are a PC's
+/// (`q35`, OVMF, `x86_64`); an arm64 NAS would need QEMU's `virt` machine and
+/// AAVMF, which it does not offer yet.
+pub const VM_ARCHITECTURES: [&str; 1] = ["amd64"];
+
+impl HostFacts {
+    /// zendiloOS offers VMs on the machine's architecture.
+    pub fn architecture_supported(&self) -> bool {
+        VM_ARCHITECTURES.contains(&self.architecture.as_str())
+    }
 }
 
 /// An ISO the administrator may read, where it is.
@@ -389,6 +403,10 @@ pub enum VmsError {
     NotFound,
     #[error(transparent)]
     Invalid(#[from] Invalid),
+    /// The machine's architecture is not one VMs are offered on
+    /// ([`VM_ARCHITECTURES`]).
+    #[error("virtual machines are not offered on {0} yet, only on amd64")]
+    Architecture(String),
     /// No `/dev/kvm`: the CPU cannot virtualise, or it is off in the firmware.
     #[error("this machine cannot run virtual machines: there is no /dev/kvm")]
     NoKvm,
@@ -671,10 +689,14 @@ impl Vms {
         Ok(known.into_iter().filter(|location| facts.locations.contains(location)).collect())
     }
 
-    /// Installs libvirt and QEMU from Debian, in a job; refused on a machine
-    /// without KVM, which could install them but never run a VM.
+    /// Installs libvirt and QEMU from Debian, in a job; refused on an
+    /// architecture VMs are not offered on, and on a machine without KVM,
+    /// which could install them but never run a VM.
     pub async fn install(&self, actor: &Actor, context: &RequestContext) -> Result<Job, VmsError> {
         let facts = self.ports.host.facts(context).await?;
+        if !facts.architecture_supported() {
+            return Err(VmsError::Architecture(facts.architecture));
+        }
         if !facts.kvm {
             return Err(VmsError::NoKvm);
         }
