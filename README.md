@@ -10,7 +10,7 @@ _A NAS operating system on Debian, run from a desktop in the browser._
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Debian 13](https://img.shields.io/badge/Debian-13%20trixie-a80030)](https://www.debian.org/releases/trixie/)
 
-Download for [x86-64](https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-amd64-netinst.iso) or [arm64](https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-arm64-netinst.iso) ·
+Download for [x86-64](https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-amd64-netinst.iso) or [arm64, test release](https://github.com/mavnezz/zendiloOS/releases/download/v0.5.0-rc.1/zendiloos-arm64-netinst.iso) ·
 [Releases](https://github.com/mavnezz/zendiloOS/releases) ·
 [Architecture](docs/architecture.md) ·
 [Testing](docs/testing.md) ·
@@ -81,7 +81,7 @@ NVMe), and a network connection:
 
 ### Install from the ISO
 
-1. Download the installation ISO of the newest stable release for [x86-64](https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-amd64-netinst.iso) or [arm64](https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-arm64-netinst.iso) and write it to a USB stick.
+1. Download the installation ISO of the newest stable release for [x86-64](https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-amd64-netinst.iso), or of the test release [0.5.0~rc.1](https://github.com/mavnezz/zendiloOS/releases/tag/v0.5.0-rc.1) for x86-64 or arm64 (no stable release has arm64 yet), and write it to a USB stick.
 2. Start the NAS from it and choose **Install zendiloOS**.
 3. Answer what the installer asks: language, location and keyboard, the machine's name, root's password and the disk for the system. Everything else is set up for you; the installer needs the network.
 4. After the restart the console shows the address of the web interface. Open it in a browser on your network and create the first administrator: no setup code is needed, whoever comes first sets the NAS up, so do it right away.
