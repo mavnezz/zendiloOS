@@ -16,7 +16,8 @@
 #   5. a configuration backup downloads encrypted with age and is restored
 #      on the same machine: zendiloosd starts again with it, the
 #      administrator signs in as before
-#   0. before all, both boot menus offer "Rescue a zendiloOS system"
+#   0. before all, the boot menus offer "Rescue a zendiloOS system" (both on
+#      amd64, UEFI's on arm64)
 #
 # Usage: scripts/iso-test.sh [ISO]   (the newest dist/zendiloos-*.iso)
 #   ZENDILOOS_ISO_TEST_REUSE=1  skips the installation and starts the
@@ -102,10 +103,15 @@ trap stop EXIT
 stop
 say "0. The boot menus offer the rescue mode"
 menus=$(mktemp -d)
-xorriso -osirrox on -indev "$iso" -extract /boot/grub/grub.cfg "$menus/grub.cfg" \
-    -extract /isolinux/zendiloos.cfg "$menus/isolinux.cfg" 2>/dev/null
+# arm64 starts through UEFI only: no BIOS menu on its ISO.
+extract=(-extract /boot/grub/grub.cfg "$menus/grub.cfg")
+[[ $arch == amd64 ]] && extract+=(-extract /isolinux/zendiloos.cfg "$menus/isolinux.cfg")
+xorriso -osirrox on -indev "$iso" "${extract[@]}" 2>/dev/null
 grep -q "menuentry --hotkey=r 'Rescue a zendiloOS system'" "$menus/grub.cfg" || fail "no rescue entry for UEFI"
-grep -A3 '^label zendiloos-rescue' "$menus/isolinux.cfg" | grep -q 'rescue/enable=true' || fail "no rescue entry for BIOS"
+if [[ $arch == amd64 ]]; then
+    bios=$(grep -A3 '^label zendiloos-rescue' "$menus/isolinux.cfg" || true)
+    grep -q 'rescue/enable=true' <<<"$bios" || fail "no rescue entry for BIOS"
+fi
 rm -rf "$menus"
 if [[ ${ZENDILOOS_ISO_TEST_REUSE:-} == 1 && -f $dir/system.qcow2 ]]; then
     say "1. Reusing the machine installed before"
