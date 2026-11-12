@@ -21,7 +21,15 @@ vi.mock('@/shared/api/live', async () => ({
 const t = (key: string, values: Record<string, unknown> = {}) => i18n.global.t(key, values)
 
 const PLUGIN: VmPlugin = {
-  hardware: { kvm: true, cpu_virtualization: 'vmx', iommu: true, swtpm: true, secure_boot: true },
+  hardware: {
+    architecture: 'amd64',
+    architecture_supported: true,
+    kvm: true,
+    cpu_virtualization: 'vmx',
+    iommu: true,
+    swtpm: true,
+    secure_boot: true,
+  },
   installed: true,
   storage: { pool: 'tank', volume: 1 },
   locations: [

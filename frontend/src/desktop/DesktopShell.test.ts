@@ -123,6 +123,8 @@ describe('the desktop', () => {
         kvm: true,
         cpu_virtualization: 'vmx',
         iommu: false,
+        swtpm: true,
+        secure_boot: true,
       },
       installed: true,
       storage: null,
