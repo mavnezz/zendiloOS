@@ -56,6 +56,7 @@ checks and how to run it.
 | `vm-docker-volumes-test` | Docker's volumes backed up, kept and restored |
 | `vm-app-center-test` | an app from the catalog becoming an administrator's own project |
 | `vm-vms-test` | virtual machines: the plugin, VMs with several disks and cards, editing, the image library, the console, live load |
+| `vm-backup-test` | backup tasks: the plugin, mirrors and versions between pools, a USB drive when plugged in, an rsync daemon and SSH with a pinned host key, a pull, restores, an encrypted backup with rclone |
 | `vm-update-test` | updates of Debian and zendiloOS through the interface, signed releases, refusals |
 | `vm-upgrade-test` | a machine set up with an older package keeps its accounts, pools, shares and files when a newer one is installed |
 | `iso-test` | installing from the ISO, the first setup, a pool, the network managed by systemd-networkd |
@@ -69,3 +70,6 @@ checks and how to run it.
   no Windows or macOS machine has used a share yet.
 - **The bay order of the built-in NAS models** (the UGREEN DXP4800 Plus
   first) has not been confirmed on the real machine.
+- **Backups to Google Drive and OneDrive.** Their sign-in and rclone's
+  backends are tested against fakes only; no backup has gone to a real
+  account yet.

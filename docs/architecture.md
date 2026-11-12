@@ -2893,7 +2893,7 @@ administrators. Its permission is a new one, `backup.manage` (4.3),
 rather than `shares.manage` or `storage.manage`: a backup reads whole
 shares whatever their rules say and a restore writes into them, which is
 an administrator's alone, and the app is shown by it. Its context is
-`zendiloos-backup` (migration 0052).
+`zendiloos-backup` (migration 0053).
 
 **Tasks.** A task has a name, a source, a target, a mode, a schedule,
 filters and options, of four kinds as its places say:

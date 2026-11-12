@@ -1877,6 +1877,8 @@ impl Request {
                 | Request::VmImages { .. }
                 | Request::VmStates { .. }
                 | Request::VmStats { .. }
+                | Request::BackupFacts { .. }
+                | Request::ListBackup { .. }
                 | Request::AppsStatus { .. }
                 | Request::AppLogs { .. }
                 | Request::HostFacts { .. }
@@ -2935,6 +2937,7 @@ mod tests {
             json!({ "op": "ssh_state" }),
             json!({ "op": "web_server_state" }),
             json!({ "op": "firewall_state" }),
+            json!({ "op": "backup_facts" }),
         ] {
             assert!(request(looking.clone()).only_reads(), "{looking}");
         }
@@ -2943,6 +2946,7 @@ mod tests {
             json!({ "op": "scrub_pool", "pool": "tank" }),
             json!({ "op": "start_self_test", "device": "sda", "kind": "short" }),
             json!({ "op": "read_burst", "device": "sda", "millis": 700 }),
+            json!({ "op": "make_backup_key" }),
         ] {
             assert!(!request(changing.clone()).only_reads(), "{changing}");
         }
