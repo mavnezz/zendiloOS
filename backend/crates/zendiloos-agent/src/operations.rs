@@ -479,7 +479,13 @@ impl Operations {
             }
             Request::ShareUsage {} => self.pools.share_usage().await,
             Request::ShowOnConsole { setup_code, open_setup } => {
-                crate::console::show(&self.console_issue, setup_code.as_ref(), *open_setup)
+                match crate::console::show(&self.console_issue, setup_code.as_ref(), *open_setup) {
+                    Ok(shown) => {
+                        self.pools.reprint_console().await;
+                        Ok(shown)
+                    }
+                    failed => failed,
+                }
             }
             Request::CreateShare { pool, volume, name } => self.pools.create_share(pool, *volume, name).await,
             Request::DestroyShare { pool, volume, name } => {
