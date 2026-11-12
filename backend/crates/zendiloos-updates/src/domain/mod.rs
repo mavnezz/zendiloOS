@@ -4,7 +4,7 @@ mod host;
 mod release;
 mod version;
 
-pub use host::{HostReport, PackageUpdate, RunState, UpdateRun};
+pub use host::{BootChoice, BootReason, HostReport, PackageUpdate, RunState, UpdateRun};
 pub use release::{Asset, Channel, DEVELOPMENT_TAG, Release, channel_of, newest_for, package_version};
 pub use version::compare_versions;
 

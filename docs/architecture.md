@@ -2244,11 +2244,53 @@ with its package (`/usr/share/zendiloos/changes.md`, `notes` in
 `[updates]`), read once when zendiloosd starts; the page shows it and an
 available release's notes as Markdown, with HTML in them as text.
 
-**The kernel and ZFS.** ZFS is built by DKMS for each kernel. After an
-update the runner looks for `zfs.ko` below the newest kernel's modules; if
-it is missing the run fails with what to do, and the interface warns not to
-restart, as the pools would not import. A newer kernel than the running one
-is reported as waiting for a restart, which the administrator starts.
+**The kernel and ZFS.** ZFS is built by DKMS for each kernel. Should that
+fail for a new one (its headers missing, a kernel newer than the ZFS release
+supports, a build cut off), a restart into it would come up without the
+pools. So the NAS never starts a kernel without its ZFS module while one
+with it is there, also when someone restarts it against the advice: GRUB's
+default is the entry zendiloOS saves in GRUB's environment block
+(`GRUB_DEFAULT=saved`, from `/etc/default/grub.d/zendiloos.cfg`; the
+package writes GRUB's configuration anew once, so that it starts the saved
+entry), which is the newest kernel by dpkg's order with a `zfs.ko` below its
+modules, a newer kernel only once it has its module too, and the newest when
+none has one. The entry is named by its id, the one Debian's `10_linux`
+gives that kernel among the advanced options
+(`gnulinux-advanced-<uuid>>gnulinux-<kernel>-advanced-<uuid>`), never the
+first entry, which starts whatever kernel is newest when GRUB's
+configuration is written next, nor a recovery mode or another system's. The
+agent's binary sets it as `choose-boot-kernel` (`grub-editenv`, outside the
+agent's sandbox, which keeps `/boot` read only), and three things run it:
+the package's hooks after a kernel or its headers were installed (DKMS
+builds ZFS once both are there) or a kernel was removed
+(`/etc/kernel/{postinst,header_postinst,postrm}.d/zz-zendiloos`, which sort
+after DKMS's hook and GRUB's own `zz-update-grub` and never fail the
+kernel's package), so an upgrade by hand or by unattended-upgrades is
+covered too; every run of the package runner, a check too, and an upgrade
+or its finishing also when it failed, since a kernel's package fails to be
+configured when DKMS's hook fails, its later hooks then never run, and
+GRUB's configuration lists the kernel all the same once anything writes it
+anew; and the package's installation. Where the kernel that is kept was
+removed, GRUB would start its first entry: the hook after the removal
+chooses again. A machine that does not start through GRUB (systemd-boot,
+another loader) is left alone and says so; removing the package unsets the
+saved entry, so GRUB starts the newest kernel again, as Debian's does. After
+an update the runner still looks for `zfs.ko` below the newest kernel's
+modules; if it is missing the run fails with what to do (`dkms autoinstall
+-k <kernel>`), saying that the NAS keeps starting the kernel it chose, or,
+where zendiloOS could not choose, not to restart, as the pools would not
+import. The Updates page says which kernel starts next and why (`boot` in
+`GET /system/updates`): the newest, which has its module; an older one, as
+the newest has none yet; the newest, as none has one; or that GRUB does not
+start the saved entry (its configuration older than the setting:
+`update-grub` writes it anew), could not be told, or is not used. A restart
+is waiting when it starts another kernel than the running one, and the
+administrator starts it. Tested with fixtures of Debian 13's `grub.cfg` in
+the agent's tests, and in the second test VM (`scripts/vm-update-test.sh`,
+step 6): a newer kernel installed without its headers, so that DKMS builds
+no ZFS for it, leaves GRUB's default on the kernel it had also once GRUB's
+configuration lists the new one first; it moves to the new kernel once a
+module is there, back once it is gone, and stays when the kernel goes.
 
 **Checks and notifications.** With the daily check on (the default), the
 NAS looks once a day and says what it found as a notification, each finding
@@ -2259,6 +2301,52 @@ test VM (`scripts/vm-update-test.sh`): a check, zendiloOS updating itself to
 a release signed with a test key and coming back with the new version, a
 changed package and an older release refused; Docker installed as the
 App Center's plugin (`scripts/vm-docker-install-test.sh`).
+
+**[Later] The system updated as A/B images** (issue #58). Keeping a kernel
+with ZFS keeps the pools; an update can still leave the system unable to
+start (a broken package, an update cut off that finishing cannot repair),
+and that needs someone at the console. The appliance's image (phase 5,
+section 6) makes the whole system the unit of an update, so that it goes to
+the side not running and comes back by itself:
+
+- **Layout.** GPT with an EFI system partition, two root partitions, A and
+  B (each a read-only image, erofs or ext4, of a fixed size), and one
+  writable partition for `/var` (the database in `/var/lib/zendiloos`, the
+  runner's records, logs) and the machine's own part of `/etc` (accounts,
+  the network's, Samba's and the agent's files), mounted over the image's
+  `/etc` so that a new image brings new defaults while the administrator's
+  files stay. The pools stay on their disks as now.
+- **Images.** Built in CI with mmdebstrap against a fixed snapshot.debian.org
+  state (section 6, Reproducibility), with the kernel and its ZFS module
+  built into the image, so the device never builds ZFS and an image whose
+  module does not load is never published (Open Question 1: the licensing
+  of prebuilt modules). Signed as releases are now (minisign over
+  `SHA256SUMS`, the trusted comment naming the version), on the same
+  channels, with an image's notes as a release's.
+- **Update.** The runner, with the checks it makes today (signature, the
+  version it was made for, the channel, only newer), writes the image to
+  the side not running and its unified kernel image to the EFI system
+  partition (systemd-sysupdate's transfer files describe both); systemd-boot
+  starts the new side with boot counting (three tries, in the entry's file
+  name), and `systemd-bless-boot` marks it good only once a unit of
+  zendiloOS's saw zendiloosd answer, the pools imported and the network up.
+  A side that fails three times is left: systemd-boot starts the other one
+  by itself, and the page says that the update was rolled back and why, as
+  far as the journal of the failed start tells.
+- **The database.** Migrations stay forward only; a database migrated by the
+  new side must still open on the old one. The copy taken before each
+  migration (section 6) goes back in place when the old side starts after a
+  failed update, and a release whose migrations an older side cannot use
+  says so, so the page can tell that going back loses what changed since.
+- **What changes for apt.** Debian's packages are no longer upgraded in
+  place on the appliance: security updates come as images, at least weekly.
+  The installation from the ISO with apt (phases 1–4) keeps updating in
+  place, with the kernel kept as above.
+
+Open: the size of the root partitions, whether the machine's `/etc` is an
+overlay or a set of bind-mounted folders, downloading deltas instead of
+whole images, and how a machine installed from the ISO moves to the
+images.
 
 ### 4.11 Certificates and the web interface
 
@@ -3231,7 +3319,7 @@ the interface and the agent deal with a single tool chain (`zpool`, `zfs`).
 | Quality | rustfmt, Clippy (`-D warnings` in CI), `unsafe_code = "forbid"` outside clearly bounded exceptions, `cargo deny`, ESLint, `vue-tsc --strict`, Vitest; coverage held by CI: backend 92 % of lines, every crate 90 % (the binaries' `main.rs` and zendiloosd's glue aside), contexts 93 %, domains 97 %; frontend 93 % of lines, its `.ts` logic 96 % (`scripts/coverage-check.sh`, `frontend/vite.config.ts`) | |
 | Installation (phases 1–4) | an installation ISO per stable release: Debian 13's netinst image with an entry "Install zendiloOS", answers by preseeding (only language, keyboard, name, root's password and the system's disk are asked) and the release's package installed at the end, then the network handed to systemd-networkd (Network, above); ZFS built by DKMS on the machine (`docs/releases.md`) | Debian's own installer, nothing to maintain but the answers; the appliance's image (phase 5) can follow |
 | Updates (phases 1–4) | Debian's packages through apt and zendiloOS's `.deb` from GitHub Releases, by channel (stable, test, development), checked daily, installed on request (4.10, `docs/releases.md`) | the appliance's image updates below build on the same releases and channels |
-| Installation and updates | **[Phase 5]** recommendation: root image built with mmdebstrap as a signed image, A/B partitions, updates with systemd-sysupdate, automatic rollback via systemd-boot boot counting, data and `/var` on separate partitions | alternatives: Debian installer with preseeding (apt based, not atomic), live-build with Calamares, mkosi. Decided in phase 5; the ground rule in 1.2 keeps all options open |
+| Installation and updates | **[Phase 5]** recommendation: root image built with mmdebstrap as a signed image, A/B partitions, updates with systemd-sysupdate, automatic rollback via systemd-boot boot counting, data and `/var` on separate partitions (sketched in 4.10, "The system updated as A/B images") | alternatives: Debian installer with preseeding (apt based, not atomic), live-build with Calamares, mkosi. Decided in phase 5; the ground rule in 1.2 keeps all options open |
 
 ---
 

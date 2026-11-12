@@ -27,11 +27,63 @@ pub struct HostReport {
     /// dpkg left packages half installed or half configured: an update was
     /// cut off, and finishing it comes before anything else apt does.
     pub interrupted: bool,
+    /// Which kernel the NAS starts next; none from a NAS that did not say.
+    pub boot: Option<BootChoice>,
+}
+
+/// Which kernel GRUB starts next, and why: the newest one with its ZFS
+/// module, never a newer one without (docs/architecture.md, 4.10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BootChoice {
+    /// None where zendiloOS does not choose it.
+    pub kernel: Option<String>,
+    pub reason: BootReason,
+    /// What stood in the way, where something did.
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootReason {
+    /// The newest kernel, which has its ZFS module.
+    Newest,
+    /// The newest kernel has no ZFS module yet: GRUB keeps starting the
+    /// newest one that has.
+    NewestLacksZfs,
+    /// No kernel has a ZFS module: the newest starts.
+    NoZfs,
+    /// GRUB's configuration does not start the entry zendiloOS saves.
+    NotSaved,
+    /// The machine does not start through GRUB: nothing chosen.
+    NotGrub,
+    /// Saving the entry failed.
+    Failed,
+}
+
+impl BootReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Newest => "newest",
+            Self::NewestLacksZfs => "newest_lacks_zfs",
+            Self::NoZfs => "no_zfs",
+            Self::NotSaved => "not_saved",
+            Self::NotGrub => "not_grub",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        [Self::Newest, Self::NewestLacksZfs, Self::NoZfs, Self::NotSaved, Self::NotGrub, Self::Failed]
+            .into_iter()
+            .find(|reason| reason.as_str() == text)
+    }
 }
 
 impl HostReport {
+    /// Whether a restart brings another kernel: the one GRUB starts where
+    /// zendiloOS chose it, else the newest installed.
     pub fn restart_needed(&self) -> bool {
-        self.newest_kernel.as_ref().is_some_and(|newest| *newest != self.running_kernel)
+        let next = self.boot.as_ref().and_then(|boot| boot.kernel.as_ref()).or(self.newest_kernel.as_ref());
+        next.is_some_and(|next| *next != self.running_kernel)
     }
 
     pub fn security_updates(&self) -> usize {
@@ -66,4 +118,51 @@ pub struct UpdateRun {
     pub zendiloos: Option<String>,
     /// What apt said at the end.
     pub report: Option<HostReport>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn report(newest: &str, boot: Option<&str>) -> HostReport {
+        HostReport {
+            running_kernel: "6.12.48+deb13-amd64".into(),
+            newest_kernel: Some(newest.into()),
+            boot: boot.map(|kernel| BootChoice {
+                kernel: Some(kernel.into()),
+                reason: BootReason::NewestLacksZfs,
+                detail: None,
+            }),
+            ..HostReport::default()
+        }
+    }
+
+    #[test]
+    fn a_restart_is_waiting_when_it_starts_another_kernel() {
+        let (running, newer) = ("6.12.48+deb13-amd64", "6.12.57+deb13-amd64");
+        assert!(report(newer, None).restart_needed(), "without a choice, the newest");
+        assert!(!report(running, None).restart_needed());
+        assert!(!report(newer, Some(running)).restart_needed(), "GRUB keeps the running one");
+        assert!(report(newer, Some("6.12.50+deb13-amd64")).restart_needed());
+        let unchosen = HostReport {
+            boot: Some(BootChoice { kernel: None, reason: BootReason::NotGrub, detail: None }),
+            ..report(newer, None)
+        };
+        assert!(unchosen.restart_needed(), "not chosen: the newest");
+    }
+
+    #[test]
+    fn boot_reasons_are_kept_by_name() {
+        for reason in [
+            BootReason::Newest,
+            BootReason::NewestLacksZfs,
+            BootReason::NoZfs,
+            BootReason::NotSaved,
+            BootReason::NotGrub,
+            BootReason::Failed,
+        ] {
+            assert_eq!(BootReason::parse(reason.as_str()), Some(reason));
+        }
+        assert_eq!(BootReason::parse("later"), None);
+    }
 }

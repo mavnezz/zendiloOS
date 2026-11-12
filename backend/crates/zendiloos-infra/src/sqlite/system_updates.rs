@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use zendiloos_kernel::{PortError, Timestamp};
 use zendiloos_updates::application::ports::UpdateStore;
 use zendiloos_updates::domain::{
-    Asset, Channel, CheckResult, HostReport, PackageUpdate, Release, RunState, UpdateRun, UpdateSettings,
+    Asset, BootChoice, BootReason, Channel, CheckResult, HostReport, PackageUpdate, Release, RunState,
+    UpdateRun, UpdateSettings,
 };
 
 use super::Database;
@@ -82,6 +83,16 @@ struct StoredReport {
     zfs_ready: bool,
     #[serde(default)]
     interrupted: bool,
+    /// Kept from 0.5.0 on.
+    #[serde(default)]
+    boot: Option<StoredBoot>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredBoot {
+    kernel: Option<String>,
+    reason: String,
+    detail: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -121,6 +132,11 @@ impl From<&HostReport> for StoredReport {
             newest_kernel: host.newest_kernel.clone(),
             zfs_ready: host.zfs_ready,
             interrupted: host.interrupted,
+            boot: host.boot.as_ref().map(|boot| StoredBoot {
+                kernel: boot.kernel.clone(),
+                reason: boot.reason.as_str().to_owned(),
+                detail: boot.detail.clone(),
+            }),
         }
     }
 }
@@ -137,6 +153,15 @@ impl From<StoredReport> for HostReport {
             newest_kernel: host.newest_kernel,
             zfs_ready: host.zfs_ready,
             interrupted: host.interrupted,
+            // A reason this build does not know (written by a newer one) is
+            // as good as none.
+            boot: host.boot.and_then(|boot| {
+                Some(BootChoice {
+                    kernel: boot.kernel,
+                    reason: BootReason::parse(&boot.reason)?,
+                    detail: boot.detail,
+                })
+            }),
         }
     }
 }
@@ -352,6 +377,11 @@ mod tests {
                 newest_kernel: Some("6.12.57+deb13-amd64".into()),
                 zfs_ready: true,
                 interrupted: true,
+                boot: Some(BootChoice {
+                    kernel: Some("6.12.48+deb13-amd64".into()),
+                    reason: BootReason::NewestLacksZfs,
+                    detail: None,
+                }),
             }),
             host_error: Some("nothing".into()),
         };

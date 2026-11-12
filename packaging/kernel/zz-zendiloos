@@ -1,0 +1,13 @@
+#!/bin/sh
+# zendiloOS: after a kernel or its headers were installed (DKMS builds ZFS
+# for a kernel once both are there) or a kernel was removed, GRUB is set to
+# start the newest kernel that has its ZFS module (docs/architecture.md,
+# 4.10). It runs after DKMS's hook and GRUB's own (zz-update-grub), which
+# sort before it, and never fails the kernel's package: what it chose, or
+# why it could not, goes to the output of apt or dpkg.
+set -u
+agent=/usr/libexec/zendiloos/zendiloos-agent
+# Left behind by a package removed but not purged.
+[ -x "$agent" ] || exit 0
+"$agent" choose-boot-kernel 2>&1 | sed 's/^/zendiloos: /' >&2 || true
+exit 0

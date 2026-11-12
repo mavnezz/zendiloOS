@@ -78,8 +78,8 @@ pub use network::{
     VlanId, Vlans,
 };
 pub use packages::{
-    InvalidReleasePackage, PackageReport, PackageRun, PackageRunState, PackageTask, ReleaseChannel,
-    ReleaseInstall, ReleasePackage, UpgradablePackage,
+    BootKernel, BootReason, InvalidReleasePackage, PackageReport, PackageRun, PackageRunState, PackageTask,
+    ReleaseChannel, ReleaseInstall, ReleasePackage, UpgradablePackage,
 };
 pub use removable::{
     InvalidRemovableId, MEMBER_SIGNATURES, REMOVABLE_PLACE, RemovableFilesystem, RemovableId,

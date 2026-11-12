@@ -3447,6 +3447,17 @@ const de: Messages = {
     currentNotes: 'Neu in dieser Version',
     channel: 'Kanal',
     kernel: 'Laufender Kernel',
+    bootKernel: 'Startet als Nächstes',
+    boot: {
+      newest: 'Der neueste Kernel, mit seinem ZFS-Modul.',
+      newest_lacks_zfs:
+        'Der neueste Kernel, {newest}, hat noch kein ZFS-Modul: Das NAS startet weiter diesen, bis es gebaut ist, und findet so immer seine Pools.',
+      no_zfs: 'Kein Kernel hat ein ZFS-Modul: Der neueste startet.',
+      not_saved:
+        'GRUB startet nicht den Kernel, den zendiloOS wählt: Seine Konfiguration ist älter als die Einstellung von zendiloOS. update-grub schreibt sie neu.',
+      not_grub: 'Das NAS startet nicht über GRUB, daher wählt zendiloOS seinen Kernel nicht.',
+      failed: 'GRUB konnte nicht gesagt werden, welcher Kernel startet: {detail}',
+    },
     checkedAt: 'Zuletzt gesucht',
     check: 'Nach Updates suchen',
     checking: 'Suche läuft …',
@@ -3472,6 +3483,8 @@ const de: Messages = {
     kernelWaits: 'Der neue Kernel {kernel} wartet auf einen Neustart des NAS.',
     zfsMissing:
       'Das ZFS-Modul fehlt für den neuen Kernel. Starten Sie das NAS nicht neu, bevor es gebaut ist: sonst findet es seine Pools nicht.',
+    zfsMissingKept:
+      'Das ZFS-Modul fehlt für den neuen Kernel {newest}. Das NAS startet weiter {kernel}, der es hat, bis es gebaut ist.',
     restartNow: 'Jetzt neu starten',
     runTitle: 'Update',
     runHint:

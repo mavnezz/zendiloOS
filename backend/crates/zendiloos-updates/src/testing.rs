@@ -7,8 +7,8 @@ use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
 use crate::application::ports::{HostError, HostPackages, ReleaseSource, UpdateStore};
 use crate::domain::{
-    Asset, Channel, CheckResult, HostReport, PackageUpdate, Release, RunState, UpdateRun, UpdateSettings,
-    channel_of,
+    Asset, BootChoice, BootReason, Channel, CheckResult, HostReport, PackageUpdate, Release, RunState,
+    UpdateRun, UpdateSettings, channel_of,
 };
 
 /// A release as GitHub would list it.
@@ -98,6 +98,11 @@ impl FakeHost {
             newest_kernel: Some("6.12.48+deb13-amd64".into()),
             zfs_ready: true,
             interrupted: *self.interrupted.lock().unwrap(),
+            boot: Some(BootChoice {
+                kernel: Some("6.12.48+deb13-amd64".into()),
+                reason: BootReason::Newest,
+                detail: None,
+            }),
         }
     }
 }
@@ -142,7 +147,16 @@ impl HostPackages for FakeHost {
             finished_at: Some(Timestamp::from_unix_seconds(200)),
             error: None,
             zendiloos: release.map(|release| release.version.clone()),
-            report: Some(HostReport { newest_kernel: Some("6.12.57+deb13-amd64".into()), ..self.report() }),
+            // A new kernel with its ZFS module, which GRUB starts next.
+            report: Some(HostReport {
+                newest_kernel: Some("6.12.57+deb13-amd64".into()),
+                boot: Some(BootChoice {
+                    kernel: Some("6.12.57+deb13-amd64".into()),
+                    reason: BootReason::Newest,
+                    detail: None,
+                }),
+                ..self.report()
+            }),
         });
         Ok(id)
     }

@@ -26139,6 +26139,44 @@
         },
         "additionalProperties": false
       },
+      "UpdateBoot": {
+        "type": "object",
+        "description": "Which kernel the NAS starts next: the newest one that has its ZFS\nmodule, never a newer one without.",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What stood in the way, where something did."
+          },
+          "kernel": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Null where zendiloOS does not choose it (`not_saved`, `not_grub`,\n`failed`)."
+          },
+          "reason": {
+            "$ref": "#/components/schemas/UpdateBootReason"
+          }
+        }
+      },
+      "UpdateBootReason": {
+        "type": "string",
+        "description": "Why GRUB starts the kernel it starts.",
+        "enum": [
+          "newest",
+          "newest_lacks_zfs",
+          "no_zfs",
+          "not_saved",
+          "not_grub",
+          "failed"
+        ]
+      },
       "UpdateChannel": {
         "type": "string",
         "description": "Which releases of zendiloOS are offered: each channel takes those of\nthe steadier ones too.",
@@ -26218,7 +26256,7 @@
           },
           "restart_needed": {
             "type": "boolean",
-            "description": "A newer kernel waits for a restart."
+            "description": "Another kernel waits for a restart."
           },
           "started_at": {
             "type": "integer",
@@ -26409,6 +26447,17 @@
           "interrupted"
         ],
         "properties": {
+          "boot": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/UpdateBoot",
+                "description": "Which kernel starts next and why; null until a check of this\nversion said."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "checked_at": {
             "type": [
               "integer",
@@ -26479,7 +26528,7 @@
           },
           "restart_needed": {
             "type": "boolean",
-            "description": "A newer kernel is installed and waits for a restart."
+            "description": "A restart starts another kernel than the running one: the one\n`boot` names, or the newest where zendiloOS does not choose."
           },
           "run": {
             "oneOf": [
@@ -26502,7 +26551,7 @@
           },
           "zfs_ready": {
             "type": "boolean",
-            "description": "The ZFS module is built for the newest kernel; without it a restart\nwould leave the pools behind."
+            "description": "The ZFS module is built for the newest kernel. Without it GRUB keeps\nstarting an older kernel that has it (`boot`), or, where zendiloOS\ndoes not choose, a restart would leave the pools behind."
           }
         }
       },

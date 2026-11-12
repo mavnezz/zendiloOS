@@ -8437,6 +8437,25 @@ export interface components {
             role?: components["schemas"]["AccountRole"] | null;
         };
         /**
+         * @description Which kernel the NAS starts next: the newest one that has its ZFS
+         *     module, never a newer one without.
+         */
+        UpdateBoot: {
+            /** @description What stood in the way, where something did. */
+            detail?: string | null;
+            /**
+             * @description Null where zendiloOS does not choose it (`not_saved`, `not_grub`,
+             *     `failed`).
+             */
+            kernel?: string | null;
+            reason: components["schemas"]["UpdateBootReason"];
+        };
+        /**
+         * @description Why GRUB starts the kernel it starts.
+         * @enum {string}
+         */
+        UpdateBootReason: "newest" | "newest_lacks_zfs" | "no_zfs" | "not_saved" | "not_grub" | "failed";
+        /**
          * @description Which releases of zendiloOS are offered: each channel takes those of
          *     the steadier ones too.
          * @enum {string}
@@ -8462,7 +8481,7 @@ export interface components {
             /** @description It finishes an update that was cut off rather than updating. */
             finishes: boolean;
             id: string;
-            /** @description A newer kernel waits for a restart. */
+            /** @description Another kernel waits for a restart. */
             restart_needed: boolean;
             /** Format: int64 */
             started_at: number;
@@ -8522,6 +8541,7 @@ export interface components {
             nics: components["schemas"]["VmNicChoice"][];
         };
         UpdatesOverview: {
+            boot?: components["schemas"]["UpdateBoot"] | null;
             /**
              * Format: int64
              * @description When the last check was, Unix seconds.
@@ -8548,14 +8568,18 @@ export interface components {
             release?: components["schemas"]["AvailableRelease"] | null;
             /** @description Why GitHub could not be asked. */
             release_error?: string | null;
-            /** @description A newer kernel is installed and waits for a restart. */
+            /**
+             * @description A restart starts another kernel than the running one: the one
+             *     `boot` names, or the newest where zendiloOS does not choose.
+             */
             restart_needed: boolean;
             run?: components["schemas"]["UpdateRun"] | null;
             running_kernel?: string | null;
             settings: components["schemas"]["UpdateSettings"];
             /**
-             * @description The ZFS module is built for the newest kernel; without it a restart
-             *     would leave the pools behind.
+             * @description The ZFS module is built for the newest kernel. Without it GRUB keeps
+             *     starting an older kernel that has it (`boot`), or, where zendiloOS
+             *     does not choose, a restart would leave the pools behind.
              */
             zfs_ready: boolean;
         };

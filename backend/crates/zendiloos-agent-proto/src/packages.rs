@@ -221,6 +221,45 @@ pub struct PackageReport {
     /// finishes what it began.
     #[serde(default)]
     pub interrupted: bool,
+    /// Which kernel the NAS starts next, as the runner set it; none from a
+    /// runner before zendiloOS chose.
+    #[serde(default)]
+    pub boot: Option<BootKernel>,
+}
+
+/// Which kernel GRUB starts next, and why (docs/architecture.md, 4.10):
+/// the newest one with its ZFS module, never a newer one without.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BootKernel {
+    /// The kernel GRUB starts by default; none where zendiloOS does not
+    /// choose it ([`BootReason::NotGrub`], [`BootReason::NotSaved`],
+    /// [`BootReason::Failed`]).
+    pub kernel: Option<String>,
+    pub reason: BootReason,
+    /// What stood in the way, where something did.
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BootReason {
+    /// The newest kernel, which has its ZFS module.
+    Newest,
+    /// The newest kernel has no ZFS module (DKMS could not build it): GRUB
+    /// keeps starting the newest one that has.
+    NewestLacksZfs,
+    /// No kernel has a ZFS module: GRUB starts the newest, as Debian would.
+    NoZfs,
+    /// GRUB's configuration does not start the entry zendiloOS saves: it
+    /// was written before `GRUB_DEFAULT=saved`, or another setting wins.
+    /// `update-grub` writes it anew.
+    NotSaved,
+    /// The machine does not start through GRUB, or GRUB's configuration
+    /// names no kernel of Debian's: nothing chosen.
+    NotGrub,
+    /// Saving the entry failed.
+    Failed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -3387,6 +3387,17 @@ const en = {
     currentNotes: "What's new in this version",
     channel: 'Channel',
     kernel: 'Running kernel',
+    bootKernel: 'Starts next',
+    boot: {
+      newest: 'The newest kernel, which has its ZFS module.',
+      newest_lacks_zfs:
+        'The newest kernel, {newest}, has no ZFS module yet: the NAS keeps starting this one until it is built, so it always finds its pools.',
+      no_zfs: 'No kernel has a ZFS module: the newest one starts.',
+      not_saved:
+        "GRUB does not start the kernel zendiloOS chooses: its configuration predates zendiloOS's setting. Running update-grub writes it anew.",
+      not_grub: 'The NAS does not start through GRUB, so zendiloOS does not choose its kernel.',
+      failed: 'GRUB could not be told which kernel to start: {detail}',
+    },
     checkedAt: 'Last looked',
     check: 'Look for updates',
     checking: 'Looking …',
@@ -3412,6 +3423,8 @@ const en = {
     kernelWaits: 'The new kernel {kernel} waits for the NAS to restart.',
     zfsMissing:
       'The ZFS module is missing for the new kernel. Do not restart the NAS before it is built: it would not find its pools.',
+    zfsMissingKept:
+      'The ZFS module is missing for the new kernel {newest}. The NAS keeps starting {kernel}, which has it, until it is built.',
     restartNow: 'Restart now',
     runTitle: 'Update',
     runHint:

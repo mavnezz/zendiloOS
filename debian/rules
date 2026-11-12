@@ -35,6 +35,13 @@ override_dh_auto_install:
 	# under the installed version (scripts/release-notes.sh).
 	scripts/release-notes.sh "$(ZENDILOOS_VERSION)" debian/changelog "$(ZENDILOOS_REPOSITORY)" \
 		> debian/zendiloos/usr/share/zendiloos/changes.md
+	# GRUB starts the newest kernel that has its ZFS module: its default is
+	# the entry zendiloOS saves, which these hooks set after a kernel or its
+	# headers came or a kernel went (docs/architecture.md, 4.10).
+	install -D -m 0644 packaging/grub/zendiloos.cfg debian/zendiloos/etc/default/grub.d/zendiloos.cfg
+	for hooks in postinst.d postrm.d header_postinst.d; do \
+		install -D -m 0755 packaging/kernel/zz-zendiloos debian/zendiloos/etc/kernel/$$hooks/zz-zendiloos; \
+	done
 	# The key releases are signed with; without it, this build takes no
 	# updates of zendiloOS (docs/releases.md).
 	if [ -f packaging/release-signing.pub ]; then \

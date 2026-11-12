@@ -194,6 +194,66 @@ describe('the update page', () => {
     expect(page()).toContain('files.copy photos')
   })
 
+  it('says which kernel starts next and why, and that a restart is safe without ZFS for the newest', async () => {
+    on(
+      'GET',
+      '/api/v1/system/updates',
+      overview({
+        packages: [],
+        release: null,
+        running_kernel: '6.12.48+deb13-amd64',
+        newest_kernel: '6.12.57+deb13-amd64',
+        zfs_ready: false,
+        restart_needed: false,
+        boot: { kernel: '6.12.48+deb13-amd64', reason: 'newest_lacks_zfs', detail: null },
+      }),
+    )
+    const { wrapper } = await mountApp(UpdatePage)
+    const boot = wrapper.find('[data-boot]').text()
+    expect(boot).toContain('6.12.48+deb13-amd64')
+    expect(boot).toContain(t('updates.boot.newest_lacks_zfs', { newest: '6.12.57+deb13-amd64' }))
+    expect(page()).not.toContain(t('updates.zfsMissing'))
+  })
+
+  it('warns not to restart where zendiloOS cannot choose the kernel', async () => {
+    on(
+      'GET',
+      '/api/v1/system/updates',
+      overview({
+        packages: [],
+        release: null,
+        zfs_ready: false,
+        restart_needed: true,
+        boot: { kernel: null, reason: 'not_saved', detail: '/boot/grub/grub.cfg does not start …' },
+      }),
+    )
+    const { wrapper } = await mountApp(UpdatePage)
+    expect(wrapper.find('[data-boot]').text()).toContain(t('updates.boot.not_saved'))
+    expect(page()).toContain(t('updates.zfsMissing'))
+    expect(page()).not.toContain(t('updates.restartNow'))
+  })
+
+  it('offers a restart into a kernel kept for its ZFS module', async () => {
+    on(
+      'GET',
+      '/api/v1/system/updates',
+      overview({
+        packages: [],
+        release: null,
+        running_kernel: '6.12.63+deb13-amd64',
+        newest_kernel: '6.12.63+deb13-amd64',
+        zfs_ready: false,
+        restart_needed: true,
+        boot: { kernel: '6.12.57+deb13-amd64', reason: 'newest_lacks_zfs', detail: null },
+      }),
+    )
+    await mountApp(UpdatePage)
+    expect(page()).toContain(
+      t('updates.zfsMissingKept', { newest: '6.12.63+deb13-amd64', kernel: '6.12.57+deb13-amd64' }),
+    )
+    expect(page()).toContain(t('updates.restartNow'))
+  })
+
   it('offers to finish an update dpkg did not finish, and follows it', async () => {
     let finishing = false
     on('GET', '/api/v1/system/updates', () =>

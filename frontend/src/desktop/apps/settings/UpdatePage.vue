@@ -58,6 +58,19 @@ const hasUpdates = computed(
   () => Boolean(overview.value?.release) || (overview.value?.packages.length ?? 0) > 0,
 )
 const security = computed(() => overview.value?.packages.filter((p) => p.security).length ?? 0)
+/** GRUB keeps starting a kernel with its ZFS module: a restart is safe. */
+const bootSafe = computed(() =>
+  ['newest', 'newest_lacks_zfs'].includes(overview.value?.boot?.reason ?? ''),
+)
+/** What to say of a ZFS module missing for the newest kernel. */
+const zfsMissing = computed(() =>
+  bootSafe.value
+    ? t('updates.zfsMissingKept', {
+        newest: overview.value?.newest_kernel ?? '',
+        kernel: overview.value?.boot?.kernel ?? '',
+      })
+    : t('updates.zfsMissing'),
+)
 const newKernel = computed(() =>
   overview.value?.packages.some((p) => p.name.startsWith('linux-image')),
 )
@@ -203,6 +216,28 @@ const cell = 'px-3 py-1.5 text-left'
           <dd>{{ t(`updates.channels.${overview.settings.channel}`) }}</dd>
           <dt class="text-muted-foreground">{{ t('updates.kernel') }}</dt>
           <dd class="font-mono text-[13px]">{{ overview.running_kernel ?? '–' }}</dd>
+          <template v-if="overview.boot">
+            <dt class="text-muted-foreground">{{ t('updates.bootKernel') }}</dt>
+            <dd class="grid gap-0.5" data-boot>
+              <span v-if="overview.boot.kernel" class="font-mono text-[13px]">{{
+                overview.boot.kernel
+              }}</span>
+              <span
+                class="text-xs"
+                :class="
+                  bootSafe || overview.boot.reason === 'not_grub'
+                    ? 'text-muted-foreground'
+                    : 'text-destructive'
+                "
+                >{{
+                  t(`updates.boot.${overview.boot.reason}`, {
+                    newest: overview.newest_kernel ?? '',
+                    detail: overview.boot.detail ?? '',
+                  })
+                }}</span
+              >
+            </dd>
+          </template>
           <dt class="text-muted-foreground">{{ t('updates.checkedAt') }}</dt>
           <dd>{{ when(overview.checked_at) }}</dd>
         </dl>
@@ -239,9 +274,9 @@ const cell = 'px-3 py-1.5 text-left'
         </ol>
         <p v-if="running" class="mt-3 text-xs text-muted-foreground">{{ t('updates.runHint') }}</p>
         <template v-else-if="run.state === 'succeeded'">
-          <Alert v-if="!run.zfs_ready" variant="destructive" class="mt-3">
+          <Alert v-if="!run.zfs_ready" :variant="bootSafe ? 'default' : 'destructive'" class="mt-3">
             <ShieldAlert />
-            {{ t('updates.zfsMissing') }}
+            {{ zfsMissing }}
           </Alert>
           <div v-else class="mt-3 flex flex-wrap items-center gap-3">
             <p class="flex items-center gap-1.5 font-medium text-emerald-700 dark:text-emerald-400">
@@ -382,17 +417,19 @@ const cell = 'px-3 py-1.5 text-left'
       </Alert>
       <Alert
         v-if="overview.restart_needed && !run"
-        :variant="overview.zfs_ready ? 'default' : 'destructive'"
+        :variant="overview.zfs_ready || bootSafe ? 'default' : 'destructive'"
       >
         <RotateCcw />
         <span class="flex flex-wrap items-center gap-3">
           {{
             overview.zfs_ready
-              ? t('updates.kernelWaits', { kernel: overview.newest_kernel })
-              : t('updates.zfsMissing')
+              ? t('updates.kernelWaits', {
+                  kernel: overview.boot?.kernel ?? overview.newest_kernel,
+                })
+              : zfsMissing
           }}
           <Button
-            v-if="overview.zfs_ready"
+            v-if="overview.zfs_ready || bootSafe"
             size="sm"
             variant="outline"
             @click="asking = 'restart'"

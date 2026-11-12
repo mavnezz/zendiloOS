@@ -37,6 +37,20 @@ load_zfs() {
     fi
 }
 
+# GRUB starts the newest kernel that has its ZFS module, so a kernel DKMS
+# could not build ZFS for is not started (docs/architecture.md, 4.10): its
+# default is the entry saved in its environment block
+# (/etc/default/grub.d/zendiloos.cfg), set here, by the kernel hooks
+# (/etc/kernel/*.d/zz-zendiloos) and by every update. GRUB's configuration
+# is written anew once, so that it starts the saved entry.
+boot_kernel_with_zfs() {
+    [ -f /boot/grub/grub.cfg ] && command -v update-grub >/dev/null 2>&1 || return 0
+    if ! grep -qsF 'set default="${saved_entry}"' /boot/grub/grub.cfg; then
+        update-grub 2>/dev/null || echo "zendiloos: update-grub failed; GRUB starts the newest kernel, with or without ZFS" >&2
+    fi
+    /usr/libexec/zendiloos/zendiloos-agent choose-boot-kernel 2>&1 | sed 's/^/zendiloos: /' >&2 || true
+}
+
 # The web interface's oldest TLS version, which the control panel rewrites;
 # nginx's site includes it.
 web_tls_defaults() {
@@ -120,6 +134,7 @@ case "$1" in
         announce_share_walks "$2"
         mask_gpt_auto
         load_zfs
+        boot_kernel_with_zfs
         # Earlier packages linked the console text to a file zendiloosd wrote.
         if [ -L /run/issue.d/zendiloos.issue ]; then rm -f /run/issue.d/zendiloos.issue; fi
         rm -f /var/lib/zendiloos/console.issue /var/lib/zendiloos/console.tmp
