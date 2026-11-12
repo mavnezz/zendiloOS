@@ -71,8 +71,8 @@ async fn creates_a_private_database_and_applies_all_migrations() {
         OpenReport {
             created: true,
             schema_before: None,
-            schema_after: 58,
-            applied: (1..=58).collect(),
+            schema_after: 60,
+            applied: (1..=60).collect(),
             backup: None
         }
     );
@@ -123,6 +123,8 @@ async fn creates_a_private_database_and_applies_all_migrations() {
             "file_services",
             "firewall_blocked",
             "firewall_project_ports",
+            "firewall_restored",
+            "firewall_restored_rules",
             "firewall_rules",
             "firewall_settings",
             "group_members",
@@ -131,6 +133,8 @@ async fn creates_a_private_database_and_applies_all_migrations() {
             "homes_location",
             "installed_apps",
             "jobs",
+            "network_restored",
+            "network_restored_files",
             "network_setting_files",
             "network_settings",
             "notification_channels",
@@ -179,8 +183,8 @@ async fn reopening_an_up_to_date_database_changes_nothing() {
         report,
         OpenReport {
             created: false,
-            schema_before: Some(58),
-            schema_after: 58,
+            schema_before: Some(60),
+            schema_after: 60,
             applied: vec![],
             backup: None
         }
@@ -467,8 +471,9 @@ async fn the_vms_of_one_location_keep_their_disks_and_cards_where_they_were() {
     let (db, report) = open(&env).await;
     // And the notifications' queue, the backup tasks', the network's
     // settings, the configuration backup's, and the VMs' TPM, Secure Boot,
-    // host devices, snapshot schedules and backups after it.
-    assert_eq!(report.applied, [51, 52, 53, 54, 55, 56, 57, 58]);
+    // host devices, snapshot schedules and backups, and the settings a
+    // restored backup brought after it.
+    assert_eq!(report.applied, [51, 52, 53, 54, 55, 56, 57, 58, 59, 60]);
     let cold = Location { pool: "cold".into(), volume: 2 };
     let tank = Location { pool: "tank".into(), volume: 1 };
     let locations = super::SqliteVmLocations::new(db.clone()).list().await.unwrap();

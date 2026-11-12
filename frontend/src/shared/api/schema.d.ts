@@ -2947,6 +2947,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/network/restored": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The network settings a restored configuration backup brought, interface
+         *     by interface and device by device, beside this machine's: they are not
+         *     put in force by the restore (other hardware has other names, and a fixed
+         *     address from elsewhere would cut the NAS off), but applied here one by
+         *     one. `null` when there are none. Needs `system.manage`.
+         */
+        get: operations["restored_network"];
+        put?: never;
+        post?: never;
+        /** Forgets the network settings of a restored backup. Needs `system.manage`. */
+        delete: operations["forget_restored_network"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/network/restored/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Applies what a restored backup says of one interface (its addresses,
+         *     as `POST /network/interfaces/{name}` does) or one bridge, bond or VLAN
+         *     (made as `POST /network/devices` makes one) as an ordinary change:
+         *     unless it is confirmed within two minutes (`POST /network/confirm`, from
+         *     the address the NAS then has), the files are as they were. Refused for
+         *     an interface this machine has no such name for and for a member of the
+         *     backup's bridges and bonds. Needs `system.manage`.
+         */
+        post: operations["apply_restored_network"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/network/setup": {
         parameters: {
             query?: never;
@@ -3273,6 +3322,50 @@ export interface paths {
         put?: never;
         /** Keeps the change waiting for confirmation. Needs `system.manage`. */
         post: operations["confirm_firewall"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/firewall/restored": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Forgets the settings a restored configuration backup brought. Needs
+         *     `system.manage`.
+         */
+        delete: operations["forget_restored_firewall"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/security/firewall/restored/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Applies the settings a restored configuration backup brought, as any
+         *     change (`PUT /security/firewall`): the rules from before, the defaults
+         *     on a machine installed afresh, return unless confirmed in time; rules
+         *     that would keep out the browser asking are refused unless `lock_out` is
+         *     set. Once confirmed they are this machine's, offered no more. Needs
+         *     `system.manage`.
+         */
+        post: operations["apply_restored_firewall"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3836,6 +3929,52 @@ export interface paths {
          *     Answers with the job. Needs `storage.manage`.
          */
         post: operations["create_pool"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage/pools/absent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The pools the configuration names that are not imported (after a
+         *     configuration backup was restored on a machine installed afresh, say),
+         *     found on the disks or missing, and the other pools `zpool import` finds.
+         *     Imports nothing. Needs `storage.manage`.
+         */
+        get: operations["absent_pools"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage/pools/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Imports a pool zendiloOS made, as a job, and mounts it: one the
+         *     configuration names as its volume, with its shares, personal folders,
+         *     Docker's data and the virtual machines' storage, another (adopted) as
+         *     the volume asked for. Samba and NFS follow. A pool another machine used
+         *     last is imported only with `force` and its name typed: importing a pool
+         *     that machine still uses would corrupt it. Needs `storage.manage`.
+         */
+        post: operations["import_pool"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4880,6 +5019,26 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * @description The pools the configuration names that are not imported, and the others
+         *     on the disks.
+         */
+        AbsentPools: {
+            /**
+             * @description Pools the configuration does not name: adopted with a volume
+             *     number, if zendiloOS made them.
+             */
+            foreign: components["schemas"]["FoundPool"][];
+            /**
+             * Format: int32
+             * @description The lowest volume number free to adopt one with.
+             */
+            free_volume?: number | null;
+            /** @description Found on the disks: imported as the volume the configuration names. */
+            known: components["schemas"]["KnownFoundPool"][];
+            /** @description On no disk here. */
+            missing: components["schemas"]["NamedPool"][];
+        };
         Account: {
             /** Format: int64 */
             created_at: number;
@@ -5097,6 +5256,10 @@ export interface components {
             path: string;
             /** Format: int32 */
             port: number;
+        };
+        ApplyRestoredInput: {
+            /** @description The interface or the bridge, bond or VLAN. */
+            name: string;
         };
         /** @enum {string} */
         ArrayHealth: "healthy" | "degraded" | "rebuilding" | "inactive";
@@ -6900,6 +7063,7 @@ export interface components {
             /** @description The networks the NAS is in, as sources. */
             local_networks: string[];
             pending?: components["schemas"]["PendingFirewall"] | null;
+            restored?: components["schemas"]["RestoredFirewall"] | null;
             /** @description The NAS's services and the Docker projects that publish ports. */
             services: components["schemas"]["FirewallService"][];
         };
@@ -6912,10 +7076,39 @@ export interface components {
             /** @description The user may create and delete entries here. */
             writable: boolean;
         };
+        FoundDevice: {
+            name: string;
+            state: string;
+        };
         /** @description An entry a search found. */
         FoundFile: components["schemas"]["FileEntry"] & {
             /** @description Where it is, relative to the root searched in, its name included. */
             path: string;
+        };
+        /** @description A pool `zpool import` finds on the disks that is not imported. */
+        FoundPool: {
+            /** @description What ZFS says can be done, in its words. */
+            action?: string | null;
+            /** @description ZFS can import it: enough of its devices are there. */
+            can_import: boolean;
+            devices: components["schemas"]["FoundDevice"][];
+            /**
+             * @description Its numeric identifier, decimal: it does not survive JavaScript's
+             *     numbers.
+             */
+            id: string;
+            name: string;
+            /**
+             * @description Another machine used it last and did not export it: ZFS imports it
+             *     only by force (`zpool import -f`). A configuration backup restored
+             *     brings back this machine's host id, so a pool of the machine backed
+             *     up is not another's.
+             */
+            other_host: boolean;
+            /** @description As ZFS names it: `ONLINE`, `DEGRADED`, `UNAVAIL`, … */
+            state: string;
+            /** @description What ZFS says of it, in its words. */
+            status?: string | null;
         };
         /** @description A strip beside the bays with the power button and status lights. */
         FrontPanel: {
@@ -7028,6 +7221,21 @@ export interface components {
              * @description A share the administrator may write.
              */
             share_id: number;
+        };
+        ImportPoolRequest: {
+            /** @description The pool's name, typed again, when forced. */
+            confirm?: string | null;
+            /** @description Import it though another machine used it last (`zpool import -f`). */
+            force?: boolean;
+            /** @description The pool's numeric identifier, as listed. */
+            id: string;
+            name: string;
+            /**
+             * Format: int32
+             * @description For a pool the configuration does not name: the volume number it
+             *     becomes; none, the lowest free. Ignored for one it names.
+             */
+            volume?: number | null;
         };
         ImportVmImageRequest: {
             /** @description What it is called; its file's name if none. */
@@ -7295,6 +7503,11 @@ export interface components {
         KindGroup: "storage" | "folders" | "system" | "certificates" | "security" | "docker" | "backup";
         /** @enum {string} */
         KindLevel: "info" | "success" | "warning" | "error";
+        /** @description A pool the configuration names that is not imported, found on the disks. */
+        KnownFoundPool: {
+            found: components["schemas"]["FoundPool"];
+            pool: components["schemas"]["NamedPool"];
+        };
         /** @description What the server sends. */
         LiveMessage: {
             data: components["schemas"]["Metrics"];
@@ -7469,6 +7682,17 @@ export interface components {
              * @description From 0 at the top of the group.
              */
             row: number;
+        };
+        /**
+         * @description A pool the configuration names: shares, apps, the personal folders or
+         *     the virtual machines' storage are on it.
+         */
+        NamedPool: {
+            mount_point: string;
+            name: string;
+            shares: string[];
+            /** Format: int32 */
+            volume: number;
         };
         /** @description A bridge, bond or VLAN zendiloOS made, as its files say. */
         NetworkDevice: {
@@ -8305,10 +8529,55 @@ export interface components {
         RestoreVmBackupRequest: {
             as: components["schemas"]["VmRestoreAs"];
         };
+        /** @description A bridge, bond or VLAN of a restored backup. */
+        RestoredDevice: {
+            device: components["schemas"]["NetworkDevice"];
+            standing: components["schemas"]["RestoredStanding"];
+        };
         RestoredEntries: {
             /** @description Where each went, in the order asked. */
             paths: string[];
         };
+        RestoredFirewall: {
+            /**
+             * Format: int64
+             * @description When they were set aside, at the first start after the restore, in
+             *     Unix seconds.
+             */
+            restored_at: number;
+            settings: components["schemas"]["FirewallSettings"];
+        };
+        RestoredFirewallChange: {
+            /** @description Apply them though they would keep out this browser. */
+            lock_out?: boolean;
+        };
+        /** @description An interface's settings in a restored backup. */
+        RestoredInterface: {
+            /** @description The bridge or bond of `member_there` and `member_here`. */
+            device?: string | null;
+            interface: string;
+            settings: components["schemas"]["PlannedSettings"];
+            standing: components["schemas"]["RestoredStanding"];
+        };
+        /**
+         * @description The network settings a restored configuration backup brought, beside
+         *     this machine's.
+         */
+        RestoredNetwork: {
+            devices: components["schemas"]["RestoredDevice"][];
+            interfaces: components["schemas"]["RestoredInterface"][];
+            /**
+             * Format: int64
+             * @description Unix seconds: when they were set aside, at the first start after
+             *     the restore.
+             */
+            restored_at: number;
+        };
+        /**
+         * @description How a restored backup's interface or device stands on this machine.
+         * @enum {string}
+         */
+        RestoredStanding: "applicable" | "in_force" | "missing" | "member_there" | "member_here" | "taken";
         /** @description The VM a restore makes or restores, and its job. */
         RestoredVm: {
             job: components["schemas"]["Job"];
@@ -16895,6 +17164,94 @@ export interface operations {
             };
         };
     };
+    restored_network: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestoredNetwork"] | null;
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    forget_restored_network: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Forgotten. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_restored_network: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApplyRestoredInput"];
+            };
+        };
+        responses: {
+            /** @description Applied; waits for confirmation. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetworkSetup"];
+                };
+            };
+            /** @description `change_pending`, `network_drift`, `device_in_use`, or `refused`: no such interface here, a member, no restored settings */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`: the detail says why */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     network_setup: {
         parameters: {
             query?: never;
@@ -17610,6 +17967,66 @@ export interface operations {
             };
             /** @description `refused`: nothing waits */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    forget_restored_firewall: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Forgotten. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_restored_firewall: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RestoredFirewallChange"];
+            };
+        };
+        responses: {
+            /** @description Applied; waits for confirmation. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FirewallSetup"];
+                };
+            };
+            /** @description `would_lock_out`, `change_pending`, `refused`: no settings of a restored backup */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `firewall_failed`: nftables refused the rules; nothing changed */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -18989,6 +19406,84 @@ export interface operations {
                 };
             };
             /** @description `confirmation_mismatch` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    absent_pools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AbsentPools"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    import_pool: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportPoolRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `not_found`: no such pool to import */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `other_host`: another machine used it last, `volume_taken`, `no_volume_number`, `refused`: ZFS cannot import it */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`, `confirmation_mismatch` */
             422: {
                 headers: {
                     [name: string]: unknown;

@@ -4,6 +4,7 @@ import { computed, type MaybeRefOrGetter, toValue } from 'vue'
 import { api, unwrap } from '@/shared/api/client'
 import type {
   Enclosure,
+  ImportPoolRequest,
   InventoryDisk,
   InventoryUpdate,
   Job,
@@ -179,6 +180,25 @@ export function usePools() {
     queryFn: () => unwrap(api.GET('/api/v1/storage/pools')),
     refetchInterval: ARRAY_REFRESH_MS,
   })
+}
+
+/**
+ * The pools the configuration names that are not imported, found on the
+ * disks or missing, and the others there: only for those who may import
+ * them. Asked once and after storage jobs, not every few seconds:
+ * `zpool import` reads every disk's labels, which wakes a disk asleep.
+ */
+export function useAbsentPools(enabled: MaybeRefOrGetter<boolean>) {
+  return useQuery({
+    queryKey: ['storage', 'pools', 'absent'],
+    queryFn: () => unwrap(api.GET('/api/v1/storage/pools/absent')),
+    enabled: computed(() => toValue(enabled)),
+  })
+}
+
+/** Imports a pool, or adopts one the configuration does not name: a job. */
+export function importPool(body: ImportPoolRequest): Promise<Job> {
+  return unwrap(api.POST('/api/v1/storage/pools/import', { body }))
 }
 
 /** Reads everything again, SMART included. */

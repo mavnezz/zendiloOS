@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO network_restored (id, restored_at) VALUES (1, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "9e5911770107da1fe51cc2524c7b1f08dac18aa34df83db1c7d807987c95a2f6"
+}

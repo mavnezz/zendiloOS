@@ -241,6 +241,39 @@ pub enum Request {
         device: u64,
         disk: DiskId,
     },
+    /// The pools `zpool import` finds on the disks that are not imported,
+    /// as it lists them: answers [`Response::ImportablePools`]. Imports
+    /// nothing.
+    ImportablePools {},
+    /// Imports the pool with the numeric identifier `id`, which must be
+    /// called `name`, without mounting anything (`zpool import -N`), its
+    /// devices by `/dev/disk/by-id`. Only one zendiloOS made: its root
+    /// dataset's `zendiloos:volume` must be `volume`, or, with `adopt`, any
+    /// number, which then becomes `volume`; anything else is exported
+    /// again. Refused, as ZFS refuses it, if another machine used the pool
+    /// last, unless `force` (`zpool import -f`); a conflict if a pool of
+    /// that name is imported or another pool is volume `volume`.
+    ImportPool {
+        name: PoolName,
+        id: u64,
+        volume: VolumeNumber,
+        #[serde(default)]
+        adopt: bool,
+        #[serde(default)]
+        force: bool,
+    },
+    /// Makes sure the mount units of an imported pool zendiloOS made exist,
+    /// as creating them writes them, are enabled and started: the volume's,
+    /// those of `shares` whose datasets are on it, and those of its personal
+    /// folders', Docker's and the virtual machines' datasets where it has
+    /// them. A unit is written only when its content differs, and systemd
+    /// reloaded once. Answers [`Response::VolumeMounted`].
+    MountVolume {
+        pool: PoolName,
+        volume: VolumeNumber,
+        #[serde(default)]
+        shares: Vec<ShareName>,
+    },
     /// Starts a scrub of the pool.
     ScrubPool {
         pool: PoolName,
@@ -1202,6 +1235,9 @@ impl Request {
             Request::CreatePool { .. } => "create_pool",
             Request::DestroyPool { .. } => "destroy_pool",
             Request::ReplaceDisk { .. } => "replace_disk",
+            Request::ImportablePools {} => "importable_pools",
+            Request::ImportPool { .. } => "import_pool",
+            Request::MountVolume { .. } => "mount_volume",
             Request::ScrubPool { .. } => "scrub_pool",
             Request::StopScrub { .. } => "stop_scrub",
             Request::MountRemovable { .. } => "mount_removable",
@@ -1411,6 +1447,20 @@ pub enum Response {
     Zfs {
         zpool_status: String,
         zfs_list: String,
+    },
+    /// What `zpool import` lists, as it wrote it; empty when it finds
+    /// none.
+    ImportablePools {
+        zpool_import: String,
+    },
+    /// The volume's mounts are in place; `missing`: shares named whose
+    /// datasets the pool does not have; `changed`: a unit was written or
+    /// enabled anew.
+    VolumeMounted {
+        #[serde(default)]
+        missing: Vec<ShareName>,
+        #[serde(default)]
+        changed: bool,
     },
     Directory {
         entries: Vec<DirectoryEntry>,
@@ -1994,6 +2044,9 @@ impl Request {
             | Request::CreatePool { .. }
             | Request::DestroyPool { .. }
             | Request::ReplaceDisk { .. }
+            // Opening a pool reads all its disks' labels; a large one
+            // replays its log.
+            | Request::ImportPool { .. }
             | Request::DestroyShare { .. }
             // A file system replays its journal; unmounting writes what is
             // cached, minutes for a slow stick.
@@ -2087,6 +2140,7 @@ impl Request {
                 | Request::EmmcHealth { .. }
                 | Request::ArrayStatus {}
                 | Request::ZfsStatus {}
+                | Request::ImportablePools {}
                 | Request::DockerState {}
                 | Request::VmHost {}
                 | Request::VmImages { .. }
@@ -3149,6 +3203,7 @@ mod tests {
         for looking in [
             json!({ "op": "list_block_devices" }),
             json!({ "op": "zfs_status" }),
+            json!({ "op": "importable_pools" }),
             json!({ "op": "smart_data", "device": "sda" }),
             json!({ "op": "emmc_health", "device": "mmcblk0" }),
             json!({ "op": "docker_stats" }),
@@ -3162,6 +3217,8 @@ mod tests {
         for changing in [
             json!({ "op": "reboot" }),
             json!({ "op": "scrub_pool", "pool": "tank" }),
+            json!({ "op": "import_pool", "name": "tank", "id": 42, "volume": 1 }),
+            json!({ "op": "mount_volume", "pool": "tank", "volume": 1 }),
             json!({ "op": "start_self_test", "device": "sda", "kind": "short" }),
             json!({ "op": "read_burst", "device": "sda", "millis": 700 }),
             json!({ "op": "make_backup_key" }),

@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use zendiloos_apps::application::ports::DockerHost;
 use zendiloos_apps::domain::docker_volume;
 use zendiloos_kernel::{PortError, RequestContext};
-use zendiloos_storage::application::ports::VolumeOccupants;
-use zendiloos_storage::domain::{Occupant, VolumeNumber};
+use zendiloos_storage::application::ports::{KnownPools, VolumeOccupants};
+use zendiloos_storage::domain::{KnownPool, Occupant, VolumeNumber};
 
 use super::Database;
 
@@ -66,6 +66,53 @@ impl VolumeOccupants for Occupants {
             occupants.push(Occupant::Docker);
         }
         Ok(occupants)
+    }
+}
+
+/// Storage's [`KnownPools`]: every pool a share, an installed app, the
+/// personal folders, a location of the virtual machines' storage or a VM's
+/// disk is on, with its volume number (the first, should rows disagree)
+/// and the shares on it that are not being deleted.
+#[async_trait]
+impl KnownPools for Occupants {
+    async fn known(&self) -> Result<Vec<KnownPool>, PortError> {
+        let db = self.db.pool();
+        let places = sqlx::query!(
+            r#"SELECT pool AS "pool!: String", volume AS "volume!: i64" FROM shares
+               UNION SELECT pool, volume FROM installed_apps
+               UNION SELECT pool, volume FROM homes_location
+               UNION SELECT pool, volume FROM vm_locations
+               UNION SELECT pool, volume FROM vm_disks
+               ORDER BY 1, 2"#
+        )
+        .fetch_all(db)
+        .await
+        .map_err(db_error)?;
+        let shares = sqlx::query!("SELECT name, pool FROM shares WHERE deleting = 0 ORDER BY name")
+            .fetch_all(db)
+            .await
+            .map_err(db_error)?;
+        let mut known: Vec<KnownPool> = Vec::new();
+        for place in places {
+            let number = u16::try_from(place.volume).ok().and_then(VolumeNumber::new);
+            let Some(volume) = number else { continue };
+            match known.iter().find(|pool| pool.name == place.pool) {
+                Some(pool) if pool.volume != volume => {
+                    tracing::warn!(
+                        pool = place.pool,
+                        "storage: the configuration names the pool as two volumes"
+                    );
+                }
+                Some(_) => {}
+                None => known.push(KnownPool { name: place.pool, volume, shares: Vec::new() }),
+            }
+        }
+        for share in shares {
+            if let Some(pool) = known.iter_mut().find(|pool| pool.name == share.pool) {
+                pool.shares.push(share.name);
+            }
+        }
+        Ok(known)
     }
 }
 
@@ -157,8 +204,26 @@ mod tests {
         );
         let second = occupants.on_volume(VolumeNumber::new(2).unwrap(), &context).await.unwrap();
         assert_eq!(second, [Occupant::Share("backup".into()), Occupant::VirtualMachines]);
-        let elsewhere = Occupants::new(db, Arc::new(Docker(Some("/var/lib/docker"))));
+        let elsewhere = Occupants::new(db.clone(), Arc::new(Docker(Some("/var/lib/docker"))));
         let third = elsewhere.on_volume(VolumeNumber::new(3).unwrap(), &context).await.unwrap();
         assert!(third.is_empty());
+
+        // The pools named, with the shares on each that are not being deleted.
+        sqlx::query("UPDATE shares SET deleting = 1 WHERE name = 'media'").execute(pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO shares (name, pool, volume, recycle_bin, created_at, updated_at)
+             VALUES ('odd', 'cold', 7, 0, 0, 0)",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        let known = elsewhere.known().await.unwrap();
+        let named: Vec<(&str, u16, Vec<&str>)> = known
+            .iter()
+            .map(|pool| {
+                (pool.name.as_str(), pool.volume.get(), pool.shares.iter().map(String::as_str).collect())
+            })
+            .collect();
+        assert_eq!(named, [("cold", 2, vec!["odd"]), ("tank", 1, vec!["backup", "photos"])]);
     }
 }

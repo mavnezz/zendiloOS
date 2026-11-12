@@ -40,6 +40,10 @@ const RESTORE: &str = "restore";
 /// The database a restore staged; its being there is what the next start
 /// acts on.
 const STAGED: &str = "zendiloos.db";
+/// Left in `restore/` once a staged database took the live one's place,
+/// until what follows a restore at the start is done
+/// ([`restore_to_follow_up`], [`restore_followed_up`]).
+const FOLLOW_UP: &str = "follow-up";
 /// A restore's request carries at most this much of the files at once: a
 /// request may have 2 MiB, base64 takes a third more.
 const BATCH: usize = 1024 * 1024;
@@ -494,6 +498,9 @@ pub fn stage_restored_database(
     if !staged.exists() {
         return Ok(None);
     }
+    // Before the swap, so a start cut off after it still follows it up.
+    let follow_up = fs::File::create(state.join(RESTORE).join(FOLLOW_UP))?;
+    follow_up.sync_all()?;
     fs::DirBuilder::new().recursive(true).mode(0o700).create(backup_dir)?;
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let before = backup_dir.join(format!("zendiloos-{stamp}-before-restore.db"));
@@ -508,6 +515,23 @@ pub fn stage_restored_database(
     }
     fs::rename(&staged, database)?;
     Ok(Some(before))
+}
+
+/// Whether this start follows a restore whose follow-up is not done yet:
+/// the restored database's network and firewall settings, which are the
+/// backed-up machine's, set aside before anything puts them in force
+/// (docs/architecture.md, 4.15). Done twice, a follow-up changes nothing
+/// more, so one cut off is simply done again.
+pub fn restore_to_follow_up(state: &Path) -> bool {
+    state.join(RESTORE).join(FOLLOW_UP).exists()
+}
+
+/// The follow-up of a restore is done.
+pub fn restore_followed_up(state: &Path) -> io::Result<()> {
+    match fs::remove_file(state.join(RESTORE).join(FOLLOW_UP)) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
 }
 
 /// [`Restart`] for zendiloosd: asked, it ends its serving a moment later,

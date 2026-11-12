@@ -237,6 +237,21 @@ pub fn message(notification: &Notification, host: &str, language: Language) -> M
             "Unter Systemsteuerung → Updates steht, woran es lag.".to_owned(),
         ),
         "updates_failed" => ("Update failed".to_owned(), "Control panel → Updates says why.".to_owned()),
+        "pools_not_imported" if german => (
+            "Pools nicht importiert".to_owned(),
+            format!(
+                "Die Konfiguration nennt Pools, die nicht importiert sind ({}). Unter Speicher → Pools lassen sie \
+                 sich importieren.",
+                param("names")
+            ),
+        ),
+        "pools_not_imported" => (
+            "Pools not imported".to_owned(),
+            format!(
+                "The configuration names pools that are not imported ({}). Storage → Pools imports them.",
+                param("names")
+            ),
+        ),
         "network_drift" if german => (
             "Netzwerkdateien geändert".to_owned(),
             format!(
@@ -557,6 +572,12 @@ mod tests {
                 vec![("names", "enp1s0, br0"), ("count", "2")],
                 "Network files changed",
                 "Netzwerkdateien geändert",
+            ),
+            (
+                "pools_not_imported",
+                vec![("names", "tank"), ("count", "1")],
+                "Pools not imported",
+                "Pools nicht importiert",
             ),
         ];
         for (code, params, english, german) in cases {

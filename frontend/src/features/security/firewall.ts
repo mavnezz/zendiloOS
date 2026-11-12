@@ -32,5 +32,23 @@ export function useFirewallActions() {
         await refresh()
       }
     },
+    /** Applies the rules a restored backup brought; they go back unless confirmed. */
+    applyRestored: async (lockOut: boolean) => {
+      try {
+        return await unwrap(
+          api.POST('/api/v1/security/firewall/restored/apply', { body: { lock_out: lockOut } }),
+        )
+      } finally {
+        await refresh()
+      }
+    },
+    /** Forgets the rules a restored backup brought. */
+    forgetRestored: async () => {
+      try {
+        await unwrap(api.DELETE('/api/v1/security/firewall/restored'))
+      } finally {
+        await refresh()
+      }
+    },
   }
 }

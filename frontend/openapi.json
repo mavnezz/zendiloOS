@@ -9937,6 +9937,121 @@
         ]
       }
     },
+    "/api/v1/network/restored": {
+      "get": {
+        "tags": [
+          "network"
+        ],
+        "summary": "The network settings a restored configuration backup brought, interface\nby interface and device by device, beside this machine's: they are not\nput in force by the restore (other hardware has other names, and a fixed\naddress from elsewhere would cut the NAS off), but applied here one by\none. `null` when there are none. Needs `system.manage`.",
+        "operationId": "restored_network",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/RestoredNetwork"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "network"
+        ],
+        "summary": "Forgets the network settings of a restored backup. Needs `system.manage`.",
+        "operationId": "forget_restored_network",
+        "responses": {
+          "204": {
+            "description": "Forgotten."
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/network/restored/apply": {
+      "post": {
+        "tags": [
+          "network"
+        ],
+        "summary": "Applies what a restored backup says of one interface (its addresses,\nas `POST /network/interfaces/{name}` does) or one bridge, bond or VLAN\n(made as `POST /network/devices` makes one) as an ordinary change:\nunless it is confirmed within two minutes (`POST /network/confirm`, from\nthe address the NAS then has), the files are as they were. Refused for\nan interface this machine has no such name for and for a member of the\nbackup's bridges and bonds. Needs `system.manage`.",
+        "operationId": "apply_restored_network",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyRestoredInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Applied; waits for confirmation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkSetup"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`change_pending`, `network_drift`, `device_in_use`, or `refused`: no such interface here, a member, no restored settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`: the detail says why",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/network/setup": {
       "get": {
         "tags": [
@@ -10880,6 +10995,81 @@
           },
           "409": {
             "description": "`refused`: nothing waits",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/security/firewall/restored": {
+      "delete": {
+        "tags": [
+          "security"
+        ],
+        "summary": "Forgets the settings a restored configuration backup brought. Needs\n`system.manage`.",
+        "operationId": "forget_restored_firewall",
+        "responses": {
+          "204": {
+            "description": "Forgotten."
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/security/firewall/restored/apply": {
+      "post": {
+        "tags": [
+          "security"
+        ],
+        "summary": "Applies the settings a restored configuration backup brought, as any\nchange (`PUT /security/firewall`): the rules from before, the defaults\non a machine installed afresh, return unless confirmed in time; rules\nthat would keep out the browser asking are refused unless `lock_out` is\nset. Once confirmed they are this machine's, offered no more. Needs\n`system.manage`.",
+        "operationId": "apply_restored_firewall",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoredFirewallChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Applied; waits for confirmation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FirewallSetup"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`would_lock_out`, `change_pending`, `refused`: no settings of a restored backup",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`firewall_failed`: nftables refused the rules; nothing changed",
             "content": {
               "application/json": {
                 "schema": {
@@ -12797,6 +12987,106 @@
           },
           "422": {
             "description": "`confirmation_mismatch`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/storage/pools/absent": {
+      "get": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "The pools the configuration names that are not imported (after a\nconfiguration backup was restored on a machine installed afresh, say),\nfound on the disks or missing, and the other pools `zpool import` finds.\nImports nothing. Needs `storage.manage`.",
+        "operationId": "absent_pools",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AbsentPools"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/storage/pools/import": {
+      "post": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "Imports a pool zendiloOS made, as a job, and mounts it: one the\nconfiguration names as its volume, with its shares, personal folders,\nDocker's data and the virtual machines' storage, another (adopted) as\nthe volume asked for. Samba and NFS follow. A pool another machine used\nlast is imported only with `force` and its name typed: importing a pool\nthat machine still uses would corrupt it. Needs `storage.manage`.",
+        "operationId": "import_pool",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportPoolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such pool to import",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`other_host`: another machine used it last, `volume_taken`, `no_volume_number`, `refused`: ZFS cannot import it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`, `confirmation_mismatch`",
             "content": {
               "application/json": {
                 "schema": {
@@ -15848,6 +16138,47 @@
   },
   "components": {
     "schemas": {
+      "AbsentPools": {
+        "type": "object",
+        "description": "The pools the configuration names that are not imported, and the others\non the disks.",
+        "required": [
+          "known",
+          "missing",
+          "foreign"
+        ],
+        "properties": {
+          "foreign": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FoundPool"
+            },
+            "description": "Pools the configuration does not name: adopted with a volume\nnumber, if zendiloOS made them."
+          },
+          "free_volume": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The lowest volume number free to adopt one with.",
+            "minimum": 0
+          },
+          "known": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KnownFoundPool"
+            },
+            "description": "Found on the disks: imported as the volume the configuration names."
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NamedPool"
+            },
+            "description": "On no disk here."
+          }
+        }
+      },
       "Account": {
         "type": "object",
         "required": [
@@ -16460,6 +16791,19 @@
             "minimum": 0
           }
         }
+      },
+      "ApplyRestoredInput": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The interface or the bridge, bond or VLAN."
+          }
+        },
+        "additionalProperties": false
       },
       "ArrayHealth": {
         "type": "string",
@@ -21632,6 +21976,17 @@
               }
             ]
           },
+          "restored": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RestoredFirewall",
+                "description": "The settings a restored configuration backup brought: not in force\n(rules made for another network could shut the browser out) until\napplied and confirmed (`POST /security/firewall/restored/apply`)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "services": {
             "type": "array",
             "items": {
@@ -21670,6 +22025,21 @@
           }
         }
       },
+      "FoundDevice": {
+        "type": "object",
+        "required": [
+          "name",
+          "state"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        }
+      },
       "FoundFile": {
         "allOf": [
           {
@@ -21689,6 +22059,59 @@
           }
         ],
         "description": "An entry a search found."
+      },
+      "FoundPool": {
+        "type": "object",
+        "description": "A pool `zpool import` finds on the disks that is not imported.",
+        "required": [
+          "name",
+          "id",
+          "state",
+          "other_host",
+          "can_import",
+          "devices"
+        ],
+        "properties": {
+          "action": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What ZFS says can be done, in its words."
+          },
+          "can_import": {
+            "type": "boolean",
+            "description": "ZFS can import it: enough of its devices are there."
+          },
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FoundDevice"
+            }
+          },
+          "id": {
+            "type": "string",
+            "description": "Its numeric identifier, decimal: it does not survive JavaScript's\nnumbers."
+          },
+          "name": {
+            "type": "string"
+          },
+          "other_host": {
+            "type": "boolean",
+            "description": "Another machine used it last and did not export it: ZFS imports it\nonly by force (`zpool import -f`). A configuration backup restored\nbrings back this machine's host id, so a pool of the machine backed\nup is not another's."
+          },
+          "state": {
+            "type": "string",
+            "description": "As ZFS names it: `ONLINE`, `DEGRADED`, `UNAVAIL`, …"
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What ZFS says of it, in its words."
+          }
+        }
       },
       "FrontPanel": {
         "type": "object",
@@ -21998,6 +22421,43 @@
             "type": "integer",
             "format": "int64",
             "description": "A share the administrator may write."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ImportPoolRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "id"
+        ],
+        "properties": {
+          "confirm": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The pool's name, typed again, when forced."
+          },
+          "force": {
+            "type": "boolean",
+            "description": "Import it though another machine used it last (`zpool import -f`)."
+          },
+          "id": {
+            "type": "string",
+            "description": "The pool's numeric identifier, as listed."
+          },
+          "name": {
+            "type": "string"
+          },
+          "volume": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "For a pool the configuration does not name: the volume number it\nbecomes; none, the lowest free. Ignored for one it names.",
+            "minimum": 0
           }
         },
         "additionalProperties": false
@@ -22744,6 +23204,22 @@
           "error"
         ]
       },
+      "KnownFoundPool": {
+        "type": "object",
+        "description": "A pool the configuration names that is not imported, found on the disks.",
+        "required": [
+          "pool",
+          "found"
+        ],
+        "properties": {
+          "found": {
+            "$ref": "#/components/schemas/FoundPool"
+          },
+          "pool": {
+            "$ref": "#/components/schemas/NamedPool"
+          }
+        }
+      },
       "LiveMessage": {
         "oneOf": [
           {
@@ -23330,6 +23806,35 @@
             "type": "integer",
             "format": "int32",
             "description": "From 0 at the top of the group.",
+            "minimum": 0
+          }
+        }
+      },
+      "NamedPool": {
+        "type": "object",
+        "description": "A pool the configuration names: shares, apps, the personal folders or\nthe virtual machines' storage are on it.",
+        "required": [
+          "name",
+          "volume",
+          "mount_point",
+          "shares"
+        ],
+        "properties": {
+          "mount_point": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "shares": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "volume": {
+            "type": "integer",
+            "format": "int32",
             "minimum": 0
           }
         }
@@ -25720,6 +26225,22 @@
         },
         "additionalProperties": false
       },
+      "RestoredDevice": {
+        "type": "object",
+        "description": "A bridge, bond or VLAN of a restored backup.",
+        "required": [
+          "device",
+          "standing"
+        ],
+        "properties": {
+          "device": {
+            "$ref": "#/components/schemas/NetworkDevice"
+          },
+          "standing": {
+            "$ref": "#/components/schemas/RestoredStanding"
+          }
+        }
+      },
       "RestoredEntries": {
         "type": "object",
         "required": [
@@ -25734,6 +26255,100 @@
             "description": "Where each went, in the order asked."
           }
         }
+      },
+      "RestoredFirewall": {
+        "type": "object",
+        "required": [
+          "settings",
+          "restored_at"
+        ],
+        "properties": {
+          "restored_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When they were set aside, at the first start after the restore, in\nUnix seconds."
+          },
+          "settings": {
+            "$ref": "#/components/schemas/FirewallSettings"
+          }
+        }
+      },
+      "RestoredFirewallChange": {
+        "type": "object",
+        "properties": {
+          "lock_out": {
+            "type": "boolean",
+            "description": "Apply them though they would keep out this browser."
+          }
+        },
+        "additionalProperties": false
+      },
+      "RestoredInterface": {
+        "type": "object",
+        "description": "An interface's settings in a restored backup.",
+        "required": [
+          "interface",
+          "settings",
+          "standing"
+        ],
+        "properties": {
+          "device": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The bridge or bond of `member_there` and `member_here`."
+          },
+          "interface": {
+            "type": "string"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/PlannedSettings"
+          },
+          "standing": {
+            "$ref": "#/components/schemas/RestoredStanding"
+          }
+        }
+      },
+      "RestoredNetwork": {
+        "type": "object",
+        "description": "The network settings a restored configuration backup brought, beside\nthis machine's.",
+        "required": [
+          "restored_at",
+          "interfaces",
+          "devices"
+        ],
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RestoredDevice"
+            }
+          },
+          "interfaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RestoredInterface"
+            }
+          },
+          "restored_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds: when they were set aside, at the first start after\nthe restore."
+          }
+        }
+      },
+      "RestoredStanding": {
+        "type": "string",
+        "description": "How a restored backup's interface or device stands on this machine.",
+        "enum": [
+          "applicable",
+          "in_force",
+          "missing",
+          "member_there",
+          "member_here",
+          "taken"
+        ]
       },
       "RestoredVm": {
         "type": "object",

@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT pool AS \"pool!: String\", volume AS \"volume!: i64\" FROM shares\n               UNION SELECT pool, volume FROM installed_apps\n               UNION SELECT pool, volume FROM homes_location\n               UNION SELECT pool, volume FROM vm_locations\n               UNION SELECT pool, volume FROM vm_disks\n               ORDER BY 1, 2",
+  "describe": {
+    "columns": [
+      {
+        "name": "pool!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "shares",
+            "name": "pool"
+          }
+        }
+      },
+      {
+        "name": "volume!: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "shares",
+            "name": "volume"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "877559ee9404b5efa4cf4f24303b4f4232a49a346e74336a04471d1ebb588d5d"
+}

@@ -7,7 +7,7 @@ use zendiloos_jobs::testing::{FixedClock, MemoryJobs};
 use zendiloos_notify::testing::MemoryNotifications;
 
 use super::*;
-use crate::domain::{Ipv6Setting, Refusal};
+use crate::domain::{Ipv6Setting, Refusal, Standing};
 use crate::testing::{DIGEST, FakeConfigurator, FakeUsers, MemorySettings, SettableNetwork, three_cards};
 
 #[derive(Default)]
@@ -499,4 +499,111 @@ async fn nothing_is_kept_or_compared_where_zendiloos_does_not_manage_the_network
     ] {
         assert!(matches!(refused, ConfigureError::Pending), "{refused}");
     }
+}
+
+fn restored_file(name: &str, text: &str) -> NetworkdFile {
+    NetworkdFile { name: format!("05-zendiloos-{name}"), text: text.into() }
+}
+
+/// What a restored backup brought: enp1s0 fixed, eno1 (a card of another
+/// machine) by DHCP, br0 of enp2s0 and enp3s0.
+fn restored_backup(s: &Setup) {
+    *s.store.1.lock().unwrap() = Some(RestoredSettings {
+        files: vec![
+            restored_file(
+                "enp1s0.network",
+                "[Match]\nName=enp1s0\n[Network]\nAddress=192.168.1.30/24\nGateway=192.168.1.1\n",
+            ),
+            restored_file("eno1.network", "[Match]\nName=eno1\n[Network]\nDHCP=ipv4\n"),
+            restored_file(
+                "br0.netdev",
+                "# Members: enp2s0 enp3s0\n[NetDev]\nName=br0\nKind=bridge\n[Bridge]\nSTP=no\n",
+            ),
+            restored_file("br0.network", "[Match]\nName=br0\n[Network]\nDHCP=ipv4\n"),
+            restored_file("enp2s0.network", "[Match]\nName=enp2s0\n[Network]\nBridge=br0\n"),
+            restored_file("enp3s0.network", "[Match]\nName=enp3s0\n[Network]\nBridge=br0\n"),
+        ],
+        restored_at: Timestamp::from_unix_seconds(500),
+    });
+}
+
+#[tokio::test]
+async fn a_restored_backups_network_is_applied_where_its_names_are_here_and_confirmed() {
+    let s = setup(FakeConfigurator::default());
+    s.source.set(three_cards());
+    let request = RequestContext::default();
+    assert_eq!(s.network.configure.restored(&request).await.unwrap(), None);
+    let none = s.network.configure.apply_restored("enp1s0", &alice(), &request).await.unwrap_err();
+    assert!(matches!(none, ConfigureError::Refused(_)), "{none:?}");
+
+    restored_backup(&s);
+    let restored = s.network.configure.restored(&request).await.unwrap().unwrap();
+    assert_eq!(restored.restored_at, Timestamp::from_unix_seconds(500));
+    let standing: Vec<(&str, Standing)> = restored
+        .configuration
+        .links
+        .iter()
+        .map(|link| (link.settings.interface.as_str(), link.standing.clone()))
+        .collect();
+    assert_eq!(
+        standing,
+        [
+            ("br0", Standing::Missing),
+            ("eno1", Standing::Missing),
+            ("enp1s0", Standing::Applicable),
+            ("enp2s0", Standing::MemberThere("br0".into())),
+            ("enp3s0", Standing::MemberThere("br0".into())),
+        ]
+    );
+    assert_eq!(restored.configuration.devices[0].standing, Standing::Applicable);
+
+    // Skipped: no such card here; a member comes with its device.
+    for (name, why) in
+        [("eno1", "no interface eno1"), ("enp2s0", "make br0"), ("wlan9", "no settings of wlan9")]
+    {
+        let refused = s.network.configure.apply_restored(name, &alice(), &request).await.unwrap_err();
+        assert!(
+            matches!(&refused, ConfigureError::Refused(reason) if reason.contains(why)),
+            "{name}: {refused:?}"
+        );
+    }
+    assert!(s.host.changes.lock().unwrap().is_empty(), "nothing changed");
+
+    // An interface: an ordinary change, waiting to be confirmed.
+    let waiting = s.network.configure.apply_restored("enp1s0", &alice(), &request).await.unwrap();
+    assert_eq!(waiting.pending.unwrap().change, Change::Interface("enp1s0".into()));
+    let applied = s.host.applied.lock().unwrap()[0].clone();
+    assert_eq!(
+        applied.ipv4,
+        Ipv4Setting::Static {
+            address: [192, 168, 1, 30].into(),
+            prefix: 24,
+            gateway: Some([192, 168, 1, 1].into())
+        }
+    );
+    let busy = s.network.configure.apply_restored("br0", &alice(), &request).await.unwrap_err();
+    assert!(matches!(busy, ConfigureError::Pending), "one change at a time: {busy:?}");
+    s.network.configure.confirm(&alice(), &request).await.unwrap();
+    let after = s.network.configure.restored(&request).await.unwrap().unwrap();
+    assert_eq!(after.configuration.links[2].standing, Standing::InForce, "the files say it now");
+
+    // A bridge: made as the backup had it.
+    let made = s.network.configure.apply_restored("br0", &alice(), &request).await.unwrap();
+    assert_eq!(made.pending.unwrap().change, Change::Device("br0".into(), DeviceAction::Made));
+    let edit = s.host.changes.lock().unwrap().last().unwrap().clone();
+    assert_eq!(edit.devices[0].members, ["enp2s0", "enp3s0"]);
+
+    s.network.configure.forget_restored(&alice(), &request).await.unwrap();
+    assert_eq!(s.network.configure.restored(&request).await.unwrap(), None);
+    let audit: Vec<&str> = s.audit.0.lock().unwrap().iter().map(|(action, ..)| *action).collect();
+    assert_eq!(
+        audit,
+        [
+            "network.apply",
+            "network.device_make",
+            "network.confirm",
+            "network.device_make",
+            "network.forget_restored"
+        ]
+    );
 }

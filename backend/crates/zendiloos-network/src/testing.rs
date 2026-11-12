@@ -8,7 +8,7 @@ use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
 use crate::application::{
     Change, ConfigureError, DeviceUsers, HostNetwork, IfupdownHost, KeptSettings, NetworkConfigurator,
-    NetworkSource, PendingChange, SettingsStore,
+    NetworkSource, PendingChange, RestoredSettings, SettingsStore,
 };
 use crate::domain::{
     Address, AddressScope, DefaultRoute, DeviceKind, Edit, IfupdownFile, Interface, InterfaceKind,
@@ -107,7 +107,7 @@ impl DeviceUsers for FakeUsers {
 
 /// zendiloOS's network settings as a database would keep them.
 #[derive(Default)]
-pub struct MemorySettings(pub Mutex<Option<KeptSettings>>);
+pub struct MemorySettings(pub Mutex<Option<KeptSettings>>, pub Mutex<Option<RestoredSettings>>);
 
 #[async_trait]
 impl SettingsStore for MemorySettings {
@@ -124,6 +124,15 @@ impl SettingsStore for MemorySettings {
         if let Some(kept) = locked(&self.0).as_mut() {
             kept.said = said.map(str::to_owned);
         }
+        Ok(())
+    }
+
+    async fn restored(&self) -> Result<Option<RestoredSettings>, PortError> {
+        Ok(locked(&self.1).clone())
+    }
+
+    async fn forget_restored(&self) -> Result<(), PortError> {
+        *locked(&self.1) = None;
         Ok(())
     }
 }
@@ -162,13 +171,19 @@ fn files_after(files: &mut Vec<NetworkdFile>, edit: &Edit) {
         }
         match settings.ipv4 {
             Ipv4Setting::Dhcp { .. } => text.push_str("DHCP=ipv4\n"),
-            Ipv4Setting::Static { address, prefix, .. } => {
-                text.push_str(&format!("Address={address}/{prefix}\n"))
+            Ipv4Setting::Static { address, prefix, gateway } => {
+                text.push_str(&format!("Address={address}/{prefix}\n"));
+                if let Some(gateway) = gateway {
+                    text.push_str(&format!("Gateway={gateway}\n"));
+                }
             }
             Ipv4Setting::Off => {}
         }
         if settings.ipv6 == Ipv6Setting::Automatic {
             text.push_str("IPv6AcceptRA=yes\n");
+        }
+        for server in &settings.dns {
+            text.push_str(&format!("DNS={server}\n"));
         }
         for vlan in &link.vlans {
             text.push_str(&format!("VLAN={vlan}\n"));

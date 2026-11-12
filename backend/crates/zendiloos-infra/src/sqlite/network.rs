@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use zendiloos_kernel::{PortError, Timestamp};
-use zendiloos_network::application::{KeptSettings, SettingsStore};
+use zendiloos_network::application::{KeptSettings, RestoredSettings, SettingsStore};
 use zendiloos_network::domain::NetworkdFile;
 
 use super::Database;
@@ -17,6 +17,44 @@ pub struct SqliteNetworkSettings {
 impl SqliteNetworkSettings {
     pub fn new(db: Database) -> Self {
         Self { db }
+    }
+
+    /// At the first start after a restore, before the files are looked at:
+    /// the settings the restored database keeps are the backed-up
+    /// machine's, so they become the restored ones (replacing any earlier
+    /// restore's) and this machine keeps none, which the next look at the
+    /// files takes as they are. Nothing kept, nothing changes: done twice,
+    /// the second time leaves the first's.
+    pub async fn set_restored_aside(&self, at: Timestamp) -> Result<bool, PortError> {
+        let at = at.unix_seconds();
+        let mut transaction = self.db.pool().begin().await.map_err(db_error)?;
+        let kept = sqlx::query_scalar!("SELECT count(*) FROM network_settings")
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(db_error)?;
+        if kept == 0 {
+            return Ok(false);
+        }
+        for statement in [
+            sqlx::query!("DELETE FROM network_restored_files"),
+            sqlx::query!("DELETE FROM network_restored"),
+            sqlx::query!(
+                "INSERT INTO network_restored_files (name, text) SELECT name, text FROM network_setting_files"
+            ),
+        ] {
+            statement.execute(&mut *transaction).await.map_err(db_error)?;
+        }
+        sqlx::query!("INSERT INTO network_restored (id, restored_at) VALUES (1, ?)", at)
+            .execute(&mut *transaction)
+            .await
+            .map_err(db_error)?;
+        for statement in
+            [sqlx::query!("DELETE FROM network_setting_files"), sqlx::query!("DELETE FROM network_settings")]
+        {
+            statement.execute(&mut *transaction).await.map_err(db_error)?;
+        }
+        transaction.commit().await.map_err(db_error)?;
+        Ok(true)
     }
 }
 
@@ -80,6 +118,36 @@ impl SettingsStore for SqliteNetworkSettings {
             .map_err(db_error)?;
         Ok(())
     }
+
+    async fn restored(&self) -> Result<Option<RestoredSettings>, PortError> {
+        let pool = self.db.pool();
+        let Some(at) = sqlx::query_scalar!("SELECT restored_at FROM network_restored WHERE id = 1")
+            .fetch_optional(pool)
+            .await
+            .map_err(db_error)?
+        else {
+            return Ok(None);
+        };
+        let files = sqlx::query_as!(
+            NetworkdFile,
+            r#"SELECT name AS "name!", text FROM network_restored_files ORDER BY name"#
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(db_error)?;
+        Ok((!files.is_empty())
+            .then(|| RestoredSettings { files, restored_at: Timestamp::from_unix_seconds(at) }))
+    }
+
+    async fn forget_restored(&self) -> Result<(), PortError> {
+        let mut transaction = self.db.pool().begin().await.map_err(db_error)?;
+        for statement in
+            [sqlx::query!("DELETE FROM network_restored_files"), sqlx::query!("DELETE FROM network_restored")]
+        {
+            statement.execute(&mut *transaction).await.map_err(db_error)?;
+        }
+        transaction.commit().await.map_err(db_error)
+    }
 }
 
 #[cfg(test)]
@@ -125,6 +193,31 @@ mod tests {
                 .await
                 .is_err()
         );
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_restores_settings_are_set_aside_once_and_this_machine_keeps_none() {
+        let (_dir, db) = temporary_database().await;
+        let store = SqliteNetworkSettings::new(db.clone());
+        assert!(!store.set_restored_aside(Timestamp::from_unix_seconds(5)).await.unwrap(), "nothing kept");
+        assert_eq!(store.restored().await.unwrap(), None);
+
+        let backed_up = [file("enp3s0.network", "[Match]\nName=enp3s0\n")];
+        store.keep(&backed_up, Timestamp::from_unix_seconds(100)).await.unwrap();
+        assert!(store.set_restored_aside(Timestamp::from_unix_seconds(200)).await.unwrap());
+        assert_eq!(store.kept().await.unwrap(), None, "the next look keeps this machine's files");
+        let restored = store.restored().await.unwrap().unwrap();
+        assert_eq!(
+            (restored.files, restored.restored_at),
+            (backed_up.to_vec(), Timestamp::from_unix_seconds(200))
+        );
+
+        // The start repeated: nothing kept, the restored ones stay.
+        assert!(!store.set_restored_aside(Timestamp::from_unix_seconds(300)).await.unwrap());
+        assert_eq!(store.restored().await.unwrap().unwrap().restored_at, Timestamp::from_unix_seconds(200));
+        store.forget_restored().await.unwrap();
+        assert_eq!(store.restored().await.unwrap(), None);
         db.close().await;
     }
 }

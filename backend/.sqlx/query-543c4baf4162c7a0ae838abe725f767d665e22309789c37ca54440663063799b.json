@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT restored_at FROM network_restored WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "restored_at",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "network_restored",
+            "name": "restored_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "543c4baf4162c7a0ae838abe725f767d665e22309789c37ca54440663063799b"
+}

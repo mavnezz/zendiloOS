@@ -420,24 +420,7 @@ impl Pools {
         // setuid and devices explicitly, for pools made before they were defaults.
         let options = ["create", "-o", "mountpoint=legacy", "-o", "setuid=off", "-o", "devices=off"];
         run(&self.zfs, &[&options[..], &[dataset.as_str()]].concat()).await?;
-        let content = format!(
-            "# Created by zendiloOS for the share {share}; removed with the share.\n\
-             [Unit]\n\
-             Description=zendiloOS share {share} (ZFS dataset {dataset})\n\
-             Requires=zfs-import.target\n\
-             After=zfs-import.target\n\
-             \n\
-             [Mount]\n\
-             What={dataset}\n\
-             Where=/volume{number}/{share}\n\
-             Type=zfs\n\
-             \n\
-             [Install]\n\
-             WantedBy=multi-user.target\n",
-            share = name.as_str(),
-            number = volume.get(),
-        );
-        self.install_unit(&unit, &content).await?;
+        self.install_unit(&unit, &share_unit(pool, volume, name)).await?;
         Ok(Response::Done)
     }
 
@@ -683,33 +666,9 @@ impl Pools {
         mut config: serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), OperationError> {
         let root = format!("/volume{}/{DOCKER_DIRECTORY}", volume.get());
-        let dataset = format!("{}/{DOCKER_DATASET}", pool.as_str());
         let unit = docker_unit_name(volume);
-        let content = format!(
-            "# Created by zendiloOS: Docker's data (images, containers) on pool {pool}.\n\
-             [Unit]\n\
-             Description=zendiloOS: Docker's data (ZFS dataset {dataset})\n\
-             Requires=zfs-import.target\n\
-             After=zfs-import.target\n\
-             Before=docker.service\n\
-             \n\
-             [Mount]\n\
-             What={dataset}\n\
-             Where={root}\n\
-             Type=zfs\n\
-             \n\
-             [Install]\n\
-             WantedBy=multi-user.target\n",
-            pool = pool.as_str(),
-        );
-        self.install_unit(&unit, &content).await?;
-        let drop_in = self.paths.units.join("docker.service.d");
-        fs::create_dir_all(&drop_in).map_err(|e| OperationError::Write(drop_in.clone(), e))?;
-        let drop_in = drop_in.join("zendiloos.conf");
-        let requires = format!(
-            "# Written by zendiloOS: Docker's data is on a pool; without it, Docker waits.\n[Unit]\nRequiresMountsFor={root}\n"
-        );
-        let changed = crate::durable::replace_if_changed(&drop_in, requires.as_bytes())?;
+        self.install_unit(&unit, &docker_unit(pool, volume)).await?;
+        let changed = self.docker_waits_for(volume)?;
         config.insert("data-root".to_owned(), root.clone().into());
         config.insert("storage-driver".to_owned(), "overlay2".into());
         let text = serde_json::to_string_pretty(&config).unwrap_or_default();
@@ -733,7 +692,7 @@ impl Pools {
         pool: &PoolName,
         volume: VolumeNumber,
     ) -> Result<(), OperationError> {
-        use zendiloos_agent_proto::{VMS_DATASET, VMS_DIRECTORY};
+        use zendiloos_agent_proto::VMS_DATASET;
 
         let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_managed(pool, Some(volume)).await?;
@@ -754,25 +713,7 @@ impl Pools {
             ];
             run(&self.zfs, &[&options[..], &[dataset.as_str()]].concat()).await?;
         }
-        let root = format!("/volume{}/{VMS_DIRECTORY}", volume.get());
-        let content = format!(
-            "# Created by zendiloOS: the virtual machines' disks and ISOs on pool {pool}.\n\
-             [Unit]\n\
-             Description=zendiloOS: the virtual machines' storage (ZFS dataset {dataset})\n\
-             Requires=zfs-import.target\n\
-             After=zfs-import.target\n\
-             Before=libvirtd.service\n\
-             \n\
-             [Mount]\n\
-             What={dataset}\n\
-             Where={root}\n\
-             Type=zfs\n\
-             \n\
-             [Install]\n\
-             WantedBy=multi-user.target\n",
-            pool = pool.as_str(),
-        );
-        self.install_unit(&unit, &content).await?;
+        self.install_unit(&unit, &vms_unit(pool, volume)).await?;
         // One reload, and only when libvirt's drop-in changed.
         if self.libvirt_waits_for(&crate::vms::vms_locations(&self.paths))? {
             run(&self.systemctl, &["daemon-reload"]).await?;
@@ -1011,26 +952,9 @@ impl Pools {
             let options = ["create", "-o", "mountpoint=legacy", "-o", "setuid=off", "-o", "devices=off"];
             run(&self.zfs, &[&options[..], &[dataset.as_str()]].concat()).await?;
         }
-        let content = format!(
-            "# Created by zendiloOS: the personal folders on pool {pool}.\n\
-             [Unit]\n\
-             Description=zendiloOS personal folders (ZFS dataset {dataset})\n\
-             Requires=zfs-import.target\n\
-             After=zfs-import.target\n\
-             \n\
-             [Mount]\n\
-             What={dataset}\n\
-             Where=/volume{number}/{HOMES_DIRECTORY}\n\
-             Type=zfs\n\
-             \n\
-             [Install]\n\
-             WantedBy=multi-user.target\n",
-            pool = pool.as_str(),
-            number = volume.get(),
-        );
         // Its owner and mode come with the first folder (`MakeHome`): only
         // the files agent may write to the volumes.
-        self.install_unit(&homes_unit_name(volume), &content).await?;
+        self.install_unit(&homes_unit_name(volume), &homes_unit(pool, volume)).await?;
         Ok(Response::Done)
     }
 
@@ -1079,6 +1003,185 @@ impl Pools {
         self.require_managed(pool, None).await?;
         run(&self.zpool, &["scrub", "-s", pool.as_str()]).await?;
         Ok(Response::Done)
+    }
+
+    /// The pools `zpool import` finds by `/dev/disk/by-id` that are not
+    /// imported, as it lists them. It reads the disks' labels and imports
+    /// nothing; without any it says so and fails, which is an empty list.
+    pub(crate) async fn importable(&self) -> Result<Response, OperationError> {
+        let by_id = self.paths.by_id.to_string_lossy().into_owned();
+        let found = zendiloos_exec::run(&self.zpool, ["import", "-d", by_id.as_str()], LIMITS).await?;
+        if found.status.success() {
+            let zpool_import = String::from_utf8(found.stdout).map_err(|_| OperationError::NotUtf8)?;
+            return Ok(Response::ImportablePools { zpool_import });
+        }
+        if found.stderr.contains("no pools available") {
+            return Ok(Response::ImportablePools { zpool_import: String::new() });
+        }
+        Err(found.success(&self.zpool).err().map_or(OperationError::NotUtf8, OperationError::from))
+    }
+
+    /// Imports a pool zendiloos made, as [`Request::ImportPool`] says: by
+    /// its identifier, unmounted, its devices by by-id link; checked to be
+    /// `volume` (with `adopt` made so), otherwise exported again.
+    ///
+    /// [`Request::ImportPool`]: zendiloos_agent_proto::Request::ImportPool
+    pub(crate) async fn import(
+        &self,
+        name: &PoolName,
+        id: u64,
+        volume: VolumeNumber,
+        adopt: bool,
+        force: bool,
+    ) -> Result<Response, OperationError> {
+        let _serial = crate::waiting::lock(&self.serial).await?;
+        if self.pool_names().await?.iter().any(|imported| imported == name.as_str()) {
+            return Err(OperationError::Conflict);
+        }
+        if self.volumes_in_use().await?.contains(&volume.get()) {
+            return Err(OperationError::Conflict);
+        }
+        // A unit of this volume number for another pool: its number is taken.
+        if let Ok(unit) = fs::read_to_string(self.unit_path(volume))
+            && unit.lines().find_map(|line| line.strip_prefix("What=")) != Some(name.as_str())
+        {
+            return Err(OperationError::Conflict);
+        }
+        let Response::ImportablePools { zpool_import } = self.importable().await? else {
+            return Err(OperationError::Failed("zpool import lists nothing".into()));
+        };
+        if !listed_pools(&zpool_import).iter().any(|(pool, listed)| pool == name.as_str() && *listed == id) {
+            return Err(refused(format!(
+                "there is no pool {} with this identifier to import",
+                name.as_str()
+            )));
+        }
+        let by_id = self.paths.by_id.to_string_lossy().into_owned();
+        let id_text = id.to_string();
+        let mut args = vec!["import", "-N", "-d", by_id.as_str()];
+        if force {
+            args.push("-f");
+        }
+        args.push(&id_text);
+        crate::progress::step("importing_pool", None);
+        match zendiloos_exec::run(&self.zpool, &args, LIMITS).await?.success(&self.zpool) {
+            Ok(_) => {}
+            Err(zendiloos_exec::ExecError::Failed { stderr, .. }) => {
+                return Err(refused(format!("ZFS does not import {}: {}", name.as_str(), stderr.trim())));
+            }
+            Err(error) => return Err(error.into()),
+        }
+        let value = output(&self.zfs, &["get", "-H", "-o", "value", VOLUME_PROPERTY, name.as_str()]).await;
+        let found: Option<u16> = value.as_deref().ok().and_then(|value| value.trim().parse().ok());
+        let refusal = match found {
+            Some(found) if found == volume.get() => None,
+            Some(_) if adopt => {
+                let property = format!("{VOLUME_PROPERTY}={}", volume.get());
+                run(&self.zfs, &["set", &property, name.as_str()]).await.err().map(|error| error.to_string())
+            }
+            Some(found) => Some(format!("{} is volume {found}, not {}", name.as_str(), volume.get())),
+            None => {
+                Some(format!("{} was not made by zendiloOS (it has no {VOLUME_PROPERTY})", name.as_str()))
+            }
+        };
+        if let Some(reason) = refusal {
+            if let Err(error) = run(&self.zpool, &["export", name.as_str()]).await {
+                tracing::error!(pool = name.as_str(), %error, "cannot export a pool imported by mistake");
+            }
+            return Err(refused(reason));
+        }
+        Ok(Response::Done)
+    }
+
+    /// Makes sure the mounts of an imported pool are in place, as
+    /// [`Request::MountVolume`] says: the units written as creating them
+    /// writes them, only where they differ, enabled, systemd reloaded once,
+    /// then started, the volume's first. Docker, whose data it holds,
+    /// starts once its mount is new.
+    ///
+    /// [`Request::MountVolume`]: zendiloos_agent_proto::Request::MountVolume
+    pub(crate) async fn mount_volume(
+        &self,
+        pool: &PoolName,
+        volume: VolumeNumber,
+        shares: &[ShareName],
+    ) -> Result<Response, OperationError> {
+        use zendiloos_agent_proto::VMS_DATASET;
+
+        let _serial = crate::waiting::lock(&self.serial).await?;
+        self.require_managed(pool, Some(volume)).await?;
+        let listed = output(&self.zfs, &["list", "-H", "-o", "name", "-d", "1", pool.as_str()]).await?;
+        let has = |dataset: &str| listed.lines().any(|line| line == format!("{}/{dataset}", pool.as_str()));
+        let mut units = vec![(unit_name(volume), volume_unit(pool, volume))];
+        let mut missing = Vec::new();
+        for share in shares {
+            if has(share.as_str()) {
+                units.push((share_unit_name(volume, share), share_unit(pool, volume, share)));
+            } else {
+                missing.push(share.clone());
+            }
+        }
+        if has(HOMES_DATASET) {
+            units.push((homes_unit_name(volume), homes_unit(pool, volume)));
+        }
+        let docker = has(DOCKER_DATASET);
+        if docker {
+            units.push((docker_unit_name(volume), docker_unit(pool, volume)));
+        }
+        if has(VMS_DATASET) {
+            units.push((crate::vms::vms_unit_name(volume), vms_unit(pool, volume)));
+        }
+        let mut written = Vec::new();
+        for (unit, content) in &units {
+            if crate::durable::replace_if_changed(&self.paths.units.join(unit), content.as_bytes())? {
+                written.push(unit.clone());
+            }
+        }
+        let names: Vec<&str> = units.iter().map(|(unit, _)| unit.as_str()).collect();
+        run(&self.systemctl, &[&["enable", "--no-reload"][..], &names[..]].concat()).await?;
+        let root = format!("/volume{}/{DOCKER_DIRECTORY}", volume.get());
+        let docker_here = docker
+            && docker_config(&self.paths.docker_config)?.get("data-root").and_then(serde_json::Value::as_str)
+                == Some(root.as_str());
+        let mut drop_ins = false;
+        if docker_here {
+            drop_ins |= self.docker_waits_for(volume)?;
+        }
+        drop_ins |= self.libvirt_waits_for(&crate::vms::vms_locations(&self.paths))?;
+        if !written.is_empty() || drop_ins {
+            run(&self.systemctl, &["daemon-reload"]).await?;
+        } else {
+            reload_if_behind(&self.systemctl, &unit_name(volume)).await?;
+        }
+        let mut failed = Vec::new();
+        for unit in &names {
+            if let Err(error) = run(&self.systemctl, &["start", unit]).await {
+                failed.push(format!("{unit} ({error})"));
+            }
+        }
+        if docker_here
+            && written.contains(&docker_unit_name(volume))
+            && self.docker.path().exists()
+            && let Err(error) = run(&self.systemctl, &["start", "docker.service"]).await
+        {
+            tracing::warn!(%error, "Docker does not start on its data mounted again");
+        }
+        if !failed.is_empty() {
+            return Err(OperationError::Failed(format!("cannot mount {}", failed.join(", "))));
+        }
+        Ok(Response::VolumeMounted { missing, changed: !written.is_empty() })
+    }
+
+    /// Docker's drop-in: it starts only with its data on `volume` mounted.
+    /// `true` when the file changed, so systemd needs to read it again.
+    fn docker_waits_for(&self, volume: VolumeNumber) -> Result<bool, OperationError> {
+        let root = format!("/volume{}/{DOCKER_DIRECTORY}", volume.get());
+        let drop_in = self.paths.units.join("docker.service.d");
+        fs::create_dir_all(&drop_in).map_err(|e| OperationError::Write(drop_in.clone(), e))?;
+        let requires = format!(
+            "# Written by zendiloOS: Docker's data is on a pool; without it, Docker waits.\n[Unit]\nRequiresMountsFor={root}\n"
+        );
+        crate::durable::replace_if_changed(&drop_in.join("zendiloos.conf"), requires.as_bytes())
     }
 
     /// The checks of the module documentation.
@@ -1211,24 +1314,7 @@ impl Pools {
     }
 
     async fn mount(&self, name: &PoolName, volume: VolumeNumber) -> Result<(), OperationError> {
-        let content = format!(
-            "# Created by zendiloOS for the ZFS pool {pool}; removed with the pool.\n\
-             [Unit]\n\
-             Description=zendiloOS volume {number} (ZFS pool {pool})\n\
-             Requires=zfs-import.target\n\
-             After=zfs-import.target\n\
-             \n\
-             [Mount]\n\
-             What={pool}\n\
-             Where=/volume{number}\n\
-             Type=zfs\n\
-             \n\
-             [Install]\n\
-             WantedBy=multi-user.target\n",
-            pool = name.as_str(),
-            number = volume.get(),
-        );
-        self.install_unit(&unit_name(volume), &content).await
+        self.install_unit(&unit_name(volume), &volume_unit(name, volume)).await
     }
 
     fn unit_path(&self, volume: VolumeNumber) -> PathBuf {
@@ -1325,6 +1411,131 @@ fn write_file(path: &std::path::Path, content: &str) -> Result<(), OperationErro
 
 pub(crate) fn share_unit_name(volume: VolumeNumber, share: &ShareName) -> String {
     format!("volume{}-{}.mount", volume.get(), share.as_str().replace('-', "\\x2d"))
+}
+
+/// The mount unit of a pool's root dataset at `/volume<N>`.
+fn volume_unit(pool: &PoolName, volume: VolumeNumber) -> String {
+    format!(
+        "# Created by zendiloOS for the ZFS pool {pool}; removed with the pool.\n\
+         [Unit]\n\
+         Description=zendiloOS volume {number} (ZFS pool {pool})\n\
+         Requires=zfs-import.target\n\
+         After=zfs-import.target\n\
+         \n\
+         [Mount]\n\
+         What={pool}\n\
+         Where=/volume{number}\n\
+         Type=zfs\n\
+         \n\
+         [Install]\n\
+         WantedBy=multi-user.target\n",
+        pool = pool.as_str(),
+        number = volume.get(),
+    )
+}
+
+/// The mount unit of a share's dataset at `/volume<N>/<share>`.
+fn share_unit(pool: &PoolName, volume: VolumeNumber, share: &ShareName) -> String {
+    format!(
+        "# Created by zendiloOS for the share {share}; removed with the share.\n\
+         [Unit]\n\
+         Description=zendiloOS share {share} (ZFS dataset {pool}/{share})\n\
+         Requires=zfs-import.target\n\
+         After=zfs-import.target\n\
+         \n\
+         [Mount]\n\
+         What={pool}/{share}\n\
+         Where=/volume{number}/{share}\n\
+         Type=zfs\n\
+         \n\
+         [Install]\n\
+         WantedBy=multi-user.target\n",
+        pool = pool.as_str(),
+        share = share.as_str(),
+        number = volume.get(),
+    )
+}
+
+/// The mount unit of the personal folders' dataset at `/volume<N>/@homes`.
+fn homes_unit(pool: &PoolName, volume: VolumeNumber) -> String {
+    format!(
+        "# Created by zendiloOS: the personal folders on pool {pool}.\n\
+         [Unit]\n\
+         Description=zendiloOS personal folders (ZFS dataset {pool}/{HOMES_DATASET})\n\
+         Requires=zfs-import.target\n\
+         After=zfs-import.target\n\
+         \n\
+         [Mount]\n\
+         What={pool}/{HOMES_DATASET}\n\
+         Where=/volume{number}/{HOMES_DIRECTORY}\n\
+         Type=zfs\n\
+         \n\
+         [Install]\n\
+         WantedBy=multi-user.target\n",
+        pool = pool.as_str(),
+        number = volume.get(),
+    )
+}
+
+/// The mount unit of Docker's dataset at `/volume<N>/@docker`.
+fn docker_unit(pool: &PoolName, volume: VolumeNumber) -> String {
+    format!(
+        "# Created by zendiloOS: Docker's data (images, containers) on pool {pool}.\n\
+         [Unit]\n\
+         Description=zendiloOS: Docker's data (ZFS dataset {pool}/{DOCKER_DATASET})\n\
+         Requires=zfs-import.target\n\
+         After=zfs-import.target\n\
+         Before=docker.service\n\
+         \n\
+         [Mount]\n\
+         What={pool}/{DOCKER_DATASET}\n\
+         Where=/volume{number}/{DOCKER_DIRECTORY}\n\
+         Type=zfs\n\
+         \n\
+         [Install]\n\
+         WantedBy=multi-user.target\n",
+        pool = pool.as_str(),
+        number = volume.get(),
+    )
+}
+
+/// The mount unit of the virtual machines' dataset at `/volume<N>/@vms`.
+fn vms_unit(pool: &PoolName, volume: VolumeNumber) -> String {
+    use zendiloos_agent_proto::{VMS_DATASET, VMS_DIRECTORY};
+    format!(
+        "# Created by zendiloOS: the virtual machines' disks and ISOs on pool {pool}.\n\
+         [Unit]\n\
+         Description=zendiloOS: the virtual machines' storage (ZFS dataset {pool}/{VMS_DATASET})\n\
+         Requires=zfs-import.target\n\
+         After=zfs-import.target\n\
+         Before=libvirtd.service\n\
+         \n\
+         [Mount]\n\
+         What={pool}/{VMS_DATASET}\n\
+         Where=/volume{number}/{VMS_DIRECTORY}\n\
+         Type=zfs\n\
+         \n\
+         [Install]\n\
+         WantedBy=multi-user.target\n",
+        pool = pool.as_str(),
+        number = volume.get(),
+    )
+}
+
+/// `(name, id)` of each pool `zpool import` lists, in its order.
+fn listed_pools(listing: &str) -> Vec<(String, u64)> {
+    let mut found = Vec::new();
+    let mut name: Option<&str> = None;
+    for line in listing.lines().map(str::trim) {
+        if let Some(pool) = line.strip_prefix("pool:") {
+            name = Some(pool.trim());
+        } else if let Some(id) = line.strip_prefix("id:")
+            && let (Some(pool), Ok(id)) = (name.take(), id.trim().parse())
+        {
+            found.push((pool.to_owned(), id));
+        }
+    }
+    found
 }
 
 pub(crate) async fn run<S: AsRef<str>>(program: &Program, args: &[S]) -> Result<(), OperationError> {

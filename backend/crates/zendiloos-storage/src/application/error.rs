@@ -23,6 +23,13 @@ pub enum StorageError {
     Refused(String),
     #[error("the name or volume number is taken")]
     Conflict,
+    /// The volume number asked for is another pool's, imported or named
+    /// by the configuration.
+    #[error("the volume number is taken")]
+    VolumeTaken,
+    /// Another machine used the pool last: it is imported only by force.
+    #[error("another machine used the pool last")]
+    OtherHost,
     /// Only a running scrub can be stopped; a resilver must finish.
     #[error("the pool is not being scrubbed")]
     NotScrubbing,

@@ -464,7 +464,7 @@ impl Planning<'_> {
 
     /// The bridge or bond `interface` is in: by zendiloOS's files or as the
     /// kernel says.
-    fn master_of(&self, interface: &str) -> Option<String> {
+    pub fn master_of(&self, interface: &str) -> Option<String> {
         self.configuration.port_of(interface).map(str::to_owned).or_else(|| {
             self.network.interfaces.iter().find(|i| i.name == interface).and_then(|i| i.member_of.clone())
         })

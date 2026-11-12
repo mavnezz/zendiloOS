@@ -449,6 +449,13 @@ impl SimulatedAgent {
         self
     }
 
+    /// Takes the pool `name` out of those imported, as a machine installed
+    /// afresh finds it on its disks; `other_host`: another machine used it
+    /// last, so it is imported only by force.
+    pub fn export_pool(&self, name: &str, other_host: bool) {
+        self.host().export(name, other_host);
+    }
+
     fn share_directory(&self, volume: u16, share: &str) -> Option<PathBuf> {
         Some(self.files.as_ref()?.join(format!("volume{volume}")).join(share))
     }
@@ -1230,6 +1237,22 @@ impl AgentTransport for SimulatedAgent {
             Request::DestroyPool { name, volume } => {
                 changed(self.host().destroy(name.as_str(), volume.get()))
             }
+            Request::ImportablePools {} => {
+                Response::ImportablePools { zpool_import: self.host().zpool_import() }
+            }
+            Request::ImportPool { name, id, volume, adopt, force } => {
+                changed(self.host().import(name.as_str(), *id, volume.get(), *adopt, *force))
+            }
+            Request::MountVolume { pool, volume, shares } => {
+                let names: Vec<&str> = shares.iter().map(|share| share.as_str()).collect();
+                match self.host().mount_volume(pool.as_str(), volume.get(), &names) {
+                    Ok(missing) => Response::VolumeMounted {
+                        missing: missing.iter().filter_map(|name| ShareName::parse(name).ok()).collect(),
+                        changed: false,
+                    },
+                    Err(refusal) => changed(Err(refusal)),
+                }
+            }
             Request::ReplaceDisk { pool, device, disk } => {
                 let now = (self.clock)();
                 changed(self.host().replace(pool.as_str(), *device, disk.as_str(), now))
@@ -1642,6 +1665,72 @@ mod tests {
 
     fn done(response: Response) {
         assert_eq!(response, Response::Done);
+    }
+
+    #[tokio::test]
+    async fn pools_on_the_disks_are_listed_imported_and_mounted_like_the_agent_does() {
+        use zendiloos_agent_proto::{PoolName, VolumeNumber};
+        let agent = at(1_000);
+        let tank = 0x88a1_3c2e_5b0a_4c8e_u64;
+        let backup = 0x6f1d_3c2e_9d1f_2a7b_u64;
+        let listing = || async {
+            match agent.call(Request::ImportablePools {}, None).await.unwrap() {
+                Response::ImportablePools { zpool_import } => zpool_import,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(listing().await, "", "everything is imported");
+        agent.export_pool("tank", false);
+        agent.export_pool("backup", true);
+        agent.export_pool("nothing", false);
+        let listed = listing().await;
+        assert!(listed.contains(&format!("   pool: tank\n     id: {tank}\n")), "{listed}");
+        assert!(listed.contains("last accessed by another system"), "{listed}");
+        assert!(zfs(&agent).await["pools"].get("tank").is_none());
+
+        let import = |name: &str, id: u64, volume: u16, adopt: bool, force: bool| Request::ImportPool {
+            name: PoolName::parse(name).unwrap(),
+            id,
+            volume: VolumeNumber::new(volume).unwrap(),
+            adopt,
+            force,
+        };
+        refused(&agent.call(import("tank", 7, 1, false, false), None).await.unwrap(), ErrorCode::Forbidden);
+        refused(
+            &agent.call(import("tank", tank, 3, false, false), None).await.unwrap(),
+            ErrorCode::Forbidden,
+        );
+        refused(
+            &agent.call(import("backup", backup, 2, false, false), None).await.unwrap(),
+            ErrorCode::Forbidden,
+        );
+        done(agent.call(import("tank", tank, 1, false, false), None).await.unwrap());
+        refused(&agent.call(import("tank", tank, 1, false, false), None).await.unwrap(), ErrorCode::Conflict);
+        done(agent.call(import("backup", backup, 5, true, true), None).await.unwrap());
+        assert_eq!(agent.host().pools.iter().find(|pool| pool.name == "backup").unwrap().volume, Some(5));
+
+        let mount = |volume: u16| Request::MountVolume {
+            pool: PoolName::parse("tank").unwrap(),
+            volume: VolumeNumber::new(volume).unwrap(),
+            shares: vec![zendiloos_agent_proto::ShareName::parse("photos").unwrap()],
+        };
+        let mounted = agent.call(mount(1), None).await.unwrap();
+        assert_eq!(
+            mounted,
+            Response::VolumeMounted {
+                missing: vec![zendiloos_agent_proto::ShareName::parse("photos").unwrap()],
+                changed: false
+            }
+        );
+        refused(&agent.call(mount(2), None).await.unwrap(), ErrorCode::Forbidden);
+
+        // A pool zendiloOS did not make is never imported.
+        let mut foreign = agent.host().pools.iter().find(|pool| pool.name == "tank").unwrap().clone();
+        foreign.name = "other".into();
+        foreign.volume = None;
+        foreign.guid = 99;
+        agent.host().importable.push(host::Importable { pool: foreign, other_host: false });
+        refused(&agent.call(import("other", 99, 6, true, false), None).await.unwrap(), ErrorCode::Forbidden);
     }
 
     fn refused(response: &Response, code: ErrorCode) {

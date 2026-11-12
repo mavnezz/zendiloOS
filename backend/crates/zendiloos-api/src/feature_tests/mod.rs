@@ -9,6 +9,7 @@ mod enclosure;
 mod errors;
 mod firewall;
 mod network;
+mod pools;
 mod two_factor;
 mod vm_backups;
 mod vms;

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  ArchiveRestore,
   ArrowDown,
   ArrowUp,
   GripVertical,
@@ -14,6 +15,7 @@ import { useI18n } from 'vue-i18n'
 import { ApiProblem } from '@/shared/api/client'
 import type { FirewallRule, FirewallService } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
+import { formatDateTime } from '@/shared/lib/format'
 import { Alert } from '@/shared/ui/alert'
 import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
@@ -135,6 +137,39 @@ async function apply(lockOutMeant = false): Promise<void> {
   }
 }
 
+// The rules a restored backup brought: applied as any change, or forgotten.
+const restored = computed(() => setup.value?.restored ?? null)
+const restoredSummary = computed(() => {
+  const settings = restored.value?.settings
+  if (!settings) return ''
+  if (!settings.enabled) return t('firewall.restored.off')
+  return t('firewall.restored.on', {
+    count: settings.rules.length,
+    fallback: t(`firewall.restored.${settings.fallback}`),
+  })
+})
+const restoredLockOut = ref(false)
+async function applyRestored(lockOutMeant = false): Promise<void> {
+  saving.value = true
+  failure.value = null
+  try {
+    await actions.applyRestored(lockOutMeant)
+  } catch (error) {
+    if (error instanceof ApiProblem && error.code === 'would_lock_out') restoredLockOut.value = true
+    else failure.value = problemMessage(error)
+  } finally {
+    saving.value = false
+  }
+}
+async function forgetRestored(): Promise<void> {
+  failure.value = null
+  try {
+    await actions.forgetRestored()
+  } catch (error) {
+    failure.value = problemMessage(error)
+  }
+}
+
 async function confirm(): Promise<void> {
   failure.value = null
   try {
@@ -229,6 +264,34 @@ function servicePorts(service: FirewallService): string {
         <Button size="sm" @click="confirm">{{ t('firewall.pending.confirm') }}</Button>
       </div>
     </div>
+    <section
+      v-if="restored && !pending"
+      class="grid gap-2 rounded-xl border bg-card p-4 text-sm"
+      aria-labelledby="firewall-restored"
+      data-restored
+    >
+      <p id="firewall-restored" class="flex items-center gap-2 font-medium">
+        <ArchiveRestore class="size-4 text-primary" />
+        {{ t('firewall.restored.title') }}
+      </p>
+      <p class="text-muted-foreground">
+        {{
+          t('firewall.restored.intro', {
+            at: formatDateTime(restored.restored_at * 1000),
+            summary: restoredSummary,
+            seconds: setup?.confirm_within ?? 90,
+          })
+        }}
+      </p>
+      <div class="flex justify-end gap-2">
+        <Button size="sm" variant="ghost" :disabled="saving" @click="forgetRestored">
+          {{ t('firewall.restored.forget') }}
+        </Button>
+        <Button size="sm" :disabled="saving || dirty" @click="applyRestored()">
+          {{ t('firewall.restored.apply') }}
+        </Button>
+      </div>
+    </section>
     <section
       v-if="blocked.length"
       class="grid gap-2 rounded-xl border border-destructive/40 bg-destructive/5 p-4 text-sm"
@@ -433,5 +496,14 @@ function servicePorts(service: FirewallService): string {
     :cancel-label="t('desktop.cancel')"
     destructive
     @confirm="apply(true)"
+  />
+  <ConfirmDialog
+    v-model:open="restoredLockOut"
+    :title="t('firewall.lockOut.title')"
+    :description="t('firewall.lockOut.description', { seconds: setup?.confirm_within ?? 90 })"
+    :confirm-label="t('firewall.lockOut.confirm')"
+    :cancel-label="t('desktop.cancel')"
+    destructive
+    @confirm="applyRestored(true)"
   />
 </template>

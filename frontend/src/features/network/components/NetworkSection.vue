@@ -19,11 +19,12 @@ import { Alert } from '@/shared/ui/alert'
 import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
 
-import { useNetwork, useNetworkActions, useNetworkSetup } from '../api'
+import { useNetwork, useNetworkActions, useNetworkSetup, useRestoredNetwork } from '../api'
 import { type DeviceKind, composition, describeSettings } from '../lib/devices'
 import DeviceDialog from './DeviceDialog.vue'
 import InterfaceDialog from './InterfaceDialog.vue'
 import RemoveDeviceDialog from './RemoveDeviceDialog.vue'
+import RestoredNetwork from './RestoredNetwork.vue'
 
 const i18n = useI18n()
 const { t } = i18n
@@ -32,6 +33,8 @@ const { data: network, error } = useNetwork()
 const props = defineProps<{ canManage: boolean }>()
 
 const { data: setup, refetch: refetchSetup } = useNetworkSetup()
+/** A restored backup's network settings, to be applied here one by one. */
+const { data: restored } = useRestoredNetwork(() => props.canManage)
 const actions = useNetworkActions()
 const jobs = useJobsStore()
 
@@ -256,6 +259,11 @@ const linkLocal = (item: NetworkInterface) => item.addresses.filter((a) => a.sco
           </div>
         </template>
       </section>
+      <RestoredNetwork
+        v-if="canManage && restored && setup?.managed"
+        :restored="restored"
+        :busy="!!drift"
+      />
       <section
         v-if="takeover"
         class="grid gap-3 rounded-xl border bg-card p-4 text-sm"

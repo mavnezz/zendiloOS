@@ -356,6 +356,8 @@ pub(crate) struct Harness {
     pub(crate) network_users: Arc<FakeUsers>,
     /// zendiloOS's network settings as confirmed.
     pub(crate) network_settings: Arc<zendiloos_network::testing::MemorySettings>,
+    /// The firewall's settings as kept.
+    pub(crate) firewall_store: Arc<zendiloos_firewall::testing::MemoryFirewall>,
 }
 
 /// The App Center's projects, from the Docker fakes, as zendiloosd's
@@ -594,9 +596,10 @@ impl Harness {
         let firewall_host = Arc::new(zendiloos_firewall::testing::FakeFirewallHost::default());
         firewall_host.set_now(zendiloos_kernel::Clock::now(identity.clock.as_ref()));
         let firewall_facts = Arc::new(zendiloos_firewall::testing::FixedFacts::default());
+        let firewall_store = Arc::new(zendiloos_firewall::testing::MemoryFirewall::default());
         let firewall =
             zendiloos_firewall::application::Firewall::new(zendiloos_firewall::application::FirewallPorts {
-                repository: Arc::new(zendiloos_firewall::testing::MemoryFirewall::default()),
+                repository: firewall_store.clone(),
                 facts: firewall_facts.clone(),
                 host: firewall_host.clone(),
                 notifier: notifier.clone(),
@@ -735,6 +738,7 @@ impl Harness {
             network_source,
             network_users,
             network_settings,
+            firewall_store,
         }
     }
 
@@ -1992,6 +1996,8 @@ fn openapi_documents_every_route() {
             "/api/v1/network/interfaces/{name}",
             "/api/v1/network/keep-files",
             "/api/v1/network/restore",
+            "/api/v1/network/restored",
+            "/api/v1/network/restored/apply",
             "/api/v1/network/setup",
             "/api/v1/network/takeover",
             "/api/v1/notification-channels",
@@ -2007,6 +2013,8 @@ fn openapi_documents_every_route() {
             "/api/v1/security/blocked",
             "/api/v1/security/firewall",
             "/api/v1/security/firewall/confirm",
+            "/api/v1/security/firewall/restored",
+            "/api/v1/security/firewall/restored/apply",
             "/api/v1/security/sessions",
             "/api/v1/security/sessions/{id}",
             "/api/v1/security/settings",
@@ -2034,6 +2042,8 @@ fn openapi_documents_every_route() {
             "/api/v1/storage/locate",
             "/api/v1/storage/overview",
             "/api/v1/storage/pools",
+            "/api/v1/storage/pools/absent",
+            "/api/v1/storage/pools/import",
             "/api/v1/storage/pools/plan",
             "/api/v1/storage/pools/{name}/destroy",
             "/api/v1/storage/pools/{name}/replace",
@@ -2487,7 +2497,7 @@ async fn jobs_are_listed_newest_first() {
     assert_problem(&missing, StatusCode::NOT_FOUND, "not_found");
 }
 
-async fn job_done(h: &Harness, id: i64) -> zendiloos_jobs::Job {
+pub(crate) async fn job_done(h: &Harness, id: i64) -> zendiloos_jobs::Job {
     for _ in 0..100 {
         let job = h.jobs.find(zendiloos_jobs::JobId::new(id)).await.unwrap().unwrap();
         if job.state != zendiloos_jobs::JobState::Running {

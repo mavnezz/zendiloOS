@@ -7,16 +7,16 @@ use zendiloos_agent_proto::{
 };
 use zendiloos_kernel::{PortError, RequestContext};
 use zendiloos_storage::application::ports::{
-    AdminError, ArraySource, BlockDeviceSource, DiskLocator, MachineSource, NewPool, PlanTokens, PoolAdmin,
-    RemovableHost, SmartSource, Steps, ZfsSource,
+    AdminError, ArraySource, BlockDeviceSource, DiskLocator, MachineSource, Mounted, NewPool, PlanTokens,
+    PoolAdmin, PoolImport, RemovableHost, SmartSource, Steps, ZfsSource,
 };
 use zendiloos_storage::domain::{
-    Array, BlockDevice, DeviceKind, Machine, Pool, PoolLayout, PoolName, RemovableDrive, SelfTestKind,
-    SmartReport, VolumeNumber,
+    Array, BlockDevice, DeviceKind, ImportablePool, Machine, Pool, PoolLayout, PoolName, RemovableDrive,
+    SelfTestKind, SmartReport, VolumeNumber,
 };
 
 use super::{WHAT, call, unexpected};
-use crate::storage::{emmc, lsblk, mdstat, smartctl, udev, zfs};
+use crate::storage::{emmc, lsblk, mdstat, smartctl, udev, zfs, zpool_import};
 
 /// The Storage context's sources, through the agent: it runs the tools,
 /// this side parses their output.
@@ -333,6 +333,56 @@ impl PoolAdmin for AgentStorage {
 
     async fn stop_scrub(&self, pool: &PoolName, context: &RequestContext) -> Result<(), AdminError> {
         self.change(Request::StopScrub { pool: pool_name(pool)? }, context).await
+    }
+
+    async fn importable(&self, context: &RequestContext) -> Result<Vec<ImportablePool>, PortError> {
+        match call(self.transport.as_ref(), Request::ImportablePools {}, context).await? {
+            Response::ImportablePools { zpool_import } => {
+                zpool_import::parse(&zpool_import).map_err(|e| PortError::new("pools to import", e))
+            }
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn import_pool(
+        &self,
+        pool: &PoolImport,
+        steps: &dyn Steps,
+        context: &RequestContext,
+    ) -> Result<(), AdminError> {
+        let request = Request::ImportPool {
+            name: pool_name(&pool.name)?,
+            id: pool.id,
+            volume: volume(pool.volume)?,
+            adopt: pool.adopt,
+            force: pool.force,
+        };
+        self.reporting(request, steps, context).await
+    }
+
+    async fn mount_volume(
+        &self,
+        pool: &PoolName,
+        number: VolumeNumber,
+        shares: &[String],
+        context: &RequestContext,
+    ) -> Result<Mounted, AdminError> {
+        // A name that is no share's never reaches the agent; it is missing.
+        let (names, odd): (Vec<_>, Vec<_>) =
+            shares.iter().map(|share| (share, proto::ShareName::parse(share))).partition(|(_, n)| n.is_ok());
+        let request = Request::MountVolume {
+            pool: pool_name(pool)?,
+            volume: volume(number)?,
+            shares: names.into_iter().filter_map(|(_, name)| name.ok()).collect(),
+        };
+        match self.answer(request, context).await? {
+            Response::VolumeMounted { missing, changed } => {
+                let mut missing: Vec<String> = missing.into_iter().map(String::from).collect();
+                missing.extend(odd.into_iter().map(|(share, _)| share.clone()));
+                Ok(Mounted { missing, changed })
+            }
+            other => Err(unexpected(other).into()),
+        }
     }
 }
 

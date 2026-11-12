@@ -9,9 +9,9 @@ use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
 use crate::domain::{
-    Array, BlockDevice, EnclosureChoice, EnclosureModel, InventoryDetails, InventoryRecord, Machine,
-    Occupant, Pool, PoolLayout, PoolName, RemovableDrive, ScheduledSelfTest, SelfTestKind, SelfTestPlan,
-    SmartReport, VolumeNumber,
+    Array, BlockDevice, EnclosureChoice, EnclosureModel, ImportablePool, InventoryDetails, InventoryRecord,
+    KnownPool, Machine, Occupant, Pool, PoolLayout, PoolName, RemovableDrive, ScheduledSelfTest,
+    SelfTestKind, SelfTestPlan, SmartReport, VolumeNumber,
 };
 
 /// The host's block device tree.
@@ -83,6 +83,44 @@ pub trait VolumeOccupants: Send + Sync {
     ) -> Result<Vec<Occupant>, PortError>;
 }
 
+/// The pools the configuration names: those the shares, apps, the
+/// personal folders and the virtual machines' storage are on, each with
+/// its volume number and its shares. Storage knows none of them itself.
+#[async_trait]
+pub trait KnownPools: Send + Sync {
+    /// By name.
+    async fn known(&self) -> Result<Vec<KnownPool>, PortError>;
+}
+
+/// Told when a volume's mounts came back (a pool imported, or its units
+/// made again at the start), so what serves its folders follows: Samba's
+/// and NFS's configuration written again.
+#[async_trait]
+pub trait VolumeObserver: Send + Sync {
+    async fn volume_back(&self, volume: VolumeNumber, context: &RequestContext);
+}
+
+/// A pool to import: by its identifier, named `name`, as volume `volume`;
+/// `adopt`: one the configuration does not name, whose volume number
+/// becomes `volume`; `force`: though another machine used it last.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoolImport {
+    pub name: PoolName,
+    pub id: u64,
+    pub volume: VolumeNumber,
+    pub adopt: bool,
+    pub force: bool,
+}
+
+/// What making sure of a volume's mounts did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Mounted {
+    /// Shares named whose datasets the pool lacks.
+    pub missing: Vec<String>,
+    /// A unit was written anew.
+    pub changed: bool,
+}
+
 /// Changes to pools; needs the privileged agent, which checks every disk
 /// again before erasing it.
 /// Where a change that takes minutes reports the step it is at (a word the
@@ -124,6 +162,28 @@ pub trait PoolAdmin: Send + Sync {
 
     /// Stops the pool's scrub; what it checked so far stays checked.
     async fn stop_scrub(&self, pool: &PoolName, context: &RequestContext) -> Result<(), AdminError>;
+
+    /// The pools `zpool import` finds on the disks; imports nothing.
+    async fn importable(&self, context: &RequestContext) -> Result<Vec<ImportablePool>, PortError>;
+
+    /// Imports a pool zendiloos made, without mounting it.
+    async fn import_pool(
+        &self,
+        pool: &PoolImport,
+        steps: &dyn Steps,
+        context: &RequestContext,
+    ) -> Result<(), AdminError>;
+
+    /// Makes sure the mounts of an imported pool are there and mounted: its
+    /// volume's, those of `shares`, and those of the datasets zendiloos
+    /// keeps on it.
+    async fn mount_volume(
+        &self,
+        pool: &PoolName,
+        volume: VolumeNumber,
+        shares: &[String],
+        context: &RequestContext,
+    ) -> Result<Mounted, AdminError>;
 }
 
 /// Mounting and ejecting removable drives; needs the privileged agent,

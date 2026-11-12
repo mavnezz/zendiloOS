@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT restored_at, enabled AS \"enabled: bool\", fallback FROM firewall_restored WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "restored_at",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "firewall_restored",
+            "name": "restored_at"
+          }
+        }
+      },
+      {
+        "name": "enabled: bool",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "firewall_restored",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "name": "fallback",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "firewall_restored",
+            "name": "fallback"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "efd59e2d6839dfd02e4a1a275848750ef68e66c47ac3468ce0d136429bd49885"
+}

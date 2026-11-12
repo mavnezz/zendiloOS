@@ -415,3 +415,66 @@ async fn files_changed_outside_zendiloos_are_restored_or_kept() {
     let refused = restore().await;
     assert_problem(&refused, StatusCode::CONFLICT, "refused");
 }
+
+/// A restored backup's network: listed beside this machine's, applied one
+/// interface at a time with confirmation, cards of other names skipped,
+/// forgotten when asked.
+#[tokio::test]
+async fn a_restored_backups_network_is_applied_where_its_names_match() {
+    use zendiloos_network::domain::NetworkdFile;
+    let h = Harness::new();
+    h.network_source.set(zendiloos_network::testing::three_cards());
+    let file =
+        |name: &str, text: &str| NetworkdFile { name: format!("05-zendiloos-{name}"), text: text.into() };
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let viewer = h.sign_in("bob", Role::ReadOnly).await;
+    let restored = |session| h.send(empty(with_cookie(get("/api/v1/network/restored"), session)));
+    assert_problem(&restored(&viewer).await, StatusCode::FORBIDDEN, "forbidden");
+    assert_eq!(restored(&admin).await.body, Value::Null, "no restore");
+
+    *h.network_settings.1.lock().unwrap() = Some(zendiloos_network::application::RestoredSettings {
+        files: vec![
+            file("enp2s0.network", "[Match]\nName=enp2s0\n[Network]\nAddress=10.0.0.5/24\nDNS=10.0.0.1\n"),
+            file("eno1.network", "[Match]\nName=eno1\n[Network]\nDHCP=ipv4\n"),
+        ],
+        restored_at: zendiloos_kernel::Timestamp::from_unix_seconds(1_793_000_000),
+    });
+    let listed = restored(&admin).await;
+    assert_eq!(listed.status, StatusCode::OK, "{:?}", listed.body);
+    assert_eq!(
+        listed.body,
+        json!({
+            "restored_at": 1_793_000_000,
+            "interfaces": [
+                {
+                    "interface": "eno1", "standing": "missing", "device": null,
+                    "settings": { "ipv4": { "mode": "dhcp", "keep": null }, "ipv6": "off", "dns": [] },
+                },
+                {
+                    "interface": "enp2s0", "standing": "applicable", "device": null,
+                    "settings": {
+                        "ipv4": { "mode": "static", "address": "10.0.0.5", "prefix": 24, "gateway": null },
+                        "ipv6": "off", "dns": ["10.0.0.1"],
+                    },
+                },
+            ],
+            "devices": [],
+        })
+    );
+    let apply = |name: &str| {
+        h.send(json(
+            with_csrf(changing(Method::POST, "/api/v1/network/restored/apply"), &admin),
+            json!({ "name": name }),
+        ))
+    };
+    assert_problem(&apply("eno1").await, StatusCode::CONFLICT, "refused");
+    let applied = apply("enp2s0").await;
+    assert_eq!(applied.status, StatusCode::ACCEPTED, "{:?}", applied.body);
+    assert_eq!(applied.body["pending"]["interface"], "enp2s0");
+    confirm(&h, &admin).await;
+    assert_eq!(restored(&admin).await.body["interfaces"][1]["standing"], "in_force");
+
+    let forget = h.send(empty(with_csrf(changing(Method::DELETE, "/api/v1/network/restored"), &admin))).await;
+    assert_eq!(forget.status, StatusCode::NO_CONTENT);
+    assert_eq!(restored(&admin).await.body, Value::Null);
+}

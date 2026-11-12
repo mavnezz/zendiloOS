@@ -47,7 +47,7 @@ use zendiloos_infra::notify::NetworkChannels;
 use zendiloos_infra::recovery::{
     AgentBackupFolders, ConfigurationRestorer, ConfigurationSnapshots, ProcessRestart,
 };
-use zendiloos_infra::sharing::DrivesForFiles;
+use zendiloos_infra::sharing::{DrivesForFiles, SharingFollowsVolumes};
 use zendiloos_infra::sqlite::{
     Database, Occupants, SqliteAccountAddresses, SqliteAccounts, SqliteAppSources, SqliteAuditLog,
     SqliteBackupAccounts, SqliteBackupRuns, SqliteBackupSettings, SqliteBackupTasks, SqliteCertificates,
@@ -121,6 +121,7 @@ async fn main() -> anyhow::Result<()> {
 
 async fn serve(config: Config) -> anyhow::Result<()> {
     let database = open_database(&config).await?;
+    follow_up_restore(&config, &database).await?;
     let audit: Arc<dyn AuditLog> = Arc::new(SqliteAuditLog::new(database.clone()));
     let (agent, files_agent, patient_agent, moving_agent, backup_agent) = agent_transports(&config).await;
     let (metrics, sampler) = MetricsHub::spawn(Duration::from_secs(2), Arc::new(SystemClock));
@@ -205,12 +206,17 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let agent_storage = Arc::new(AgentStorage::new(agent.clone()));
     let agent_storage_for_sharing = agent_storage.clone();
     let docker = Docker::new(agent_storage.clone(), audit.clone(), Arc::new(SystemClock), jobs.clone());
+    // Samba and NFS follow a volume whose mounts came back; Sharing is made
+    // below.
+    let volumes_followed = SharingFollowsVolumes::new();
     let storage = StorageUseCases::new(StoragePorts {
         devices: agent_storage.clone(),
         smart: agent_storage.clone(),
         arrays: agent_storage.clone(),
         zfs: agent_storage.clone(),
         occupants: Arc::new(Occupants::new(database.clone(), agent_storage.clone())),
+        known: Arc::new(Occupants::new(database.clone(), agent_storage.clone())),
+        volumes: Arc::new(volumes_followed.clone()),
         removable: agent_storage.clone(),
         machine: agent_storage.clone(),
         locator: agent_storage.clone(),
@@ -246,6 +252,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         notifier: notifier.clone(),
     };
     let sharing = SharingUseCases::new(sharing_ports.clone());
+    volumes_followed.follow(sharing.clone());
     // Shares whose data could not go before (busy, or zendiloosd stopped).
     let unfinished = sharing.clone();
     tokio::spawn(async move {
@@ -294,6 +301,10 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     if let Err(error) = sharing.apply(&RequestContext::default()).await {
         tracing::warn!(error = %error_chain(&error), "cannot apply the sharing configuration");
     }
+    // The mounts of every pool the configuration names, made where they
+    // are missing (a restore on a machine installed afresh); pools not
+    // imported are told, to be imported on the Storage page.
+    spawn_volume_reconcile(storage.imports.clone());
 
     let ip = IpNetworkReader::new(config.network.ip.as_deref());
     match ip.path() {
@@ -699,6 +710,21 @@ async fn announce_setup(config: &Config, identity: &IdentityUseCases) -> anyhow:
     })
 }
 
+/// Makes sure of the mounts of the pools the configuration names, once
+/// the agent answers; tried for a few minutes while it does not.
+fn spawn_volume_reconcile(imports: zendiloos_storage::application::imports::PoolImports) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        for _ in 0..20 {
+            match imports.reconcile(&RequestContext::default()).await {
+                Ok(_) => return,
+                Err(error) => tracing::info!(%error, "storage: the volumes' mounts cannot be looked at yet"),
+            }
+            tokio::time::sleep(Duration::from_secs(15)).await;
+        }
+        tracing::warn!("storage: the volumes' mounts were not looked at");
+    })
+}
+
 /// Looks at pools and disks every minute and notifies about changes;
 /// mounts removable drives plugged in meanwhile and lets go of those
 /// pulled out (the file explorer has them looked at more often while it
@@ -1039,6 +1065,35 @@ async fn open_database(config: &Config) -> anyhow::Result<Database> {
         "database ready"
     );
     Ok(database)
+}
+
+/// At the first start after a restore, before anything puts the network's
+/// or the firewall's settings in force: the restored database's are the
+/// backed-up machine's, so they are set aside, to be applied with
+/// confirmation on the Network page and the Firewall tab
+/// (docs/architecture.md, 4.15). This machine keeps its network files as
+/// they are and starts with the firewall's defaults.
+async fn follow_up_restore(config: &Config, database: &Database) -> anyhow::Result<()> {
+    if !zendiloos_infra::recovery::restore_to_follow_up(&config.state_dir) {
+        return Ok(());
+    }
+    let now = SystemClock.now();
+    let network = SqliteNetworkSettings::new(database.clone())
+        .set_restored_aside(now)
+        .await
+        .context("cannot set the restored network settings aside")?;
+    let firewall = SqliteFirewall::new(database.clone())
+        .set_restored_aside(now)
+        .await
+        .context("cannot set the restored firewall settings aside")?;
+    zendiloos_infra::recovery::restore_followed_up(&config.state_dir)
+        .context("cannot note the restore followed up")?;
+    tracing::warn!(
+        network,
+        firewall,
+        "restore: the backup's network and firewall settings are set aside, to be applied with confirmation"
+    );
+    Ok(())
 }
 
 /// Resolves on SIGTERM (systemd stop) or SIGINT (Ctrl+C).

@@ -9,6 +9,7 @@ pub(crate) mod mdstat;
 pub(crate) mod smartctl;
 pub(crate) mod udev;
 pub(crate) mod zfs;
+pub(crate) mod zpool_import;
 
 /// Tool output in an unexpected form, e.g. from an unsupported version.
 #[derive(Debug, thiserror::Error)]

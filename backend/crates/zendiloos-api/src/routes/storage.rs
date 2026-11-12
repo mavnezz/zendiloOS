@@ -29,6 +29,8 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(pools, create_pool))
         .routes(routes!(plan_pool))
         .routes(routes!(destroy_pool))
+        .routes(routes!(absent_pools))
+        .routes(routes!(import_pool))
         .routes(routes!(plan_replace))
         .routes(routes!(replace_disk))
         .routes(routes!(scrub_pool))
@@ -52,6 +54,8 @@ impl From<StorageError> for ApiError {
             StorageError::Plan(P::NameTaken) | StorageError::Conflict => {
                 rejected(StatusCode::CONFLICT, "name_taken", None)
             }
+            StorageError::VolumeTaken => rejected(StatusCode::CONFLICT, "volume_taken", None),
+            StorageError::OtherHost => rejected(StatusCode::CONFLICT, "other_host", None),
             StorageError::Plan(e @ P::DiskCount { .. }) => {
                 rejected(unprocessable, "disk_count", Some(e.to_string()))
             }
@@ -1254,6 +1258,182 @@ async fn destroy_pool(
 ) -> Result<(StatusCode, Json<Job>), ApiError> {
     auth.require(Permission::StorageManage)?;
     let job = state.storage.destroy_pool.execute(&name, &request.confirm, &auth.0.actor(), &client).await?;
+    Ok((StatusCode::ACCEPTED, Json(job.into())))
+}
+
+/// A pool `zpool import` finds on the disks that is not imported.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FoundPool {
+    pub name: String,
+    /// Its numeric identifier, decimal: it does not survive JavaScript's
+    /// numbers.
+    pub id: String,
+    /// As ZFS names it: `ONLINE`, `DEGRADED`, `UNAVAIL`, …
+    pub state: String,
+    /// Another machine used it last and did not export it: ZFS imports it
+    /// only by force (`zpool import -f`). A configuration backup restored
+    /// brings back this machine's host id, so a pool of the machine backed
+    /// up is not another's.
+    pub other_host: bool,
+    /// ZFS can import it: enough of its devices are there.
+    pub can_import: bool,
+    /// What ZFS says of it, in its words.
+    pub status: Option<String>,
+    /// What ZFS says can be done, in its words.
+    pub action: Option<String>,
+    pub devices: Vec<FoundDevice>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FoundDevice {
+    pub name: String,
+    pub state: String,
+}
+
+impl From<storage::ImportablePool> for FoundPool {
+    fn from(pool: storage::ImportablePool) -> Self {
+        Self {
+            name: pool.name,
+            id: pool.id.to_string(),
+            state: pool.state,
+            other_host: pool.other_host,
+            can_import: pool.can_import,
+            status: pool.status,
+            action: pool.action,
+            devices: pool.devices.into_iter().map(|(name, state)| FoundDevice { name, state }).collect(),
+        }
+    }
+}
+
+/// A pool the configuration names: shares, apps, the personal folders or
+/// the virtual machines' storage are on it.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct NamedPool {
+    pub name: String,
+    pub volume: u16,
+    pub mount_point: String,
+    pub shares: Vec<String>,
+}
+
+impl From<storage::KnownPool> for NamedPool {
+    fn from(pool: storage::KnownPool) -> Self {
+        Self {
+            name: pool.name,
+            volume: pool.volume.get(),
+            mount_point: pool.volume.mount_point(),
+            shares: pool.shares,
+        }
+    }
+}
+
+/// A pool the configuration names that is not imported, found on the disks.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct KnownFoundPool {
+    pub pool: NamedPool,
+    pub found: FoundPool,
+}
+
+/// The pools the configuration names that are not imported, and the others
+/// on the disks.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AbsentPools {
+    /// Found on the disks: imported as the volume the configuration names.
+    pub known: Vec<KnownFoundPool>,
+    /// On no disk here.
+    pub missing: Vec<NamedPool>,
+    /// Pools the configuration does not name: adopted with a volume
+    /// number, if zendiloOS made them.
+    pub foreign: Vec<FoundPool>,
+    /// The lowest volume number free to adopt one with.
+    pub free_volume: Option<u16>,
+}
+
+/// The pools the configuration names that are not imported (after a
+/// configuration backup was restored on a machine installed afresh, say),
+/// found on the disks or missing, and the other pools `zpool import` finds.
+/// Imports nothing. Needs `storage.manage`.
+#[utoipa::path(
+    get,
+    path = "/storage/pools/absent",
+    tag = "storage",
+    security(("session" = [])),
+    responses(
+        (status = OK, body = AbsentPools),
+        (status = FORBIDDEN, body = Problem, description = "`forbidden`"),
+    )
+)]
+async fn absent_pools(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+) -> Result<Json<AbsentPools>, ApiError> {
+    auth.require(Permission::StorageManage)?;
+    let absent = state.storage.imports.absent(&client).await?;
+    Ok(Json(AbsentPools {
+        known: absent
+            .known
+            .into_iter()
+            .map(|known| KnownFoundPool { pool: known.known.into(), found: known.found.into() })
+            .collect(),
+        missing: absent.missing.into_iter().map(NamedPool::from).collect(),
+        foreign: absent.foreign.into_iter().map(FoundPool::from).collect(),
+        free_volume: absent.free_volume.map(storage::VolumeNumber::get),
+    }))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ImportPoolRequest {
+    pub name: String,
+    /// The pool's numeric identifier, as listed.
+    pub id: String,
+    /// For a pool the configuration does not name: the volume number it
+    /// becomes; none, the lowest free. Ignored for one it names.
+    #[serde(default)]
+    pub volume: Option<u16>,
+    /// Import it though another machine used it last (`zpool import -f`).
+    #[serde(default)]
+    pub force: bool,
+    /// The pool's name, typed again, when forced.
+    #[serde(default)]
+    pub confirm: Option<String>,
+}
+
+/// Imports a pool zendiloOS made, as a job, and mounts it: one the
+/// configuration names as its volume, with its shares, personal folders,
+/// Docker's data and the virtual machines' storage, another (adopted) as
+/// the volume asked for. Samba and NFS follow. A pool another machine used
+/// last is imported only with `force` and its name typed: importing a pool
+/// that machine still uses would corrupt it. Needs `storage.manage`.
+#[utoipa::path(
+    post,
+    path = "/storage/pools/import",
+    tag = "storage",
+    security(("session" = [])),
+    request_body = ImportPoolRequest,
+    responses(
+        (status = ACCEPTED, body = Job),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`: no such pool to import"),
+        (status = CONFLICT, body = Problem, description = "`other_host`: another machine used it last, `volume_taken`, `no_volume_number`, `refused`: ZFS cannot import it"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`, `confirmation_mismatch`"),
+    )
+)]
+async fn import_pool(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    ApiJson(request): ApiJson<ImportPoolRequest>,
+) -> Result<(StatusCode, Json<Job>), ApiError> {
+    auth.require(Permission::StorageManage)?;
+    let id = request.id.parse().map_err(|_| ApiError::InvalidInput("id: not a pool's identifier".into()))?;
+    let asked = zendiloos_storage::application::imports::ImportRequest {
+        name: request.name,
+        id,
+        volume: request.volume,
+        force: request.force,
+        confirm: request.confirm,
+    };
+    let job = state.storage.imports.import(asked, &auth.0.actor(), &client).await?;
     Ok((StatusCode::ACCEPTED, Json(job.into())))
 }
 

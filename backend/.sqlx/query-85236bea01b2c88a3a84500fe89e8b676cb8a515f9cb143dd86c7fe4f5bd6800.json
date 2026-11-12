@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM network_settings",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "85236bea01b2c88a3a84500fe89e8b676cb8a515f9cb143dd86c7fe4f5bd6800"
+}

@@ -467,7 +467,7 @@ const de: Messages = {
     restore: {
       title: 'Wiederherstellen',
       intro:
-        'Bringt die Konfiguration einer Sicherung auf dieses NAS zurück: ihre Konten (melden Sie sich danach mit ihnen an), Freigaben, Einstellungen und Zertifikate. zendiloOS startet damit neu. Das Netzwerk bleibt, wie es ist; stellen Sie es auf der Seite Netzwerk ein, wo jede Änderung bestätigt wird. Firewall-Regeln kommen zurück, wie sie waren.',
+        'Bringt die Konfiguration einer Sicherung auf dieses NAS zurück: ihre Konten (melden Sie sich danach mit ihnen an), Freigaben, Einstellungen und Zertifikate. zendiloOS startet damit neu. Ihre Netzwerkeinstellungen und Firewall-Regeln werden nicht in Kraft gesetzt: Die Seite Netzwerk und der Reiter Firewall bieten sie an, jede Änderung mit Bestätigung. Pools des alten Geräts werden unter Speicher importiert.',
       file: 'Sicherung',
       submit: 'Wiederherstellen …',
       confirmTitle: 'Diese Sicherung wiederherstellen?',
@@ -476,7 +476,7 @@ const de: Messages = {
       confirmLabel: 'Wiederherstellen',
       done: 'Die Sicherung von {name} vom {time}, erstellt mit zendiloOS {version}, ist wiederhergestellt.',
       port: 'Die Weboberfläche antwortet nach dem Neustart auf Port {port}.',
-      network: 'Netzwerkeinstellungen in der Sicherung, nicht übernommen: {files}.',
+      network: 'Netzwerkeinstellungen in der Sicherung, angeboten auf der Seite Netzwerk: {files}.',
       restarting: 'zendiloOS startet neu; diese Seite lädt neu.',
     },
   },
@@ -1694,6 +1694,7 @@ const de: Messages = {
         updates_installed: 'Updates installiert',
         updates_failed: 'Update fehlgeschlagen',
         network_drift: 'Netzwerkdateien außerhalb von zendiloOS geändert',
+        pools_not_imported: 'Pools nicht importiert',
         configuration_backup_failed: 'Sicherung der Konfiguration fehlgeschlagen',
         certificate_renewed: 'Zertifikat erneuert',
         certificate_renewal_failed: 'Zertifikat nicht erneuert',
@@ -1708,6 +1709,17 @@ const de: Messages = {
   },
   firewall: {
     title: 'Firewall',
+    restored: {
+      title: 'Firewall-Regeln der wiederhergestellten Sicherung',
+      intro:
+        'Die {at} wiederhergestellte Konfigurationssicherung brachte diese Einstellungen mit: {summary}. Sie sind nicht in Kraft, denn Regeln für ein anderes Netz könnten Sie aussperren: Bis Sie sie übernehmen, gelten die Vorgaben einer frischen Installation (die Firewall aus). Übernommen gehen sie zurück, wenn Sie sie nicht innerhalb von {seconds} Sekunden bestätigen.',
+      off: 'die Firewall aus',
+      on: 'die Firewall an mit {count} Regeln, sonst {fallback}',
+      allow: 'erlauben',
+      deny: 'verweigern',
+      apply: 'Mit Bestätigung übernehmen',
+      forget: 'Verwerfen',
+    },
     enable: 'Firewall einschalten',
     description:
       'Legt fest, welche Adressen welche Dienste dieses NAS erreichen, und die Ports, die seine Docker-Container veröffentlichen.',
@@ -1863,6 +1875,24 @@ const de: Messages = {
       restoreTitle: 'Die Netzwerkeinstellungen von zendiloOS sind zurückgeschrieben',
       restoreHint:
         'Bestätigen Sie es von der Adresse aus, die das NAS jetzt hat, sonst kehren die Dateien in {seconds} Sekunden zurück, wie sie waren.',
+    },
+    restored: {
+      title: 'Netzwerkeinstellungen der wiederhergestellten Sicherung',
+      intro:
+        'Die {at} wiederhergestellte Konfigurationssicherung brachte diese Einstellungen mit. Sie sind nicht in Kraft: Die Schnittstellen eines anderen Geräts können anders heißen, und seine Adressen könnten dieses NAS abschneiden. Übernehmen Sie sie einzeln; jede Änderung geht zurück, wenn Sie sie nicht innerhalb von zwei Minuten bestätigen.',
+      interfaces: 'Schnittstellen',
+      devices: 'Bridges, Bonds und VLANs',
+      apply: 'Übernehmen',
+      make: 'Anlegen',
+      forget: 'Diese Einstellungen verwerfen',
+      standing: {
+        applicable: 'Kann übernommen werden',
+        in_force: 'In Kraft',
+        missing: 'Übersprungen: nicht an diesem Gerät',
+        member_there: 'Kommt mit {device}',
+        member_here: 'Hier Mitglied von {device}',
+        taken: 'Hier trägt etwas anderes diesen Namen',
+      },
     },
     drift: {
       title: 'Die Netzwerkdateien von zendiloOS wurden außerhalb von zendiloOS geändert',
@@ -2174,6 +2204,41 @@ const de: Messages = {
       understood: '{disk} löschen und als Ersatz verwenden.',
       submit: 'Löschen und ersetzen',
     },
+    imports: {
+      title: 'Zu importierende Pools',
+      intro:
+        'Die Konfiguration nennt diese Pools, sie sind aber nicht importiert, etwa nachdem eine Konfigurationssicherung auf einem frisch installierten Gerät wiederhergestellt wurde. zendiloOS importiert einen Pool nur auf Ihren Wunsch: Ein Pool, den ein anderes Gerät noch benutzt, würde beschädigt.',
+      hostId:
+        'ZFS erkennt einen Pool an der Host-ID des Geräts, das ihn zuletzt benutzt hat. Eine Konfigurationssicherung bringt diese ID zurück, sodass ein Pool des gesicherten Geräts als eigener importiert wird.',
+      volume: 'Volume {volume} · {path}',
+      shares: 'Freigaben: {names}',
+      noShares: 'Keine Freigaben',
+      otherHost: 'Zuletzt von einem anderen Gerät benutzt',
+      cannotImport: 'Nicht importierbar',
+      import: 'Importieren',
+      missingTitle: 'Auf keiner Platte hier',
+      missing: '{name} (Volume {volume}): Seine Platten sind nicht in diesem Gerät.',
+      foreignTitle: 'Weitere Pools auf den Platten',
+      foreignIntro:
+        'Die Konfiguration nennt sie nicht. Ein Pool, den zendiloOS auf einer anderen Installation angelegt hat, wird als Volume dieser übernommen; keine Freigabe dieser Konfiguration zeigt auf seine Ordner.',
+      adopt: 'Übernehmen',
+      dialog: {
+        title: '{name} importieren?',
+        adoptTitle: '{name} übernehmen?',
+        description:
+          'ZFS öffnet den Pool; danach werden sein Volume, seine Freigaben, die persönlichen Ordner, die Daten von Docker und der Speicher der virtuellen Maschinen eingehängt, und Samba und NFS folgen.',
+        adoptDescription:
+          'Übernommen wird nur ein Pool, den zendiloOS angelegt hat: Er wird ein Volume dieses Geräts, seine Ordner, wie sie sind.',
+        devices: 'Platten',
+        otherHost:
+          'ZFS meldet, dass ein anderes Gerät diesen Pool zuletzt benutzt und nicht exportiert hat. Importieren Sie ihn nur, wenn dieses Gerät endgültig ausgeschaltet ist: Ein Pool, den zwei Geräte zugleich benutzen, wird unrettbar beschädigt.',
+        confirm: 'Geben Sie {name} ein, um ihn trotzdem zu importieren',
+        volume: 'Volume-Nummer',
+        submit: 'Importieren',
+        force: 'Trotzdem importieren',
+        adoptSubmit: 'Übernehmen',
+      },
+    },
     noPools: 'Noch keine Pools.',
     underway: 'Läuft; das kann einige Minuten dauern.',
     steps: {
@@ -2184,6 +2249,7 @@ const de: Messages = {
       destroying_pool: 'Pool wird gelöscht',
       clearing_disks: 'Platten werden geleert',
       replacing_disk: 'Neue Platte wird eingebunden',
+      importing_pool: 'Pool wird importiert',
     },
     poolsUnavailable: 'ZFS ist nicht verfügbar, daher können keine Pools angezeigt werden.',
     notManaged: 'Nicht von zendiloOS verwaltet',
@@ -2781,6 +2847,7 @@ const de: Messages = {
       sharing_delete_share: 'Freigabe löschen',
       storage_create_pool: 'Pool anlegen',
       storage_destroy_pool: 'Pool löschen',
+      storage_import_pool: 'Pool importieren',
       storage_replace_disk: 'Platte ersetzen',
       storage_scrub: 'Daten prüfen',
       apps_install: 'App installieren',
@@ -3951,6 +4018,10 @@ const de: Messages = {
       title: 'Update fehlgeschlagen',
       body: 'Unter Systemsteuerung → Updates steht, woran es lag.',
     },
+    pools_not_imported: {
+      title: 'Pools nicht importiert',
+      body: 'Die Konfiguration nennt Pools, die nicht importiert sind ({names}). Unter Speicher → Pools lassen sie sich importieren.',
+    },
     network_drift: {
       title: 'Netzwerkdateien geändert',
       body: 'Die Netzwerkdateien von zendiloOS weichen von seinen Einstellungen ab ({names}). Unter Systemsteuerung → Netzwerk lassen sie sich wiederherstellen oder übernehmen.',
@@ -4492,6 +4563,9 @@ const de: Messages = {
     acme_not_installed: 'Installieren Sie zuerst den ACME-Client.',
     web_server_failed: 'nginx hat die Einstellungen nicht übernommen; nichts wurde geändert',
     would_lock_out: 'Diese Regeln würden diesen Browser aussperren.',
+    other_host:
+      'Ein anderes Gerät hat diesen Pool zuletzt benutzt. Importieren Sie ihn nur, wenn dieses Gerät endgültig aus ist, indem Sie seinen Namen eingeben.',
+    volume_taken: 'Diese Volume-Nummer gehört einem anderen Pool.',
     firewall_failed: 'nftables hat die Regeln nicht übernommen; nichts wurde geändert',
     vms_architecture:
       'Virtuelle Maschinen gibt es für die Architektur dieser Maschine noch nicht, nur für amd64 (x86-64).',

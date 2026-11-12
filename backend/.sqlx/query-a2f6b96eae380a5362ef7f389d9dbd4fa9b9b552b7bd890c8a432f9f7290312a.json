@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO firewall_restored_rules\n                     (position, enabled, interface, service, project, protocol, ports, source, action)\n                 SELECT position, enabled, interface, service, project, protocol, ports, source, action\n                 FROM firewall_rules",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "a2f6b96eae380a5362ef7f389d9dbd4fa9b9b552b7bd890c8a432f9f7290312a"
+}
