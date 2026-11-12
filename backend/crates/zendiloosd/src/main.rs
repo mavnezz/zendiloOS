@@ -52,10 +52,10 @@ use zendiloos_infra::sqlite::{
     Database, Occupants, SqliteAccountAddresses, SqliteAccounts, SqliteAppSources, SqliteAuditLog,
     SqliteBackupAccounts, SqliteBackupRuns, SqliteBackupSettings, SqliteBackupTasks, SqliteCertificates,
     SqliteChannels, SqliteConfigurationPlans, SqliteDiskInventory, SqliteEjectedDrives, SqliteEnclosure,
-    SqliteFirewall, SqliteGroups, SqliteInstalledApps, SqliteJobs, SqliteNetworkSettings, SqliteNotifications,
-    SqliteOperators, SqlitePreferences, SqliteProjects, SqliteSecurity, SqliteSelfTestPlans, SqliteSessions,
-    SqliteShareProjects, SqliteShares, SqliteSystemUpdates, SqliteTwoFactor, SqliteUpdateSettings,
-    SqliteVmImages, SqliteVmLocations, SqliteVms, SqliteVolumeBackups,
+    SqliteFirewall, SqliteGroups, SqliteInstalledApps, SqliteJobs, SqliteNetworkSettings,
+    SqliteNotifications, SqliteOperators, SqlitePreferences, SqliteProjects, SqliteSecurity,
+    SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares, SqliteSystemUpdates,
+    SqliteTwoFactor, SqliteUpdateSettings, SqliteVmImages, SqliteVmLocations, SqliteVms, SqliteVolumeBackups,
 };
 use zendiloos_infra::updates::{GitHubReleases, installed_notes};
 use zendiloos_jobs::Jobs;
