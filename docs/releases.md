@@ -45,7 +45,18 @@ version:
 - `SHA256SUMS.minisig`: its signature, made with the release key, whose
   trusted comment (signed as well) names the build: `zendiloos <version>`
 - `zendiloos-amd64-netinst.iso` and `zendiloos-arm64-netinst.iso`, for
-  stable releases: the installation ISOs
+  stable releases (and test releases while the repository variable
+  `ZENDILOOS_ISO` says `test`): the installation ISOs
+
+GitHub turns a `~` in an asset's name into `.`: a test release's packages
+are listed as `zendiloos_0.5.0.rc.1_<arch>.deb`, while `SHA256SUMS` and the
+signature's trusted comment name `0.5.0~rc.1`. zendiloosd reads the version
+back (three numbers, then a `.` before a letter is GitHub's `~`) and saves
+the package under the name `SHA256SUMS` lists, which the runner's checks
+go by. A NAS with 0.5.0~rc.1 or older reads the name as GitHub gives it,
+takes a test release for a development build and refuses it on the test
+channel: it takes test releases from a package installed by hand, and
+stable releases (without a `~`) as before.
 
 A NAS takes the package of its own architecture: zendiloosd picks it by
 its name (the architecture zendiloosd was built for), and the runner
