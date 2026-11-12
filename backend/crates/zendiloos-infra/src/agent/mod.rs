@@ -76,7 +76,7 @@ async fn call_raw_reporting(
 }
 
 /// The agent's answer; its errors become port errors.
-async fn call(
+pub(crate) async fn call(
     transport: &dyn AgentTransport,
     request: Request,
     context: &RequestContext,
@@ -91,7 +91,7 @@ fn agent_error(code: ErrorCode, message: &str) -> PortError {
     PortError::new(WHAT, format!("{code:?}: {message}"))
 }
 
-async fn expect_done(
+pub(crate) async fn expect_done(
     transport: &dyn AgentTransport,
     request: Request,
     context: &RequestContext,
@@ -102,8 +102,25 @@ async fn expect_done(
     }
 }
 
-fn unexpected(response: Response) -> PortError {
+pub(crate) fn unexpected(response: Response) -> PortError {
     PortError::new(WHAT, format!("unexpected answer: {response:?}"))
+}
+
+pub(crate) use self::{
+    call as call_agent, expect_done as expect_agent_done, unexpected as unexpected_answer,
+};
+
+/// What a port error says, with its causes: the agent's message is the
+/// source of the error that names it.
+pub(crate) fn reason(error: &PortError) -> String {
+    let mut text = error.to_string();
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
 }
 
 /// The agent's version; an error if it is unreachable or speaks another

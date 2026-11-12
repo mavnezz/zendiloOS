@@ -171,6 +171,7 @@ fn host(erasable: Erasable) -> Host {
         network: Default::default(),
         time: Default::default(),
         host_name: Default::default(),
+        configuration: Default::default(),
         ssh: Default::default(),
         web: Default::default(),
         acme: Default::default(),

@@ -148,6 +148,20 @@ pub fn message(notification: &Notification, host: &str, language: Language) -> M
                 param("reason")
             ),
         ),
+        "configuration_backup_failed" if german => (
+            "Keine Sicherung der Konfiguration".to_owned(),
+            format!(
+                "{}\nSystemsteuerung → Konfigurationssicherung zeigt den Plan und den letzten Lauf.",
+                param("reason")
+            ),
+        ),
+        "configuration_backup_failed" => (
+            "No backup of the configuration".to_owned(),
+            format!(
+                "{}\nControl panel → Configuration backup shows the plan and the last run.",
+                param("reason")
+            ),
+        ),
         "backup_failed" if german => (
             format!("Sicherung „{}“ fehlgeschlagen", param("task")),
             format!("{}\nIm Protokoll der App „Sicherung“ steht, was geschah.", param("reason")),
@@ -447,6 +461,12 @@ mod tests {
                 vec![("volume", "tesla_db"), ("reason", "No space left on device")],
                 "No backup of the volume tesla_db",
                 "Keine Sicherung des Volumes tesla_db",
+            ),
+            (
+                "configuration_backup_failed",
+                vec![("reason", "No space left on device")],
+                "No backup of the configuration",
+                "Keine Sicherung der Konfiguration",
             ),
             (
                 "backup_failed",

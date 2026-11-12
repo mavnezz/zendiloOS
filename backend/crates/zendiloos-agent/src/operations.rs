@@ -16,6 +16,7 @@ use crate::acme::{Acme, AcmePaths};
 use crate::apps::Apps;
 use crate::backup::{BackupPaths, BackupTools, Backups};
 use crate::config::Tools;
+use crate::configuration::{Configuration, ConfigurationPaths, ConfigurationPlaces};
 use crate::docker::Docker;
 use crate::emmc::Emmc;
 use crate::enclosure::Enclosure;
@@ -44,6 +45,7 @@ pub struct Paths {
     pub network: NetworkPaths,
     pub time: TimePaths,
     pub host_name: HostNamePaths,
+    pub configuration: ConfigurationPlaces,
     pub ssh: SshPaths,
     pub web: WebPaths,
     pub acme: AcmePaths,
@@ -81,6 +83,7 @@ pub struct Operations {
     network: std::sync::Arc<Network>,
     time: Time,
     host_names: HostNames,
+    configuration: Configuration,
     ssh: Ssh,
     web: Web,
     acme: Acme,
@@ -110,7 +113,20 @@ impl Operations {
         erasable: Erasable,
         paths: Paths,
     ) -> Result<Self, ExecError> {
+        let configuration = ConfigurationPaths {
+            own_certificate: paths.web_server.own_certificate.clone(),
+            own_key: paths.web_server.own_key.clone(),
+            certificates: paths.web_server.certificates.clone(),
+            tls_settings: paths.web.tls.clone(),
+            ssh_settings: paths.ssh.config.clone(),
+            time_servers: paths.time.servers.clone(),
+            samba_passwords: paths.configuration.samba_passwords.clone(),
+            host_id: paths.configuration.host_id.clone(),
+            id_high_water: paths.accounts.high_water.clone(),
+            network: paths.network.directory.clone(),
+        };
         Ok(Self {
+            configuration: Configuration::new(Program::new(&tools.systemctl)?, configuration),
             systemctl: Program::new(&tools.systemctl)?,
             lsblk: Program::new(&tools.lsblk)?,
             udevadm: Program::new(&tools.udevadm)?,
@@ -411,6 +427,11 @@ impl Operations {
                 self.firewall.apply(config.as_ref(), *confirm_within, waiting.as_ref()).await
             }
             Request::ConfirmFirewall {} => self.firewall.confirm().await,
+            Request::ReadConfiguration {} => self.configuration.read(&self.accounts).await,
+            Request::RestoreConfiguration { files } => {
+                self.configuration.restore(files, &self.web_server).await
+            }
+            Request::RestoreAccounts { users, groups } => self.accounts.restore(users, groups).await,
             Request::HostNameState {} => self.host_names.state(),
             Request::SetHostName { name } => self.host_names.set(name, &self.web_server).await,
             Request::TimeState {} => self.time.state().await,

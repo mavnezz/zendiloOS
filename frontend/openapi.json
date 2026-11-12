@@ -3672,6 +3672,261 @@
         ]
       }
     },
+    "/api/v1/configuration/backup": {
+      "get": {
+        "tags": [
+          "configuration"
+        ],
+        "summary": "The plan of the backups made on their own. Needs `system.manage`.",
+        "operationId": "configuration_plan",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigurationPlan"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "configuration"
+        ],
+        "summary": "Sets when and where the backups are made, how many are kept and the\npassphrase; they are written as the administrator setting it. Needs\n`system.manage`.",
+        "operationId": "set_configuration_plan",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigurationPlanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigurationPlan"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`: a time, a folder, how many kept; on without a folder or passphrase",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/configuration/backup/download": {
+      "post": {
+        "tags": [
+          "configuration"
+        ],
+        "summary": "A backup of the configuration as it is now: the database, the\ncertificates, Samba's passwords, the accounts' Linux users and the\nhost's settings, encrypted with the passphrase (age, scrypt). Needs\n`system.manage`.",
+        "operationId": "download_configuration",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DownloadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The backup, `zendiloos-config-<name>-<time>.tar.zst.age`.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`: a passphrase too short",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/configuration/backup/run": {
+      "post": {
+        "tags": [
+          "configuration"
+        ],
+        "summary": "Backs up into the plan's folder now, in a job. Needs `system.manage`.",
+        "operationId": "run_configuration_backup",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_planned`: no folder or passphrase yet",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/configuration/restore": {
+      "post": {
+        "tags": [
+          "configuration"
+        ],
+        "summary": "Restores a backup on this NAS: the body is the backup, the passphrase\nin `X-Zendiloos-Passphrase` (base64 of its UTF-8). Checked first as a\nwhole: refused with the passphrase wrong, of another layout, or of a\ndatabase newer than this release knows (an older one is migrated).\nThe accounts' Linux users, the certificates, Samba's passwords and the\nhost's settings go back at once, the database at zendiloosd's start,\nwhich follows; whoever is signed in signs in again with the accounts of\nthe backup. The network stays as it is. Needs `system.manage`; refused\nwhile jobs run.",
+        "operationId": "restore_configuration",
+        "parameters": [
+          {
+            "name": "x-zendiloos-passphrase",
+            "in": "header",
+            "description": "Base64 of the passphrase's UTF-8.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestoreResult"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`jobs_running`; `refused`: the host would not take it back (a name or ID taken), in its words",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`wrong_passphrase`, `not_a_backup`, `unsupported_backup`, `backup_too_new`, `invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/docker/backup-shares/{id}/readers": {
       "get": {
         "tags": [
@@ -10955,6 +11210,104 @@
         }
       }
     },
+    "/api/v1/setup/restore": {
+      "post": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "Restores a backup instead of creating the first administrator, as\n`/configuration/restore` does; allowed as the setup is (the setup code\nin `X-Zendiloos-Setup-Code`, or an open setup from the NAS's own\nnetwork). Afterwards the backup's accounts sign in.",
+        "operationId": "restore_instead_of_setup",
+        "parameters": [
+          {
+            "name": "x-zendiloos-passphrase",
+            "in": "header",
+            "description": "Base64 of the passphrase's UTF-8.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-zendiloos-setup-code",
+            "in": "header",
+            "description": "The code on the console; none for an open setup.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestoreResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`setup_not_local`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`setup_completed`, `jobs_running`, `refused`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_setup_code`, `wrong_passphrase`, `not_a_backup`, `unsupported_backup`, `backup_too_new`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`too_many_attempts`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/shares": {
       "get": {
         "tags": [
@@ -17683,6 +18036,249 @@
           }
         }
       },
+      "ConfigurationFrequency": {
+        "type": "string",
+        "description": "When the backups are made.",
+        "enum": [
+          "daily",
+          "weekly"
+        ]
+      },
+      "ConfigurationLastRun": {
+        "type": "object",
+        "required": [
+          "at",
+          "succeeded"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "succeeded": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ConfigurationPlan": {
+        "type": "object",
+        "description": "The backups made on their own; the passphrase is never sent back.",
+        "required": [
+          "enabled",
+          "frequency",
+          "hour",
+          "minute",
+          "keep",
+          "passphrase_set",
+          "passphrase_min",
+          "keep_max"
+        ],
+        "properties": {
+          "account": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The administrator who set it up: the backups are written with that\naccount's access to the folder."
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "frequency": {
+            "$ref": "#/components/schemas/ConfigurationFrequency"
+          },
+          "hour": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The NAS's local time.",
+            "minimum": 0
+          },
+          "keep": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many are kept in the folder, the newest; 1 to 60.",
+            "minimum": 0
+          },
+          "keep_max": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "last_run": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ConfigurationLastRun"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "minute": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "next_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "passphrase_min": {
+            "type": "integer",
+            "description": "The fewest characters a passphrase has.",
+            "minimum": 0
+          },
+          "passphrase_set": {
+            "type": "boolean"
+          },
+          "target": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ConfigurationTarget"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "weekday": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "0 is Monday; weekly only.",
+            "minimum": 0
+          }
+        }
+      },
+      "ConfigurationPlanRequest": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "frequency",
+          "hour",
+          "minute",
+          "keep"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "frequency": {
+            "$ref": "#/components/schemas/ConfigurationFrequency"
+          },
+          "hour": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "keep": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "minute": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "passphrase": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "password",
+            "description": "Left out or empty: the one kept stays."
+          },
+          "target": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ConfigurationTarget"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "weekday": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "ConfigurationTarget": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "A folder of a share.",
+            "required": [
+              "share_id",
+              "folder",
+              "kind"
+            ],
+            "properties": {
+              "folder": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "share"
+                ]
+              },
+              "share_id": {
+                "type": "integer",
+                "format": "int64"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A folder of a removable drive, by its file system's UUID; a run\nwhile it is not plugged in fails and is told.",
+            "required": [
+              "drive",
+              "folder",
+              "kind"
+            ],
+            "properties": {
+              "drive": {
+                "type": "string"
+              },
+              "folder": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "drive"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Where the backups go."
+      },
       "ContainerHealthcheck": {
         "type": "object",
         "required": [
@@ -19445,6 +20041,20 @@
             "type": "string"
           }
         }
+      },
+      "DownloadRequest": {
+        "type": "object",
+        "required": [
+          "passphrase"
+        ],
+        "properties": {
+          "passphrase": {
+            "type": "string",
+            "format": "password",
+            "description": "At least 12 characters; nobody opens or restores the backup\nwithout it."
+          }
+        },
+        "additionalProperties": false
       },
       "EjectRemovable": {
         "type": "object",
@@ -24413,6 +25023,54 @@
           }
         },
         "additionalProperties": false
+      },
+      "RestoreResult": {
+        "type": "object",
+        "description": "What came of a restore; zendiloosd starts again with it a moment later.",
+        "required": [
+          "host_name",
+          "created_at",
+          "version",
+          "warnings",
+          "network"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When it was made, and by which version of zendiloOS."
+          },
+          "host_name": {
+            "type": "string",
+            "description": "The name of the machine the backup was made of, which this one has now."
+          },
+          "https_port": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The web interface's HTTPS port as the backup has it: where the\ninterface is once zendiloosd started again.",
+            "minimum": 0
+          },
+          "network": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The network's files in the backup. Not put in force: the network is\nset on its page, each change confirmed."
+          },
+          "version": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What was not put back; the rest was."
+          }
+        }
       },
       "RestoredEntries": {
         "type": "object",

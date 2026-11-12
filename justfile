@@ -242,6 +242,10 @@ vm-ssh-test:
 vm-hostname-test:
     scripts/vm-hostname-test.sh
 
+# The configuration backup: made on the second VM, restored on a fresh third one instead of its setup
+vm-config-backup-test:
+    scripts/vm-config-backup-test.sh
+
 # The web interface's defences in the second VM: TLS, blocked addresses, account lock, sessions
 vm-security-test:
     scripts/vm-security-test.sh

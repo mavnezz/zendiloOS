@@ -8,6 +8,7 @@ use zendiloos_jobs::Jobs;
 use zendiloos_network::application::NetworkUseCases;
 use zendiloos_notify::Notifier;
 use zendiloos_notify::channels::Channels;
+use zendiloos_recovery::application::Recovery;
 use zendiloos_sharing::application::{FilesUseCases, SharingUseCases};
 use zendiloos_storage::application::StorageUseCases;
 use zendiloos_system::application::SystemUseCases;
@@ -37,6 +38,7 @@ pub struct ApiState {
     pub(crate) firewall: Firewall,
     pub(crate) vms: Vms,
     pub(crate) backup: Backups,
+    pub(crate) recovery: Recovery,
     /// Session cookies get `Secure` and the `__Host-` prefix. Only turn
     /// this off where the interface is reached over plain HTTP.
     pub(crate) secure_cookies: bool,
@@ -63,6 +65,7 @@ pub struct UseCases {
     pub firewall: Firewall,
     pub vms: Vms,
     pub backup: Backups,
+    pub recovery: Recovery,
 }
 
 impl ApiState {
@@ -87,6 +90,7 @@ impl ApiState {
             firewall,
             vms,
             backup,
+            recovery,
         } = use_cases;
         Self {
             system,
@@ -108,6 +112,7 @@ impl ApiState {
             firewall,
             vms,
             backup,
+            recovery,
             secure_cookies,
         }
     }

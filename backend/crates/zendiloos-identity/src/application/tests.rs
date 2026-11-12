@@ -117,6 +117,24 @@ async fn setup_requires_the_right_code() {
 }
 
 #[tokio::test]
+async fn a_restore_instead_of_the_setup_is_gated_as_the_setup_is() {
+    let t = TestIdentity::new();
+    t.use_cases.prepare_setup.execute().await.unwrap();
+    let code = |code: &str| Some(zendiloos_kernel::Secret::new(code));
+
+    let wrong = t.use_cases.restore_setup.allow(code("ABCD-EFGH-JKLN"), &from(1)).await;
+    assert!(matches!(wrong, Err(IdentityError::InvalidSetupCode)), "{wrong:?}");
+    assert_eq!(t.audit.entries()[0].reason, Some("wrong_setup_code"));
+    t.use_cases.restore_setup.allow(code(SETUP_CODE), &from(1)).await.unwrap();
+
+    t.use_cases.restore_setup.close().await.unwrap();
+    assert!(!t.setup_codes.is_present(), "the code is used up");
+    t.add_account("alice", PASSWORD, Role::Admin);
+    let done = t.use_cases.restore_setup.allow(code(SETUP_CODE), &from(1)).await;
+    assert!(matches!(done, Err(IdentityError::SetupCompleted)), "{done:?}");
+}
+
+#[tokio::test]
 async fn setup_without_an_issued_code_is_refused() {
     let t = TestIdentity::new();
     let error =

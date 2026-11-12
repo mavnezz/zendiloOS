@@ -7,6 +7,7 @@ mod manage_groups;
 mod password_policy;
 mod prepare_setup;
 mod purge_expired_sessions;
+mod restore_setup;
 mod save_preferences;
 mod security;
 mod two_factor;
@@ -22,6 +23,7 @@ pub use manage_groups::{CreateGroup, DeleteGroup, GroupChanges, NewGroupInput, U
 pub use password_policy::SetPasswordPolicy;
 pub use prepare_setup::{PendingSetup, PrepareSetup};
 pub use purge_expired_sessions::PurgeExpiredSessions;
+pub use restore_setup::RestoreSetup;
 pub use save_preferences::SavePreferences;
 pub use security::{BlockAddress, EndSession, SetSecurity, UnblockAddress};
 pub use two_factor::{

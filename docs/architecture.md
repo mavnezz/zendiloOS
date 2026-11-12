@@ -98,7 +98,7 @@ The Debian package `zendiloos` (built with `just deb`) installs:
 | `/run/zendiloos/agent.sock` | `zendiloos-agent.socket`, `root:zendiloos 0660`: only zendiloosd reaches the system agent |
 | `/run/zendiloos/files.sock` | `zendiloos-files.socket`, `root:zendiloos 0660`: the files agent, the same program with `--role files` |
 | `/etc/samba/smb.conf` | installed from `/usr/share/zendiloos/smb.conf` only if it is Debian's unchanged default (kept as `smb.conf.debian`); it includes `/etc/samba/zendiloos.conf`, which the agent writes |
-| `/var/lib/zendiloos/` | database, backups, downloaded releases (`updates/`), setup code or the marker of an open setup (`setup-open`) (`0700`) |
+| `/var/lib/zendiloos/` | database, backups, downloaded releases (`updates/`), setup code or the marker of an open setup (`setup-open`) (`0700`); a configuration backup's database staged for the next start (`restore/zendiloos.db`, 4.15), the one it replaced kept in `backup/` as `zendiloos-<time>-before-restore.db` |
 | `/run/issue.d/zendiloos.issue` | the console text, written by the agent from its own template (0600): the login prompt shows the address and, until setup is done, the setup code, or for an open setup that the first administrator is created in the browser. zendiloosd only names the code; nothing it controls is read by agetty |
 
 `zendiloosd` uses `Type=notify` and is ordered before `getty.target`, so the
@@ -139,7 +139,7 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 
 | Concept | In Zendiloos |
 |---|---|
-| Bounded context | one core crate each: `identity`, `system`, `storage`, `sharing`, `apps`, `containers`, `updates`, `network`, `certificates`, `firewall`, `vms`, `backup` |
+| Bounded context | one core crate each: `identity`, `system`, `storage`, `sharing`, `apps`, `containers`, `updates`, `network`, `certificates`, `firewall`, `vms`, `backup`, `recovery` |
 | Domain layer | entities, value objects, aggregates, domain rules and errors; pure Rust, no I/O |
 | Application layer | use cases (commands and queries) and the **ports** they need, as traits |
 | Primary (driving) adapter | `zendiloos-api`: HTTP and WebSocket |
@@ -162,6 +162,7 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 | `zendiloos-firewall` | the firewall: one ordered list of rules (interface, service or ports, source, allow or deny) and what happens when none matches, enforced by nftables for the NAS and the ports Docker publishes, changed with confirmation; services nobody reaches, told (4.12) | kernel, notify |
 | `zendiloos-vms` | virtual machines: the plugin (libvirt and QEMU installed, their storage in locations on one or more pools, the hardware check), VMs from an OS preset with their disks (each on its location), network cards (through the NAS, on a host bridge, directly on a card, on an internal network) and CD drives, made in a job and changed (hardware only while off), the image library (ISOs copied from a share or uploaded), what running VMs use, their state from libvirt and their consoles (4.13) | kernel, jobs |
 | `zendiloos-backup` | backup tasks: the plugin (rsync, the SSH client and rclone installed, the NAS's SSH key), tasks from a share to another share or a removable drive, to an rsync server (daemon or SSH with the host key pinned) or from one, to Google Drive or OneDrive (accounts signed in to with OAuth), encrypted with rclone's crypt if wished, mirrors and dated versions with retention, schedules and "when its drive is plugged in", runs as jobs with their log and transfer lists, restores (4.14) | kernel, jobs, notify |
+| `zendiloos-recovery` | the configuration backup: the archive made of the database, the host's files and settings and the accounts' Linux users, encrypted with a passphrase; downloaded, or written on a schedule into a folder of a share or a removable drive with the newest kept; restored on this or a fresh installation, also instead of the first setup (4.15) | kernel, jobs, notify |
 | `zendiloos-infra` | all secondary adapters, SQLite migrations | kernel, jobs, notify, contexts, agent-proto, exec; in tests also sim |
 | `zendiloos-api` | primary adapter: axum routes, DTOs, OpenAPI, auth middleware, WebSocket | kernel, jobs, notify, contexts |
 | `zendiloosd` | composition root (binary) | everything except agent |
@@ -191,7 +192,7 @@ placeholder crates.
       sharing · apps · containers          │
       updates · network                    │
       certificates · firewall · vms        │
-      backup                               │
+      backup · recovery                    │
                │                           │
                └─────────────┬─────────────┘
                              v
@@ -1406,6 +1407,14 @@ TLS is rustls with ring and the system's certificate authorities
   writes as systemd-networkd files of its own; it refuses them unless the
   files still have that digest. It changes only `/etc/network/interfaces`,
   `/etc/resolv.conf` and those files, after a record of how they were.
+- A configuration backup's restore (4.15) writes no text of zendiloosd's
+  into a configuration file the agent reads settings from: SSH, the clock,
+  TLS and the machine's name go back through their own typed requests, the
+  network not at all. What it writes as it is: certificates and keys
+  (PEM, checked by `nginx -t` before they stay), Samba's password database
+  (as `SetSmbPassword` could set any managed account's), ZFS's host id
+  (four bytes) and the IDs handed out (which only rise); users and groups
+  only with managed IDs, refused when a name or ID is another's.
 - `Secret` has a redacted `Debug`/`Display` and is never logged.
 - Every operation is logged to the journal with request ID, peer UID/PID and
   result.
@@ -3272,6 +3281,160 @@ token), the sign-in against fake token endpoints and Graph, feature tests
 of the API, the frontend's tests, and in the second test VM (`just
 vm-backup-test`, 8, an encrypted backup with real rclone among them).
 Google Drive and OneDrive themselves are reached by none of these.
+
+### 4.15 Configuration backup and recovery
+
+**What is backed up.** One file, `zendiloos-config-<name>-<UTC
+time>.tar.zst.age`: a tar archive, compressed with zstd and encrypted with
+age's passphrase encryption (scrypt), all three made in zendiloosd itself
+(the crates `tar`, `zstd` and `age`). Inside, in this order:
+`manifest.json` (the layout, `1`, zendiloOS's version, the database's
+schema, the machine's name, the time), `settings.json` (what the host
+keeps outside zendiloOS's files: the time zone and time servers as
+timedated has them, SSH's settings, the oldest TLS version),
+`accounts.json` (the people's Linux users and groups with their UIDs,
+GIDs and members, as the account files have them: the database keeps no
+GIDs, and the files on the volumes carry the UIDs), `zendiloos.db` (a
+consistent copy, `VACUUM INTO`, never the live file) and below `files/`
+what zendiloOS wrote that its database does not say again, read by the
+agent (`ReadConfiguration`, each a place of its own named by what it is,
+never by a path, a plain file read without following a link): the
+machine's own certificate and key, the issued certificates the web
+interface serves, Samba's passwords (`passdb.tdb`: an account's SMB
+password cannot be made from its web password's hash), ZFS's host id
+(`/etc/hostid`, by which a pool knows its machine), the IDs handed out,
+and for reference SSH's, timesyncd's and TLS's files and the network's
+(`05-zendiloos-*`). Everything else follows from the database at the next
+start, as always (1.2): Samba's and NFS's configuration, the web server's
+ports and certificate, the firewall's rules.
+
+**Encrypted, with a passphrase the administrator gives.** The archive
+holds the password hashes, the certificates' keys, Samba's passwords and
+the secrets kept for mail, backups and DNS, and it goes into a share,
+onto a USB drive or into a browser's downloads. Written root's alone it
+would be no safer there: Samba reads the shares as root, a drive goes
+elsewhere. So it is encrypted, with a passphrase of at least 12
+characters. *age* rather than `openssl enc`: age authenticates what it
+decrypts (a wrong passphrase or a changed file is refused, never read as
+garbage), its format is specified and small, and Debian's `age` opens a
+backup by hand (`age -d … | zstd -d | tar -x`), where `openssl enc` has
+no authenticated mode. age's command reads a passphrase only from a
+terminal, so zendiloosd uses the library. Decrypting accepts a work
+factor up to 2^22, so a backup a fast machine made opens on a slow one.
+
+**By hand and on a schedule** (Control panel → Configuration backup,
+`system.manage`): `POST /configuration/backup/download` answers the file
+for the passphrase given (`configuration.download` in the audit log). The
+plan (`GET` and `PUT /configuration/backup`, migration `0055`, one row)
+backs up daily or weekly at a time of the NAS's time zone, as the
+backup plugin's schedules reckon (made up once when the NAS was off), into
+a folder of a share or of a removable drive (made if missing), and keeps
+the newest N there (1 to 60, 7 by default; by name, which sorts as the
+times do; other files are never touched). It needs neither the Backup
+plugin nor rsync: zendiloosd writes the file through the files agent with
+the access of the administrator who set the plan up (as the file manager
+uploads: a hidden upload, then renamed), so the folder's rules hold; an
+account that is gone or no longer an administrator fails the run. The
+passphrase is kept with the plan as the mail server's password is (4.3):
+never sent back, a change without one keeps it. `POST
+/configuration/backup/run` backs up now. A run is a job
+(`configuration.backup`); its outcome is kept with the plan, and a failed
+one is told (`configuration_backup_failed`, an error of the group
+*System*). Audited: `configuration.backup_settings`, `configuration.backup`.
+
+**Restore** (`POST /configuration/restore`, `system.manage`; and `POST
+/setup/restore` instead of creating the first administrator, allowed as
+the setup is: the setup code, or an open setup from the own network,
+tries throttled as the setup's). The body is the file, the passphrase in
+`X-Zendiloos-Passphrase` as base64 of its UTF-8 (a header takes ASCII
+only); nginx takes up to 257 MiB on these two paths, zendiloosd 256.
+Refused while jobs or an update run (the restart would cut them off).
+Checked first as a whole, before anything changes: the passphrase
+(`wrong_passphrase`), the layout (only the entries above, each once,
+plain files, the manifest first; `not_a_backup`, `unsupported_backup` for
+another layout number), and the database: one of zendiloOS (its
+migrations' table), not newer than this release knows (`backup_too_new`:
+update first). An older one is taken as it is: the migrator brings it up
+at the next start, a copy made before, as for an update. Then the host's
+part goes back: the accounts' Linux users and groups with their IDs
+(`RestoreAccounts`: where missing, refused as a whole if a name or ID is
+another's here), the files (`RestoreConfiguration`, only those a backup
+puts back, each checked as what it is: PEM, four bytes, `uid=`/`gid=`
+lines; the certificates under the web server's lock, `nginx -t` and a
+reload, the ones before back if nginx refuses; Samba stopped while its
+passwords are written; the IDs handed out only rise), and the settings
+through their own requests (the machine's name, 6; the clock; SSH; TLS),
+each that fails only named in the answer. The database is staged as
+`restore/zendiloos.db` with the restore's audit entry written into it
+(the account by name: its ID is the other database's), and zendiloosd
+exits two seconds after its answer (status 75), for systemd to start it
+again (`Restart=on-failure`; run by hand, as `just dev` does, it is started
+again by hand). At its start, before opening the database,
+a staged one takes the place of the live one, which goes with its
+write-ahead log to `backup/zendiloos-<time>-before-restore.db`. Whoever was
+signed in signs in again, with the backup's accounts. Audited as
+`configuration.restore`.
+
+**The network is not put in force.** Interfaces have other names on
+other hardware, and a fixed address from elsewhere would cut the
+administrator off: the restore leaves the network as it is (the address
+the installer gave the fresh machine keeps answering) and names the
+network's files in the backup; they are set on the Network page, where
+every change is confirmed or goes back (6). The web interface's ports
+come from the database: the answer says the HTTPS port, the interface
+moves there with zendiloosd's start. **Known limits:** the firewall's
+rules come back as they were, without confirmation (as at every start),
+so rules made for another network can shut the browser out: the page
+says so before a restore. Pools of the old machine are not imported:
+with the host id restored, ZFS imports them at the next boot, but their
+volumes' mount units are not made (see the recovery mode below).
+Installed plugins (Docker, VMs, the Backup plugin, the ACME client) are
+installed again from the App Center; their settings are in the database.
+The Backup plugin's SSH key and acme.sh's accounts stay out (servers are
+given the new key; certificates are issued anew at their renewal).
+
+**Tested** by the domain's and use cases' tests (names, retention, the
+schedule, passphrases, the plan, refusals, the restart), the agent's
+against fake programs (the files read, links left out; certificates
+nginx refuses going back; Samba stopped and started; accounts made with
+their IDs and refused when taken), infra's (an archive written and read,
+another layout refused, a backup restored into a fresh state directory
+with its database staged, swapped in at the start and the audit entry in
+it, a newer schema refused, backups written into a share through the
+files agent), the API's feature tests, the frontend's, `just
+vm-config-backup-test` (VM 2 and a fresh VM 3) and `just iso-test`.
+
+**Recovery mode (design; the rescue entry is built).** For a machine that
+does not start, the ISO's menus have *Rescue a zendiloOS system*: Debian's
+rescue mode (`rescue/enable=true`, none of zendiloOS's answers), a shell in
+the installed system, from which a configuration backup can be copied
+off (`/var/lib/zendiloos`), a database from `backup/` put back, or a
+package repaired. The installer's environment has no ZFS, and a module
+built for the installed kernel loads only into that kernel, so the pools
+are not reached from there. What is to follow, in this order:
+
+1. *Importing pools of another installation* (Storage): `zpool import`
+   lists the pools zendiloOS made (`zendiloos:volume`) that are not
+   imported; the page offers them, the agent imports one (read-only
+   first, to look at, then for good with `-f` when its host id is
+   another's) and makes its volume's, shares', personal folders' and
+   Docker's mount units from the pool's datasets as creating them does.
+   With it, a fresh installation plus a configuration backup is a whole
+   recovery: the shares the database names come back on their pools.
+2. *A recovery boot entry of the installed system*: a GRUB entry
+   `zendiloOS (recovery)` booting the installed kernel into
+   `zendiloos-recovery.target`: no pools imported, no file services, no
+   Docker or VMs; nginx and zendiloosd with an empty database of its own
+   (`/run/zendiloos-recovery`), whose setup offers only a restore: a
+   backup uploaded, or one found in `@recovery` folders, on removable
+   drives and on pools imported read-only for the purpose (`zpool import
+   -o readonly=on -N`, the newest per machine name listed). Restored, the
+   machine starts normally.
+3. *A live image* with ZFS for the ISO's kernel, built with the ISO
+   (DKMS in the build container), for a machine whose system disk is gone:
+   it imports pools read-only, finds backups as above and installs
+   zendiloOS anew with the chosen backup restored at its first start
+   (the installer's late command stages it in `/var/lib/zendiloos`).
 
 ---
 

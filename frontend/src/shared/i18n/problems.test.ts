@@ -6,6 +6,11 @@ import { i18n, problemMessage } from './index'
 
 /** Codes the API sends that once reached people as "unknown". */
 const CODES = [
+  'wrong_passphrase',
+  'not_a_backup',
+  'unsupported_backup',
+  'backup_too_new',
+  'not_planned',
   'disk_not_found',
   'duplicate_disk',
   'no_volume_number',

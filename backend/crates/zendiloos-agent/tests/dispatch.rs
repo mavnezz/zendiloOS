@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 use zendiloos_agent::config::Tools;
 use zendiloos_agent::{
-    AccountFiles, AcmePaths, Erasable, ErasePolicy, FirewallPaths, HostNamePaths, HostPaths, NetworkPaths,
-    Operations, Paths, SshPaths, TimePaths, WebPaths, WebServerPaths,
+    AccountFiles, AcmePaths, ConfigurationPlaces, Erasable, ErasePolicy, FirewallPaths, HostNamePaths,
+    HostPaths, NetworkPaths, Operations, Paths, SshPaths, TimePaths, WebPaths, WebServerPaths,
 };
 use zendiloos_agent_proto::{ErrorCode, Request, Response, Role};
 
@@ -132,6 +132,7 @@ impl Host {
             },
             time: TimePaths { servers: at("timesyncd.conf") },
             host_name: HostNamePaths { hostname: at("hostname"), hosts: at("hosts") },
+            configuration: ConfigurationPlaces { samba_passwords: at("passdb.tdb"), host_id: at("hostid") },
             ssh: SshPaths { config: at("sshd_config.d/00-zendiloos.conf") },
             web: WebPaths { tls: at("nginx/tls.conf") },
             acme: AcmePaths {
@@ -224,6 +225,10 @@ fn requests() -> Vec<Value> {
         json!({ "op": "confirm_firewall" }),
         json!({ "op": "time_state" }),
         json!({ "op": "host_name_state" }),
+        json!({ "op": "read_configuration" }),
+        json!({ "op": "restore_configuration", "files": [{ "path": "/etc/hostid", "content": "AQIDBA==" }] }),
+        json!({ "op": "restore_accounts", "users": [{ "name": "anna", "uid": 2001 }],
+                "groups": [{ "name": "family", "gid": 2002, "members": ["anna"] }] }),
         json!({ "op": "share_usage" }),
         json!({ "op": "show_on_console" }),
         json!({ "op": "create_share", "pool": tank, "volume": 1, "name": "media" }),

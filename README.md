@@ -55,6 +55,7 @@ hardened service that checks every request.
 - **Virtual machines** (preview): a plugin of the App Center; VMs with several disks and network cards, an image library, a console in the browser and their load live
 - **Network**: addresses per card with confirmation, bridges, bonds and VLANs; an installation of Debian with ifupdown taken over on request
 - **Updates**: Debian and zendiloOS in one place, signed releases from three channels (stable, test, development)
+- **Configuration backup**: accounts, shares, settings and certificates in one file encrypted with a passphrase, downloaded or written on a schedule into a share or onto a USB drive, and restored on a fresh installation instead of its first setup
 - **Security**: two-factor sign-in, a firewall that covers Docker's published ports too, limits on failed logins, blocked addresses, sessions to end, SSH that switches itself off
 - **Notifications**: in the browser, by e-mail through one mail server and by webhook, chosen per kind
 

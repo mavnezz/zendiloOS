@@ -3,6 +3,7 @@
 
 mod backup;
 mod certificates;
+mod configuration;
 mod docker;
 mod enclosure;
 mod errors;

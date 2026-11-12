@@ -1152,6 +1152,29 @@ impl AgentTransport for SimulatedAgent {
                 *self.ssh.lock().unwrap_or_else(PoisonError::into_inner) = (config.clone(), off_at);
                 Response::Done
             }
+            Request::ReadConfiguration {} => {
+                use zendiloos_agent_proto::{ConfigurationFile, ConfigurationPath};
+                let file = |path, text: &str| ConfigurationFile::new(path, text.as_bytes().to_vec());
+                let files = [
+                    file(ConfigurationPath::OwnCertificate, "-----BEGIN CERTIFICATE-----\nsimulated\n"),
+                    file(ConfigurationPath::OwnKey, "-----BEGIN PRIVATE KEY-----\nsimulated\n"),
+                    file(ConfigurationPath::SambaPasswords, "TDB"),
+                    file(ConfigurationPath::HostId, "a1b2"),
+                ];
+                Response::Configuration {
+                    files: files.into_iter().flatten().collect(),
+                    users: vec![],
+                    groups: vec![],
+                }
+            }
+            Request::RestoreConfiguration { files } => {
+                if files.iter().all(|file| file.path.restorable()) {
+                    Response::Done
+                } else {
+                    error(ErrorCode::Forbidden, "refused: not restored from a backup")
+                }
+            }
+            Request::RestoreAccounts { .. } => Response::Done,
             Request::HostNameState {} => Response::HostNameState {
                 hostname: format!("{}\n", self.host_name.lock().unwrap_or_else(PoisonError::into_inner)),
             },

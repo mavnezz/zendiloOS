@@ -20,6 +20,7 @@ pub mod host;
 mod https;
 pub mod identity;
 pub mod notify;
+pub mod recovery;
 pub mod sharing;
 pub mod sqlite;
 mod storage;

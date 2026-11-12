@@ -60,6 +60,7 @@ pub struct IdentityConfig {
 pub struct IdentityUseCases {
     pub prepare_setup: commands::PrepareSetup,
     pub complete_setup: commands::CompleteSetup,
+    pub restore_setup: commands::RestoreSetup,
     pub login: commands::Login,
     pub complete_sign_in: commands::CompleteSignIn,
     pub logout: commands::Logout,
@@ -104,6 +105,7 @@ impl IdentityUseCases {
         Self {
             prepare_setup: commands::PrepareSetup::new(Arc::clone(&context)),
             complete_setup: commands::CompleteSetup::new(Arc::clone(&context)),
+            restore_setup: commands::RestoreSetup::new(Arc::clone(&context)),
             login: commands::Login::new(Arc::clone(&context)),
             complete_sign_in: commands::CompleteSignIn::new(Arc::clone(&context)),
             logout: commands::Logout::new(Arc::clone(&context)),

@@ -153,15 +153,23 @@ systemd-resolved, so zendiloOS can change it from the first boot
 (architecture 6, "Network"); what it does not understand stays with
 ifupdown, which zendiloOS then offers to take over.
 
+Beside it, "Rescue a zendiloOS system" boots Debian's rescue mode
+(`rescue/enable=true`, without zendiloOS's answers: it installs nothing):
+a shell in the installed system, to copy a configuration backup off it,
+put a database from `/var/lib/zendiloos/backup` back or repair what keeps
+it from starting. What a recovery mode is to become is in architecture
+4.15.
+
 Each release carries it as `zendiloos-amd64-netinst.iso`, listed in the
 signed `SHA256SUMS`, so the newest stable one is always
 `https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-amd64-netinst.iso`.
 
 Locally: `just iso` builds one for the newest package in `dist/`;
 `just iso-test` installs from it into a fresh QEMU machine, unattended, and
-checks that zendiloOS answers, takes its setup, makes a ZFS pool, that
-systemd-networkd manages the network and that names resolve (apt reaches
-Debian's mirror). `just iso-network-test` (part of `just check`) runs the
+checks that both boot menus offer the rescue mode, that zendiloOS answers,
+takes its setup, makes a ZFS pool, that systemd-networkd manages the
+network and that names resolve (apt reaches Debian's mirror), and that a
+configuration backup downloads and restores. `just iso-network-test` (part of `just check`) runs the
 network's switch against what Debian's installer writes. A newer Debian
 point release is taken by changing `packaging/iso/netinst.env`.
 

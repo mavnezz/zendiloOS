@@ -327,6 +327,57 @@ impl WebServer {
         Held { web_server: self, _pending: self.pending.lock().await }
     }
 
+    /// Writes certificates and keys restored from a configuration backup
+    /// (`files`: where, what, its mode), under the lock changes take, has
+    /// `nginx -t` read them and nginx reload; refused, every file returns
+    /// as it was (or goes, where there was none).
+    pub(crate) async fn put_restored(&self, files: &[(PathBuf, Vec<u8>, u32)]) -> Result<(), OperationError> {
+        use std::os::unix::fs::DirBuilderExt;
+        let _pending = self.pending.lock().await;
+        let mut before: Vec<(PathBuf, Option<Vec<u8>>, u32)> = Vec::new();
+        let written = (|| {
+            for (path, content, mode) in files {
+                let previous = match fs::read(path) {
+                    Ok(bytes) => Some(bytes),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(OperationError::Read(path.clone(), error)),
+                };
+                if let Some(parent) = path.parent() {
+                    fs::DirBuilder::new()
+                        .recursive(true)
+                        .mode(0o755)
+                        .create(parent)
+                        .map_err(|e| OperationError::Write(parent.to_owned(), e))?;
+                }
+                before.push((path.clone(), previous, *mode));
+                crate::durable::replace_mode(path, content, *mode)?;
+            }
+            Ok(())
+        })();
+        let taken = match written {
+            Ok(()) => match self.check().await {
+                Ok(()) => self.reload().await,
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        };
+        if let Err(error) = taken {
+            for (path, previous, mode) in before.iter().rev() {
+                let back = match previous {
+                    Some(bytes) => crate::durable::replace_mode(path, bytes, *mode),
+                    None => fs::remove_file(path).map_err(|e| OperationError::Write(path.clone(), e)),
+                };
+                if let Err(back) = back {
+                    tracing::error!(%back, path = %path.display(), "cannot put a certificate back");
+                }
+            }
+            return Err(OperationError::Failed(format!(
+                "nginx does not take the restored certificates: {error}"
+            )));
+        }
+        Ok(())
+    }
+
     /// nginx reads its certificate again: it was renewed. Not while a
     /// change is applied or goes back.
     pub(crate) async fn reload_certificate(&self) -> Result<Response, OperationError> {

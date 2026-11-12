@@ -18,6 +18,7 @@ zendiloos-agent-proto = { path = "crates/zendiloos-agent-proto" }
 zendiloos-api = { path = "crates/zendiloos-api" }
 zendiloos-apps = { path = "crates/zendiloos-apps" }
 zendiloos-backup = { path = "crates/zendiloos-backup" }
+zendiloos-recovery = { path = "crates/zendiloos-recovery" }
 zendiloos-containers = { path = "crates/zendiloos-containers" }
 zendiloos-updates = { path = "crates/zendiloos-updates" }
 zendiloos-exec = { path = "crates/zendiloos-exec" }
@@ -86,6 +87,9 @@ sysinfo = { version = "0.40", default-features = false, features = ["system", "n
 # Backups of Docker's volumes: tar archives compressed with zstd, which
 # Debian's tar and zstd read as well.
 tar = { version = "0.4", default-features = false }
+# Configuration backups: encrypted with a passphrase (scrypt) as age's
+# format, which Debian's age opens as well.
+age = { version = "0.11", default-features = false }
 zstd = { version = "0.13", default-features = false }
 tempfile = "3"
 thiserror = "2"

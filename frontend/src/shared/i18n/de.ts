@@ -398,6 +398,71 @@ const de: Messages = {
       addButton: 'Hinzufügen',
     },
   },
+  configurationBackup: {
+    description:
+      'Die Konfiguration von zendiloOS in einer Datei: seine Datenbank (Konten, Freigaben, Einstellungen), die Zertifikate der Weboberfläche, die Samba-Passwörter, die Linux-Benutzer der Personen und die Einstellungen des Systems. Mit einer Passphrase verschlüsselt: Bewahren Sie sie getrennt von der Sicherung auf, denn ohne sie kann niemand die Sicherung öffnen oder wiederherstellen.',
+    passphrase: 'Passphrase',
+    passphraseRepeat: 'Passphrase wiederholen',
+    passphraseHint: 'Mindestens {min} Zeichen.',
+    passphraseKept: 'Eine Passphrase ist hinterlegt; geben Sie eine ein, um sie zu ersetzen.',
+    passphrasesDiffer: 'Die Passphrasen stimmen nicht überein.',
+    download: {
+      title: 'Jetzt sichern',
+      intro: 'Lädt eine Sicherung der Konfiguration, wie sie jetzt ist, herunter.',
+      submit: 'Sicherung herunterladen',
+    },
+    plan: {
+      title: 'Nach Zeitplan sichern',
+      intro:
+        'Schreibt eine Sicherung in einen Ordner einer Freigabe oder eines USB-Laufwerks, mit den Rechten des Administrators, der dies einrichtet, und behält die neuesten. Das Sicherungs-Plugin ist nicht nötig.',
+      enabled: 'An',
+      when: 'Wann',
+      daily: 'Täglich',
+      weekly: 'Wöchentlich',
+      at: 'um',
+      where: 'Wohin',
+      share: 'Freigabe',
+      drive: 'USB-Laufwerk',
+      choose: 'Auswählen …',
+      folder: 'Ordner',
+      folderHint:
+        'In der Freigabe oder auf dem Laufwerk, wird bei Bedarf angelegt; leer: ganz oben.',
+      keep: 'Behalten',
+      keepHint:
+        'Die neuesten {count} Sicherungen bleiben im Ordner; ältere von zendiloOS werden entfernt.',
+      save: 'Speichern',
+      runNow: 'Jetzt in den Ordner sichern',
+      started: 'Die Sicherung läuft; die Aufgabenliste zeigt sie.',
+      next: 'Nächste: {time}',
+      by: 'Geschrieben als {name}.',
+      lastOk: 'Zuletzt: {time}, {file}',
+      lastFailed: 'Zuletzt: {time}, fehlgeschlagen: {error}',
+      weekdays: {
+        0: 'Montag',
+        1: 'Dienstag',
+        2: 'Mittwoch',
+        3: 'Donnerstag',
+        4: 'Freitag',
+        5: 'Samstag',
+        6: 'Sonntag',
+      },
+    },
+    restore: {
+      title: 'Wiederherstellen',
+      intro:
+        'Bringt die Konfiguration einer Sicherung auf dieses NAS zurück: ihre Konten (melden Sie sich danach mit ihnen an), Freigaben, Einstellungen und Zertifikate. zendiloOS startet damit neu. Das Netzwerk bleibt, wie es ist; stellen Sie es auf der Seite Netzwerk ein, wo jede Änderung bestätigt wird. Firewall-Regeln kommen zurück, wie sie waren.',
+      file: 'Sicherung',
+      submit: 'Wiederherstellen …',
+      confirmTitle: 'Diese Sicherung wiederherstellen?',
+      confirm:
+        'Alles, was hier seitdem eingestellt wurde, wird durch die Sicherung ersetzt; die Datenbank von vorher wird daneben aufbewahrt. zendiloOS startet neu, und alle melden sich neu an.',
+      confirmLabel: 'Wiederherstellen',
+      done: 'Die Sicherung von {name} vom {time}, erstellt mit zendiloOS {version}, ist wiederhergestellt.',
+      port: 'Die Weboberfläche antwortet nach dem Neustart auf Port {port}.',
+      network: 'Netzwerkeinstellungen in der Sicherung, nicht übernommen: {files}.',
+      restarting: 'zendiloOS startet neu; diese Seite lädt neu.',
+    },
+  },
   setup: {
     title: 'zendiloOS einrichten',
     intro: 'Lege das erste Administratorkonto an.',
@@ -413,6 +478,18 @@ const de: Messages = {
     passwordsDiffer: 'Die Passwörter stimmen nicht überein.',
     submit: 'Administrator anlegen',
     toLogin: 'Zur Anmeldung',
+    restoreInstead: 'Stattdessen eine Konfigurationssicherung wiederherstellen',
+    createInstead: 'Stattdessen einen Administrator anlegen',
+    restoreIntro:
+      'Eine Sicherung eines anderen zendiloOS (Systemsteuerung → Konfigurationssicherung) bringt dessen Konten, Einstellungen und Zertifikate hierher. Melden Sie sich danach mit dessen Konten an.',
+    backupFile: 'Konfigurationssicherung (.tar.zst.age)',
+    passphrase: 'Ihre Passphrase',
+    restore: 'Wiederherstellen',
+    restoring: 'Wird wiederhergestellt …',
+    restored: 'Die Sicherung von {name} vom {time} ist wiederhergestellt.',
+    restarting: 'zendiloOS startet damit neu; die Anmeldung folgt gleich.',
+    restoredSlow:
+      'zendiloOS braucht länger als sonst für den Neustart. Laden Sie die Seite gleich neu.',
   },
   login: {
     title: 'Anmelden',
@@ -493,6 +570,7 @@ const de: Messages = {
     network: 'Netzwerk',
     locale: 'Uhrzeit & Sprache',
     update: 'Updates',
+    configurationBackup: 'Konfigurationssicherung',
     accounts: 'Benutzer',
     groups: 'Gruppen',
     fileServices: 'Dateidienste',
@@ -1599,6 +1677,7 @@ const de: Messages = {
         updates_installed: 'Updates installiert',
         updates_failed: 'Update fehlgeschlagen',
         network_drift: 'Netzwerkdateien außerhalb von zendiloOS geändert',
+        configuration_backup_failed: 'Sicherung der Konfiguration fehlgeschlagen',
         certificate_renewed: 'Zertifikat erneuert',
         certificate_renewal_failed: 'Zertifikat nicht erneuert',
         certificate_not_taken: 'Neues Zertifikat nicht übernommen',
@@ -2676,6 +2755,7 @@ const de: Messages = {
       interrupted: 'Durch einen Neustart unterbrochen; bitte das Ergebnis prüfen.',
     },
     kinds: {
+      configuration_backup: 'Konfiguration sichern',
       files_copy: 'Dateien kopieren',
       files_delete: 'Dateien löschen',
       files_move: 'Dateien verschieben',
@@ -3648,6 +3728,10 @@ const de: Messages = {
       title: 'Netzwerkdateien geändert',
       body: 'Die Netzwerkdateien von zendiloOS weichen von seinen Einstellungen ab ({names}). Unter Systemsteuerung → Netzwerk lassen sie sich wiederherstellen oder übernehmen.',
     },
+    configuration_backup_failed: {
+      title: 'Keine Sicherung der Konfiguration',
+      body: '{reason} Systemsteuerung → Konfigurationssicherung zeigt den Plan und den letzten Lauf.',
+    },
     snapshot_failed: {
       title: 'Kein Snapshot von {share}',
       body: 'Ein geplanter Snapshot konnte nicht aufgenommen werden. Ist das Volume der Freigabe da?',
@@ -4129,6 +4213,13 @@ const de: Messages = {
     not_own_project: 'Die Compose-Datei dieses Projekts liegt nicht in zendiloOS.',
     jobs_running:
       'Es laufen noch Aufgaben im Hintergrund, die sonst mittendrin abbrächen; warten Sie, bis sie beendet sind',
+    wrong_passphrase: 'Die Passphrase öffnet diese Sicherung nicht.',
+    not_a_backup: 'Das ist keine Konfigurationssicherung von zendiloOS',
+    unsupported_backup:
+      'Diese Sicherung hat einen Aufbau, den diese Version von zendiloOS nicht liest.',
+    backup_too_new:
+      'Die Sicherung stammt von einem neueren zendiloOS als diesem. Aktualisieren Sie zuerst zendiloOS und stellen Sie sie dann wieder her.',
+    not_planned: 'Wählen Sie zuerst einen Ordner und eine Passphrase für die Sicherungen.',
     pool_in_use:
       'Auf dem Pool liegen noch Daten, die sonst unbemerkt verloren gingen. Löschen oder verschieben Sie sie zuerst, jeweils an ihrer eigenen Stelle',
     drive_in_use:

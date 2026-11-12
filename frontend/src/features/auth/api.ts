@@ -1,5 +1,7 @@
 import { ApiProblem, api, unwrap } from '@/shared/api/client'
+import { passphraseHeader } from '@/shared/lib/passphrase'
 import type {
+  RestoreResult,
   SecondFactorChallenge,
   SessionInfo,
   SetupRequest,
@@ -29,6 +31,27 @@ export function fetchSetupStatus(): Promise<SetupStatus> {
 
 export function completeSetup(request: SetupRequest): Promise<SessionInfo> {
   return unwrap(api.POST('/api/v1/setup', { body: request }))
+}
+
+/** Restores a configuration backup instead of creating the first administrator. */
+export function restoreSetup(
+  backup: Blob,
+  passphrase: string,
+  setupCode: string | null,
+): Promise<RestoreResult> {
+  return unwrap(
+    api.POST('/api/v1/setup/restore', {
+      params: {
+        header: {
+          'x-zendiloos-passphrase': passphraseHeader(passphrase),
+          ...(setupCode ? { 'x-zendiloos-setup-code': setupCode } : {}),
+        },
+      },
+      body: backup as never,
+      bodySerializer: (body: unknown) => body as BodyInit,
+      headers: { 'Content-Type': 'application/octet-stream' },
+    }),
+  )
 }
 
 /** What came of the password: a session, or the second factor asked for. */

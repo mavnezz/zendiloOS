@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO configuration_backup\n                 (id, enabled, frequency, weekday, hour, minute, target_kind, share_id, drive, folder, keep,\n                  passphrase, account_id, since)\n             VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n             ON CONFLICT (id) DO UPDATE SET\n                 enabled = excluded.enabled, frequency = excluded.frequency, weekday = excluded.weekday,\n                 hour = excluded.hour, minute = excluded.minute, target_kind = excluded.target_kind,\n                 share_id = excluded.share_id, drive = excluded.drive, folder = excluded.folder,\n                 keep = excluded.keep, passphrase = excluded.passphrase, account_id = excluded.account_id,\n                 since = excluded.since",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 13
+    },
+    "nullable": []
+  },
+  "hash": "0b247c596a633c45ee3140f6676455ecfefaba92aa1c9bf60c97f69abc4cb471"
+}

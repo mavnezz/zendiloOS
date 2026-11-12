@@ -344,6 +344,8 @@ pub(crate) struct Harness {
     /// rsync pretended, not installed at first; drives a test plugs in.
     pub(crate) backup_host: Arc<zendiloos_backup::testing::FakeHost>,
     pub(crate) backup_drives: Arc<zendiloos_backup::testing::FakeDrives>,
+    /// The configuration backup's ports, pretended; its audit and jobs its own.
+    pub(crate) recovery: zendiloos_recovery::testing::Fakes,
     /// The network's host, pretended: managed by systemd-networkd unless a
     /// test gives it ifupdown.
     pub(crate) network_host: Arc<zendiloos_network::testing::FakeConfigurator>,
@@ -630,6 +632,8 @@ impl Harness {
                 audit: identity.audit.clone(),
                 clock: identity.clock.clone(),
             });
+        let (recovery, recovery_fakes) = zendiloos_recovery::testing::recovery();
+        recovery_fakes.operators.0.lock().unwrap().clear();
         let network_host = Arc::new(zendiloos_network::testing::FakeConfigurator::default());
         let network_source = Arc::new(SettableNetwork::default());
         let network_users = Arc::new(FakeUsers::default());
@@ -637,6 +641,7 @@ impl Harness {
         let use_cases = UseCases {
             vms,
             backup,
+            recovery,
             certificates,
             firewall: firewall.clone(),
             containers: docker_test.containers,
@@ -721,6 +726,7 @@ impl Harness {
             vm_host,
             backup_host,
             backup_drives,
+            recovery: recovery_fakes,
             network_host,
             network_source,
             network_users,
@@ -1791,10 +1797,11 @@ async fn a_wrong_current_password_is_not_mistaken_for_a_lost_session() {
 
 /// Routes anyone may call. Everything else must require a session; this
 /// guards against a handler that forgets its `Auth` argument.
-const PUBLIC: [(&str, &str); 5] = [
+const PUBLIC: [(&str, &str); 6] = [
     ("GET", "/api/v1/health"),
     ("GET", "/api/v1/setup"),
     ("POST", "/api/v1/setup"),
+    ("POST", "/api/v1/setup/restore"),
     ("POST", "/api/v1/auth/login"),
     ("POST", "/api/v1/auth/login/second-factor"),
 ];
@@ -1893,6 +1900,10 @@ fn openapi_documents_every_route() {
             "/api/v1/certificates/plugin/install",
             "/api/v1/certificates/{id}",
             "/api/v1/certificates/{id}/issue",
+            "/api/v1/configuration/backup",
+            "/api/v1/configuration/backup/download",
+            "/api/v1/configuration/backup/run",
+            "/api/v1/configuration/restore",
             "/api/v1/docker/backup-shares/{id}/readers",
             "/api/v1/docker/backups",
             "/api/v1/docker/backups/import",
@@ -1997,6 +2008,7 @@ fn openapi_documents_every_route() {
             "/api/v1/security/settings",
             "/api/v1/security/unblock",
             "/api/v1/setup",
+            "/api/v1/setup/restore",
             "/api/v1/shares",
             "/api/v1/shares/access/{kind}/{id}",
             "/api/v1/shares/{id}",

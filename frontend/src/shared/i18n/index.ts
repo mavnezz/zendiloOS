@@ -165,6 +165,11 @@ const KNOWN_PROBLEMS = [
   'host_key_changed',
   'agent_failed',
   'account_in_use',
+  'wrong_passphrase',
+  'not_a_backup',
+  'unsupported_backup',
+  'backup_too_new',
+  'not_planned',
   'cloud_sign_in_expired',
 ] as const
 
@@ -226,6 +231,8 @@ export function problemMessage(error: unknown): string {
     'agent_failed',
     // The tasks that back up into a cloud account.
     'account_in_use',
+    // What of a configuration backup does not fit.
+    'not_a_backup',
   ]
   if (isKnown(error.code)) {
     const message = t(`errors.${error.code}`)
