@@ -25,21 +25,35 @@ a stable release is newer.
 
 ## What a release holds
 
-- `zendiloos_<version>_<arch>.deb`
-- `zendiloos_<version>_<arch>.cdx.json`: the software bill of materials
-  (SBOM), CycloneDX 1.5 in JSON: the Rust crates of zendiloosd and
-  zendiloos-agent (cargo-cyclonedx), the npm packages the web interface's
-  bundle holds (as the build found them), and the package itself with its
-  SHA-256 and the Debian packages it depends on, recommends and suggests
-  (by name and the versions it asks for: Debian's mirror gives the rest at
-  installation). `scripts/sbom.sh` makes it, `just check` checks its
-  licences against `backend/deny.toml`, and `docs/licences.md` is the
-  overview made from it
-- `SHA256SUMS`: the checksums of the package, the SBOM and, if there is
-  one, the ISO
+Everything for two architectures, `amd64` (x86-64) and `arm64`, of one
+version:
+
+- `zendiloos_<version>_amd64.deb` and `zendiloos_<version>_arm64.deb`
+- `zendiloos_<version>_<arch>.cdx.json`, one per package: its software
+  bill of materials (SBOM), CycloneDX 1.5 in JSON: the Rust crates of
+  zendiloosd and zendiloos-agent as built for that architecture
+  (cargo-cyclonedx; a few crates are for one of them only), the npm
+  packages the web interface's bundle holds (as the build found them),
+  and the package itself with its SHA-256 and the Debian packages it
+  depends on, recommends and suggests (by name and the versions it asks
+  for: Debian's mirror gives the rest at installation). `scripts/sbom.sh`
+  makes them, `just check` checks the licences of both against
+  `backend/deny.toml`, and `docs/licences.md` is the overview made from
+  them
+- `SHA256SUMS`: the checksums of both packages, both SBOMs and, if there
+  are, the ISOs
 - `SHA256SUMS.minisig`: its signature, made with the release key, whose
   trusted comment (signed as well) names the build: `zendiloos <version>`
-- `zendiloos-amd64-netinst.iso`, for stable releases: the installation ISO
+- `zendiloos-amd64-netinst.iso` and `zendiloos-arm64-netinst.iso`, for
+  stable releases: the installation ISOs
+
+A NAS takes the package of its own architecture: zendiloosd picks it by
+its name (the architecture zendiloosd was built for), and the runner
+installs it only if both its name and the `Architecture` the package
+itself says are what `dpkg --print-architecture` says; a package of the
+other architecture is refused, signed or not. An amd64 NAS of an earlier
+version takes its package from a release with both as before, as it
+always looked for `_amd64.deb`.
 
 The NAS checks the signature with the public key its own package brought
 along (`/usr/share/zendiloos/release-signing.pub`, from
@@ -99,8 +113,9 @@ hand (`apt install ./zendiloos_….deb`).
    Tags `v*` cannot be moved or deleted, so check the version first. A tag
    on a commit that `main` does not contain is not released.
 
-CI checks, builds the package with the tag's version, signs `SHA256SUMS`
-and creates the GitHub release (a pre-release for a tag with a `-`), with
+CI checks, builds both packages with the tag's version (arm64's
+cross-compiled in the same container, see below), runs the backend's tests
+on an arm64 machine too, signs `SHA256SUMS` and creates the GitHub release (a pre-release for a tag with a `-`), with
 notes generated from the pull requests. They are what the NAS shows as the
 release notes, so replace them with notes written for people:
 `gh release edit v1.2.0-rc.1 --notes-file notes.md`. Pushes to `main` replace the
@@ -136,9 +151,17 @@ Secrets and variables → Actions → Variables) changes that: `stable` (the
 default), `test` (test releases too), `all` (every development build too)
 or `off`.
 
-The ISO is Debian 13's netinst image (`packaging/iso/netinst.env`, pinned
-by its SHA512) with an entry "Install zendiloOS <version>" first in both
-boot menus, BIOS and UEFI, and the answers of `packaging/iso/preseed.cfg`.
+There is one per architecture. Each is Debian 13's netinst image of that
+architecture (`packaging/iso/netinst.env`, each pinned by its SHA512) with
+an entry "Install zendiloOS <version>" first in its boot menus, and the
+answers of `packaging/iso/preseed.cfg`. amd64's has both menus, BIOS and
+UEFI, and starts the graphical installer; arm64's starts through UEFI
+only, as Debian's does, with GRUB's menu, and the text installer, which a
+board's serial console shows as well as a screen. The arm64 image names
+the kernel headers of its architecture (`linux-headers-arm64`) and puts
+GRUB on the removable media path too (`\EFI\BOOT\BOOTAA64.EFI`): the UEFI
+of many boards (U-Boot's) keeps no boot entries and starts a disk only
+from there.
 The installer asks only for the language, location and keyboard, the
 machine's name, root's password and the disk for the system, never chosen
 for you: on a NAS the wrong disk would cost data. Packages come from
@@ -160,18 +183,50 @@ put a database from `/var/lib/zendiloos/backup` back or repair what keeps
 it from starting. What a recovery mode is to become is in architecture
 4.15.
 
-Each release carries it as `zendiloos-amd64-netinst.iso`, listed in the
-signed `SHA256SUMS`, so the newest stable one is always
-`https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-amd64-netinst.iso`.
+Each release carries them as `zendiloos-amd64-netinst.iso` and
+`zendiloos-arm64-netinst.iso`, listed in the signed `SHA256SUMS`, so the
+newest stable ones are always
+`https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-amd64-netinst.iso`
+and
+`https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-arm64-netinst.iso`.
 
-Locally: `just iso` builds one for the newest package in `dist/`;
-`just iso-test` installs from it into a fresh QEMU machine, unattended, and
-checks that both boot menus offer the rescue mode, that zendiloOS answers,
-takes its setup, makes a ZFS pool, that systemd-networkd manages the
-network and that names resolve (apt reaches Debian's mirror), and that a
-configuration backup downloads and restores. `just iso-network-test` (part of `just check`) runs the
+Locally: `just iso` builds one for the newest package in `dist/` of this
+machine's architecture, `just iso arm64` (or `ZENDILOOS_ARCH=arm64`) the
+other's; `just iso-test` installs from it into a fresh QEMU machine,
+unattended, and checks that both boot menus offer the rescue mode, that
+zendiloOS answers, takes its setup, makes a ZFS pool, that
+systemd-networkd manages the network and that names resolve (apt reaches
+Debian's mirror), and that a configuration backup downloads and restores;
+`just iso-test arm64` does it in QEMU's `virt` machine with UEFI (AAVMF),
+emulated on an x86 machine and so for hours (`docs/testing.md`). The
+workflow *ISO test* does the same on GitHub, by hand. `just iso-network-test` (part of `just check`) runs the
 network's switch against what Debian's installer writes. A newer Debian
-point release is taken by changing `packaging/iso/netinst.env`.
+point release is taken by changing `packaging/iso/netinst.env`: its
+version and both checksums.
+
+## Two architectures
+
+Each package is built in the same `debian:trixie` container
+(`packaging/build.Dockerfile`, pinned by the digest of its index, which
+names the image of each architecture): `just deb` builds for this
+machine's architecture, `just deb arm64` (or `ZENDILOOS_ARCH=arm64 just
+deb`) for arm64 on an x86 machine, cross-compiled
+(`dpkg-buildpackage --host-arch arm64`): Rust's standard library for
+`aarch64-unknown-linux-gnu`, Debian's cross compiler
+`gcc-aarch64-linux-gnu` for linking and for the C the crates bring, and
+the C library for arm64 through multiarch, from which `dpkg-shlibdeps`
+tells the package's dependencies as for a native build. On an arm64
+machine it is the other way round. The web interface is the same for
+both. Building on an arm64 machine instead would have needed one in CI
+(GitHub has them) and an emulated one on every x86 workstation, which
+takes hours for what takes minutes cross-compiled; so one build
+environment for both, and the arm64 runner only for what must run there:
+CI's job *Rust on arm64* runs the backend's tests natively, beside the
+check, and a release waits for it. `just check` runs on amd64 only.
+
+`debian/control` suggests libvirt, QEMU for x86 and OVMF on amd64 only
+(`[amd64]`): virtual machines are not offered on arm64 yet
+(architecture 4.13).
 
 ## The repository must stay public
 

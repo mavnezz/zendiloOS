@@ -10,7 +10,7 @@ _A NAS operating system on Debian, run from a desktop in the browser._
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Debian 13](https://img.shields.io/badge/Debian-13%20trixie-a80030)](https://www.debian.org/releases/trixie/)
 
-[Download](https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-amd64-netinst.iso) ·
+Download for [x86-64](https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-amd64-netinst.iso) or [arm64](https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-arm64-netinst.iso) ·
 [Releases](https://github.com/mavnezz/zendiloOS/releases) ·
 [Architecture](docs/architecture.md) ·
 [Testing](docs/testing.md) ·
@@ -52,7 +52,7 @@ hardened service that checks every request.
 - **App Center**: apps from the [community catalog](https://github.com/mavnezz/zendiloOS.community.applications) and others you add, installed as Docker projects of your own that you can edit; plugins for Docker and for certificates from Let's Encrypt
 - **Docker**: containers, images, networks and your own Compose projects, a page per container with its log and a terminal, image updates, with consent for whatever reaches beyond the container
 - **Docker volumes**: listed with the containers that use them; backed up into a shared folder daily, weekly or monthly, as many kept as you like, the containers stopped meanwhile; restored under their own name or into another volume, also once a volume was deleted; backups found in a folder taken over again
-- **Virtual machines** (preview): a plugin of the App Center; VMs with several disks and network cards, an image library, a console in the browser and their load live; snapshots of all their disks at once, by hand and on schedules, and backups into a share or onto a USB drive, restored as a new VM or over the old one; a TPM and Secure Boot for Windows 11; USB and PCI devices of the host handed to a VM
+- **Virtual machines** (preview, on x86-64): a plugin of the App Center; VMs with several disks and network cards, an image library, a console in the browser and their load live; snapshots of all their disks at once, by hand and on schedules, and backups into a share or onto a USB drive, restored as a new VM or over the old one; a TPM and Secure Boot for Windows 11; USB and PCI devices of the host handed to a VM
 - **Network**: addresses per card with confirmation, bridges, bonds and VLANs; an installation of Debian with ifupdown taken over on request
 - **Updates**: Debian and zendiloOS in one place, signed releases from three channels (stable, test, development)
 - **Configuration backup**: accounts, shares, settings and certificates in one file encrypted with a passphrase, downloaded or written on a schedule into a share or onto a USB drive, and restored on a fresh installation instead of its first setup
@@ -67,12 +67,21 @@ hardened service that checks every request.
 
 ### Hardware
 
-An x86-64 machine (amd64) with a disk for the system and one or more for
-data, and a network connection. arm64 is planned.
+A machine with a disk for the system and one or more for data (SATA or
+NVMe), and a network connection:
+
+- **x86-64 (amd64)**: a NAS appliance, a mini PC or a machine of your own,
+  with UEFI or a BIOS.
+- **arm64**: a NAS board or single-board computer whose firmware starts a
+  USB stick through UEFI (EDK2, or U-Boot's UEFI) and whose hardware
+  Debian's own kernel supports; boards that need their vendor's kernel do
+  not work. zendiloOS has not run on a real arm64 board yet
+  ([testing](docs/testing.md#arm64)), and virtual machines are offered on
+  x86-64 only for now.
 
 ### Install from the ISO
 
-1. Download the [installation ISO](https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-amd64-netinst.iso) of the newest stable release and write it to a USB stick.
+1. Download the installation ISO of the newest stable release for [x86-64](https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-amd64-netinst.iso) or [arm64](https://github.com/mavnezz/zendiloOS/releases/latest/download/zendiloos-arm64-netinst.iso) and write it to a USB stick.
 2. Start the NAS from it and choose **Install zendiloOS**.
 3. Answer what the installer asks: language, location and keyboard, the machine's name, root's password and the disk for the system. Everything else is set up for you; the installer needs the network.
 4. After the restart the console shows the address of the web interface. Open it in a browser on your network and create the first administrator: no setup code is needed, whoever comes first sets the NAS up, so do it right away.
@@ -82,7 +91,7 @@ data, and a network connection. arm64 is planned.
 ```sh
 sudo sed -i 's/^Components: main$/Components: main contrib/' /etc/apt/sources.list.d/debian.sources
 sudo apt update && sudo apt install linux-headers-$(uname -r)
-sudo apt install ./zendiloos_<version>_amd64.deb   # from a release
+sudo apt install ./zendiloos_<version>_amd64.deb   # from a release; _arm64.deb on arm64
 ```
 
 ZFS comes from Debian's `contrib` and is built for your kernel. The setup code
@@ -116,7 +125,9 @@ The tools:
 - **Node** as `.nvmrc` pins it.
 - **just, sqlx-cli for SQLite, cargo-deny and cargo-llvm-cov.**
 - **Docker** for the package.
-- **QEMU, xorriso, curl and jq** for the test VM and the ISO.
+- **QEMU, xorriso, curl and jq** for the test VM and the ISO; for testing
+  the arm64 ISO also QEMU for arm (`qemu-system-arm`) and its UEFI firmware
+  (`qemu-efi-aarch64`).
 - **minisign** to sign releases.
 
 On Debian 13 or a recent Ubuntu:
@@ -147,7 +158,8 @@ real. The setup code is in `dev/state/setup-code`.
 
 ```sh
 just deb           # build dist/zendiloos_*.deb in a debian:trixie container
-just iso           # the installation ISO for it
+just deb arm64     # the same for arm64, cross-compiled
+just iso           # the installation ISO for it (just iso arm64 for arm64's)
 just vm create     # a Debian 13 test VM with 4 SATA and 1 NVMe disk
 just vm start      # boot it in the background
 just vm install    # install the newest package from dist/

@@ -1542,7 +1542,11 @@ its apps say they are not from the zendiloOS community catalog. `zendiloosd` fet
 indexes over https (redirects only to https, a size limit, a timeout) and
 checks every entry with the catalog's own checks before showing it; an
 entry that fails is left out, not repaired. Icons are cached, checked to be
-PNG and served as `image/png`.
+PNG and served as `image/png`. Each app names the architectures its
+images are made for (`architectures`, which the catalog's checks hold
+against the registries): an app whose list lacks the NAS's is shown, marked
+(`runs_here` false), and its template is not filled in (`app_architecture`,
+409), so a project never waits for an image Docker cannot pull.
 
 **One policy, in one crate.** The format and the policy live in the
 catalog's crate `zendiloos-catalog` (pure: text in, problems out).
@@ -2221,8 +2225,10 @@ refused while background jobs run, as an update is.
 
 **Releases.** zendiloosd reads the repository's releases from GitHub's API
 (`[updates]` in `zendiloosd.toml`): the package for this machine
-(`zendiloos_<version>_<arch>.deb`), `SHA256SUMS` and its minisign signature
-`SHA256SUMS.minisig`. A release's channel comes from GitHub: stable for a
+(`zendiloos_<version>_<arch>.deb`, of the architecture zendiloosd itself was
+built for, `amd64` or `arm64`; a release holds one for each, a release
+without the machine's is not offered), `SHA256SUMS` and its minisign
+signature `SHA256SUMS.minisig`. A release's channel comes from GitHub: stable for a
 release, test for a pre-release (`v1.2.0-rc.1`), development for the rolling
 release `dev` built from every commit on main. Each channel takes the
 steadier ones too; only a version newer than the running one, in dpkg's
@@ -2240,7 +2246,9 @@ the package brought along (`/usr/share/zendiloos/release-signing.pub`, or
 one an administrator put in `/etc/zendiloos`), that the signature's trusted
 comment is `zendiloos <version>` of this very package (one key signs every
 build, the development build of each commit too), the package's checksum,
-its name, architecture and version, and installs only a version newer than
+its name, architecture (the name's and the package's own `Architecture`
+must both be what `dpkg --print-architecture` says) and version, and
+installs only a version newer than
 the installed one, so an old signed release cannot be brought back. It is
 started with the NAS's channel (`run-packages <id> update <package>
 <channel>`, zendiloosd sends it along with the release) and takes a build
@@ -2646,7 +2654,12 @@ are there, each with a line of explanation; the agent reads them (`VmHost`,
 `VmHostDevices`), as it reads the machine's other facts, so the simulation
 can give them too.
 Without KVM the installation is refused (`kvm_missing`): QEMU would run,
-but at the speed of an emulator.
+but at the speed of an emulator. VMs are offered on amd64 only for now:
+the domains zendiloOS writes are a PC's (`q35`, OVMF, `x86_64`), and an
+arm64 NAS would need QEMU's `virt` machine with AAVMF instead. There the
+page says so (`architecture`, `architecture_supported` in the plugin's
+`hardware`) and the installation is refused (`vms_architecture`), by the
+package runner too, so QEMU for x86 never comes onto an arm64 NAS.
 
 **libvirt, not QEMU run by hand.** libvirt starts QEMU as `libvirt-qemu`,
 confined by an AppArmor profile it makes for each VM (`virt-aa-helper`:
@@ -3611,8 +3624,8 @@ the interface and the agent deal with a single tool chain (`zpool`, `zfs`).
 
 | Area | Decision | Alternatives / rationale |
 |---|---|---|
-| Base | Debian 13 "trixie" (kernel 6.12 LTS), amd64; arm64 from phase 5 | current stable; backports kernel for new hardware if needed |
-| Target hardware | x86-64 NAS appliances with Intel CPUs and generic x86-64 systems with UEFI (self-built, mini PCs) | phase 5: boot medium, LEDs and fans (often via I²C), Intel GPU drivers |
+| Base | Debian 13 "trixie" (kernel 6.12 LTS), amd64 and arm64 | current stable; backports kernel for new hardware if needed |
+| Target hardware | x86-64 NAS appliances with Intel CPUs and generic x86-64 systems with UEFI (self-built, mini PCs); arm64 NAS boards and single-board computers with SATA or NVMe whose firmware starts Debian's installer through UEFI (EDK2, or U-Boot's UEFI) and whose hardware Debian's own kernel supports | phase 5: boot medium, LEDs and fans (often via I²C), Intel GPU drivers; boards that need a kernel or device tree of their vendor are not covered |
 | Development environment | tools installed on the development machine (README, "Development"): Rust from `rust-toolchain.toml` through rustup, Node from `.nvmrc`; CI installs the same versions | packages and images are built in a `debian:trixie` container |
 | Database | SQLite (WAL) with sqlx; compile-time checked queries (`query!`), offline data in `backend/.sqlx` | after changing SQL or migrations run `just sqlx-prepare`; `just check` fails if the data is stale |
 | Writes to the system disk | measured with zendiloosd idle on the simulated NAS under `strace` (2026-11-11), the agent's share from the requests it was sent: the database got one transaction (12 pages of the write-ahead log) in 3.5 minutes and no `fsync` (WAL with `synchronous=NORMAL` syncs at checkpoints); its regular writes are already spaced (a session's last use at most once a minute, a disk's last sighting once an hour, an unchanged upsert writes nothing). Metrics and the containers' use over time are kept in memory only, Docker's data and its containers' logs on a pool; zendiloosd traces HTTP requests at debug, and nginx's access log gets the API's requests only while a page is open and polls (every 5 to 30 seconds), which is left as it is. What was wasteful went into the journal: the agent logged every request it carried out at info, some 20 a minute on an idle NAS (the disks and pools every minute, what the firewall needs to know every 30 seconds, what containers use every 20), about 29 000 lines and, at some 0.6 KB an entry, 15 to 20 MB a day; and each reload of systemd (3.3) wrote its lines and, on eMMC, the GPT generator's errors. Requests that only read (`Request::only_reads`) are now logged at debug when they go well; reloads happen only for changed units, the generator is masked (1.3), and the journal keeps at most 512 MiB (1.3) | eMMC 5.0 and later report their wear (5, Monitoring); the database's writes needed no batching |
@@ -3626,7 +3639,7 @@ the interface and the agent deal with a single tool chain (`zpool`, `zfs`).
 | SSH | the SSH server as a service in the control panel (Terminal): on or off (off means stopped and disabled; open sessions stay, as `KillMode=process`), its port (22, or a free one from 1024; zendiloosd refuses a port another program listens on, read from `/proc/net/tcp`), and whether root and passwords may log in, each either set or left as the system has it. The settings go to `/etc/ssh/sshd_config.d/00-zendiloos.conf`, read before the other drop-ins, so they win; `sshd -t` checks them first and the previous file returns if it fails. On request a transient systemd timer turns SSH off again after up to a day; SSH is then enabled only until the next boot (`enable --runtime`), as the timer itself is gone after a restart, so a restart turns it off too. Who may log in is Debian's: the accounts of the interface have no shell | keys, users allowed to log in and a web terminal belong to Debian's configuration or later |
 | Time | time zone, network time on or off, up to four time servers (a drop-in of systemd-timesyncd; none: Debian's pool) or the clock set by hand, all through systemd-timedated (`timedatectl`); shown and set in the NAS's zone, not the browser's. Schedules follow a new zone within five minutes (`jiff` keeps the system zone that long), apps when they next start (they get `/etc/localtime`) | the agent may not set the clock itself (`ProtectClock`); timedated is what `timedatectl` and every desktop use |
 | Docker | Debian packages `docker.io` and `docker-compose`, installed as the App Center's Docker plugin (the package only suggests them) by apt in a unit of its own (4.10); apps are administrators' Compose projects (4.9) | security updates through Debian; Docker CE optional |
-| Packaging | `debian/` with debhelper (compat 13 plus `dh-sequence-installsysusers`), built in a `debian:trixie` container with Rust from `rustup` and Node.js 24 pinned by checksum | native maintainer scripts, `sysusers.d`, `tmpfiles.d`, `dh_installsystemd`; works on any host with Docker |
+| Packaging | `debian/` with debhelper (compat 13 plus `dh-sequence-installsysusers`), built in a `debian:trixie` container with Rust from `rustup` and Node.js 24 pinned by checksum; for amd64 and arm64, the other architecture than the container's cross-compiled (`dpkg-buildpackage --host-arch`, Debian's cross compiler, the C library of that architecture through multiarch for linking and `dpkg-shlibdeps`) | native maintainer scripts, `sysusers.d`, `tmpfiles.d`, `dh_installsystemd`; works on any host with Docker; cross-compiling rather than building on an arm64 machine keeps one build environment, which a workstation runs in minutes and CI's x86 runners too, while the tests run natively on an arm64 runner (`docs/testing.md`) |
 | Test VM | `scripts/vm.sh` (`just vm …`): Debian 13 cloud image verified by SHA512, cloud-init, 4 SATA disks with emulated SMART and 1 NVMe disk, ports on 127.0.0.1 unless `ZENDILOOS_VM_LISTEN` or `ZENDILOOS_VM_BRIDGE` (the LAN) say otherwise; several VMs side by side (`ZENDILOOS_VM`); spare network cards on a network of their own for bonds and VLANs (`ZENDILOOS_VM_EXTRA_NICS`) | the cloud kernel suffices for ZFS (DKMS with its headers); it has no USB, so removable drives come over SCSI with the removable bit |
 | Reproducibility | `rust-toolchain.toml`, `Cargo.lock`, `package-lock.json`, `SOURCE_DATE_EPOCH`, pinned build container; the installation ISO starts from Debian's netinst image, pinned by its SHA512 (`packaging/iso/netinst.env`); the appliance's images (phase 5) are to be built with mmdebstrap against a fixed snapshot.debian.org state, failing on any error | |
 | Licensing | Zendiloos code under Apache-2.0; the installation ISO adds only zendiloOS's package and the answers to Debian's netinst image, and Debian's packages come from its mirror with their copyright files. Every release carries a software bill of materials beside its package, in its signed checksums (CycloneDX 1.5: the programs' crates, the npm packages in the web interface's bundle, the Debian packages the package names; `scripts/sbom.sh`, `docs/releases.md`); `docs/licences.md` is the overview made from it, and `just check` holds every licence to those `backend/deny.toml` allows (cargo-deny's own check, for the crates), or an exception for one package of the web interface (noVNC's MPL-2.0, the fonts' OFL-1.1). The build writes what it bundled beside the bundle (`licences.json`) with the licence texts (`third-party-licences.txt`). The appliance's image (phase 5) is to list its Debian packages with their versions too | required when distributing a Debian-based image |
@@ -3656,6 +3669,12 @@ partition with a reserve.
 Decided on 2026-11-06 for the installation ISO: it ships no ZFS module;
 DKMS builds it on the machine, as on an existing Debian
 (`docs/releases.md`).
+
+Decided on 2026-11-12 for arm64 (issue #61): a package and an installation
+ISO for arm64 beside amd64's in every release, the package cross-compiled
+in the same build container, the NAS taking its own architecture's;
+virtual machines stay amd64's until the domains are written for QEMU's
+`virt` machine too.
 
 1. ZFS in the appliance's image (phase 5): build it on the device, as the
    ISO does, or ship prebuilt modules, which needs a licensing review
