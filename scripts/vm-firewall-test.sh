@@ -282,9 +282,18 @@ setup=$(body GET /security/firewall)
 [[ $(jq -r '.current.rules | map(.service) | index("smb")' <<<"$setup") != null ]] || fail "the kept rules changed"
 
 say "9. After a reboot the rules are in force before the network"
+# Waits for a new boot, not only for SSH: a guest VM that ignores the
+# shutdown keeps libvirt-guests waiting up to five minutes, with the old
+# system still answering meanwhile.
+boot=$(vm 'cat /proc/sys/kernel/random/boot_id')
+booted_anew() {
+    local now
+    now=$(vm 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null) || return 1
+    [[ -n $now && $now != "$boot" ]]
+}
 vm 'sudo systemctl reboot' || true
 sleep 10
-wait_for "the VM after the reboot" "vm true" 300
+wait_for "the VM after the reboot" booted_anew 600
 [[ $(vm 'systemctl is-active zendiloos-firewall.service') == active ]] || fail "the unit is not active"
 vm 'sudo nft list table inet zendiloos_firewall' | grep -q "saddr $client" || fail "the rules are not back"
 before=$(vm "systemctl show -p ActiveEnterTimestampMonotonic --value zendiloos-firewall.service")
