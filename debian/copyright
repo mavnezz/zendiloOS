@@ -6,6 +6,14 @@ Files: *
 Copyright: 2026 The zendiloOS authors
 License: Apache-2.0
 
+Files: frontend/node_modules/*
+Copyright: Their authors, as each package says
+License: various
+Comment: The npm packages the web interface's bundle holds, each under
+ a licence backend/deny.toml allows (docs/licences.md lists them); their
+ licence texts are in /usr/share/zendiloos/webui/third-party-licences.txt,
+ which the build writes from the packages.
+
 Files: frontend/node_modules/@novnc/novnc/core/*
 Copyright: 2022 The noVNC authors
 License: MPL-2.0
@@ -17,6 +25,18 @@ Files: frontend/node_modules/@novnc/novnc/vendor/pako/*
 Copyright: 2014-2016 Vitaly Puzrin
 License: Expat
 Comment: pako, which noVNC vendors for its zlib decoding.
+
+Files: frontend/node_modules/@fontsource-variable/geist/*
+Copyright: 2024 The Geist Project Authors (https://github.com/vercel/geist-font)
+License: OFL-1.1
+Comment: Geist, the web interface's font, bundled into
+ /usr/share/zendiloos/webui.
+
+Files: frontend/node_modules/@fontsource-variable/jetbrains-mono/*
+Copyright: 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)
+License: OFL-1.1
+Comment: JetBrains Mono, the web interface's monospaced font, bundled into
+ /usr/share/zendiloos/webui.
 
 License: Apache-2.0
  On Debian systems, the full text of the Apache License, Version 2.0 can be
@@ -44,3 +64,11 @@ License: Expat
  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  SOFTWARE.
+
+License: OFL-1.1
+ The full text of the SIL Open Font License, Version 1.1, goes along with the
+ fonts in /usr/share/zendiloos/webui/third-party-licences.txt; it is also at
+ https://openfontlicense.org/open-font-license-official-text/.
+
+License: various
+ See /usr/share/zendiloos/webui/third-party-licences.txt.

@@ -26,7 +26,17 @@ a stable release is newer.
 ## What a release holds
 
 - `zendiloos_<version>_<arch>.deb`
-- `SHA256SUMS`: the checksums of the package and, if there is one, the ISO
+- `zendiloos_<version>_<arch>.cdx.json`: the software bill of materials
+  (SBOM), CycloneDX 1.5 in JSON: the Rust crates of zendiloosd and
+  zendiloos-agent (cargo-cyclonedx), the npm packages the web interface's
+  bundle holds (as the build found them), and the package itself with its
+  SHA-256 and the Debian packages it depends on, recommends and suggests
+  (by name and the versions it asks for: Debian's mirror gives the rest at
+  installation). `scripts/sbom.sh` makes it, `just check` checks its
+  licences against `backend/deny.toml`, and `docs/licences.md` is the
+  overview made from it
+- `SHA256SUMS`: the checksums of the package, the SBOM and, if there is
+  one, the ISO
 - `SHA256SUMS.minisig`: its signature, made with the release key, whose
   trusted comment (signed as well) names the build: `zendiloos <version>`
 - `zendiloos-amd64-netinst.iso`, for stable releases: the installation ISO

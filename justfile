@@ -20,7 +20,7 @@ test:
     cargo test --workspace --locked
 
 # Everything CI checks; the tests run measured, against the coverage thresholds
-check: version-check release-notes-test iso-network-test lint deny coverage-backend sqlx-check api-check web-check
+check: version-check release-notes-test iso-network-test lint deny coverage-backend sqlx-check api-check web-check licences-check
 
 # The crates carry the version of the newest entry in debian/changelog
 # (Debian's ~ for a test release is Cargo's -)
@@ -131,6 +131,25 @@ web-check:
     npm run -s lint
     npm run -s test:coverage
     npm run -s build
+
+# The software bill of materials of what the sources bring, the crates and
+# the web interface's bundle (scripts/sbom.sh), after the frontend's
+# production build: dev/sbom/zendiloos.cdx.json. A release's adds its
+# package and Debian's (CI, docs/releases.md).
+sbom:
+    mkdir -p dev/sbom
+    scripts/sbom.sh sources dev/sbom/zendiloos.cdx.json
+
+# Write docs/licences.md anew from the SBOM, after a production build
+licences:
+    cd frontend && npm run -s build
+    just sbom
+    node scripts/licences.mjs dev/sbom/zendiloos.cdx.json > docs/licences.md
+
+# Fail if a licence is not one backend/deny.toml allows (or an exception in
+# scripts/licences.mjs), or docs/licences.md is stale; after web-check's build
+licences-check: sbom
+    node scripts/licences.mjs --check dev/sbom/zendiloos.cdx.json
 
 # Build the Debian package in a debian:trixie container; the result lands in dist/
 deb:

@@ -14,6 +14,7 @@ _A NAS operating system on Debian, run from a desktop in the browser._
 [Releases](https://github.com/mavnezz/zendiloOS/releases) ·
 [Architecture](docs/architecture.md) ·
 [Testing](docs/testing.md) ·
+[Licences](docs/licences.md) ·
 [Issues](https://github.com/mavnezz/zendiloOS/issues)
 
 <img src="docs/images/desktop.jpg" alt="The zendiloOS desktop: the file explorer in a shared folder, widgets with the system's state">
@@ -163,9 +164,11 @@ frontend/   Vue 3 interface; openapi.json and the TypeScript types are generated
 debian/     Debian packaging
 packaging/  systemd units, nginx, default configuration, build image, ISO answers
 scripts/    test VM, VM tests, release and ISO tools
-docs/       architecture, testing, releases
+docs/       architecture, testing, releases, licences
 ```
 
 ## License
 
-[Apache-2.0](LICENSE)
+[Apache-2.0](LICENSE). What the package carries of others' work, and under
+which licences: [docs/licences.md](docs/licences.md); every release
+publishes its software bill of materials beside the package.
