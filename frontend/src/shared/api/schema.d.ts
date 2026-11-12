@@ -1159,6 +1159,94 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/configuration/backup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The plan of the backups made on their own. Needs `system.manage`. */
+        get: operations["configuration_plan"];
+        /**
+         * Sets when and where the backups are made, how many are kept and the
+         *     passphrase; they are written as the administrator setting it. Needs
+         *     `system.manage`.
+         */
+        put: operations["set_configuration_plan"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/configuration/backup/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * A backup of the configuration as it is now: the database, the
+         *     certificates, Samba's passwords, the accounts' Linux users and the
+         *     host's settings, encrypted with the passphrase (age, scrypt). Needs
+         *     `system.manage`.
+         */
+        post: operations["download_configuration"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/configuration/backup/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Backs up into the plan's folder now, in a job. Needs `system.manage`. */
+        post: operations["run_configuration_backup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/configuration/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restores a backup on this NAS: the body is the backup, the passphrase
+         *     in `X-Zendiloos-Passphrase` (base64 of its UTF-8). Checked first as a
+         *     whole: refused with the passphrase wrong, of another layout, or of a
+         *     database newer than this release knows (an older one is migrated).
+         *     The accounts' Linux users, the certificates, Samba's passwords and the
+         *     host's settings go back at once, the database at zendiloosd's start,
+         *     which follows; whoever is signed in signs in again with the accounts of
+         *     the backup. The network stays as it is. Needs `system.manage`; refused
+         *     while jobs run.
+         */
+        post: operations["restore_configuration"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/docker/backup-shares/{id}/readers": {
         parameters: {
             query?: never;
@@ -3289,6 +3377,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/setup/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restores a backup instead of creating the first administrator, as
+         *     `/configuration/restore` does; allowed as the setup is (the setup code
+         *     in `X-Zendiloos-Setup-Code`, or an open setup from the NAS's own
+         *     network). Afterwards the backup's accounts sign in.
+         */
+        post: operations["restore_instead_of_setup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/shares": {
         parameters: {
             query?: never;
@@ -3945,6 +4055,30 @@ export interface paths {
         /** The data volumes. Needs `storage.view`. */
         get: operations["volumes"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/hostname": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The machine's name. Needs `system.view`. */
+        get: operations["host_name"];
+        /**
+         * Renames the machine. What derives from the name follows at once:
+         *     `<name>.local` (Avahi), the SMB name (Samba's NetBIOS name, the name in
+         *     uppercase) and WS-Discovery, which restart if they run (open SMB
+         *     connections end), `/etc/hosts`, the web interface's own certificate
+         *     (never an issued one) and the notifications. Needs `system.manage`.
+         */
+        put: operations["set_host_name"];
         post?: never;
         delete?: never;
         options?: never;
@@ -5750,6 +5884,85 @@ export interface components {
             };
             severity: components["schemas"]["Severity"];
         };
+        /**
+         * @description When the backups are made.
+         * @enum {string}
+         */
+        ConfigurationFrequency: "daily" | "weekly";
+        ConfigurationLastRun: {
+            /** Format: int64 */
+            at: number;
+            error?: string | null;
+            file?: string | null;
+            succeeded: boolean;
+        };
+        /** @description The backups made on their own; the passphrase is never sent back. */
+        ConfigurationPlan: {
+            /**
+             * @description The administrator who set it up: the backups are written with that
+             *     account's access to the folder.
+             */
+            account?: string | null;
+            enabled: boolean;
+            frequency: components["schemas"]["ConfigurationFrequency"];
+            /**
+             * Format: int32
+             * @description The NAS's local time.
+             */
+            hour: number;
+            /**
+             * Format: int32
+             * @description How many are kept in the folder, the newest; 1 to 60.
+             */
+            keep: number;
+            /** Format: int32 */
+            keep_max: number;
+            last_run?: components["schemas"]["ConfigurationLastRun"] | null;
+            /** Format: int32 */
+            minute: number;
+            /** Format: int64 */
+            next_at?: number | null;
+            /** @description The fewest characters a passphrase has. */
+            passphrase_min: number;
+            passphrase_set: boolean;
+            target?: components["schemas"]["ConfigurationTarget"] | null;
+            /**
+             * Format: int32
+             * @description 0 is Monday; weekly only.
+             */
+            weekday?: number | null;
+        };
+        ConfigurationPlanRequest: {
+            enabled: boolean;
+            frequency: components["schemas"]["ConfigurationFrequency"];
+            /** Format: int32 */
+            hour: number;
+            /** Format: int32 */
+            keep: number;
+            /** Format: int32 */
+            minute: number;
+            /**
+             * Format: password
+             * @description Left out or empty: the one kept stays.
+             */
+            passphrase?: string | null;
+            target?: components["schemas"]["ConfigurationTarget"] | null;
+            /** Format: int32 */
+            weekday?: number | null;
+        };
+        /** @description Where the backups go. */
+        ConfigurationTarget: {
+            folder: string;
+            /** @enum {string} */
+            kind: "share";
+            /** Format: int64 */
+            share_id: number;
+        } | {
+            drive: string;
+            folder: string;
+            /** @enum {string} */
+            kind: "drive";
+        };
         ContainerHealthcheck: {
             /** Format: int64 */
             interval_seconds?: number | null;
@@ -6291,6 +6504,14 @@ export interface components {
             complete: boolean;
             name: string;
         };
+        DownloadRequest: {
+            /**
+             * Format: password
+             * @description At least 12 characters; nobody opens or restores the backup
+             *     without it.
+             */
+            passphrase: string;
+        };
         EjectRemovable: {
             /**
              * @description Also takes the disk off the bus, ready to be pulled out (the
@@ -6726,6 +6947,39 @@ export interface components {
         };
         /** @enum {string} */
         HookFormat: "json" | "text";
+        /** @description What came of a rename. */
+        HostNameRenamed: {
+            /**
+             * @description The web interface's own certificate was made anew for the name; if
+             *     not, it still names the old one.
+             */
+            certificate_renewed: boolean;
+            name: string;
+            /** @description As Samba and Windows show it. */
+            netbios_name: string;
+            /**
+             * @description The web interface serves that certificate: browsers meet a new one
+             *     and ask to trust it again.
+             */
+            own_certificate_served: boolean;
+        };
+        HostNameRequest: {
+            /**
+             * @description Letters, digits and `-`, at most 15, not digits only; kept in
+             *     lowercase.
+             */
+            name: string;
+        };
+        /** @description The machine's name. */
+        HostNameState: {
+            /** @description The most characters a new name may have (NetBIOS's limit). */
+            max_length: number;
+            /**
+             * @description As the system keeps it (`/etc/hostname`); one set elsewhere may be
+             *     longer than a new one may be.
+             */
+            name: string;
+        };
         ImageUpdate: {
             /** @description The containers made from it, by name. */
             containers: string[];
@@ -8017,6 +8271,30 @@ export interface components {
             target: components["schemas"]["RestoreInto"];
             /** @description The volume, for `existing`. */
             volume?: string | null;
+        };
+        /** @description What came of a restore; zendiloosd starts again with it a moment later. */
+        RestoreResult: {
+            /**
+             * Format: int64
+             * @description When it was made, and by which version of zendiloOS.
+             */
+            created_at: number;
+            /** @description The name of the machine the backup was made of, which this one has now. */
+            host_name: string;
+            /**
+             * Format: int32
+             * @description The web interface's HTTPS port as the backup has it: where the
+             *     interface is once zendiloosd started again.
+             */
+            https_port?: number | null;
+            /**
+             * @description The network's files in the backup. Not put in force: the network is
+             *     set on its page, each change confirmed.
+             */
+            network: string[];
+            version: string;
+            /** @description What was not put back; the rest was. */
+            warnings: string[];
         };
         RestoreVmBackupRequest: {
             as: components["schemas"]["VmRestoreAs"];
@@ -12215,6 +12493,189 @@ export interface operations {
             };
             /** @description `acme_not_installed`, or `refused`: an HTTP challenge without plain HTTP on port 80 */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    configuration_plan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigurationPlan"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_configuration_plan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfigurationPlanRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigurationPlan"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`: a time, a folder, how many kept; on without a folder or passphrase */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    download_configuration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DownloadRequest"];
+            };
+        };
+        responses: {
+            /** @description The backup, `zendiloos-config-<name>-<time>.tar.zst.age`. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": number[];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`: a passphrase too short */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    run_configuration_backup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `not_planned`: no folder or passphrase yet */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    restore_configuration: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Base64 of the passphrase's UTF-8. */
+                "x-zendiloos-passphrase": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": number[];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestoreResult"];
+                };
+            };
+            /** @description `jobs_running`; `refused`: the host would not take it back (a name or ID taken), in its words */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `wrong_passphrase`, `not_a_backup`, `unsupported_backup`, `backup_too_new`, `invalid_input` */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -17399,6 +17860,70 @@ export interface operations {
             };
         };
     };
+    restore_instead_of_setup: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Base64 of the passphrase's UTF-8. */
+                "x-zendiloos-passphrase": string;
+                /** @description The code on the console; none for an open setup. */
+                "x-zendiloos-setup-code"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": number[];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestoreResult"];
+                };
+            };
+            /** @description `setup_not_local`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `setup_completed`, `jobs_running`, `refused` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_setup_code`, `wrong_passphrase`, `not_a_backup`, `unsupported_backup`, `backup_too_new` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `too_many_attempts` */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     list_shares: {
         parameters: {
             query?: never;
@@ -18868,6 +19393,75 @@ export interface operations {
             };
             /** @description `forbidden` */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    host_name: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HostNameState"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_host_name: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HostNameRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HostNameRenamed"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`: not a name of letters, digits and -, too long, digits only, localhost */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
