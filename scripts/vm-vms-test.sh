@@ -152,7 +152,7 @@ job_succeeded() {
 same_cards() {
     local id=$1 before=$2 after
     after=$(jq -c '[.nics[] | [.slot, .mac]]' "$work/last")
-    [[ $after == $(jq -c '[.nics[] | [.slot, .mac]]' <<<"$before") ]] && return 0
+    [[ $after == "$(jq -c '[.nics[] | [.slot, .mac]]' <<<"$before")" ]] && return 0
     note "the answer: $after"
     note "before: $(jq -c '[.nics[] | [.slot, .mac]]' <<<"$before")"
     note "GET now: $(call GET "/vms/$id" | jq -c '[.nics[] | [.slot, .mac]]')"
