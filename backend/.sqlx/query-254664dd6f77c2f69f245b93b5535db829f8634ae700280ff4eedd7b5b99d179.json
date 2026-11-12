@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM notification_deliveries WHERE state = 'failed' AND (at < ? OR id IN (\n                 SELECT id FROM (\n                     SELECT id, row_number() OVER (PARTITION BY channel_id ORDER BY at DESC, id DESC) AS newer\n                     FROM notification_deliveries WHERE state = 'failed'\n                 ) WHERE newer > ?\n             ))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "254664dd6f77c2f69f245b93b5535db829f8634ae700280ff4eedd7b5b99d179"
+}

@@ -21,6 +21,8 @@ const channel = (id: number, name: string): NotificationChannel => ({
   language: 'en',
   last_delivery_at: null,
   last_error: null,
+  waiting: [],
+  failed: [],
 })
 const channels = [channel(1, 'Mail'), channel(2, 'Chat')]
 

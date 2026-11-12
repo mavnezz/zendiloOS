@@ -1,0 +1,146 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", channel_id, notification_id, raised_at, level, code, params, state,\n                      attempts, at, error\n               FROM notification_deliveries ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "notification_deliveries",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "channel_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "notification_deliveries",
+            "name": "channel_id"
+          }
+        }
+      },
+      {
+        "name": "notification_id",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "notification_deliveries",
+            "name": "notification_id"
+          }
+        }
+      },
+      {
+        "name": "raised_at",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "notification_deliveries",
+            "name": "raised_at"
+          }
+        }
+      },
+      {
+        "name": "level",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notification_deliveries",
+            "name": "level"
+          }
+        }
+      },
+      {
+        "name": "code",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notification_deliveries",
+            "name": "code"
+          }
+        }
+      },
+      {
+        "name": "params",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notification_deliveries",
+            "name": "params"
+          }
+        }
+      },
+      {
+        "name": "state",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notification_deliveries",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "name": "attempts",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "notification_deliveries",
+            "name": "attempts"
+          }
+        }
+      },
+      {
+        "name": "at",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "notification_deliveries",
+            "name": "at"
+          }
+        }
+      },
+      {
+        "name": "error",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notification_deliveries",
+            "name": "error"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "16d11394d10802c25cb991eb53e20b34461812c3a2da42a2e869027030d9eca9"
+}

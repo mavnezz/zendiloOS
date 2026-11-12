@@ -96,9 +96,29 @@ announce_share_walks() {
     fi
 }
 
+# systemd-gpt-auto-generator mounts partitions of the discoverable GPT
+# types that fstab does not name. A NAS installed with Debian's installer
+# names all of its own in fstab, and zendiloOS mounts its pools with units
+# of its own; on an eMMC system disk the generator fails at every reload of
+# systemd ("Cannot dissect image: Input/output error"), which buries real
+# warnings. It is masked, unless something is in its place already (the
+# administrator's, or a package's: Ubuntu's systemd ships this very link);
+# the marker beside zendiloOS's settings says that the mask is zendiloOS's,
+# for the purge.
+gpt_auto=/etc/systemd/system-generators/systemd-gpt-auto-generator
+mask_gpt_auto() {
+    if [ ! -e "$gpt_auto" ] && [ ! -L "$gpt_auto" ]; then
+        mkdir -p /etc/systemd/system-generators
+        ln -s /dev/null "$gpt_auto"
+        mkdir -p /etc/zendiloos
+        echo "$gpt_auto" >/etc/zendiloos/masked-generators
+    fi
+}
+
 case "$1" in
     configure)
         announce_share_walks "$2"
+        mask_gpt_auto
         load_zfs
         # Earlier packages linked the console text to a file zendiloosd wrote.
         if [ -L /run/issue.d/zendiloos.issue ]; then rm -f /run/issue.d/zendiloos.issue; fi

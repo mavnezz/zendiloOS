@@ -9,6 +9,10 @@
 #   3. a real notification (a finished scrub of a one-disk pool), routed
 #      to the webhook and not kept in zendiloOS, reaches the webhook on its
 #      own and is not listed in the interface
+#   4. with the receiver down, the next scrub's notification waits on the
+#      channel (listed as waiting, with the reason), is still there after a
+#      restart of zendiloosd, and goes out on its own once the receiver is
+#      back
 #
 # Needs the VM running with the package installed and set up, and one free
 # SATA disk. Account and password come from ZENDILOOS_USER and
@@ -84,9 +88,9 @@ curl -sk -c "$work/jar" -H "Origin: $base" -H 'Content-Type: application/json' \
     -d "$(jq -n --arg name "$user" --arg password "$password" '{name: $name, password: $password}')" \
     "$api/auth/login" | jq -er .csrf_token >"$work/csrf" || fail "cannot sign in"
 
-say "1. A webhook receives a test message"
 # Logs every request body, one per line, and answers 204.
-vm "rm -f /tmp/hooks.log; nohup python3 -c '
+start_receiver() {
+    vm "nohup python3 -c '
 import http.server, sys
 class Hook(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
@@ -97,7 +101,12 @@ class Hook(http.server.BaseHTTPRequestHandler):
 sys.argv[0] = \"zendiloos-hook-receiver\"
 http.server.HTTPServer((\"127.0.0.1\", 8099), Hook).serve_forever()
 ' zendiloos-hook-receiver >/dev/null 2>&1 &"
-wait_for "the receiver" "vm 'ss -Hltn | grep -q 127.0.0.1:8099'" 20
+    wait_for "the receiver" "vm 'ss -Hltn | grep -q 127.0.0.1:8099'" 20
+}
+
+say "1. A webhook receives a test message"
+vm 'rm -f /tmp/hooks.log'
+start_receiver
 hook=$(call POST /notification-channels '{"name":"Test hook","target":{"kind":"webhook","url":"http://127.0.0.1:8099/hook","format":"json"},"language":"en"}')
 hook_id=$(jq -er .id <<<"$hook") || fail "webhook: $hook"
 channels+=("$hook_id")
@@ -152,6 +161,30 @@ vm "grep \"Data check of $pool\" /tmp/hooks.log | tail -n1" | jq -e '.code == "s
 call GET '/notifications?limit=50' | jq -e --arg pool "$pool" \
     '[.notifications[] | select(.code == "scrub_finished" and .params.pool == $pool)] | length == 0' >/dev/null \
     || fail "a kind not kept in zendiloOS is listed there"
+
+say "4. With the receiver down, the next one waits, outlives a restart and goes out once it is back"
+vm 'pkill -f zendiloos-hook-receiver'
+wait_for "the receiver to stop" "! vm 'ss -Hltn | grep -q 127.0.0.1:8099'" 20
+delivered=$(vm "grep -c \"Data check of $pool\" /tmp/hooks.log")
+[[ $(status POST "/storage/pools/$pool/scrub") == 204 ]] || fail "cannot scrub again: $(cat "$work/body")"
+waiting() {
+    call GET /notification-channels | jq -e --argjson id "$hook_id" '.[] | select(.id == $id)
+        | .waiting | length == 1 and .[0].notification.code == "scrub_finished" and .[0].attempts >= 1
+          and (.[0].error | startswith("cannot connect"))'
+}
+wait_for "the scrub's notification waiting on the channel" waiting 150
+call GET /notification-channels | jq -r --argjson id "$hook_id" \
+    '.[] | select(.id == $id) | .waiting[0] | "   waiting after \(.attempts) tries: \(.error)"'
+vm 'sudo systemctl restart zendiloosd'
+wait_for "zendiloosd" "curl -skf $api/health" 120
+waiting >/dev/null || fail "what waited is gone after the restart: $(call GET /notification-channels)"
+start_receiver
+# Tried again a minute after the first try, then two, then four.
+wait_for "the waiting notification at the webhook" \
+    "[[ \$(vm \"grep -c 'Data check of $pool' /tmp/hooks.log\") -gt $delivered ]]" 420
+call GET /notification-channels | jq -e --argjson id "$hook_id" \
+    '.[] | select(.id == $id) | .waiting == [] and .failed == [] and .last_error == null' >/dev/null \
+    || fail "the channel still lists it: $(call GET /notification-channels)"
 remove_pool
 
-say "Passed: webhook, email recipients and failure reported, a scrub's notification routed and delivered"
+say "Passed: webhook, email recipients and failure reported, a scrub's notification routed and delivered, and delivered again once its receiver was back"

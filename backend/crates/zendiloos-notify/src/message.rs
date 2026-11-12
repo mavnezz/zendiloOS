@@ -103,18 +103,26 @@ pub fn message(notification: &Notification, host: &str, language: Language) -> M
                 (slot, "") => format!("{} ({slot})", param("disk")),
                 (slot, group) => format!("{} ({slot}, {group})", param("disk")),
             };
+            // An eMMC is soldered to the board: the system moves instead.
+            let emmc = param("source") == "emmc";
             if german {
                 let health = if failing { "kritisch" } else { "auffällig" };
-                (
-                    format!("Platte {disk} meldet Probleme"),
-                    format!("{model}: SMART-Zustand ist {health}. Planen Sie den Austausch."),
-                )
+                let body = if emmc {
+                    format!(
+                        "{model}: Der Verschleiß des eMMC ist {health}. Ziehen Sie das System rechtzeitig auf eine andere Platte um."
+                    )
+                } else {
+                    format!("{model}: SMART-Zustand ist {health}. Planen Sie den Austausch.")
+                };
+                (format!("Platte {disk} meldet Probleme"), body)
             } else {
                 let health = if failing { "failing" } else { "worrying" };
-                (
-                    format!("Disk {disk} reports problems"),
-                    format!("{model}: SMART health is {health}. Plan to replace it."),
-                )
+                let body = if emmc {
+                    format!("{model}: the eMMC's wear is {health}. Move the system to another disk in time.")
+                } else {
+                    format!("{model}: SMART health is {health}. Plan to replace it.")
+                };
+                (format!("Disk {disk} reports problems"), body)
             }
         }
         "snapshot_failed" if german => (
@@ -337,6 +345,13 @@ mod tests {
             message(&disk, "nas", Language::German).body,
             "WD RED: SMART-Zustand ist kritisch. Planen Sie den Austausch."
         );
+        let emmc =
+            notification("disk_health", &[("disk", "mmcblk0"), ("health", "warning"), ("source", "emmc")]);
+        assert_eq!(
+            message(&emmc, "nas", Language::English).body,
+            "mmcblk0: the eMMC's wear is worrying. Move the system to another disk in time."
+        );
+        assert!(message(&emmc, "nas", Language::German).body.contains("Verschleiß des eMMC ist auffällig"));
     }
 
     #[test]

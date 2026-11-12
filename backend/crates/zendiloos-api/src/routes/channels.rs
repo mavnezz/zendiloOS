@@ -17,11 +17,13 @@ use zendiloos_notify::channels::{
     PasswordChange, Recipient, Security, Webhook, WebhookFormat,
 };
 use zendiloos_notify::message::Language;
+use zendiloos_notify::queue::{QueueState, QueuedDelivery};
 use zendiloos_notify::routes::Group;
 
 use crate::auth::Auth;
 use crate::error::{ApiError, Problem};
 use crate::extract::{ApiJson, Client};
+use crate::routes::jobs::Notification;
 use crate::state::ApiState;
 
 pub(super) fn routes() -> OpenApiRouter<ApiState> {
@@ -138,6 +140,19 @@ pub struct ChannelRecipient {
     pub problem: Option<RecipientProblem>,
 }
 
+/// A notification that has not gone out on a channel.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UndeliveredNotification {
+    pub notification: Notification,
+    /// How often it was tried.
+    pub attempts: u32,
+    /// Waiting: when it is tried next; failed: when it failed for good. In
+    /// Unix seconds.
+    pub at: i64,
+    /// Why the last try failed.
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct NotificationChannel {
     pub id: i64,
@@ -150,6 +165,12 @@ pub struct NotificationChannel {
     pub last_delivery_at: Option<i64>,
     /// What went wrong then; none if it went out.
     pub last_error: Option<String>,
+    /// What did not go out yet and is tried again, with a growing pause,
+    /// for about twelve hours: the oldest first.
+    pub waiting: Vec<UndeliveredNotification>,
+    /// What will not go out, because it cannot or its tries ran out: the
+    /// most recent first, for a week.
+    pub failed: Vec<UndeliveredNotification>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -261,7 +282,25 @@ fn target(destination: &Destination) -> ChannelTarget {
     }
 }
 
-async fn dto(state: &ApiState, channel: Channel) -> Result<NotificationChannel, ApiError> {
+fn undelivered(delivery: &QueuedDelivery) -> UndeliveredNotification {
+    UndeliveredNotification {
+        notification: delivery.notification.clone().into(),
+        attempts: delivery.attempts,
+        at: delivery.at.unix_seconds(),
+        error: delivery.error.clone(),
+    }
+}
+
+/// The channel as the page shows it, with what of `queued` is its own.
+async fn dto(
+    state: &ApiState,
+    channel: Channel,
+    queued: &[QueuedDelivery],
+) -> Result<NotificationChannel, ApiError> {
+    let own =
+        |wanted: QueueState| queued.iter().filter(move |d| d.channel_id == channel.id && d.state == wanted);
+    let waiting = own(QueueState::Waiting).map(undelivered).collect();
+    let failed = own(QueueState::Failed).rev().map(undelivered).collect();
     let recipients = state
         .channels
         .recipients(&channel)
@@ -293,6 +332,8 @@ async fn dto(state: &ApiState, channel: Channel) -> Result<NotificationChannel, 
         },
         last_delivery_at: channel.last.as_ref().map(|d| d.at.unix_seconds()),
         last_error: channel.last.and_then(|d| d.error),
+        waiting,
+        failed,
     })
 }
 
@@ -362,9 +403,10 @@ async fn list_channels(
     State(state): State<ApiState>,
 ) -> Result<Json<Vec<NotificationChannel>>, ApiError> {
     auth.require(Permission::SystemManage)?;
+    let queued = state.channels.queued().await?;
     let mut listed = Vec::new();
     for channel in state.channels.list().await? {
-        listed.push(dto(&state, channel).await?);
+        listed.push(dto(&state, channel, &queued).await?);
     }
     Ok(Json(listed))
 }
@@ -391,7 +433,7 @@ async fn create_channel(
 ) -> Result<(StatusCode, Json<NotificationChannel>), ApiError> {
     auth.require(Permission::SystemManage)?;
     let created = state.channels.create(settings(input), &auth.0.actor(), &client).await?;
-    Ok((StatusCode::CREATED, Json(dto(&state, created).await?)))
+    Ok((StatusCode::CREATED, Json(dto(&state, created, &[]).await?)))
 }
 
 /// Changes a channel's name, recipients or address, and language. Needs
@@ -419,7 +461,8 @@ async fn update_channel(
 ) -> Result<Json<NotificationChannel>, ApiError> {
     auth.require(Permission::SystemManage)?;
     let updated = state.channels.update(id, settings(input), &auth.0.actor(), &client).await?;
-    Ok(Json(dto(&state, updated).await?))
+    let queued = state.channels.queued().await?;
+    Ok(Json(dto(&state, updated, &queued).await?))
 }
 
 /// Removes a channel, and where notifications went on it. Needs
@@ -447,7 +490,8 @@ async fn delete_channel(
 }
 
 /// Sends a test message on this channel alone now and waits for the
-/// outcome. Needs `system.manage`.
+/// outcome; once one went out, what waits on the channel goes out too.
+/// Needs `system.manage`.
 #[utoipa::path(
     post,
     path = "/notification-channels/{id}/test",

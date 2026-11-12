@@ -387,7 +387,7 @@ async fn the_storage_goes_on_a_pool_and_libvirt_follows_it() {
         calls.iter().position(|call| call == wanted).unwrap_or_else(|| panic!("{wanted}: {calls:?}"))
     };
     at("zfs create -o mountpoint=legacy -o setuid=off -o devices=off -o exec=off tank/zendiloos.vms");
-    let enabled = at("systemctl enable --now volume1-\\x40vms.mount");
+    let enabled = at("systemctl start volume1-\\x40vms.mount");
     assert!(enabled < at("systemctl enable --now virtlogd.socket"));
     assert!(at("systemctl enable --now virtlogd.socket") < at("systemctl enable --now libvirtd.socket"));
     assert!(at("systemctl enable libvirtd.service") < at("systemctl restart libvirtd.service"));
@@ -470,7 +470,7 @@ async fn a_location_goes_only_once_empty_and_libvirt_stops_waiting_for_it_first(
     let reloaded = at("systemctl daemon-reload");
     let stopped = at("systemctl stop volume2-\\x40vms.mount");
     let destroyed = at("zfs destroy cold/zendiloos.vms");
-    let disabled = at("systemctl disable --now volume2-\\x40vms.mount");
+    let disabled = at("systemctl disable --no-reload --now volume2-\\x40vms.mount");
     assert!(reloaded < stopped && stopped < destroyed && destroyed < disabled, "{calls:?}");
     assert!(!host.path("units/volume2-\\x40vms.mount").exists());
     let drop_in = fs::read_to_string(host.path("units/libvirtd.service.d/zendiloos.conf")).unwrap();

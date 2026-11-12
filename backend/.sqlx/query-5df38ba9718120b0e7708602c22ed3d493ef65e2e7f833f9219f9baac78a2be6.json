@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO notification_deliveries\n                     (channel_id, notification_id, raised_at, level, code, params, state, attempts, at, error)\n                 VALUES (?, ?, ?, ?, ?, ?, 'waiting', 0, ?, NULL)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "5df38ba9718120b0e7708602c22ed3d493ef65e2e7f833f9219f9baac78a2be6"
+}

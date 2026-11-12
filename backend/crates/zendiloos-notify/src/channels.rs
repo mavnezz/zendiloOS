@@ -5,17 +5,25 @@
 //! Mail goes out through one mail server, set once; an email channel names
 //! only its recipients: zendiloOS accounts (at the address the account has
 //! when a mail goes out) and other addresses. Which notifications a
-//! channel carries is the routing table's business ([`crate::routes`]).
+//! channel carries is the routing table's business ([`crate::routes`]);
+//! how a delivery that did not go out is tried again, the queue's
+//! ([`crate::queue`]).
 
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::sync::broadcast;
+use tokio::sync::{Notify, broadcast};
 use tokio::task::JoinHandle;
 use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, PortError, RequestContext, Timestamp};
 
 use crate::message::{Language, Message, message};
+pub use crate::queue::SendFailure;
+use crate::queue::{
+    ChannelQueue, DeliveryQueue, FAILED_KEPT, FAILED_KEPT_FOR, QueueState, QueuedDelivery, after_failure,
+    by_channel,
+};
 use crate::routes::{KINDS, Kind, RouteRepository, Routes, find, kind_of};
 use crate::{Level, Notification, Notifier};
 
@@ -342,14 +350,15 @@ pub trait AccountAddresses: Send + Sync {
 /// Delivers messages; adapters for SMTP and HTTP.
 #[async_trait]
 pub trait ChannelSender: Send + Sync {
-    /// Delivers one message; the error in words an administrator can act on.
+    /// Delivers one message; the error in words an administrator can act
+    /// on, and whether it may pass.
     async fn send(
         &self,
         target: &Target,
         message: &Message,
         notification: &Notification,
         host: &str,
-    ) -> Result<(), String>;
+    ) -> Result<(), SendFailure>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -393,14 +402,20 @@ pub struct KindChoice {
     pub channels: Vec<i64>,
 }
 
-/// A delivery that takes longer than this has failed.
+/// A delivery that takes longer than this has failed, and may go out
+/// when tried again.
 const SEND_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long the queue sleeps at most without anything due: its records
+/// are looked at again, should a wake-up have gone missing.
+const IDLE: Duration = Duration::from_secs(300);
 
 /// What channels need from outside.
 #[derive(Clone)]
 pub struct ChannelPorts {
     pub repository: Arc<dyn ChannelRepository>,
     pub routes: Arc<dyn RouteRepository>,
+    pub queue: Arc<dyn DeliveryQueue>,
     pub addresses: Arc<dyn AccountAddresses>,
     pub sender: Arc<dyn ChannelSender>,
     pub audit: Arc<dyn AuditLog>,
@@ -414,11 +429,31 @@ pub struct Channels {
     ports: ChannelPorts,
     /// The NAS's name, in every message.
     host: String,
+    /// Something was queued or a channel is done: the queue looks again.
+    wake: Arc<Notify>,
+    /// The channels whose deliveries are being sent, each by a task of its
+    /// own, so a slow server holds up no other.
+    sending: Arc<Mutex<HashSet<i64>>>,
+}
+
+/// Takes a channel off [`Channels::sending`] when its task ends, however
+/// it ends, and has the queue look again.
+struct Sending {
+    channel_id: i64,
+    sending: Arc<Mutex<HashSet<i64>>>,
+    wake: Arc<Notify>,
+}
+
+impl Drop for Sending {
+    fn drop(&mut self) {
+        self.sending.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&self.channel_id);
+        self.wake.notify_one();
+    }
 }
 
 impl Channels {
     pub fn new(ports: ChannelPorts, host: String) -> Self {
-        Self { ports, host }
+        Self { ports, host, wake: Arc::new(Notify::new()), sending: Arc::default() }
     }
 
     pub async fn list(&self) -> Result<Vec<Channel>, ChannelError> {
@@ -516,10 +551,40 @@ impl Channels {
             code: "channel_test".to_owned(),
             params: Default::default(),
         };
-        let delivery = self.send(&channel, &notification).await;
-        let outcome = if delivery.error.is_none() { Outcome::Success } else { Outcome::Failure };
+        let sent = self.send(&channel, &notification).await;
+        let outcome = if sent.is_ok() { Outcome::Success } else { Outcome::Failure };
         self.audit("notify.channel_test", outcome, &channel.settings.name, actor, request).await;
-        delivery.error.map_or(Ok(()), |error| Err(ChannelError::Delivery(error)))
+        if let Err(failure) = sent {
+            return Err(ChannelError::Delivery(failure.reason));
+        }
+        // It reaches its receiver again: what waits for it goes out now.
+        self.hurry(id).await;
+        Ok(())
+    }
+
+    /// What waits on the channels and what failed for good, oldest first.
+    pub async fn queued(&self) -> Result<Vec<QueuedDelivery>, ChannelError> {
+        Ok(self.ports.queue.queued().await?)
+    }
+
+    /// Makes the deliveries waiting for `channel_id` due now.
+    async fn hurry(&self, channel_id: i64) {
+        let now = self.ports.clock.now();
+        let waiting = match self.ports.queue.queued().await {
+            Ok(listed) => listed,
+            Err(error) => return tracing::warn!(%error, "channels: cannot read what waits"),
+        };
+        for delivery in
+            waiting.iter().filter(|d| d.channel_id == channel_id && d.state == QueueState::Waiting)
+        {
+            if delivery.at > now
+                && let Err(error) =
+                    self.ports.queue.record(&QueuedDelivery { at: now, ..delivery.clone() }).await
+            {
+                tracing::warn!(%error, "channels: cannot bring a delivery forward");
+            }
+        }
+        self.wake.notify_one();
     }
 
     pub async fn mail_server(&self) -> Result<Option<MailServer>, ChannelError> {
@@ -603,14 +668,18 @@ impl Channels {
         self.routes().await
     }
 
-    /// What `channel` delivers to now, or why it cannot deliver.
-    async fn target(&self, channel: &Channel) -> Result<Target, String> {
+    /// What `channel` delivers to now, or why it cannot deliver: settings
+    /// that need a person fail for good, a database that cannot be read
+    /// may pass.
+    async fn target(&self, channel: &Channel) -> Result<Target, SendFailure> {
         match &channel.settings.destination {
             Destination::Webhook(webhook) => Ok(Target::Webhook(webhook.clone())),
             Destination::Email { .. } => {
-                let server = self.ports.repository.mail_server().await.map_err(|e| e.to_string())?;
-                let server = server.ok_or("no mail server is set up")?;
-                let states = self.recipients(channel).await.map_err(|e| e.to_string())?;
+                let unreadable = |error: PortError| SendFailure::transient(error.to_string());
+                let server = self.ports.repository.mail_server().await.map_err(unreadable)?;
+                let server = server.ok_or_else(|| SendFailure::permanent("no mail server is set up"))?;
+                let states =
+                    self.recipients(channel).await.map_err(|e| SendFailure::transient(e.to_string()))?;
                 let to: Vec<String> = states
                     .into_iter()
                     .filter_map(|state| match state.address {
@@ -619,14 +688,16 @@ impl Channels {
                     })
                     .collect();
                 if to.is_empty() {
-                    return Err("none of the recipients has an email address".to_owned());
+                    return Err(SendFailure::permanent("none of the recipients has an email address"));
                 }
                 Ok(Target::Email(server.mail(to)))
             }
         }
     }
 
-    async fn send(&self, channel: &Channel, notification: &Notification) -> Delivery {
+    /// Sends `notification` on `channel` once, and records the outcome as
+    /// the channel's last delivery.
+    async fn send(&self, channel: &Channel, notification: &Notification) -> Result<(), SendFailure> {
         let text = message(notification, &self.host, channel.settings.language);
         let sent = match self.target(channel).await {
             Ok(target) => tokio::time::timeout(
@@ -634,17 +705,22 @@ impl Channels {
                 self.ports.sender.send(&target, &text, notification, &self.host),
             )
             .await
-            .unwrap_or_else(|_| Err(format!("no answer within {} seconds", SEND_TIMEOUT.as_secs()))),
-            Err(error) => Err(error),
+            .unwrap_or_else(|_| {
+                Err(SendFailure::transient(format!("no answer within {} seconds", SEND_TIMEOUT.as_secs())))
+            }),
+            Err(failure) => Err(failure),
         };
-        let delivery = Delivery { at: self.ports.clock.now(), error: sent.err() };
+        let error = sent.as_ref().err().map(|failure| failure.reason.clone());
+        let delivery = Delivery { at: self.ports.clock.now(), error };
         if let Err(error) = self.ports.repository.delivered(channel.id, &delivery).await {
             tracing::warn!(%error, "channels: cannot record a delivery");
         }
-        delivery
+        sent
     }
 
-    /// Delivers `notification` on every channel its kind is routed to.
+    /// Queues `notification` for every channel its kind is routed to; the
+    /// queue sends it at once. Should the queue not take it, it is sent
+    /// once right away instead.
     pub async fn deliver(&self, notification: &Notification) {
         let (channels, routes) = match (self.ports.repository.list().await, self.ports.routes.routes().await)
         {
@@ -654,38 +730,142 @@ impl Channels {
             }
         };
         let kind = kind_of(&notification.code, notification.level);
-        for channel in channels.iter().filter(|c| carried(&routes, c, kind, notification.level)) {
-            let delivery = self.send(channel, notification).await;
-            match delivery.error {
-                None => tracing::info!(
-                    channel = channel.settings.name,
-                    code = notification.code,
-                    "channels: delivered"
-                ),
-                Some(error) => {
-                    tracing::warn!(
-                        channel = channel.settings.name,
-                        code = notification.code,
-                        error,
-                        "channels: not delivered"
-                    );
+        let routed: Vec<&Channel> =
+            channels.iter().filter(|c| carried(&routes, c, kind, notification.level)).collect();
+        if routed.is_empty() {
+            return;
+        }
+        let ids: Vec<i64> = routed.iter().map(|c| c.id).collect();
+        match self.ports.queue.enqueue(notification, &ids, self.ports.clock.now()).await {
+            Ok(()) => self.wake.notify_one(),
+            Err(error) => {
+                tracing::error!(%error, code = notification.code, "channels: cannot queue; sent once now");
+                for channel in routed {
+                    let sent = self.send(channel, notification).await;
+                    log_outcome(channel, notification, &sent.map_err(|f| f.reason), "not delivered");
                 }
             }
         }
     }
 
-    /// Delivers every notification `notifier` raises from now on, kept in
-    /// zendiloOS or not, each on a task of its own so a slow server holds
-    /// up no other.
+    /// The channels whose waiting deliveries are due, with those, and when
+    /// the next of the others is due. A channel's deliveries go with it
+    /// when it is removed; one this version cannot read keeps them.
+    async fn due(&self) -> Result<(Vec<(Channel, ChannelQueue)>, Option<Timestamp>), PortError> {
+        let now = self.ports.clock.now();
+        let channels = self.ports.repository.list().await?;
+        let mut due = Vec::new();
+        let mut next: Option<Timestamp> = None;
+        for queue in by_channel(self.ports.queue.queued().await?) {
+            let Some(channel) = channels.iter().find(|c| c.id == queue.channel_id) else { continue };
+            match queue.due_at() {
+                Some(at) if at <= now => due.push((channel.clone(), queue)),
+                Some(at) => next = Some(next.map_or(at, |next| next.min(at))),
+                None => {}
+            }
+        }
+        Ok((due, next))
+    }
+
+    /// Sends a channel's waiting deliveries, oldest first, until one fails
+    /// in a way that may pass: it waits for its next try, and those behind
+    /// it wait with it.
+    async fn send_queue(&self, channel: &Channel, queue: ChannelQueue) {
+        let mut waiting = queue.waiting.into_iter();
+        while let Some(delivery) = waiting.next() {
+            let notification = &delivery.notification;
+            let sent = self.send(channel, notification).await;
+            let recorded = match sent {
+                Ok(()) => {
+                    log_outcome(channel, notification, &Ok(()), "");
+                    self.ports.queue.dequeue(delivery.id).await
+                }
+                Err(failure) => {
+                    let after = after_failure(&delivery, &failure, self.ports.clock.now());
+                    let outcome = Err(failure.reason);
+                    if after.state == QueueState::Waiting {
+                        log_outcome(channel, notification, &outcome, "not delivered, tried again later");
+                        let behind = std::iter::once(after.clone())
+                            .chain(waiting.by_ref().map(|d| QueuedDelivery { at: after.at, ..d }));
+                        for delivery in behind {
+                            if let Err(error) = self.ports.queue.record(&delivery).await {
+                                tracing::warn!(%error, "channels: cannot record a delivery that waits");
+                            }
+                        }
+                        return;
+                    }
+                    log_outcome(channel, notification, &outcome, "not delivered, given up");
+                    let failed = self.ports.queue.record(&after).await;
+                    let before = self.ports.clock.now().saturating_sub(FAILED_KEPT_FOR);
+                    failed.and(self.ports.queue.prune(before, FAILED_KEPT).await)
+                }
+            };
+            if let Err(error) = recorded {
+                tracing::warn!(%error, "channels: cannot record a delivery");
+            }
+        }
+    }
+
+    /// Starts sending the due deliveries of every channel not being sent to
+    /// already, each channel on a task of its own; when the next of the
+    /// others is due.
+    async fn start_due(&self) -> Option<Timestamp> {
+        let (due, next) = match self.due().await {
+            Ok(due) => due,
+            Err(error) => {
+                tracing::warn!(%error, "channels: cannot read what waits");
+                return None;
+            }
+        };
+        for (channel, queue) in due {
+            if !self.sending.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(channel.id) {
+                continue;
+            }
+            let guard =
+                Sending { channel_id: channel.id, sending: self.sending.clone(), wake: self.wake.clone() };
+            let channels = self.clone();
+            tokio::spawn(async move {
+                let _done = guard;
+                channels.send_queue(&channel, queue).await;
+            });
+        }
+        next
+    }
+
+    /// Sends what is due now, one channel after the other, and returns when
+    /// that is done: what the queue's task does, for tests.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn send_due(&self) {
+        if let Ok((due, _)) = self.due().await {
+            for (channel, queue) in due {
+                self.send_queue(&channel, queue).await;
+            }
+        }
+    }
+
+    /// Queues every notification `notifier` raises from now on, kept in
+    /// zendiloOS or not, and sends what is queued: what is due at once,
+    /// what waits when it is due, also what waited before a restart.
     pub fn spawn(self, notifier: &Notifier) -> JoinHandle<()> {
         let mut events = notifier.outgoing();
+        let queue = self.clone();
         tokio::spawn(async move {
+            // Stops with this task, also when it is aborted.
+            let _sending = AbortOnDrop(tokio::spawn(async move {
+                let before = queue.ports.clock.now().saturating_sub(FAILED_KEPT_FOR);
+                if let Err(error) = queue.ports.queue.prune(before, FAILED_KEPT).await {
+                    tracing::warn!(%error, "channels: cannot forget old failed deliveries");
+                }
+                loop {
+                    let next = queue.start_due().await;
+                    let now = queue.ports.clock.now();
+                    let pause = next.map_or(IDLE, |at| at.duration_since(now).max(Duration::from_secs(1)));
+                    let _ = tokio::time::timeout(pause.min(IDLE), queue.wake.notified()).await;
+                }
+            }));
             loop {
                 match events.recv().await {
-                    Ok(notification) => {
-                        let channels = self.clone();
-                        tokio::spawn(async move { channels.deliver(&notification).await });
-                    }
+                    Ok(notification) => self.deliver(&notification).await,
                     Err(broadcast::error::RecvError::Lagged(missed)) => {
                         tracing::warn!(missed, "channels: notifications came too fast, some were not sent");
                     }
@@ -693,6 +873,29 @@ impl Channels {
                 }
             }
         })
+    }
+}
+
+struct AbortOnDrop(JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Logs how a delivery went.
+fn log_outcome(channel: &Channel, notification: &Notification, sent: &Result<(), String>, failed: &str) {
+    match sent {
+        Ok(()) => {
+            tracing::info!(channel = channel.settings.name, code = notification.code, "channels: delivered")
+        }
+        Err(error) => tracing::warn!(
+            channel = channel.settings.name,
+            code = notification.code,
+            error,
+            "channels: {failed}"
+        ),
     }
 }
 
@@ -704,16 +907,38 @@ fn carried(routes: &Routes, channel: &Channel, kind: &str, level: Level) -> bool
 mod tests {
     use std::sync::Mutex;
 
+    use std::sync::atomic::{AtomicI64, Ordering};
+
     use super::*;
+    use crate::queue::{TRIES, pause};
     use crate::routes::Routes;
     use crate::testing::{
-        MemoryAddresses, MemoryChannels, MemoryNotifications, MemoryRoutes, RecordingSender,
+        MemoryAddresses, MemoryChannels, MemoryNotifications, MemoryQueue, MemoryRoutes, RecordingSender,
     };
 
     struct Fixed;
     impl Clock for Fixed {
         fn now(&self) -> Timestamp {
             Timestamp::from_unix_seconds(1_793_836_800)
+        }
+    }
+
+    /// Starts when [`Fixed`] stands and goes forward when told.
+    struct Moving(AtomicI64);
+
+    impl Moving {
+        fn new() -> Self {
+            Self(AtomicI64::new(Fixed.now().unix_seconds()))
+        }
+
+        fn advance(&self, by: Duration) {
+            self.0.fetch_add(by.as_secs() as i64, Ordering::SeqCst);
+        }
+    }
+
+    impl Clock for Moving {
+        fn now(&self) -> Timestamp {
+            Timestamp::from_unix_seconds(self.0.load(Ordering::SeqCst))
         }
     }
 
@@ -742,25 +967,51 @@ mod tests {
         audit: Arc<Audit>,
         routes: Arc<MemoryRoutes>,
         addresses: Arc<MemoryAddresses>,
+        queue: Arc<MemoryQueue>,
+        clock: Arc<Moving>,
     }
 
     fn setup() -> Setup {
+        setup_with(Arc::new(MemoryQueue::default()))
+    }
+
+    fn setup_with(queue: Arc<MemoryQueue>) -> Setup {
         let sender = Arc::new(RecordingSender::default());
         let audit = Arc::new(Audit::default());
         let routes = Arc::new(MemoryRoutes::default());
         let addresses = Arc::new(MemoryAddresses::default());
+        let clock = Arc::new(Moving::new());
         let channels = Channels::new(
             ChannelPorts {
                 repository: Arc::new(MemoryChannels::default()),
                 routes: routes.clone(),
+                queue: queue.clone(),
                 addresses: addresses.clone(),
                 sender: sender.clone(),
                 audit: audit.clone(),
-                clock: Arc::new(Fixed),
+                clock: clock.clone(),
             },
             "nas".into(),
         );
-        Setup { channels, sender, audit, routes, addresses }
+        Setup { channels, sender, audit, routes, addresses, queue, clock }
+    }
+
+    impl Setup {
+        /// Raises `notification` and sends what is due.
+        async fn deliver(&self, notification: &Notification) {
+            self.channels.deliver(notification).await;
+            self.channels.send_due().await;
+        }
+
+        fn fail(&self, failure: Option<SendFailure>) {
+            *self.sender.failing.lock().unwrap() = failure;
+        }
+
+        /// The queue's deliveries: their code, state and tries.
+        fn queued(&self) -> Vec<(String, QueueState, u32)> {
+            let all = self.queue.0.lock().unwrap();
+            all.iter().map(|d| (d.notification.code.clone(), d.state, d.attempts)).collect()
+        }
     }
 
     fn server() -> MailServer {
@@ -909,7 +1160,7 @@ mod tests {
 
         // An account's new address is used from the next mail on.
         t.addresses.0.lock().unwrap().insert(2, Some("anna@new.example".into()));
-        t.channels.deliver(&degraded(Level::Warning)).await;
+        t.deliver(&degraded(Level::Warning)).await;
         assert_eq!(sent_to(&t.sender)[1], "anna@new.example,bob@example.org");
 
         let lonely = t
@@ -967,10 +1218,10 @@ mod tests {
         // level. The chat carries errors only, so it gets all pool trouble
         // (which can be an error), but no data check that found errors
         // (never more than a warning).
-        t.channels.deliver(&degraded(Level::Warning)).await;
+        t.deliver(&degraded(Level::Warning)).await;
         assert_eq!(sent_to(&t.sender), ["me@example.org", "https://chat.example"]);
         let scrub = Notification { code: "scrub_finished".into(), ..degraded(Level::Warning) };
-        t.channels.deliver(&scrub).await;
+        t.deliver(&scrub).await;
         assert_eq!(sent_to(&t.sender)[2..], ["me@example.org"], "found errors: a warning");
         let routes = t.channels.routes().await.unwrap();
         let trouble = routes.iter().find(|r| r.kind.key == "pool_trouble").unwrap();
@@ -985,7 +1236,7 @@ mod tests {
         let routes = t.channels.set_routes(vec![choice], &alice(), &request()).await.unwrap();
         let trouble = routes.iter().find(|r| r.kind.key == "pool_trouble").unwrap();
         assert_eq!((trouble.in_app, trouble.channels.clone()), (false, vec![chat.id]));
-        t.channels.deliver(&degraded(Level::Warning)).await;
+        t.deliver(&degraded(Level::Warning)).await;
         assert_eq!(sent_to(&t.sender), ["https://chat.example"], "no longer by mail");
         let untouched = routes.iter().find(|r| r.kind.key == "scrub_errors").unwrap();
         assert_eq!(untouched.channels, [mail.id], "the other kinds keep theirs");
@@ -1087,5 +1338,194 @@ mod tests {
             *t.audit.0.lock().unwrap(),
             ["notify.channel_create", "notify.channel_update", "notify.channel_test"]
         );
+    }
+
+    /// A webhook that carries everything.
+    async fn chat(t: &Setup) -> Channel {
+        let all = ChannelSettings { min_level: Level::Info, ..webhook("Chat", "https://chat.example") };
+        t.channels.create(all, &alice(), &request()).await.unwrap()
+    }
+
+    fn recovered() -> Notification {
+        Notification {
+            id: 8,
+            code: "pool_recovered".into(),
+            level: Level::Success,
+            ..degraded(Level::Warning)
+        }
+    }
+
+    fn sent_titles(sender: &RecordingSender) -> Vec<String> {
+        sender.sent.lock().unwrap().iter().map(|(_, message)| message.title.clone()).collect()
+    }
+
+    #[tokio::test]
+    async fn what_may_pass_is_tried_again_in_order_until_it_goes_out() {
+        let t = setup();
+        let chat = chat(&t).await;
+        t.fail(Some(SendFailure::transient("Temporary failure in name resolution")));
+
+        t.deliver(&degraded(Level::Error)).await;
+        assert!(sent_to(&t.sender).is_empty());
+        assert_eq!(t.queued(), [("pool_trouble".into(), QueueState::Waiting, 1)]);
+        let listed = t.channels.queued().await.unwrap();
+        assert_eq!(listed[0].at, Fixed.now().saturating_add(pause(1)), "a minute later");
+        let last = t.channels.list().await.unwrap()[0].last.clone().unwrap();
+        assert_eq!(last.error.as_deref(), Some("Temporary failure in name resolution"));
+
+        // A new one for the channel tries the oldest at once, and waits
+        // behind it.
+        t.deliver(&recovered()).await;
+        assert_eq!(
+            t.queued(),
+            [
+                ("pool_trouble".into(), QueueState::Waiting, 2),
+                ("pool_recovered".into(), QueueState::Waiting, 0)
+            ]
+        );
+        let due = Fixed.now().saturating_add(pause(2));
+        assert!(t.channels.queued().await.unwrap().iter().all(|d| d.at == due), "both wait two minutes");
+
+        t.fail(None);
+        t.channels.send_due().await;
+        assert!(sent_to(&t.sender).is_empty(), "not before it is due");
+        t.clock.advance(pause(2));
+        t.channels.send_due().await;
+        assert_eq!(
+            sent_titles(&t.sender),
+            ["[nas] Pool tank is degraded", "[nas] Pool tank is healthy again"]
+        );
+        assert!(t.queued().is_empty(), "gone out, gone from the queue");
+        assert_eq!(t.channels.list().await.unwrap()[0].last.as_ref().unwrap().error, None);
+        assert_eq!(chat.id, t.channels.list().await.unwrap()[0].id);
+    }
+
+    #[tokio::test]
+    async fn what_cannot_succeed_fails_for_good_at_once() {
+        let t = setup();
+        chat(&t).await;
+        t.fail(Some(SendFailure::permanent("the server answered 401 Unauthorized")));
+
+        t.deliver(&degraded(Level::Warning)).await;
+        assert_eq!(t.queued(), [("pool_trouble".into(), QueueState::Failed, 1)]);
+        let failed = t.channels.queued().await.unwrap().remove(0);
+        assert_eq!(
+            (failed.at, failed.error.as_deref()),
+            (Fixed.now(), Some("the server answered 401 Unauthorized"))
+        );
+
+        // It holds up nothing behind it.
+        t.fail(None);
+        t.deliver(&recovered()).await;
+        assert_eq!(sent_titles(&t.sender), ["[nas] Pool tank is healthy again"]);
+        assert_eq!(t.queued(), [("pool_trouble".into(), QueueState::Failed, 1)], "kept to be shown");
+
+        // Settings that need a person do not pass by themselves either.
+        let mail = email("Admins", vec![address("me@example.org")]);
+        t.channels.create(mail, &alice(), &request()).await.unwrap();
+        t.queue.0.lock().unwrap().clear();
+        t.deliver(&degraded(Level::Warning)).await;
+        let listed = t.channels.queued().await.unwrap();
+        let mailed = listed.iter().find(|d| d.state == QueueState::Failed).unwrap();
+        assert_eq!(mailed.error.as_deref(), Some("no mail server is set up"));
+    }
+
+    #[tokio::test]
+    async fn a_delivery_is_given_up_when_its_tries_run_out() {
+        let t = setup();
+        chat(&t).await;
+        t.fail(Some(SendFailure::transient("no answer within 30 seconds")));
+
+        t.deliver(&degraded(Level::Warning)).await;
+        for tries in 1..TRIES {
+            assert_eq!(t.queued(), [("pool_trouble".into(), QueueState::Waiting, tries)]);
+            t.clock.advance(pause(tries));
+            t.channels.send_due().await;
+        }
+        assert_eq!(t.queued(), [("pool_trouble".into(), QueueState::Failed, TRIES)]);
+        let waited = t.clock.now().duration_since(Fixed.now()).as_secs() / 3600;
+        assert_eq!(waited, 12, "about twelve hours");
+
+        // Failed ones are shown for a week: the old one is forgotten when
+        // the next one fails.
+        t.clock.advance(FAILED_KEPT_FOR + Duration::from_secs(60));
+        t.fail(Some(SendFailure::permanent("the server answered 404 Not Found")));
+        t.deliver(&recovered()).await;
+        assert_eq!(t.queued(), [("pool_recovered".into(), QueueState::Failed, 1)]);
+    }
+
+    #[tokio::test]
+    async fn a_test_that_goes_out_sends_what_waits() {
+        let t = setup();
+        let chat = chat(&t).await;
+        t.fail(Some(SendFailure::transient("connection refused")));
+        t.deliver(&degraded(Level::Warning)).await;
+        let failed = t.channels.test(chat.id, &alice(), &request()).await;
+        assert!(
+            matches!(failed, Err(ChannelError::Delivery(ref e)) if e == "connection refused"),
+            "{failed:?}"
+        );
+
+        t.fail(None);
+        t.channels.test(chat.id, &alice(), &request()).await.unwrap();
+        t.channels.send_due().await;
+        assert_eq!(sent_titles(&t.sender), ["[nas] Test message", "[nas] Pool tank is degraded"]);
+        assert!(t.queued().is_empty());
+    }
+
+    #[tokio::test]
+    async fn what_waited_before_a_restart_goes_out() {
+        let queue = Arc::new(MemoryQueue::default());
+        let t = setup_with(queue.clone());
+        let chat = chat(&t).await;
+        crate::queue::DeliveryQueue::enqueue(&*queue, &degraded(Level::Warning), &[chat.id], Fixed.now())
+            .await
+            .unwrap();
+
+        let notifier = crate::Notifier::new(Arc::new(MemoryNotifications::default()), Arc::new(Fixed));
+        let delivering = t.channels.clone().spawn(&notifier);
+        for _ in 0..100 {
+            if t.queued().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(sent_to(&t.sender), ["https://chat.example"]);
+        delivering.abort();
+    }
+
+    /// A queue that takes nothing in.
+    struct Full;
+
+    #[async_trait]
+    impl DeliveryQueue for Full {
+        async fn enqueue(&self, _: &Notification, _: &[i64], _: Timestamp) -> Result<(), PortError> {
+            Err(PortError::new("queue", "disk full"))
+        }
+        async fn queued(&self) -> Result<Vec<QueuedDelivery>, PortError> {
+            Err(PortError::new("queue", "disk full"))
+        }
+        async fn dequeue(&self, _: i64) -> Result<(), PortError> {
+            Ok(())
+        }
+        async fn record(&self, _: &QueuedDelivery) -> Result<(), PortError> {
+            Ok(())
+        }
+        async fn prune(&self, _: Timestamp, _: u32) -> Result<(), PortError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn without_a_queue_a_notification_is_sent_once() {
+        let t = setup();
+        chat(&t).await;
+        let channels =
+            Channels::new(ChannelPorts { queue: Arc::new(Full), ..t.channels.ports.clone() }, "nas".into());
+
+        channels.deliver(&degraded(Level::Warning)).await;
+        channels.send_due().await;
+
+        assert_eq!(sent_to(&t.sender), ["https://chat.example"]);
     }
 }

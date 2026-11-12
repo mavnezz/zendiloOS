@@ -575,6 +575,7 @@ impl SmartSource for FakeStorage {
             power_cycles: Some(12),
             attributes: Vec::new(),
             nvme: None,
+            emmc: None,
             error_log_count: Some(0),
             last_self_test: None,
             running_self_test: self

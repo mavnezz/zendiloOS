@@ -34,6 +34,8 @@ pub enum Transport {
     Nvme,
     Usb,
     Virtio,
+    /// eMMC or an SD card (`mmcblk<N>`).
+    Mmc,
     Other,
 }
 
@@ -45,6 +47,7 @@ impl Transport {
             Some("nvme") => Transport::Nvme,
             Some("usb") => Transport::Usb,
             Some("virtio") => Transport::Virtio,
+            Some("mmc") => Transport::Mmc,
             _ => Transport::Other,
         }
     }

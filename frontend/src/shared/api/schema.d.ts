@@ -2533,7 +2533,8 @@ export interface paths {
         put?: never;
         /**
          * Sends a test message on this channel alone now and waits for the
-         *     outcome. Needs `system.manage`.
+         *     outcome; once one went out, what waits on the channel goes out too.
+         *     Needs `system.manage`.
          */
         post: operations["test_channel"];
         delete?: never;
@@ -5314,6 +5315,28 @@ export interface components {
              */
             power_off?: boolean;
         };
+        /**
+         * @description How far an eMMC device's reserved blocks, which replace worn ones, are
+         *     used.
+         * @enum {string}
+         */
+        EmmcReserve: "normal" | "warning" | "urgent";
+        /** @description What an eMMC device of version 5.0 or later reports of its wear. */
+        EmmcWear: {
+            /**
+             * Format: int32
+             * @description The device's estimate of the share of its life used for its memory
+             *     of type A, in steps of ten percent: 1 is 0 to 10 % used, 10 is 90
+             *     to 100 %, 11 past its life; absent if it gives none.
+             */
+            life_used_a?: number | null;
+            /**
+             * Format: int32
+             * @description The same for its memory of type B.
+             */
+            life_used_b?: number | null;
+            reserve?: components["schemas"]["EmmcReserve"] | null;
+        };
         EnableDockerRequest: {
             /** @description A pool zendiloOS created. */
             pool: string;
@@ -5592,7 +5615,7 @@ export interface components {
             value?: number | null;
         };
         /** @enum {string} */
-        FindingCode: "overall_failed" | "attribute_failing" | "attribute_failed_in_past" | "reallocated_sectors" | "pending_sectors" | "uncorrectable_sectors" | "error_log_entries" | "self_test_failed" | "nvme_critical_warning" | "nvme_spare_low" | "nvme_worn_out" | "nvme_media_errors";
+        FindingCode: "overall_failed" | "attribute_failing" | "attribute_failed_in_past" | "reallocated_sectors" | "pending_sectors" | "uncorrectable_sectors" | "error_log_entries" | "self_test_failed" | "nvme_critical_warning" | "nvme_spare_low" | "nvme_worn_out" | "nvme_media_errors" | "emmc_worn_out" | "emmc_past_life" | "emmc_reserve_low";
         /** @enum {string} */
         FirewallAction: "allow" | "deny";
         /**
@@ -6409,6 +6432,11 @@ export interface components {
             };
         };
         NotificationChannel: {
+            /**
+             * @description What will not go out, because it cannot or its tries ran out: the
+             *     most recent first, for a week.
+             */
+            failed: components["schemas"]["UndeliveredNotification"][];
             /** Format: int64 */
             id: number;
             language: components["schemas"]["ChannelLanguage"];
@@ -6423,6 +6451,11 @@ export interface components {
             /** @description For an email channel: each recipient, as mail reaches it now. */
             recipients: components["schemas"]["ChannelRecipient"][];
             target: components["schemas"]["ChannelTarget"];
+            /**
+             * @description What did not go out yet and is tried again, with a growing pause,
+             *     for about twelve hours: the oldest first.
+             */
+            waiting: components["schemas"]["UndeliveredNotification"][];
         };
         /** @enum {string} */
         NotificationLevel: "info" | "success" | "warning" | "error";
@@ -7338,11 +7371,12 @@ export interface components {
             worst: number;
         };
         /** @enum {string} */
-        SmartProtocol: "ata" | "nvme" | "scsi";
+        SmartProtocol: "ata" | "nvme" | "scsi" | "emmc";
         /** @description SMART data of one disk with zendiloOS's assessment. */
         SmartReport: {
             /** @description ATA only. */
             attributes: components["schemas"]["SmartAttribute"][];
+            emmc?: components["schemas"]["EmmcWear"] | null;
             /** Format: int64 */
             error_log_count?: number | null;
             findings: components["schemas"]["Finding"][];
@@ -7626,7 +7660,7 @@ export interface components {
             target_share?: number | null;
         };
         /** @enum {string} */
-        Transport: "sata" | "sas" | "nvme" | "usb" | "virtio" | "other";
+        Transport: "sata" | "sas" | "nvme" | "usb" | "virtio" | "mmc" | "other";
         TwoFactorCodeRequest: {
             /**
              * Format: password
@@ -7652,6 +7686,23 @@ export interface components {
             enabled: boolean;
             /** @description Recovery codes not used yet. */
             recovery_codes_left: number;
+        };
+        /** @description A notification that has not gone out on a channel. */
+        UndeliveredNotification: {
+            /**
+             * Format: int64
+             * @description Waiting: when it is tried next; failed: when it failed for good. In
+             *     Unix seconds.
+             */
+            at: number;
+            /**
+             * Format: int32
+             * @description How often it was tried.
+             */
+            attempts: number;
+            /** @description Why the last try failed. */
+            error?: string | null;
+            notification: components["schemas"]["Notification"];
         };
         UninstallRequest: {
             /** @description The app's id, repeated: its data goes with it. */

@@ -678,6 +678,15 @@ impl AgentTransport for SimulatedAgent {
                 }
             }
             Request::SmartData { device } => smart(device),
+            // The simulated NAS has no eMMC: a card without files.
+            Request::EmmcHealth { .. } => Response::Emmc {
+                kind: String::new(),
+                life_time: String::new(),
+                pre_eol_info: String::new(),
+                name: String::new(),
+                serial: String::new(),
+                fwrev: String::new(),
+            },
             // Docker runs once installed and its data is on a pool.
             Request::DockerState {} => {
                 let data_root = self.docker.lock().unwrap_or_else(PoisonError::into_inner).clone();

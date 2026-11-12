@@ -163,6 +163,12 @@ pub enum Request {
     SmartData {
         device: DiskName,
     },
+    /// What an eMMC device (`mmcblk<N>`), which has no SMART, reports of
+    /// its wear: the kernel's files of its card in sysfs. Answers
+    /// [`Response::Emmc`].
+    EmmcHealth {
+        device: DiskName,
+    },
     /// Has the drive start a self-test (`smartctl -t short|long`); the drive
     /// runs it alongside its work.
     StartSelfTest {
@@ -985,6 +991,7 @@ impl Request {
             Request::Machine {} => "machine",
             Request::ReadBurst { .. } => "read_burst",
             Request::SmartData { .. } => "smart_data",
+            Request::EmmcHealth { .. } => "emmc_health",
             Request::StartSelfTest { .. } => "start_self_test",
             Request::AbortSelfTest { .. } => "abort_self_test",
             Request::ArrayStatus {} => "array_status",
@@ -1156,6 +1163,20 @@ pub enum Response {
         /// smartctl's exit status: a bit mask, not a plain success flag.
         exit_status: i32,
         smartctl_json: String,
+    },
+    /// The files of an eMMC device's card below
+    /// `/sys/class/block/<device>/device`, as the kernel writes them (a
+    /// trailing newline and all); empty where there is none.
+    Emmc {
+        /// `type`: `MMC` for eMMC, `SD` for a memory card.
+        kind: String,
+        /// `life_time`: the two estimates of the life used, `0x01 0x02`.
+        life_time: String,
+        /// `pre_eol_info`: how far the reserved blocks are used, `0x01`.
+        pre_eol_info: String,
+        name: String,
+        serial: String,
+        fwrev: String,
     },
     ArrayStatus {
         /// Empty if the kernel has no software RAID support loaded.
@@ -1702,6 +1723,62 @@ impl Request {
                 | Request::RemoveVolumeBackup { .. }
                 | Request::EndVolumeWork { .. }
                 | Request::ScanVolumeBackups { .. }
+        )
+    }
+
+    /// Whether the request only reads the state of the NAS. zendiloosd asks
+    /// for that again and again: every minute for the disks and pools, every
+    /// 30 seconds for what the firewall needs to know, every 20 seconds for
+    /// what containers use, every few seconds for a page that is open. The
+    /// agent logs those that went well at debug, so that the journal, on
+    /// the system disk, keeps what changed the NAS rather than some 30 000
+    /// lines a day of looking. A file opened or packed for a person's
+    /// download is not among them.
+    pub fn only_reads(&self) -> bool {
+        matches!(
+            self,
+            Request::Hello {}
+                | Request::ListBlockDevices {}
+                | Request::Machine {}
+                | Request::SmartData { .. }
+                | Request::EmmcHealth { .. }
+                | Request::ArrayStatus {}
+                | Request::ZfsStatus {}
+                | Request::DockerState {}
+                | Request::VmHost {}
+                | Request::VmImages { .. }
+                | Request::VmStates { .. }
+                | Request::VmStats { .. }
+                | Request::AppsStatus { .. }
+                | Request::AppLogs { .. }
+                | Request::HostFacts { .. }
+                | Request::DockerContainers { .. }
+                | Request::DockerStats { .. }
+                | Request::DockerImages { .. }
+                | Request::DockerNetworks { .. }
+                | Request::DockerDiskUsage { .. }
+                | Request::ContainerLogs { .. }
+                | Request::InspectContainer { .. }
+                | Request::ContainerProcesses { .. }
+                | Request::DockerVolumes { .. }
+                | Request::DockerVolumeSizes { .. }
+                | Request::ScanVolumeBackups { .. }
+                | Request::CheckCompose { .. }
+                | Request::ProjectLogs { .. }
+                | Request::ProjectFiles { .. }
+                | Request::NetworkState { .. }
+                | Request::SshState { .. }
+                | Request::PackagesState { .. }
+                | Request::WebTlsState { .. }
+                | Request::AcmeState { .. }
+                | Request::WebServerState { .. }
+                | Request::FirewallState { .. }
+                | Request::TimeState { .. }
+                | Request::ListSnapshots { .. }
+                | Request::ShareUsage { .. }
+                | Request::ListDirectory { .. }
+                | Request::SearchFiles { .. }
+                | Request::EntryFacts { .. }
         )
     }
 
@@ -2705,6 +2782,48 @@ mod tests {
         }
         assert_eq!(BurstMillis::new(BurstMillis::MAX).map(BurstMillis::get), Ok(2000));
         assert_eq!(u16::from(BurstMillis::new(1).unwrap()), 1);
+    }
+
+    #[test]
+    fn what_only_reads_is_told_apart_from_what_changes_the_nas() {
+        let request = |value: serde_json::Value| serde_json::from_value::<Request>(value).unwrap();
+        for looking in [
+            json!({ "op": "list_block_devices" }),
+            json!({ "op": "zfs_status" }),
+            json!({ "op": "smart_data", "device": "sda" }),
+            json!({ "op": "emmc_health", "device": "mmcblk0" }),
+            json!({ "op": "docker_stats" }),
+            json!({ "op": "ssh_state" }),
+            json!({ "op": "web_server_state" }),
+            json!({ "op": "firewall_state" }),
+        ] {
+            assert!(request(looking.clone()).only_reads(), "{looking}");
+        }
+        for changing in [
+            json!({ "op": "reboot" }),
+            json!({ "op": "scrub_pool", "pool": "tank" }),
+            json!({ "op": "start_self_test", "device": "sda", "kind": "short" }),
+            json!({ "op": "read_burst", "device": "sda", "millis": 700 }),
+        ] {
+            assert!(!request(changing.clone()).only_reads(), "{changing}");
+        }
+    }
+
+    #[test]
+    fn an_emmc_device_s_wear_is_asked_for_by_its_name_and_comes_raw() {
+        let asked: Request =
+            serde_json::from_value(json!({ "op": "emmc_health", "device": "mmcblk0" })).unwrap();
+        assert_eq!((asked.name(), asked.role()), ("emmc_health", Role::System));
+        for device in ["mmcblk0p1", "mmcblk0boot0", "../mmcblk0"] {
+            let refused = serde_json::from_value::<Request>(json!({ "op": "emmc_health", "device": device }));
+            assert!(refused.is_err(), "{device}");
+        }
+        let answer: Response = serde_json::from_value(json!({
+            "status": "emmc", "kind": "MMC\n", "life_time": "0x01 0x02\n", "pre_eol_info": "0x01\n",
+            "name": "AJTD4R\n", "serial": "0x1a2b3c4d\n", "fwrev": "0x0800000000000000\n",
+        }))
+        .unwrap();
+        assert!(matches!(answer, Response::Emmc { ref life_time, .. } if life_time == "0x01 0x02\n"));
     }
 
     #[test]

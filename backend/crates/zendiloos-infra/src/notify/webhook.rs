@@ -15,6 +15,7 @@ use tokio_rustls::TlsConnector;
 use zendiloos_notify::Notification;
 use zendiloos_notify::channels::{Webhook, WebhookFormat};
 use zendiloos_notify::message::Message;
+use zendiloos_notify::queue::SendFailure;
 
 /// What a webhook in JSON receives: the fields chat services, Gotify and
 /// home automation look for.
@@ -76,14 +77,14 @@ pub(super) async fn post(
     message: &Message,
     notification: &Notification,
     host: &str,
-) -> Result<(), String> {
-    let uri: Uri = hook.url.parse().map_err(|e| format!("the address: {e}"))?;
+) -> Result<(), SendFailure> {
+    let uri: Uri = hook.url.parse().map_err(|e| SendFailure::permanent(format!("the address: {e}")))?;
     let https = match uri.scheme_str() {
         Some("https") => true,
         Some("http") => false,
-        _ => return Err("only http:// and https:// addresses".into()),
+        _ => return Err(SendFailure::permanent("only http:// and https:// addresses")),
     };
-    let authority = uri.authority().ok_or("the address has no host")?.clone();
+    let authority = uri.authority().ok_or_else(|| SendFailure::permanent("the address has no host"))?.clone();
     let server = authority.host().trim_start_matches('[').trim_end_matches(']').to_owned();
     let port = authority.port_u16().unwrap_or(if https { 443 } else { 80 });
 
@@ -112,31 +113,66 @@ pub(super) async fn post(
         let credentials = base64::engine::general_purpose::STANDARD.encode(percent_decoded(user_info));
         request = request.header(hyper::header::AUTHORIZATION, format!("Basic {credentials}"));
     }
-    let request = request.body(Full::new(Bytes::from(body))).map_err(|e| e.to_string())?;
+    let request =
+        request.body(Full::new(Bytes::from(body))).map_err(|e| SendFailure::permanent(e.to_string()))?;
 
+    // Name resolution and the connection: whatever goes wrong may pass.
     let tcp = TcpStream::connect((server.as_str(), port))
         .await
-        .map_err(|e| format!("cannot connect to {server}:{port}: {e}"))?;
+        .map_err(|e| SendFailure::transient(format!("cannot connect to {server}:{port}: {e}")))?;
     let status = if https {
-        let name =
-            ServerName::try_from(server.clone()).map_err(|_| format!("{server} is not a host name"))?;
-        let stream = TlsConnector::from(tls).connect(name, tcp).await.map_err(|e| format!("TLS: {e}"))?;
+        let name = ServerName::try_from(server.clone())
+            .map_err(|_| SendFailure::permanent(format!("{server} is not a host name")))?;
+        let stream = TlsConnector::from(tls).connect(name, tcp).await.map_err(|e| {
+            let reason = format!("TLS: {e}");
+            if super::refused_by_tls(&e) {
+                SendFailure::permanent(reason)
+            } else {
+                SendFailure::transient(reason)
+            }
+        })?;
         exchange(TokioIo::new(stream), request).await?
     } else {
         exchange(TokioIo::new(tcp), request).await?
     };
-    if status.is_success() { Ok(()) } else { Err(format!("the server answered {status}")) }
+    match status {
+        status if status.is_success() => Ok(()),
+        status => Err(answered(status)),
+    }
 }
 
-async fn exchange<T>(io: T, request: Request<Full<Bytes>>) -> Result<StatusCode, String>
+/// A server that answers 5xx is down or overloaded for now, and 408 and
+/// 429 ask to come back later; any other answer refuses this request, and
+/// would refuse it again.
+fn answered(status: StatusCode) -> SendFailure {
+    let reason = format!("the server answered {status}");
+    if crate::https::answered_later(status) {
+        SendFailure::transient(reason)
+    } else {
+        SendFailure::permanent(reason)
+    }
+}
+
+/// A connection cut off or closed may pass; an answer that is not HTTP
+/// means the address leads somewhere else.
+fn exchange_failure(error: &hyper::Error) -> SendFailure {
+    let reason = error.to_string();
+    if error.is_parse() || error.is_user() {
+        SendFailure::permanent(reason)
+    } else {
+        SendFailure::transient(reason)
+    }
+}
+
+async fn exchange<T>(io: T, request: Request<Full<Bytes>>) -> Result<StatusCode, SendFailure>
 where
     T: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
 {
     let (mut sender, connection) =
-        hyper::client::conn::http1::handshake(io).await.map_err(|e| e.to_string())?;
+        hyper::client::conn::http1::handshake(io).await.map_err(|e| exchange_failure(&e))?;
     tokio::spawn(async move {
         let _ = connection.await;
     });
-    let response = sender.send_request(request).await.map_err(|e| e.to_string())?;
+    let response = sender.send_request(request).await.map_err(|e| exchange_failure(&e))?;
     Ok(response.status())
 }

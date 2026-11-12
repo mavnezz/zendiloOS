@@ -1498,6 +1498,13 @@ const de: Messages = {
     testSent: 'Die Testnachricht ist verschickt.',
     lastSent: 'Zuletzt gesendet {time}.',
     lastFailed: 'Nicht gesendet {time}:',
+    queue: {
+      waiting:
+        'Wartet auf Zustellung, nächster Versuch {time}: | Eine Meldung wartet auf Zustellung, nächster Versuch {time}: | {n} Meldungen warten auf Zustellung, nächster Versuch {time}:',
+      tries: 'noch nicht versucht | einmal versucht | {n}-mal versucht',
+      failed:
+        'Nicht zugestellt: | Eine Meldung wurde nicht zugestellt und wird nicht mehr versucht: | {n} Meldungen wurden nicht zugestellt und werden nicht mehr versucht:',
+    },
     remove: 'Entfernen',
     removeTitle: '{name} entfernen?',
     removeHint: 'Über diesen Kanal gehen dann keine Meldungen mehr.',
@@ -2139,6 +2146,7 @@ const de: Messages = {
       nvme: 'NVMe',
       usb: 'USB',
       virtio: 'Virtuell',
+      mmc: 'eMMC oder SD',
       other: 'Andere',
     },
     media: {
@@ -2176,6 +2184,11 @@ const de: Messages = {
       nvme_spare_low: 'Die Reservekapazität ist knapp: {value} % (Grenze {threshold} %).',
       nvme_worn_out: '{value} % der vorgesehenen Lebensdauer sind verbraucht.',
       nvme_media_errors: 'Medienfehler: {value}.',
+      emmc_worn_out:
+        'Mindestens {value} % seiner Lebensdauer sind verbraucht. Ziehen Sie das System rechtzeitig auf eine andere Platte um.',
+      emmc_past_life:
+        'Es hat die Lebensdauer überschritten, für die es gebaut ist, und kann jederzeit ausfallen. Ziehen Sie das System auf eine andere Platte um.',
+      emmc_reserve_low: '{value} % der Blöcke, die verschlissene ersetzen, sind verbraucht.',
     },
     temperature: 'Temperatur',
     powerOnHours: 'Betriebsstunden',
@@ -2318,6 +2331,20 @@ const de: Messages = {
       storedHint: 'Jede Platte, die das NAS gesehen hat, bleibt hier mit Ihren Notizen zu ihr.',
       forget: '{serial} aus der Liste entfernen',
       lastSeen: 'Zuletzt gesehen',
+    },
+    emmc: {
+      title: 'eMMC-Verschleiß',
+      hint: 'eMMC hat kein SMART; es schätzt in Schritten von zehn Prozent, wie viel seiner Lebensdauer es verbraucht hat, für jede seiner zwei Speicherarten.',
+      life: 'Speicher {part}: {used}',
+      lifeLabel: 'Verbrauchte Lebensdauer, Speicher {part}',
+      range: '{from} bis {to} % der Lebensdauer verbraucht',
+      pastLife: 'Lebensdauer überschritten',
+      reserve: 'Reserveblöcke',
+      reserves: {
+        normal: 'Normal',
+        warning: '80 % verbraucht: eine Warnung',
+        urgent: '90 % verbraucht: dringend',
+      },
     },
     nvmeHealth: 'NVMe-Zustand',
     wear: 'Verbrauchte Lebensdauer: {percent} %',
@@ -3146,6 +3173,8 @@ const de: Messages = {
     disk_health: {
       title: 'Platte {disk} meldet Probleme',
       body: '{model}: SMART-Zustand ist {health}. Planen Sie den Austausch.',
+      bodyEmmc:
+        '{model}: Der Verschleiß des eMMC ist {health}. Ziehen Sie das System rechtzeitig auf eine andere Platte um.',
     },
     removable_pulled: {
       title: '{drive} wurde abgezogen, ohne ausgeworfen zu werden',

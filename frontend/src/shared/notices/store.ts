@@ -31,6 +31,8 @@ export function wording(notification: ServerNotification): { title: string; body
   const count = Number(params.errors ?? 0)
   let body = `${key}.body`
   if (notification.code === 'updates_available' && !params.version) body = `${key}.bodyDebian`
+  // An eMMC is soldered to the board: the system moves instead.
+  if (notification.code === 'disk_health' && params.source === 'emmc') body = `${key}.bodyEmmc`
   if (notification.code === 'updates_installed') {
     if (params.zfs_ready === 'false') body = `${key}.bodyZfs`
     else if (params.restart === 'true') body = `${key}.bodyRestart`

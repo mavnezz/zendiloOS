@@ -1,4 +1,5 @@
-/// What SMART says about a disk, or why it says nothing.
+/// What SMART says about a disk, or why it says nothing. An eMMC device,
+/// which has no SMART, reports its wear instead ([`EmmcWear`]).
 #[derive(Debug, Clone, PartialEq)]
 pub enum SmartReport {
     Available(Box<SmartData>),
@@ -17,6 +18,8 @@ pub enum SmartProtocol {
     Ata,
     Nvme,
     Scsi,
+    /// Not SMART: what an eMMC device reports of its wear.
+    Emmc,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,6 +36,7 @@ pub struct SmartData {
     /// ATA attributes; empty for other protocols.
     pub attributes: Vec<AtaAttribute>,
     pub nvme: Option<NvmeHealth>,
+    pub emmc: Option<EmmcWear>,
     /// Entries in the ATA error log.
     pub error_log_count: Option<u64>,
     /// The most recent self-test.
@@ -116,6 +120,40 @@ pub struct NvmeHealth {
     pub data_units_written: u64,
 }
 
+/// What an eMMC device of version 5.0 or later reports of its wear, from
+/// its EXT_CSD register.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmmcWear {
+    /// The device's estimates of the share of its life used, for its two
+    /// kinds of memory cells (A and B, often its SLC and its MLC part), in
+    /// steps of ten percent: 1 is 0 to 10 % used, 10 is 90 to 100 %, 11
+    /// past its life. `None` where it gives no estimate.
+    pub life_used_a: Option<u8>,
+    pub life_used_b: Option<u8>,
+    /// How far its reserved blocks, which replace worn ones, are used.
+    pub pre_eol: Option<PreEol>,
+}
+
+impl EmmcWear {
+    /// The step past which the device's life is over.
+    pub const PAST_LIFE: u8 = 11;
+
+    /// The higher of the two estimates.
+    pub fn life_used(&self) -> Option<u8> {
+        self.life_used_a.max(self.life_used_b)
+    }
+}
+
+/// How far an eMMC device's reserved blocks are used (`PRE_EOL_INFO`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PreEol {
+    Normal,
+    /// 80 % of them used.
+    Warning,
+    /// 90 % of them used.
+    Urgent,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelfTest {
     pub passed: bool,
@@ -159,6 +197,14 @@ pub enum Finding {
     },
     NvmeWornOut(u8),
     NvmeMediaErrors(u64),
+    /// An eMMC device estimates that it used at least this share of its
+    /// life, in percent ([`EMMC_WORN`] or more).
+    EmmcWornOut(u8),
+    /// An eMMC device is past the life it was made for.
+    EmmcPastLife,
+    /// An eMMC device used most of its reserved blocks: 80 % (a warning) or
+    /// 90 % (urgent).
+    EmmcReserveLow(PreEol),
 }
 
 impl Finding {
@@ -167,7 +213,9 @@ impl Finding {
             Finding::OverallFailed
             | Finding::AttributeFailing { .. }
             | Finding::NvmeCriticalWarning(_)
-            | Finding::NvmeSpareLow { .. } => Health::Failing,
+            | Finding::NvmeSpareLow { .. }
+            | Finding::EmmcPastLife
+            | Finding::EmmcReserveLow(PreEol::Urgent) => Health::Failing,
             _ => Health::Warning,
         }
     }
@@ -182,6 +230,11 @@ pub struct Assessment {
 /// NVMe wear at which a drive counts as worn out, in percent of its rated
 /// life.
 const NVME_WORN_OUT: u8 = 90;
+
+/// eMMC wear at which a device counts as worn out, in percent of its life:
+/// earlier than an NVMe drive, since eMMC is soldered to the board and the
+/// system has to move to another disk before it gives out.
+pub const EMMC_WORN: u8 = 80;
 
 impl SmartData {
     /// Judges the data by rules that are common ground among SMART tools:
@@ -237,6 +290,19 @@ impl SmartData {
                 findings.push(Finding::NvmeMediaErrors(nvme.media_errors));
             }
         }
+        if let Some(emmc) = &self.emmc {
+            match emmc.life_used() {
+                Some(step) if step >= EmmcWear::PAST_LIFE => findings.push(Finding::EmmcPastLife),
+                // Step n: at least (n - 1) × 10 % used.
+                Some(step) if step.saturating_sub(1) * 10 >= EMMC_WORN => {
+                    findings.push(Finding::EmmcWornOut(step.saturating_sub(1) * 10));
+                }
+                _ => {}
+            }
+            if let Some(pre_eol @ (PreEol::Warning | PreEol::Urgent)) = emmc.pre_eol {
+                findings.push(Finding::EmmcReserveLow(pre_eol));
+            }
+        }
         let health = findings.iter().map(Finding::health).max().unwrap_or(Health::Good);
         Assessment { health, findings }
     }
@@ -258,6 +324,7 @@ mod tests {
             power_cycles: Some(0),
             attributes,
             nvme: None,
+            emmc: None,
             error_log_count: Some(0),
             last_self_test: None,
             running_self_test: None,
@@ -334,6 +401,43 @@ mod tests {
         assert_eq!(nvme(|h| h.available_spare = 5).assess().health, Health::Failing);
         assert_eq!(nvme(|h| h.percentage_used = 95).assess().findings, [Finding::NvmeWornOut(95)]);
         assert_eq!(nvme(|h| h.media_errors = 2).assess().health, Health::Warning);
+    }
+
+    fn emmc(life_used_a: u8, life_used_b: u8, pre_eol: PreEol) -> SmartData {
+        let wear = EmmcWear {
+            life_used_a: Some(life_used_a),
+            life_used_b: Some(life_used_b),
+            pre_eol: Some(pre_eol),
+        };
+        SmartData { protocol: SmartProtocol::Emmc, emmc: Some(wear), passed: None, ..ata(vec![]) }
+    }
+
+    #[test]
+    fn emmc_rules() {
+        assert_eq!(
+            emmc(1, 2, PreEol::Normal).assess(),
+            Assessment { health: Health::Good, findings: vec![] }
+        );
+        assert_eq!(emmc(8, 3, PreEol::Normal).assess().health, Health::Good, "70 to 80 % used");
+        assert_eq!(
+            emmc(2, 9, PreEol::Normal).assess().findings,
+            [Finding::EmmcWornOut(80)],
+            "the higher counts"
+        );
+        assert_eq!(emmc(10, 1, PreEol::Normal).assess().health, Health::Warning);
+        assert_eq!(emmc(11, 1, PreEol::Normal).assess().findings, [Finding::EmmcPastLife]);
+        assert_eq!(emmc(11, 1, PreEol::Normal).assess().health, Health::Failing);
+        let reserve = emmc(3, 3, PreEol::Warning).assess();
+        assert_eq!(
+            (reserve.health, reserve.findings),
+            (Health::Warning, vec![Finding::EmmcReserveLow(PreEol::Warning)])
+        );
+        assert_eq!(emmc(3, 3, PreEol::Urgent).assess().health, Health::Failing);
+        let unknown = SmartData {
+            emmc: Some(EmmcWear { life_used_a: None, life_used_b: None, pre_eol: None }),
+            ..ata(vec![])
+        };
+        assert_eq!(unknown.assess().health, Health::Good);
     }
 
     #[test]

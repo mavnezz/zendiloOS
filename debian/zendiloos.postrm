@@ -24,6 +24,21 @@ case "$1" in
         # Generated at installation; the database in /var/lib/zendiloos is
         # kept, since it holds the administrators' work.
         rm -rf /etc/zendiloos/tls /etc/zendiloos/nginx /etc/zendiloos/firewall /etc/zendiloos/network
+        # The generators the package masked, if they are still masked as it
+        # left them; systemd runs them again from the next reload or boot.
+        if [ -f /etc/zendiloos/masked-generators ]; then
+            while read -r generator; do
+                case "$generator" in
+                    /etc/systemd/system-generators/*) ;;
+                    *) continue ;;
+                esac
+                if [ -L "$generator" ] && [ "$(readlink "$generator")" = /dev/null ]; then
+                    rm -f "$generator"
+                fi
+            done </etc/zendiloos/masked-generators
+            rm -f /etc/zendiloos/masked-generators
+            rmdir /etc/systemd/system-generators 2>/dev/null || true
+        fi
         ;;
 esac
 

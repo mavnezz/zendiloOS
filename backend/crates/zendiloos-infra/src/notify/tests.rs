@@ -8,6 +8,7 @@ use tokio::net::TcpListener;
 use zendiloos_kernel::Timestamp;
 use zendiloos_notify::Level;
 use zendiloos_notify::channels::{Webhook, WebhookFormat};
+use zendiloos_notify::queue::SendFailure;
 
 use super::*;
 
@@ -27,6 +28,11 @@ fn message() -> Message {
 
 /// Accepts one message and returns everything the client said.
 async fn smtp_server(listener: TcpListener) -> String {
+    smtp_server_answering(listener, b"250 ok\r\n").await
+}
+
+/// As [`smtp_server`], answering `rcpt` to the recipient.
+async fn smtp_server_answering(listener: TcpListener, rcpt: &'static [u8]) -> String {
     let (stream, _) = listener.accept().await.unwrap();
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
@@ -50,6 +56,8 @@ async fn smtp_server(listener: TcpListener) -> String {
         } else if line == "QUIT" {
             writer.write_all(b"221 bye\r\n").await.unwrap();
             break;
+        } else if line.starts_with("RCPT") {
+            rcpt
         } else {
             b"250 ok\r\n"
         };
@@ -100,7 +108,43 @@ async fn starttls_is_required_when_chosen() {
     let refused =
         NetworkChannels::new().send(&Target::Email(email), &message(), &notification(), "nas").await;
 
-    assert!(refused.is_err(), "the password must not go out in clear");
+    let refused = refused.expect_err("the password must not go out in clear");
+    assert!(!refused.transient, "a server without STARTTLS stays one: {refused:?}");
+}
+
+fn plain_mail(port: u16) -> Target {
+    Target::Email(Email {
+        server: "127.0.0.1".into(),
+        port,
+        security: Security::None,
+        username: None,
+        password: None,
+        from: "nas@example.org".into(),
+        to: vec!["admin@example.org".into()],
+    })
+}
+
+#[tokio::test]
+async fn an_smtp_server_that_says_later_is_tried_again_and_one_that_refuses_is_not() {
+    for (rcpt, transient) in [
+        (&b"451 4.7.1 greylisted, try again later\r\n"[..], true),
+        (&b"550 5.1.1 no such user\r\n"[..], false),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(smtp_server_answering(listener, rcpt));
+
+        let failed = NetworkChannels::new().send(&plain_mail(port), &message(), &notification(), "nas").await;
+
+        let failed = failed.unwrap_err();
+        assert_eq!(failed.transient, transient, "{failed:?}");
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let failed = NetworkChannels::new().send(&plain_mail(port), &message(), &notification(), "nas").await;
+    assert!(failed.unwrap_err().transient, "a server not reached may come up");
 }
 
 /// Answers one request with `status` and returns it, head and body.
@@ -154,7 +198,7 @@ async fn webhooks_get_json_or_text() {
 
     let refused = NetworkChannels::new().send(&ntfy, &message(), &notification(), "nas").await;
 
-    assert_eq!(refused, Err("the server answered 403 Forbidden".into()));
+    assert_eq!(refused, Err(SendFailure::permanent("the server answered 403 Forbidden")));
     let request = server.await.unwrap();
     assert!(request.contains("title: =?UTF-8?B?"), "{request}");
     assert!(request.contains(&format!("host: {address}\r\n")), "no user in Host: {request}");
@@ -171,5 +215,27 @@ async fn an_unreachable_server_says_so() {
 
     let failed = NetworkChannels::new().send(&hook, &message(), &notification(), "nas").await.unwrap_err();
 
-    assert!(failed.starts_with("cannot connect to 127.0.0.1:"), "{failed}");
+    assert!(failed.reason.starts_with("cannot connect to 127.0.0.1:"), "{failed:?}");
+    assert!(failed.transient, "it may come up");
+}
+
+#[tokio::test]
+async fn a_webhook_that_is_down_for_now_is_tried_again() {
+    for (status, transient) in [
+        ("503 Service Unavailable", true),
+        ("502 Bad Gateway", true),
+        ("429 Too Many Requests", true),
+        ("404 Not Found", false),
+        ("401 Unauthorized", false),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        tokio::spawn(http_server(listener, status));
+        let hook = Target::Webhook(Webhook { url, format: WebhookFormat::Json });
+
+        let failed =
+            NetworkChannels::new().send(&hook, &message(), &notification(), "nas").await.unwrap_err();
+
+        assert_eq!(failed, SendFailure { reason: format!("the server answered {status}"), transient });
+    }
 }

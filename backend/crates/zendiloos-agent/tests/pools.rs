@@ -257,9 +257,14 @@ async fn creates_a_mirror_with_equal_partitions_and_a_mount_unit() {
          -O mountpoint=legacy -O canmount=on \
          -O zendiloos:volume=2 media mirror /dev/disk/by-id/ata-FREE-1-part1 /dev/disk/by-id/ata-FREE-2-part1"
     );
+    // Linked first: the new unit's file and link take one reload.
     assert_eq!(
-        &calls[calls.len() - 2..],
-        ["systemctl daemon-reload", "systemctl enable --now volume2.mount"]
+        &calls[calls.len() - 3..],
+        [
+            "systemctl enable --no-reload volume2.mount",
+            "systemctl daemon-reload",
+            "systemctl start volume2.mount"
+        ]
     );
     let unit = fs::read_to_string(host.path("units/volume2.mount")).unwrap();
     assert!(unit.contains("What=media\nWhere=/volume2\nType=zfs\n"), "{unit}");
@@ -382,9 +387,9 @@ async fn destroys_only_its_own_pools_and_erases_their_disks() {
             "systemctl stop volume1.mount",
             "zpool destroy tank",
             // Only then their units go.
-            "systemctl disable --now volume1-old\\x2dshare.mount",
+            "systemctl disable --no-reload --now volume1-old\\x2dshare.mount",
             "systemctl daemon-reload",
-            "systemctl disable --now volume1.mount",
+            "systemctl disable --no-reload --now volume1.mount",
             "systemctl daemon-reload",
             "zpool labelclear -f /dev/disk/by-id/ata-MEMBER-part1",
             "wipefs --all --quiet /dev/disk/by-id/ata-MEMBER-part1",
@@ -490,7 +495,7 @@ async fn shares_are_datasets_with_their_own_mount_unit() {
         ),
         "{calls:#?}"
     );
-    assert_eq!(calls.last().unwrap(), "systemctl enable --now volume1-my\\x2dphotos.mount");
+    assert_eq!(calls.last().unwrap(), "systemctl start volume1-my\\x2dphotos.mount");
     let unit = fs::read_to_string(host.path("units/volume1-my\\x2dphotos.mount")).unwrap();
     assert!(unit.contains("What=tank/my-photos\nWhere=/volume1/my-photos\nType=zfs\n"), "{unit}");
 
@@ -508,7 +513,8 @@ async fn shares_are_datasets_with_their_own_mount_unit() {
         .iter()
         .position(|c| c == "systemctl start zendiloos-nfs-flush.service")
         .expect("the NFS server lets go first");
-    let unmounted = calls.iter().position(|c| c.starts_with("systemctl disable --now volume1-my")).unwrap();
+    let unmounted =
+        calls.iter().position(|c| c.starts_with("systemctl disable --no-reload --now volume1-my")).unwrap();
     assert!(flushed < unmounted, "{calls:#?}");
     assert!(!host.path("units/volume1-my\\x2dphotos.mount").exists());
 }
@@ -554,13 +560,15 @@ async fn writes_samba_and_nfs_configuration_after_checking_it() {
         host.calls(),
         [
             "testparm --suppress-prompt /samba/zendiloos.check",
-            "systemctl enable --now smbd.service",
+            "systemctl enable --no-reload --now smbd.service",
             // The first announcement over Bonjour: smbd makes it as it starts.
             "systemctl try-restart smbd.service",
-            "systemctl enable --now wsdd2.service",
-            "systemctl enable --now avahi-daemon.socket avahi-daemon.service",
-            "systemctl enable --now nfs-server.service",
+            "systemctl enable --no-reload --now wsdd2.service",
+            "systemctl enable --no-reload --now avahi-daemon.socket avahi-daemon.service",
+            "systemctl enable --no-reload --now nfs-server.service",
             "systemctl reload-or-restart nfs-server.service",
+            // Reloaded once if a link changed.
+            "systemctl show --property=NeedDaemonReload --value smbd.service",
         ]
     );
     let first = host.calls().len();
@@ -609,10 +617,11 @@ async fn servers_that_are_off_stop_and_stay_off_with_their_configuration_kept() 
         host.calls(),
         [
             "testparm --suppress-prompt /samba/zendiloos.check",
-            "systemctl disable --now smbd.service",
-            "systemctl disable --now wsdd2.service",
-            "systemctl disable --now avahi-daemon.service avahi-daemon.socket",
-            "systemctl disable --now nfs-server.service",
+            "systemctl disable --no-reload --now smbd.service",
+            "systemctl disable --no-reload --now wsdd2.service",
+            "systemctl disable --no-reload --now avahi-daemon.service avahi-daemon.socket",
+            "systemctl disable --no-reload --now nfs-server.service",
+            "systemctl show --property=NeedDaemonReload --value smbd.service",
         ]
     );
 }
@@ -727,7 +736,7 @@ async fn docker_moves_onto_a_pool_zendiloos_made() {
 
     let calls = host.calls();
     assert!(calls.contains(&"zfs create -o mountpoint=legacy tank/zendiloos.docker".to_owned()), "{calls:?}");
-    assert!(calls.contains(&"systemctl enable --now volume1-\\x40docker.mount".to_owned()), "{calls:?}");
+    assert!(calls.contains(&"systemctl start volume1-\\x40docker.mount".to_owned()), "{calls:?}");
     assert_eq!(calls.last().unwrap(), "systemctl restart docker");
     let unit = fs::read_to_string(host.path("units/volume1-\\x40docker.mount")).unwrap();
     assert!(unit.contains("What=tank/zendiloos.docker\nWhere=/volume1/@docker\n"), "{unit}");
@@ -1006,6 +1015,12 @@ async fn personal_folders_get_a_dataset_and_quotas_per_user() {
     );
     let unit = fs::read_to_string(host.path("units/volume2-\\x40homes.mount")).unwrap();
     assert!(unit.contains("What=cold/zendiloos.homes\nWhere=/volume2/@homes\n"), "{unit}");
+    // Prepared again, its unit is the same: systemd is not reloaded for it.
+    let reloads = || host.calls().iter().filter(|call| *call == "systemctl daemon-reload").count();
+    let before = reloads();
+    assert_eq!(host.run(homes("cold", 2)).await, Response::Done);
+    assert_eq!(reloads(), before, "{:?}", host.calls());
+    assert_eq!(host.calls().last().unwrap(), "systemctl start volume2-\\x40homes.mount");
     assert_refused(host.run(homes("tank", 2)).await, ErrorCode::Forbidden, "not managed");
 
     let quota = |bytes| Request::SetHomeQuota {
@@ -1038,7 +1053,10 @@ async fn an_apps_dataset_goes_with_the_app() {
     // Never installed as far as Compose knows: only its dataset goes.
     assert_eq!(host.run(remove("kuma")).await, Response::Done);
     let calls = host.calls();
-    assert!(calls.contains(&"systemctl disable --now volume1-\\x40apps-kuma.mount".to_owned()), "{calls:?}");
+    assert!(
+        calls.contains(&"systemctl disable --no-reload --now volume1-\\x40apps-kuma.mount".to_owned()),
+        "{calls:?}"
+    );
     assert!(calls.contains(&"zfs destroy -r tank/zendiloos.apps/kuma".to_owned()));
     assert_eq!(host.run(remove("other")).await, Response::Done, "no dataset: nothing to destroy");
     assert!(!host.calls().contains(&"zfs destroy -r tank/zendiloos.apps/other".to_owned()));

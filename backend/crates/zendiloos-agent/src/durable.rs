@@ -15,6 +15,17 @@ pub(crate) fn replace(path: &Path, content: &[u8]) -> Result<(), OperationError>
     write(path, content, None)
 }
 
+/// As [`replace`], but only when `path` holds something else: whether it
+/// was written. A unit file written again unchanged would only make systemd
+/// reload for nothing.
+pub(crate) fn replace_if_changed(path: &Path, content: &[u8]) -> Result<bool, OperationError> {
+    if fs::read(path).is_ok_and(|before| before == content) {
+        return Ok(false);
+    }
+    replace(path, content)?;
+    Ok(true)
+}
+
 /// As [`replace`], the file with the permission bits `mode`, whatever the
 /// umask says.
 pub(crate) fn replace_mode(path: &Path, content: &[u8], mode: u32) -> Result<(), OperationError> {
@@ -69,6 +80,19 @@ fn beside(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_with_the_same_content_is_left_alone() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("volume1.mount");
+        assert!(replace_if_changed(&path, b"[Mount]\n").unwrap(), "a new file");
+        let written = fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(!replace_if_changed(&path, b"[Mount]\n").unwrap());
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), written, "not written again");
+        assert!(replace_if_changed(&path, b"[Mount]\nWhat=tank\n").unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "[Mount]\nWhat=tank\n");
+    }
 
     #[test]
     fn a_file_is_replaced_whole_and_nothing_stays_beside_it() {

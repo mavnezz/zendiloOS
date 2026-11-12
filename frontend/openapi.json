@@ -8674,7 +8674,7 @@
         "tags": [
           "notifications"
         ],
-        "summary": "Sends a test message on this channel alone now and waits for the\noutcome. Needs `system.manage`.",
+        "summary": "Sends a test message on this channel alone now and waits for the\noutcome; once one went out, what waits on the channel goes out too.\nNeeds `system.manage`.",
         "operationId": "test_channel",
         "parameters": [
           {
@@ -17131,6 +17131,49 @@
         },
         "additionalProperties": false
       },
+      "EmmcReserve": {
+        "type": "string",
+        "description": "How far an eMMC device's reserved blocks, which replace worn ones, are\nused.",
+        "enum": [
+          "normal",
+          "warning",
+          "urgent"
+        ]
+      },
+      "EmmcWear": {
+        "type": "object",
+        "description": "What an eMMC device of version 5.0 or later reports of its wear.",
+        "properties": {
+          "life_used_a": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The device's estimate of the share of its life used for its memory\nof type A, in steps of ten percent: 1 is 0 to 10 % used, 10 is 90\nto 100 %, 11 past its life; absent if it gives none.",
+            "minimum": 0
+          },
+          "life_used_b": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The same for its memory of type B.",
+            "minimum": 0
+          },
+          "reserve": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EmmcReserve"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "EnableDockerRequest": {
         "type": "object",
         "required": [
@@ -17786,7 +17829,10 @@
           "nvme_critical_warning",
           "nvme_spare_low",
           "nvme_worn_out",
-          "nvme_media_errors"
+          "nvme_media_errors",
+          "emmc_worn_out",
+          "emmc_past_life",
+          "emmc_reserve_low"
         ]
       },
       "FirewallAction": {
@@ -20255,9 +20301,18 @@
           "name",
           "target",
           "recipients",
-          "language"
+          "language",
+          "waiting",
+          "failed"
         ],
         "properties": {
+          "failed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UndeliveredNotification"
+            },
+            "description": "What will not go out, because it cannot or its tries ran out: the\nmost recent first, for a week."
+          },
           "id": {
             "type": "integer",
             "format": "int64"
@@ -20292,6 +20347,13 @@
           },
           "target": {
             "$ref": "#/components/schemas/ChannelTarget"
+          },
+          "waiting": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UndeliveredNotification"
+            },
+            "description": "What did not go out yet and is tried again, with a growing pause,\nfor about twelve hours: the oldest first."
           }
         }
       },
@@ -22852,7 +22914,8 @@
         "enum": [
           "ata",
           "nvme",
-          "scsi"
+          "scsi",
+          "emmc"
         ]
       },
       "SmartReport": {
@@ -22871,6 +22934,17 @@
               "$ref": "#/components/schemas/SmartAttribute"
             },
             "description": "ATA only."
+          },
+          "emmc": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EmmcWear",
+                "description": "eMMC only."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "error_log_count": {
             "type": [
@@ -23736,6 +23810,7 @@
           "nvme",
           "usb",
           "virtio",
+          "mmc",
           "other"
         ]
       },
@@ -23799,6 +23874,38 @@
             "type": "integer",
             "description": "Recovery codes not used yet.",
             "minimum": 0
+          }
+        }
+      },
+      "UndeliveredNotification": {
+        "type": "object",
+        "description": "A notification that has not gone out on a channel.",
+        "required": [
+          "notification",
+          "attempts",
+          "at"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Waiting: when it is tried next; failed: when it failed for good. In\nUnix seconds."
+          },
+          "attempts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How often it was tried.",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the last try failed."
+          },
+          "notification": {
+            "$ref": "#/components/schemas/Notification"
           }
         }
       },

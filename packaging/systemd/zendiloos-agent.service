@@ -17,7 +17,8 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 # this deliberately:
 # - reboot and power off go through systemd and need nothing;
 # - SMART reads disks through SG_IO (CAP_SYS_RAWIO) and NVMe admin
-#   commands (CAP_SYS_ADMIN);
+#   commands (CAP_SYS_ADMIN); an eMMC device's wear is read from the files
+#   of its card in /sys, which needs nothing;
 # - where each disk sits: udev's database (udevadm info, /run/udev) and
 #   DMI's names in /sys are read; a disk made to blink is read from with
 #   O_DIRECT, never written, which the device rules below allow already;

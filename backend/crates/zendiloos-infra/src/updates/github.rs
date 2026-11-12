@@ -2,6 +2,12 @@
 //! each with its package for this machine, `SHA256SUMS` and its minisign
 //! signature. What is downloaded goes to a folder the agent takes it from;
 //! the agent trusts none of it until the signature matches.
+//!
+//! GitHub's downloads fail now and then for a moment (a `504 Gateway
+//! Timeout` for `SHA256SUMS` kept updates from starting), so each file is
+//! tried again after a pause when the failure may pass: an answer of 5xx,
+//! 408 or 429, a connection that could not be made, broke off or timed
+//! out. Only once its tries ran out does the update fail, saying why.
 
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::PathBuf;
@@ -25,6 +31,8 @@ const MAX_PACKAGE: usize = 512 * 1024 * 1024;
 const DOWNLOAD_TIME: Duration = Duration::from_secs(30 * 60);
 const SUMS: &str = "SHA256SUMS";
 const SIGNATURE: &str = "SHA256SUMS.minisig";
+/// The pauses before a file's second, third and fourth try.
+const PAUSES: [Duration; 3] = [Duration::from_secs(10), Duration::from_secs(30), Duration::from_secs(60)];
 
 pub struct GitHubReleases {
     tls: Arc<rustls::ClientConfig>,
@@ -36,6 +44,8 @@ pub struct GitHubReleases {
     arch: String,
     /// Where releases are downloaded to (`/var/lib/zendiloos/updates`).
     spool: PathBuf,
+    /// [`PAUSES`], shorter in tests.
+    pauses: Vec<Duration>,
 }
 
 impl GitHubReleases {
@@ -51,6 +61,36 @@ impl GitHubReleases {
             repository: repository.to_owned(),
             arch: arch.to_owned(),
             spool,
+            pauses: PAUSES.to_vec(),
+        }
+    }
+
+    /// One file of a release, tried again after each of the pauses while
+    /// the failure may pass.
+    async fn fetch(&self, asset: &Asset, max: usize) -> Result<Vec<u8>, String> {
+        let mut pauses = self.pauses.iter();
+        let mut tries = 1;
+        loop {
+            let tried = https::attempt(&self.tls, Method::GET, &asset.address, &[], max, DOWNLOAD_TIME).await;
+            let failure = match tried {
+                Ok(answer) if answer.status.is_success() => return Ok(answer.body),
+                Ok(answer) => https::Failure {
+                    reason: format!("the server answered {}", answer.status),
+                    transient: https::answered_later(answer.status),
+                },
+                Err(failure) => failure,
+            };
+            let Some(pause) = pauses.next().filter(|_| failure.transient) else {
+                let times = if tries == 1 { String::new() } else { format!(" (tried {tries} times)") };
+                return Err(format!("{}: {}{times}", asset.name, failure.reason));
+            };
+            tracing::warn!(
+                file = asset.name,
+                error = failure.reason,
+                "updates: download failed, tried again"
+            );
+            tokio::time::sleep(*pause).await;
+            tries += 1;
         }
     }
 }
@@ -147,17 +187,13 @@ impl ReleaseSource for GitHubReleases {
         for (asset, max) in
             [(&release.sums, MAX_SMALL), (&release.signature, MAX_SMALL), (&release.package, MAX_PACKAGE)]
         {
-            let answer =
-                https::send_within(&self.tls, Method::GET, &asset.address, &[], max, DOWNLOAD_TIME).await?;
-            if !answer.status.is_success() {
-                return Err(format!("{}: the server answered {}", asset.name, answer.status));
-            }
+            let body = self.fetch(asset, max).await?;
             let path = spool.join(&asset.name);
             let written = (|| {
                 use std::io::Write;
                 let mut file =
                     std::fs::OpenOptions::new().write(true).create_new(true).mode(0o640).open(&path)?;
-                file.write_all(&answer.body)?;
+                file.write_all(&body)?;
                 file.sync_all()
             })();
             written.map_err(|e| format!("{}: {e}", path.display()))?;
@@ -168,9 +204,92 @@ impl ReleaseSource for GitHubReleases {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use zendiloos_updates::domain::Channel;
 
     use super::*;
+    use crate::test_https::{Asked, client, response, serve};
+
+    /// Over a server whose answers to each path are given in turn, the last
+    /// one for good; pausing for a moment only.
+    async fn releases_from(
+        answers: Vec<(&'static str, Vec<&'static str>)>,
+    ) -> (GitHubReleases, Release, tempfile::TempDir) {
+        let answers = Mutex::new(answers);
+        let port = serve(move |asked: &Asked| {
+            let mut answers = answers.lock().unwrap();
+            let Some((_, statuses)) = answers.iter_mut().find(|(path, _)| *path == asked.path) else {
+                return response("404 Not Found", &[], b"");
+            };
+            let status = if statuses.len() > 1 { statuses.remove(0) } else { statuses[0] };
+            response(status, &[], if status.starts_with("200") { b"content" } else { b"" })
+        })
+        .await;
+        let spool = tempfile::tempdir().unwrap();
+        let mut github = GitHubReleases::new("https://127.0.0.1", "o/r", spool.path().join("updates"));
+        (github.tls, github.pauses) = (client(), vec![Duration::from_millis(1); 3]);
+        let asset = |name: &str| Asset {
+            name: name.to_owned(),
+            address: format!("https://127.0.0.1:{port}/{name}"),
+            size: 7,
+        };
+        let release = Release {
+            channel: Channel::Stable,
+            tag: "v0.5.0".into(),
+            version: "0.5.0".into(),
+            published_at: None,
+            notes: String::new(),
+            package: asset("zendiloos_0.5.0_amd64.deb"),
+            sums: asset("SHA256SUMS"),
+            signature: asset("SHA256SUMS.minisig"),
+        };
+        (github, release, spool)
+    }
+
+    #[tokio::test]
+    async fn a_file_github_does_not_give_for_a_moment_is_tried_again() {
+        let (github, release, spool) = releases_from(vec![
+            ("/SHA256SUMS", vec!["504 Gateway Timeout", "503 Service Unavailable", "200 OK"]),
+            ("/SHA256SUMS.minisig", vec!["200 OK"]),
+            ("/zendiloos_0.5.0_amd64.deb", vec!["429 Too Many Requests", "200 OK"]),
+        ])
+        .await;
+
+        github.download(&release).await.unwrap();
+
+        let files = spool.path().join("updates");
+        for name in ["SHA256SUMS", "SHA256SUMS.minisig", "zendiloos_0.5.0_amd64.deb"] {
+            assert_eq!(std::fs::read(files.join(name)).unwrap(), b"content", "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_download_fails_once_its_tries_ran_out_or_at_once_when_refused() {
+        let (github, release, _spool) =
+            releases_from(vec![("/SHA256SUMS", vec!["504 Gateway Timeout"])]).await;
+        let failed = github.download(&release).await.unwrap_err();
+        assert_eq!(failed, "SHA256SUMS: the server answered 504 Gateway Timeout (tried 4 times)");
+
+        let (github, release, _spool) = releases_from(vec![
+            ("/SHA256SUMS", vec!["200 OK"]),
+            ("/SHA256SUMS.minisig", vec!["404 Not Found", "200 OK"]),
+        ])
+        .await;
+        let failed = github.download(&release).await.unwrap_err();
+        assert_eq!(failed, "SHA256SUMS.minisig: the server answered 404 Not Found", "not tried again");
+    }
+
+    #[tokio::test]
+    async fn a_server_not_reached_is_tried_again_too() {
+        let (mut github, mut release, _spool) = releases_from(vec![]).await;
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        release.sums.address = format!("https://127.0.0.1:{closed}/SHA256SUMS");
+        github.pauses = vec![Duration::from_millis(1)];
+        let failed = github.download(&release).await.unwrap_err();
+        assert!(failed.starts_with("SHA256SUMS: cannot connect to 127.0.0.1"), "{failed}");
+        assert!(failed.ends_with("(tried 2 times)"), "{failed}");
+    }
 
     #[test]
     fn githubs_answer_becomes_releases_with_their_files() {

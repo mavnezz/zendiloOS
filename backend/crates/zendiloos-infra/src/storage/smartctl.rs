@@ -332,6 +332,7 @@ pub fn parse(exit_status: i32, json: &str) -> Result<SmartReport, ParseError> {
         power_cycles: output.power_cycle_count,
         attributes,
         nvme,
+        emmc: None,
         error_log_count: output.ata_smart_error_log.and_then(|log| log.summary).map(|s| s.count),
         last_self_test,
         running_self_test,

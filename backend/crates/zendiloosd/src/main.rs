@@ -171,7 +171,8 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let channels = Channels::new(
         ChannelPorts {
             repository: Arc::new(channel_store.clone()),
-            routes: Arc::new(channel_store),
+            routes: Arc::new(channel_store.clone()),
+            queue: Arc::new(channel_store),
             addresses: Arc::new(SqliteAccountAddresses::new(database.clone())),
             sender: Arc::new(NetworkChannels::new()),
             audit: audit.clone(),

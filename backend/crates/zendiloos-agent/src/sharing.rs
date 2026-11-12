@@ -33,7 +33,7 @@ use zendiloos_exec::Program;
 use crate::acl::{self, Acl, Managed};
 use crate::config::Tools;
 use crate::operations::OperationError;
-use crate::pools::{HostPaths, run};
+use crate::pools::{HostPaths, link_units, reload_if_behind, run};
 
 pub use zendiloos_fileops::RECYCLE_DIRECTORY;
 /// How long a change of a share's own folder waits for the walk of the
@@ -370,8 +370,14 @@ impl Sharing {
         checked?;
         let before = fs::read_to_string(&self.paths.samba_config).unwrap_or_default();
         write_atomically(&self.paths.samba_config, &samba)?;
+        // The services' units are their packages' and unchanged: enabling
+        // or disabling only links them. Without `--no-reload` systemctl
+        // would reload systemd for each, four times at every change of the
+        // shares and every start of zendiloosd, and without the SysV hooks
+        // skipped twice more for smbd's init script; systemd is reloaded
+        // once at the end, and only if a service was switched on or off.
         if services.smb {
-            run(&self.systemctl, &["enable", "--now", "smbd.service"]).await?;
+            link_units(&self.systemctl, &["enable", "--no-reload", "--now", "smbd.service"]).await?;
             // smbd announces itself and its Time Machine shares over Bonjour
             // when it starts, not when it reloads: it restarts when that
             // changes, which ends open connections; otherwise it reloads.
@@ -389,17 +395,17 @@ impl Sharing {
                 }
             }
         } else {
-            run(&self.systemctl, &["disable", "--now", "smbd.service"]).await?;
+            link_units(&self.systemctl, &["disable", "--no-reload", "--now", "smbd.service"]).await?;
         }
         if services.smb && services.wsdd {
-            self.optional(&["enable", "--now", WSDD]).await;
+            self.optional(&["enable", "--no-reload", "--now", WSDD]).await;
         } else {
-            self.optional(&["disable", "--now", WSDD]).await;
+            self.optional(&["disable", "--no-reload", "--now", WSDD]).await;
         }
         if services.bonjour {
-            self.optional(&["enable", "--now", AVAHI_SOCKET, AVAHI]).await;
+            self.optional(&["enable", "--no-reload", "--now", AVAHI_SOCKET, AVAHI]).await;
         } else {
-            self.optional(&["disable", "--now", AVAHI, AVAHI_SOCKET]).await;
+            self.optional(&["disable", "--no-reload", "--now", AVAHI, AVAHI_SOCKET]).await;
         }
 
         let exports = nfs_exports(nfs, squashed);
@@ -412,18 +418,21 @@ impl Sharing {
             // Through systemd: the kernel's NFS server keeps its export
             // cache per network namespace, and this agent has its own.
             if services.nfs {
-                run(&self.systemctl, &["enable", "--now", "nfs-server.service"]).await?;
+                link_units(&self.systemctl, &["enable", "--no-reload", "--now", "nfs-server.service"])
+                    .await?;
                 run(&self.systemctl, &["reload-or-restart", "nfs-server.service"]).await?;
             } else {
-                run(&self.systemctl, &["disable", "--now", "nfs-server.service"]).await?;
+                link_units(&self.systemctl, &["disable", "--no-reload", "--now", "nfs-server.service"])
+                    .await?;
             }
         }
+        reload_if_behind(&self.systemctl, "smbd.service").await?;
         Ok(Response::Done)
     }
 
     /// For a service that may not be installed: a failure is only noted.
     async fn optional(&self, args: &[&str]) {
-        if let Err(error) = run(&self.systemctl, args).await {
+        if let Err(error) = link_units(&self.systemctl, args).await {
             tracing::info!(%error, "an optional service was not changed");
         }
     }
@@ -1186,7 +1195,8 @@ mod tests {
     }
 
     /// Sharing with testparm, systemctl and smbcontrol as scripts that
-    /// record what they are asked; testparm refuses while `refuse` is there.
+    /// record what they are asked; testparm refuses while `refuse` is there,
+    /// and systemd is behind the disk while `behind` is.
     fn applying(dir: &Path, exportfs: bool) -> Sharing {
         let log = dir.join("calls.log");
         let script = |name: &str, body: &str| {
@@ -1201,7 +1211,16 @@ mod tests {
                 "testparm",
                 &format!("[ -f {} ] && exit 1; exit 0", dir.join("refuse").display()),
             ),
-            systemctl: script("systemctl", ""),
+            // Enabling or disabling with the SysV hooks would reload systemd.
+            systemctl: script(
+                "systemctl",
+                &format!(
+                    "case \"$1\" in enable|disable) [ \"$SYSTEMCTL_SKIP_SYSV\" = 1 ] || \
+                     echo with SysV hooks >> {};; show) [ -f {} ] && echo yes || echo no;; esac",
+                    log.display(),
+                    dir.join("behind").display()
+                ),
+            ),
             smbcontrol: script("smbcontrol", ""),
             exportfs: if exportfs { script("exportfs", "") } else { dir.join("no-exportfs") },
             ..Tools::default()
@@ -1244,7 +1263,8 @@ mod tests {
         fs::remove_file(dir.path().join("refuse")).unwrap();
 
         // Everything off: the servers stop and stay off, and no connection
-        // is closed (there are none).
+        // is closed (there are none). Their links changed: one reload.
+        fs::write(dir.path().join("behind"), "").unwrap();
         let mut off = base_services();
         (off.smb, off.nfs, off.wsdd, off.bonjour) = (false, false, false, false);
         let media = ShareName::parse("media").unwrap();
@@ -1253,12 +1273,16 @@ mod tests {
             Response::Done
         );
         let calls = fs::read_to_string(dir.path().join("calls.log")).unwrap();
-        for stopped in
-            ["disable --now smbd.service", "disable --now wsdd2.service", "disable --now nfs-server.service"]
-        {
+        for stopped in [
+            "disable --no-reload --now smbd.service",
+            "disable --no-reload --now wsdd2.service",
+            "disable --no-reload --now nfs-server.service",
+        ] {
             assert!(calls.contains(stopped), "{stopped}: {calls}");
         }
         assert!(!calls.contains("smbcontrol"), "{calls}");
+        assert!(!calls.contains("with SysV hooks"), "{calls}");
+        assert_eq!(calls.matches("systemctl daemon-reload").count(), 1, "{calls}");
     }
 
     #[tokio::test]
@@ -1270,6 +1294,7 @@ mod tests {
         sharing.apply(&[smb("media", false)], &[], &base_services(), None, &[]).await.unwrap();
         let quiet = fs::read_to_string(dir.path().join("calls.log")).unwrap();
         assert!(!quiet.contains("smbcontrol"), "nothing taken away, nothing closed: {quiet}");
+        assert!(!quiet.contains("daemon-reload"), "no link changed, no reload: {quiet}");
         fs::remove_file(dir.path().join("calls.log")).unwrap();
 
         sharing.apply(&[smb("media", false)], &[], &base_services(), None, &[media, photos]).await.unwrap();
@@ -1314,8 +1339,10 @@ mod tests {
         assert!(exports.contains("all_squash,anonuid=995,anongid=995"), "{exports}");
         let calls = fs::read_to_string(dir.path().join("calls.log")).unwrap();
         assert!(
-            calls.contains("enable --now nfs-server.service")
+            calls.contains("enable --no-reload --now nfs-server.service")
                 && calls.contains("reload-or-restart nfs-server")
+                && !calls.contains("with SysV hooks"),
+            "{calls}"
         );
 
         fs::write(dir.path().join("group"), "root:x:0:\n").unwrap();

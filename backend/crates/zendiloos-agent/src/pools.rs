@@ -580,10 +580,19 @@ impl Pools {
         Ok(())
     }
 
+    /// Writes `unit` and has it started now and at every boot. systemd is
+    /// reloaded only when the file or its link changed, once: a reload runs
+    /// every generator again and is logged. Linked first, so that a new
+    /// unit's file and link are read by the same reload.
     async fn install_unit(&self, unit: &str, content: &str) -> Result<(), OperationError> {
-        crate::durable::replace(&self.paths.units.join(unit), content.as_bytes())?;
-        run(&self.systemctl, &["daemon-reload"]).await?;
-        run(&self.systemctl, &["enable", "--now", unit]).await
+        let changed = crate::durable::replace_if_changed(&self.paths.units.join(unit), content.as_bytes())?;
+        run(&self.systemctl, &["enable", "--no-reload", unit]).await?;
+        if changed {
+            run(&self.systemctl, &["daemon-reload"]).await?;
+        } else {
+            reload_if_behind(&self.systemctl, unit).await?;
+        }
+        run(&self.systemctl, &["start", unit]).await
     }
 
     /// Starts `units` again, the volume's before its shares', after a
@@ -599,7 +608,8 @@ impl Pools {
     async fn remove_unit(&self, unit: &str) -> Result<(), OperationError> {
         let path = self.paths.units.join(unit);
         if path.exists() {
-            run(&self.systemctl, &["disable", "--now", unit]).await?;
+            // One reload, once the file is gone.
+            run(&self.systemctl, &["disable", "--no-reload", "--now", unit]).await?;
             fs::remove_file(&path).map_err(|e| OperationError::Write(path.clone(), e))?;
             run(&self.systemctl, &["daemon-reload"]).await?;
         }
@@ -699,7 +709,7 @@ impl Pools {
         let requires = format!(
             "# Written by zendiloOS: Docker's data is on a pool; without it, Docker waits.\n[Unit]\nRequiresMountsFor={root}\n"
         );
-        write_file(&drop_in, &requires)?;
+        let changed = crate::durable::replace_if_changed(&drop_in, requires.as_bytes())?;
         config.insert("data-root".to_owned(), root.clone().into());
         config.insert("storage-driver".to_owned(), "overlay2".into());
         let text = serde_json::to_string_pretty(&config).unwrap_or_default();
@@ -707,7 +717,9 @@ impl Pools {
             fs::create_dir_all(parent).map_err(|e| OperationError::Write(parent.to_owned(), e))?;
         }
         write_file(&self.paths.docker_config, &format!("{text}\n"))?;
-        run(&self.systemctl, &["daemon-reload"]).await?;
+        if changed {
+            run(&self.systemctl, &["daemon-reload"]).await?;
+        }
         Ok(())
     }
 
@@ -761,26 +773,29 @@ impl Pools {
             pool = pool.as_str(),
         );
         self.install_unit(&unit, &content).await?;
-        self.libvirt_waits_for(&crate::vms::vms_locations(&self.paths))?;
-        run(&self.systemctl, &["daemon-reload"]).await
+        // One reload, and only when libvirt's drop-in changed.
+        if self.libvirt_waits_for(&crate::vms::vms_locations(&self.paths))? {
+            run(&self.systemctl, &["daemon-reload"]).await?;
+        }
+        Ok(())
     }
 
     /// libvirt's drop-in: it starts only with every location mounted
     /// (`RequiresMountsFor=`, one line each); without a location it goes.
+    /// `true` when the file changed, so systemd needs to read it again.
     fn libvirt_waits_for(
         &self,
         locations: &[zendiloos_agent_proto::VmStorage],
-    ) -> Result<(), OperationError> {
+    ) -> Result<bool, OperationError> {
         use zendiloos_agent_proto::VMS_DIRECTORY;
 
         let drop_in = self.paths.units.join("libvirtd.service.d");
         let file = drop_in.join("zendiloos.conf");
         if locations.is_empty() {
             return match fs::remove_file(&file) {
-                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                    Err(OperationError::Write(file, error))
-                }
-                _ => Ok(()),
+                Ok(()) => Ok(true),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                Err(error) => Err(OperationError::Write(file, error)),
             };
         }
         fs::create_dir_all(&drop_in).map_err(|e| OperationError::Write(drop_in.clone(), e))?;
@@ -792,7 +807,7 @@ impl Pools {
             requires
                 .push_str(&format!("RequiresMountsFor=/volume{}/{VMS_DIRECTORY}\n", location.volume.get()));
         }
-        write_file(&file, &requires)
+        crate::durable::replace_if_changed(&file, requires.as_bytes())
     }
 
     /// Removes a location of the virtual machines' storage, refused while
@@ -1315,6 +1330,32 @@ pub(crate) fn share_unit_name(volume: VolumeNumber, share: &ShareName) -> String
 pub(crate) async fn run<S: AsRef<str>>(program: &Program, args: &[S]) -> Result<(), OperationError> {
     let args: Vec<&str> = args.iter().map(AsRef::as_ref).collect();
     zendiloos_exec::run(program, &args, LIMITS).await?.success(program)?;
+    Ok(())
+}
+
+/// `systemctl enable` or `disable` without Debian's SysV hooks. For a unit
+/// that also has an init script (smbd, ssh) systemctl runs update-rc.d,
+/// which reloads systemd twice whatever `--no-reload` says; the script's
+/// rc.d links count for nothing beside the native unit.
+pub(crate) async fn link_units(systemctl: &Program, args: &[&str]) -> Result<(), OperationError> {
+    let surroundings = zendiloos_exec::Surroundings {
+        variables: vec![("SYSTEMCTL_SKIP_SYSV".to_owned(), "1".to_owned())],
+        directory: None,
+    };
+    zendiloos_exec::run_with(systemctl, args, None, &surroundings, LIMITS).await?.success(systemctl)?;
+    Ok(())
+}
+
+/// Reloads systemd if what it holds of `unit` is behind the disk. Since
+/// systemd 257 that is so for every unit once any link changed without a
+/// reload, and `systemctl status` then warns that the unit changed on
+/// disk. Links go with `--no-reload`, so that one that stays as it was
+/// reloads nothing; this reloads once after one that changed.
+pub(crate) async fn reload_if_behind(systemctl: &Program, unit: &str) -> Result<(), OperationError> {
+    let behind = output(systemctl, &["show", "--property=NeedDaemonReload", "--value", unit]).await?;
+    if behind.trim() == "yes" {
+        run(systemctl, &["daemon-reload"]).await?;
+    }
     Ok(())
 }
 
