@@ -667,6 +667,7 @@ impl Vms {
         if !self.ports.repository.create(&vm).await? {
             return Err(VmsError::NameTaken);
         }
+        tracing::info!(id = vm.id, cards = %cards(&vm.settings.nics), "vms: recorded");
         let this = self.clone();
         let (who, context_owned, made) = (actor.clone(), context.clone(), vm.clone());
         let started = self
@@ -733,10 +734,14 @@ impl Vms {
         actor: &Actor,
         context: &RequestContext,
     ) -> Result<VmView, VmsError> {
-        let vm = self.ready(id).await?;
-        let _busy = self.take_busy(&vm.id, "changed")?;
+        let id = self.ready(id).await?.id;
+        let _busy = self.take_busy(&id, "changed")?;
         let (facts, library) = self.storage(context).await?;
         let _library = self.library.lock().await;
+        // Read again now that nothing else changes it: its cards keep the
+        // addresses its record has at this moment, not those of a look
+        // taken before the host was asked (issue #71).
+        let vm = self.ready(&id).await?;
         let others: Vec<Vm> =
             self.ports.repository.list().await?.into_iter().filter(|other| other.id != vm.id).collect();
         let taken: Vec<&str> = others.iter().map(|other| other.settings.name.as_str()).collect();
@@ -799,6 +804,12 @@ impl Vms {
         if !self.ports.repository.update(&changed).await? {
             return Err(VmsError::NameTaken);
         }
+        tracing::info!(
+            id = vm.id,
+            before = %cards(&vm.settings.nics),
+            after = %cards(&changed.settings.nics),
+            "vms: changed"
+        );
         drop(_library);
         self.get(&vm.id, context).await
     }
@@ -886,6 +897,11 @@ impl Vms {
         *count += 1;
         Ok(Seat { open: Arc::clone(&self.consoles), account })
     }
+}
+
+/// A VM's cards as the journal shows them: `0=52:54:00:12:34:56 1=…`.
+fn cards(nics: &[Nic]) -> String {
+    nics.iter().map(|nic| format!("{}={}", nic.slot, nic.mac)).collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]

@@ -31,9 +31,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use zendiloos_agent_proto::{
-    AgentTransport, DiskName, ErrorCode, FileLocation, FileRoot, Layout, PROTOCOL_VERSION, PackageReport,
-    PackageRun, PackageRunState, PackageTask, Report, Request, RequestId, Response, ShareName, TerminalSize,
-    TransportError, UpgradablePackage,
+    AgentTransport, BootKernel, BootReason, DiskName, ErrorCode, FileLocation, FileRoot, Layout,
+    PROTOCOL_VERSION, PackageReport, PackageRun, PackageRunState, PackageTask, Report, Request, RequestId,
+    Response, ShareName, TerminalSize, TransportError, UpgradablePackage,
 };
 use zendiloos_fileops::{FileError, ShareRoot};
 
@@ -264,6 +264,12 @@ impl SimPackages {
             newest_kernel: Some(if updated { "6.12.57+deb13-amd64" } else { "6.12.48+deb13-amd64" }.into()),
             zfs_ready: true,
             interrupted: false,
+            // GRUB starts the newest kernel, which has its ZFS module.
+            boot: Some(BootKernel {
+                kernel: Some(if updated { "6.12.57+deb13-amd64" } else { "6.12.48+deb13-amd64" }.into()),
+                reason: BootReason::Newest,
+                detail: None,
+            }),
         }
     }
 }

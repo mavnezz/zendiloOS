@@ -223,6 +223,22 @@ pub fn message(notification: &Notification, host: &str, language: Language) -> M
             "Unter Systemsteuerung → Updates steht, woran es lag.".to_owned(),
         ),
         "updates_failed" => ("Update failed".to_owned(), "Control panel → Updates says why.".to_owned()),
+        "network_drift" if german => (
+            "Netzwerkdateien geändert".to_owned(),
+            format!(
+                "Die Netzwerkdateien von zendiloOS weichen von seinen Einstellungen ab ({}). Unter Systemsteuerung \
+                 → Netzwerk lassen sie sich wiederherstellen oder übernehmen.",
+                param("names")
+            ),
+        ),
+        "network_drift" => (
+            "Network files changed".to_owned(),
+            format!(
+                "zendiloOS's network files differ from its settings ({}). Control panel → Network restores the \
+                 settings or keeps the files.",
+                param("names")
+            ),
+        ),
         "certificate_renewed" if german => (
             format!("Zertifikat für {} erneuert", param("name")),
             "Let's Encrypt hat das Zertifikat erneuert; zeigt die Weboberfläche es, nutzt sie es schon."
@@ -515,6 +531,12 @@ mod tests {
                 vec![("drive", "STICK")],
                 "STICK was pulled out without being ejected",
                 "STICK wurde abgezogen, ohne ausgeworfen zu werden",
+            ),
+            (
+                "network_drift",
+                vec![("names", "enp1s0, br0"), ("count", "2")],
+                "Network files changed",
+                "Netzwerkdateien geändert",
             ),
         ];
         for (code, params, english, german) in cases {

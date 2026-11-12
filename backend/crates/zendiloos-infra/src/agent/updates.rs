@@ -6,12 +6,14 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use zendiloos_agent_proto::{
-    AgentTransport, ErrorCode, PackageReport, PackageRun, PackageRunState, PackageTask, ReleaseChannel,
-    ReleaseInstall, ReleasePackage, Request, Response,
+    AgentTransport, BootKernel, ErrorCode, PackageReport, PackageRun, PackageRunState, PackageTask,
+    ReleaseChannel, ReleaseInstall, ReleasePackage, Request, Response,
 };
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 use zendiloos_updates::application::ports::{HostError, HostPackages};
-use zendiloos_updates::domain::{Channel, HostReport, PackageUpdate, Release, RunState, UpdateRun};
+use zendiloos_updates::domain::{
+    BootChoice, BootReason, Channel, HostReport, PackageUpdate, Release, RunState, UpdateRun,
+};
 
 use super::{WHAT, agent_error, call, call_raw, unexpected};
 
@@ -84,6 +86,23 @@ fn report(report: PackageReport) -> HostReport {
         newest_kernel: report.newest_kernel,
         zfs_ready: report.zfs_ready,
         interrupted: report.interrupted,
+        boot: report.boot.map(boot),
+    }
+}
+
+fn boot(boot: BootKernel) -> BootChoice {
+    use zendiloos_agent_proto::BootReason as Told;
+    BootChoice {
+        kernel: boot.kernel,
+        reason: match boot.reason {
+            Told::Newest => BootReason::Newest,
+            Told::NewestLacksZfs => BootReason::NewestLacksZfs,
+            Told::NoZfs => BootReason::NoZfs,
+            Told::NotSaved => BootReason::NotSaved,
+            Told::NotGrub => BootReason::NotGrub,
+            Told::Failed => BootReason::Failed,
+        },
+        detail: boot.detail,
     }
 }
 

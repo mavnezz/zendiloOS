@@ -275,6 +275,7 @@ fn apply(address: &str, seconds: u16) -> Request {
         netdevs: vec![],
         removed: vec![],
         links: vec![fixed("enp1s0", address)],
+        unset: vec![],
     };
     change(edit, seconds)
 }
@@ -319,6 +320,7 @@ fn make_bridge() -> Request {
         netdevs: vec![bridge_netdev(&["enp1s0"])],
         removed: vec![],
         links: vec![dhcp("br0"), port("enp1s0", PortOf::Bridge { name: name("br0") })],
+        unset: vec![],
     };
     change(edit, 120)
 }
@@ -330,6 +332,7 @@ fn remove_bridge() -> Request {
         netdevs: vec![],
         removed: vec![name("br0")],
         links: vec![NetworkConfig { keep_up: false, ..dhcp("enp1s0") }],
+        unset: vec![],
     };
     change(edit, 120)
 }
@@ -357,6 +360,7 @@ fn bond(mode: BondMode) -> Request {
             port("enp2s0", PortOf::Bond { name: name("bond0") }),
             port("enp3s0", PortOf::Bond { name: name("bond0") }),
         ],
+        unset: vec![],
     };
     change(edit, 120)
 }
@@ -917,6 +921,7 @@ async fn a_vlan_is_carried_by_its_parent() {
         }],
         removed: vec![],
         links: vec![parent, vlan],
+        unset: vec![],
     };
     assert_eq!(agent.execute(&change(edit, 120)).await, Response::Done);
     assert!(host.file("05-zendiloos-enp1s0.network").unwrap().contains("VLAN=enp1s0.10\n"));
@@ -1013,6 +1018,7 @@ async fn the_nas_keeps_itself_off_a_bridge_without_members_or_an_address() {
         netdevs: vec![Netdev { name: name("vmnet0"), mac: None, ..bridge_netdev(&[]) }],
         removed: vec![],
         links: vec![off],
+        unset: vec![],
     };
     assert_eq!(agent.execute(&change(edit, 30)).await, Response::Done);
     let rules = fs::read_to_string(host.root.join("internal-networks.nft")).unwrap();
@@ -1038,4 +1044,66 @@ async fn the_nas_keeps_itself_off_a_bridge_without_members_or_an_address() {
     assert_eq!(agent.execute(&make_bridge()).await, Response::Done);
     let rules = fs::read_to_string(host.root.join("internal-networks.nft")).unwrap();
     assert!(!rules.contains("br0"), "{rules}");
+}
+
+/// zendiloOS's settings written back: a file lost outside it comes again,
+/// one written outside it goes, as one change; unconfirmed, the files are
+/// as they were, the one written outside too.
+#[tokio::test]
+async fn a_restore_writes_back_what_was_lost_and_takes_away_what_was_added() {
+    let host = Host::new();
+    fs::write(host.root.join("network/05-zendiloos-enp2s0.network"), "[Match]\nName=enp2s0\n").unwrap();
+    let agent = host.agent().await;
+    let restore = || {
+        change(
+            NetworkEdit {
+                change: NetworkChange::Restore {},
+                netdevs: vec![],
+                removed: vec![],
+                links: vec![fixed("enp1s0", "192.168.1.10")],
+                unset: vec![name("enp2s0")],
+            },
+            120,
+        )
+    };
+    host.forget_calls();
+    assert_eq!(agent.execute(&restore()).await, Response::Done);
+    assert!(host.file("05-zendiloos-enp1s0.network").unwrap().contains("Address=192.168.1.10/24"));
+    assert!(host.file("05-zendiloos-enp2s0.network").is_none(), "the file written outside goes");
+    assert!(host.networkd().contains(&"ReconfigureLink i 3".to_owned()), "enp2s0 set up again");
+    assert_eq!(state(&agent).await.1, Some(NetworkChange::Restore {}));
+    drop(agent);
+
+    // Not confirmed before the agent restarts: as it was.
+    let agent = host.agent().await;
+    assert!(host.file("05-zendiloos-enp1s0.network").is_none());
+    assert_eq!(host.file("05-zendiloos-enp2s0.network").as_deref(), Some("[Match]\nName=enp2s0\n"));
+
+    // Only a file of zendiloOS's goes, and not a device's this way.
+    let unset = |interface: &str| {
+        change(
+            NetworkEdit {
+                change: NetworkChange::Restore {},
+                netdevs: vec![],
+                removed: vec![],
+                links: vec![],
+                unset: vec![name(interface)],
+            },
+            120,
+        )
+    };
+    let Response::Error { code, message } = agent.execute(&unset("enp3s0")).await else {
+        panic!("a file that is not there went")
+    };
+    assert_eq!(code, ErrorCode::Forbidden, "{message}");
+    assert!(message.contains("no file of zendiloOS's for enp3s0"), "{message}");
+    let both = NetworkEdit {
+        change: NetworkChange::Restore {},
+        netdevs: vec![],
+        removed: vec![name("br0")],
+        links: vec![],
+        unset: vec![name("br0")],
+    };
+    let fields = serde_json::to_value(&both).unwrap();
+    assert!(serde_json::from_value::<NetworkEdit>(fields).is_err(), "a device's file goes with the device");
 }

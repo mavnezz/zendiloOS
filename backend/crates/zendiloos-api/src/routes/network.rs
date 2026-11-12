@@ -1,6 +1,8 @@
 //! How the machine is connected (`system.view`), changing an interface's
 //! settings with confirmation, making, changing and removing bridges, bonds
-//! and VLANs, and taking the network over from ifupdown (`system.manage`).
+//! and VLANs, taking the network over from ifupdown, and writing zendiloOS's
+//! settings back over files changed outside it or keeping those files
+//! (`system.manage`).
 
 use crate::extract::ApiPath as Path;
 use axum::Json;
@@ -31,6 +33,8 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(make_device))
         .routes(routes!(change_device, remove_device))
         .routes(routes!(plan_device))
+        .routes(routes!(restore_network))
+        .routes(routes!(keep_network_files))
 }
 
 impl From<ConfigureError> for ApiError {
@@ -53,6 +57,11 @@ impl From<ConfigureError> for ApiError {
                 status: StatusCode::CONFLICT,
                 code: "not_carried_over",
                 detail: Some(refusals(&refused)),
+            },
+            ConfigureError::Drifted => ApiError::Rejected {
+                status: StatusCode::CONFLICT,
+                code: "network_drift",
+                detail: Some(error.to_string()),
             },
             ConfigureError::Port(e) => ApiError::internal(e),
         }
@@ -89,16 +98,62 @@ pub struct NetworkSetup {
     /// Of its bridges, the internal networks for VMs: without members or
     /// an address of the NAS's, which the NAS keeps itself off.
     pub internal: Vec<String>,
+    /// zendiloOS's files differ from its settings as last confirmed:
+    /// changed or lost outside zendiloOS. Until they are written back
+    /// (`POST /network/restore`) or kept (`POST /network/keep-files`), no
+    /// other change is made. Null while a change waits.
+    pub drift: Option<NetworkDrift>,
+}
+
+/// How zendiloOS's files differ from its settings.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct NetworkDrift {
+    /// Devices first, each by name.
+    pub differences: Vec<NetworkDifference>,
+    /// When the settings were confirmed, or taken from the files, in Unix
+    /// seconds.
+    pub kept_at: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct NetworkDifference {
+    pub part: NetworkPart,
+    /// The device's or interface's name.
+    pub name: String,
+    pub kind: NetworkDifferenceKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkPart {
+    /// A bridge, bond or VLAN zendiloOS made: its `.netdev`.
+    Device,
+    /// An interface's settings: its `.network`.
+    Interface,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkDifferenceKind {
+    /// zendiloOS's settings have it, the files not: lost.
+    Missing,
+    /// The file says otherwise.
+    Changed,
+    /// A file of zendiloOS's its settings do not have: written outside it.
+    Added,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PendingNetworkChange {
     /// The interface whose settings changed, or the device made, changed
-    /// or removed; empty for a takeover.
+    /// or removed; empty for a takeover or a restore.
     pub interface: String,
     /// zendiloOS took the network over from ifupdown: unless confirmed,
     /// ifupdown gets it back exactly as it was.
     pub takeover: bool,
+    /// zendiloOS's settings were written back over files changed outside
+    /// it: unless confirmed, the files are as they were.
+    pub restore: bool,
     /// A bridge, bond or VLAN (`interface`) was made, changed or removed.
     pub device: Option<DeviceActionKind>,
     /// When the old settings return unless confirmed, in Unix seconds.
@@ -277,9 +332,11 @@ fn setup_dto(setup: app::NetworkSetup) -> NetworkSetup {
             app::Manager::Unknown => NetworkManagerKind::Unknown,
         },
         pending: setup.pending.map(|p| {
+            let restore = p.change == app::Change::Restore;
             let (interface, takeover, device) = match p.change {
                 app::Change::Interface(interface) => (interface, false, None),
                 app::Change::Takeover(_) => (String::new(), true, None),
+                app::Change::Restore => (String::new(), false, None),
                 app::Change::Device(device, action) => (
                     device,
                     false,
@@ -290,10 +347,35 @@ fn setup_dto(setup: app::NetworkSetup) -> NetworkSetup {
                     }),
                 ),
             };
-            PendingNetworkChange { interface, takeover, device, revert_at: p.revert_at.unix_seconds() }
+            PendingNetworkChange {
+                interface,
+                takeover,
+                restore,
+                device,
+                revert_at: p.revert_at.unix_seconds(),
+            }
         }),
         devices: setup.devices.into_iter().map(device_dto).collect(),
         internal: setup.internal,
+        drift: setup.drift.map(|drift| NetworkDrift {
+            differences: drift
+                .differences
+                .into_iter()
+                .map(|difference| NetworkDifference {
+                    part: match difference.part {
+                        net::Part::Device => NetworkPart::Device,
+                        net::Part::Interface => NetworkPart::Interface,
+                    },
+                    name: difference.name,
+                    kind: match difference.kind {
+                        net::DifferenceKind::Missing => NetworkDifferenceKind::Missing,
+                        net::DifferenceKind::Changed => NetworkDifferenceKind::Changed,
+                        net::DifferenceKind::Added => NetworkDifferenceKind::Added,
+                    },
+                })
+                .collect(),
+            kept_at: drift.kept_at.unix_seconds(),
+        }),
         takeover: setup.takeover.map(|takeover| NetworkTakeover {
             interfaces: takeover
                 .plan
@@ -384,7 +466,7 @@ pub struct InterfaceSettingsInput {
     request_body = InterfaceSettingsInput,
     responses(
         (status = ACCEPTED, body = NetworkSetup, description = "Applied; waits for confirmation."),
-        (status = CONFLICT, body = Problem, description = "`change_pending`, or `refused`: not managed by systemd-networkd, no such interface"),
+        (status = CONFLICT, body = Problem, description = "`change_pending`, `network_drift` (zendiloOS's files differ from its settings), or `refused`: not managed by systemd-networkd, no such interface"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`"),
     )
 )]
@@ -550,6 +632,53 @@ fn plan_dto(edit: net::Edit) -> DevicePlan {
     }
 }
 
+/// Writes zendiloOS's settings back over its files where they were changed
+/// or lost outside it (`drift` in `GET /network/setup`), as one change:
+/// unless it is confirmed within two minutes (`POST /network/confirm`, from
+/// the address the NAS then has), the files are as they were. Needs
+/// `system.manage`.
+#[utoipa::path(
+    post,
+    path = "/network/restore",
+    tag = "network",
+    security(("session" = [])),
+    responses(
+        (status = ACCEPTED, body = NetworkSetup, description = "Written back; waits for confirmation."),
+        (status = CONFLICT, body = Problem, description = "`change_pending`, or `refused`: not managed by systemd-networkd, nothing differs, the host refused a file"),
+    )
+)]
+async fn restore_network(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+) -> Result<(StatusCode, Json<NetworkSetup>), ApiError> {
+    auth.require(Permission::SystemManage)?;
+    let setup = state.network.configure.restore(&auth.0.actor(), &client).await?;
+    Ok((StatusCode::ACCEPTED, Json(setup_dto(setup))))
+}
+
+/// Keeps zendiloOS's files as they are as its settings, where they differ
+/// from them: changed by hand on purpose, say. Nothing is written. Needs
+/// `system.manage`.
+#[utoipa::path(
+    post,
+    path = "/network/keep-files",
+    tag = "network",
+    security(("session" = [])),
+    responses(
+        (status = OK, body = NetworkSetup),
+        (status = CONFLICT, body = Problem, description = "`change_pending`, or `refused`: not managed by systemd-networkd"),
+    )
+)]
+async fn keep_network_files(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+) -> Result<Json<NetworkSetup>, ApiError> {
+    auth.require(Permission::SystemManage)?;
+    Ok(Json(setup_dto(state.network.configure.keep(&auth.0.actor(), &client).await?)))
+}
+
 /// Makes a bridge, bond or VLAN, with what that does to its members and
 /// parent (see `POST /network/devices/plan`), as one change: unless it is
 /// confirmed within two minutes (`POST /network/confirm`), every file goes
@@ -562,7 +691,7 @@ fn plan_dto(edit: net::Edit) -> DevicePlan {
     request_body = NewDeviceInput,
     responses(
         (status = ACCEPTED, body = NetworkSetup, description = "Made; waits for confirmation."),
-        (status = CONFLICT, body = Problem, description = "`change_pending`, or `refused`: not managed by systemd-networkd, a name in use"),
+        (status = CONFLICT, body = Problem, description = "`change_pending`, `network_drift`, or `refused`: not managed by systemd-networkd, a name in use"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`: the detail says why"),
     )
 )]
@@ -591,7 +720,7 @@ async fn make_device(
     request_body = DeviceUpdateInput,
     responses(
         (status = ACCEPTED, body = NetworkSetup, description = "Changed; waits for confirmation."),
-        (status = CONFLICT, body = Problem, description = "`change_pending`, `refused`"),
+        (status = CONFLICT, body = Problem, description = "`change_pending`, `network_drift`, `refused`"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`: no such device of zendiloOS's, members not free, …"),
     )
 )]
@@ -620,7 +749,7 @@ async fn change_device(
     params(("name" = String, Path)),
     responses(
         (status = ACCEPTED, body = NetworkSetup, description = "Removed; waits for confirmation."),
-        (status = CONFLICT, body = Problem, description = "`device_in_use` (the detail names the VMs), `change_pending`, `refused`"),
+        (status = CONFLICT, body = Problem, description = "`device_in_use` (the detail names the VMs), `change_pending`, `network_drift`, `refused`"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`: no device of zendiloOS's, a member or parent of another"),
     )
 )]
@@ -647,7 +776,7 @@ async fn remove_device(
     request_body = DevicePlanInput,
     responses(
         (status = OK, body = DevicePlan),
-        (status = CONFLICT, body = Problem, description = "`device_in_use`"),
+        (status = CONFLICT, body = Problem, description = "`device_in_use`, `network_drift`"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`: the detail says why"),
     )
 )]

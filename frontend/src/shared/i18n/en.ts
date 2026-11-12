@@ -1539,6 +1539,7 @@ const en = {
         updates_available: 'Updates available',
         updates_installed: 'Updates installed',
         updates_failed: 'Update failed',
+        network_drift: 'Network files changed outside zendiloOS',
         certificate_renewed: 'Certificate renewed',
         certificate_renewal_failed: 'Certificate not renewed',
         certificate_not_taken: 'New certificate not taken',
@@ -1747,6 +1748,24 @@ const en = {
       },
       deviceHint:
         'Confirm it, or everything returns as it was in {seconds} seconds, devices made go and devices removed come back.',
+      restoreTitle: "zendiloOS's network settings are written back",
+      restoreHint:
+        'Confirm it, from the address the NAS has now, or the files return as they were in {seconds} seconds.',
+    },
+    drift: {
+      title: "zendiloOS's network files were changed outside it",
+      hint: 'They no longer say the settings last confirmed in zendiloOS ({at}). The network keeps running as the files say; nothing else can be changed here until the settings are written back or the files are kept.',
+      device: 'Device {name}',
+      interface: 'Interface {name}',
+      kinds: {
+        missing: 'its file was lost',
+        changed: 'its file says otherwise',
+        added: 'a file zendiloOS did not write',
+      },
+      restore: "Restore zendiloOS's settings",
+      keep: 'Keep the files as they are',
+      restoreHint:
+        'Written back as one change, which has to be confirmed like any other: should the NAS become unreachable, the files return by themselves.',
     },
     add: {
       button: 'Add',
@@ -3387,6 +3406,17 @@ const en = {
     currentNotes: "What's new in this version",
     channel: 'Channel',
     kernel: 'Running kernel',
+    bootKernel: 'Starts next',
+    boot: {
+      newest: 'The newest kernel, which has its ZFS module.',
+      newest_lacks_zfs:
+        'The newest kernel, {newest}, has no ZFS module yet: the NAS keeps starting this one until it is built, so it always finds its pools.',
+      no_zfs: 'No kernel has a ZFS module: the newest one starts.',
+      not_saved:
+        "GRUB does not start the kernel zendiloOS chooses: its configuration predates zendiloOS's setting. Running update-grub writes it anew.",
+      not_grub: 'The NAS does not start through GRUB, so zendiloOS does not choose its kernel.',
+      failed: 'GRUB could not be told which kernel to start: {detail}',
+    },
     checkedAt: 'Last looked',
     check: 'Look for updates',
     checking: 'Looking …',
@@ -3412,6 +3442,8 @@ const en = {
     kernelWaits: 'The new kernel {kernel} waits for the NAS to restart.',
     zfsMissing:
       'The ZFS module is missing for the new kernel. Do not restart the NAS before it is built: it would not find its pools.',
+    zfsMissingKept:
+      'The ZFS module is missing for the new kernel {newest}. The NAS keeps starting {kernel}, which has it, until it is built.',
     restartNow: 'Restart now',
     runTitle: 'Update',
     runHint:
@@ -3522,6 +3554,10 @@ const en = {
     updates_failed: {
       title: 'Update failed',
       body: 'Control panel → Updates says why.',
+    },
+    network_drift: {
+      title: 'Network files changed',
+      body: "zendiloOS's network files differ from its settings ({names}). Control panel → Network restores the settings or keeps the files.",
     },
     snapshot_failed: {
       title: 'No snapshot of {share}',

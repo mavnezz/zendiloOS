@@ -65,7 +65,8 @@ export async function answer(request: Request): Promise<Response> {
   if (reply === undefined) return problem(404, 'not_found')
   const result: unknown =
     typeof reply === 'function' ? await (reply as (call: Call) => unknown)(call) : reply
-  if (result instanceof Response) return result
+  // A copy: a body is read only once, and a route may be asked again.
+  if (result instanceof Response) return result.clone()
   if (result === null) return new Response(null, { status: 204 })
   return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } })
 }

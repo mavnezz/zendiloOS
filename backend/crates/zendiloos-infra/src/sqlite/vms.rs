@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use sqlx::{Sqlite, Transaction};
+use sqlx::{Sqlite, SqliteConnection, Transaction};
 use zendiloos_kernel::{PortError, Timestamp};
 use zendiloos_vms::application::{VmImageRepository, VmLocationRepository, VmRepository};
 use zendiloos_vms::domain::{
@@ -158,16 +158,16 @@ fn boot_text(boot: &[BootDevice]) -> String {
 }
 
 impl SqliteVms {
-    /// The devices of one VM, or of all.
-    async fn devices(&self, id: Option<&str>) -> Result<Devices, PortError> {
-        let pool = self.db.pool();
+    /// The devices of one VM, or of all, read on `connection`: within the
+    /// transaction that read the VMs, so both come from the same moment.
+    async fn devices(connection: &mut SqliteConnection, id: Option<&str>) -> Result<Devices, PortError> {
         let disks = sqlx::query_as!(
             DiskRow,
             r#"SELECT vm AS "vm!", slot, size_gib, bus, pool, volume FROM vm_disks
                WHERE ?1 IS NULL OR vm = ?1 ORDER BY vm, slot"#,
             id
         )
-        .fetch_all(pool)
+        .fetch_all(&mut *connection)
         .await
         .map_err(db_error)?;
         let nics = sqlx::query_as!(
@@ -176,7 +176,7 @@ impl SqliteVms {
                WHERE ?1 IS NULL OR vm = ?1 ORDER BY vm, slot"#,
             id
         )
-        .fetch_all(pool)
+        .fetch_all(&mut *connection)
         .await
         .map_err(db_error)?;
         let drives = sqlx::query_as!(
@@ -185,7 +185,7 @@ impl SqliteVms {
                WHERE ?1 IS NULL OR vm = ?1 ORDER BY vm, slot"#,
             id
         )
-        .fetch_all(pool)
+        .fetch_all(&mut *connection)
         .await
         .map_err(db_error)?;
         Devices::of(disks, nics, drives)
@@ -239,21 +239,27 @@ impl SqliteVms {
 
 #[async_trait]
 impl VmRepository for SqliteVms {
+    /// Read in one transaction, which SQLite gives one view of the
+    /// database: a VM is never read with the devices of a change written
+    /// meanwhile.
     async fn list(&self) -> Result<Vec<Vm>, PortError> {
+        let mut transaction = self.db.pool().begin().await.map_err(db_error)?;
         let rows = sqlx::query_as!(
             Row,
             r#"SELECT id AS "id!", name, os, cpus, memory_mib, firmware, autostart AS "autostart: bool", boot,
                       created_at, ready AS "ready: bool"
                FROM vms ORDER BY created_at, id"#
         )
-        .fetch_all(self.db.pool())
+        .fetch_all(&mut *transaction)
         .await
         .map_err(db_error)?;
-        let mut devices = self.devices(None).await?;
+        let mut devices = Self::devices(&mut transaction, None).await?;
         rows.into_iter().map(|row| devices.vm(row)).collect()
     }
 
+    /// In one transaction, as [`Self::list`].
     async fn find(&self, id: &str) -> Result<Option<Vm>, PortError> {
+        let mut transaction = self.db.pool().begin().await.map_err(db_error)?;
         let row = sqlx::query_as!(
             Row,
             r#"SELECT id AS "id!", name, os, cpus, memory_mib, firmware, autostart AS "autostart: bool", boot,
@@ -261,11 +267,11 @@ impl VmRepository for SqliteVms {
                FROM vms WHERE id = ?"#,
             id
         )
-        .fetch_optional(self.db.pool())
+        .fetch_optional(&mut *transaction)
         .await
         .map_err(db_error)?;
         let Some(row) = row else { return Ok(None) };
-        let mut devices = self.devices(Some(id)).await?;
+        let mut devices = Self::devices(&mut transaction, Some(id)).await?;
         devices.vm(row).map(Some)
     }
 
@@ -577,6 +583,63 @@ mod tests {
             location: Location { pool: "cold".into(), volume: 2 },
         });
         Vm { id: id.into(), settings, created_at: Timestamp::from_unix_seconds(1_700_000_000), ready: false }
+    }
+
+    /// Each change of `busy` writes its record whole, its memory and its
+    /// cards' addresses naming the change (`k`): read while it changes, a
+    /// VM is one change's, never a record of one with the cards of another;
+    /// and a VM that is not changed reads as it was, cards and all.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_vm_is_read_whole_while_it_and_others_change() {
+        let (_dir, db) = temporary_database().await;
+        let vms = std::sync::Arc::new(SqliteVms::new(db.clone()));
+        let steady = vm("00000000000a", "steady");
+        assert!(vms.create(&steady).await.unwrap());
+        fn written(k: u32) -> Vm {
+            let mut busy = vm("00000000000b", "busy");
+            busy.settings.memory_mib = 256 + k;
+            // One card or three, every one naming the change.
+            busy.settings.nics = (0..if k.is_multiple_of(2) { 1 } else { 3 })
+                .map(|slot| Nic {
+                    slot,
+                    model: NicModel::Virtio,
+                    network: Network::User,
+                    mac: format!("52:54:00:{:02x}:{:02x}:{slot:02x}", (k >> 8) & 0xff, k & 0xff),
+                })
+                .collect();
+            busy
+        }
+        fn whole(busy: &Vm) -> bool {
+            busy.settings == written(busy.settings.memory_mib - 256).settings
+        }
+        assert!(vms.create(&written(0)).await.unwrap());
+        let writer = {
+            let vms = vms.clone();
+            tokio::spawn(async move {
+                for k in 1..400 {
+                    assert!(vms.update(&written(k)).await.unwrap());
+                }
+            })
+        };
+        let readers: Vec<_> = (0..3)
+            .map(|_| {
+                let (vms, steady) = (vms.clone(), steady.clone());
+                tokio::spawn(async move {
+                    for _ in 0..300 {
+                        let busy = vms.find("00000000000b").await.unwrap().unwrap();
+                        assert!(whole(&busy), "a record of one change with the cards of another: {busy:?}");
+                        let all = vms.list().await.unwrap();
+                        assert_eq!(all[0].settings, steady.settings, "the VM nobody changes");
+                        assert!(whole(&all[1]), "listed half changed: {:?}", all[1]);
+                    }
+                })
+            })
+            .collect();
+        writer.await.unwrap();
+        for reader in readers {
+            reader.await.unwrap();
+        }
+        db.close().await;
     }
 
     #[tokio::test]

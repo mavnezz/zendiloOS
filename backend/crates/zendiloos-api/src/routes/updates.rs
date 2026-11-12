@@ -145,10 +145,42 @@ pub struct UpdateRun {
     pub error: Option<String>,
     /// The version of zendiloOS it installs.
     pub zendiloos: Option<String>,
-    /// A newer kernel waits for a restart.
+    /// Another kernel waits for a restart.
     pub restart_needed: bool,
     /// The ZFS module is built for the newest kernel.
     pub zfs_ready: bool,
+}
+
+/// Why GRUB starts the kernel it starts.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateBootReason {
+    /// The newest kernel, which has its ZFS module.
+    Newest,
+    /// The newest kernel has no ZFS module yet: GRUB keeps starting the
+    /// newest one that has, until it is built.
+    NewestLacksZfs,
+    /// No kernel has a ZFS module: the newest starts.
+    NoZfs,
+    /// GRUB's configuration does not start the entry zendiloOS saves;
+    /// `update-grub` writes it anew.
+    NotSaved,
+    /// The NAS does not start through GRUB: zendiloOS chooses no kernel.
+    NotGrub,
+    /// Saving GRUB's default failed.
+    Failed,
+}
+
+/// Which kernel the NAS starts next: the newest one that has its ZFS
+/// module, never a newer one without.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UpdateBoot {
+    /// Null where zendiloOS does not choose it (`not_saved`, `not_grub`,
+    /// `failed`).
+    pub kernel: Option<String>,
+    pub reason: UpdateBootReason,
+    /// What stood in the way, where something did.
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -171,15 +203,35 @@ pub struct UpdatesOverview {
     pub packages_error: Option<String>,
     pub running_kernel: Option<String>,
     pub newest_kernel: Option<String>,
-    /// A newer kernel is installed and waits for a restart.
+    /// A restart starts another kernel than the running one: the one
+    /// `boot` names, or the newest where zendiloOS does not choose.
     pub restart_needed: bool,
-    /// The ZFS module is built for the newest kernel; without it a restart
-    /// would leave the pools behind.
+    /// The ZFS module is built for the newest kernel. Without it GRUB keeps
+    /// starting an older kernel that has it (`boot`), or, where zendiloOS
+    /// does not choose, a restart would leave the pools behind.
     pub zfs_ready: bool,
     /// dpkg left packages half installed or half configured: an update
     /// was cut off, and is finished with `POST /system/updates/finish`.
     pub interrupted: bool,
+    /// Which kernel starts next and why; null until a check of this
+    /// version said.
+    pub boot: Option<UpdateBoot>,
     pub run: Option<UpdateRun>,
+}
+
+fn boot_dto(boot: &updates::BootChoice) -> UpdateBoot {
+    UpdateBoot {
+        kernel: boot.kernel.clone(),
+        reason: match boot.reason {
+            updates::BootReason::Newest => UpdateBootReason::Newest,
+            updates::BootReason::NewestLacksZfs => UpdateBootReason::NewestLacksZfs,
+            updates::BootReason::NoZfs => UpdateBootReason::NoZfs,
+            updates::BootReason::NotSaved => UpdateBootReason::NotSaved,
+            updates::BootReason::NotGrub => UpdateBootReason::NotGrub,
+            updates::BootReason::Failed => UpdateBootReason::Failed,
+        },
+        detail: boot.detail.clone(),
+    }
 }
 
 fn overview_dto(overview: UpdateOverview) -> UpdatesOverview {
@@ -226,6 +278,7 @@ fn overview_dto(overview: UpdateOverview) -> UpdatesOverview {
         restart_needed: host.as_ref().is_some_and(updates::HostReport::restart_needed),
         zfs_ready: host.as_ref().is_none_or(|host| host.zfs_ready),
         interrupted: host.as_ref().is_some_and(|host| host.interrupted),
+        boot: host.as_ref().and_then(|host| host.boot.as_ref()).map(boot_dto),
         run: overview.run.map(|run| UpdateRun {
             restart_needed: run.report.as_ref().is_some_and(updates::HostReport::restart_needed),
             zfs_ready: run.report.as_ref().is_none_or(|report| report.zfs_ready),

@@ -67,7 +67,7 @@ const fn kind(key: &'static str, group: Group, level: Level) -> Kind {
 }
 
 /// Every kind zendiloOS raises, in the order the table shows them.
-pub const KINDS: [Kind; 20] = [
+pub const KINDS: [Kind; 21] = [
     // Degraded a warning; faulted, removed or unavailable an error.
     kind("pool_trouble", Group::Storage, Level::Error),
     kind("pool_recovered", Group::Storage, Level::Success),
@@ -85,6 +85,8 @@ pub const KINDS: [Kind; 20] = [
     // Done a success; the ZFS module missing for the new kernel an error.
     kind("updates_installed", Group::System, Level::Error),
     kind("updates_failed", Group::System, Level::Error),
+    // zendiloOS's network files changed or lost outside it.
+    kind("network_drift", Group::System, Level::Warning),
     kind("certificate_renewed", Group::Certificates, Level::Success),
     kind("certificate_renewal_failed", Group::Certificates, Level::Error),
     kind("certificate_not_taken", Group::Certificates, Level::Error),

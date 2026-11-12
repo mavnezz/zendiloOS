@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Installs the development tools in the versions CI uses, on x86-64 Linux:
-# just, cargo-deny and cargo-llvm-cov as their projects' prebuilt binaries,
-# each checked against its SHA-256, and sqlx-cli (SQLite only), which has
-# no prebuilt binaries and is built with cargo, unless that version is
-# there already. Rust itself comes from rustup and rust-toolchain.toml.
+# just, cargo-deny, cargo-llvm-cov and cargo-cyclonedx (the SBOM,
+# scripts/sbom.sh) as their projects' prebuilt binaries, each checked
+# against its SHA-256, and sqlx-cli (SQLite only), which has no prebuilt
+# binaries and is built with cargo, unless that version is there already.
+# Rust itself comes from rustup and rust-toolchain.toml.
 #
 # Usage: scripts/install-tools.sh [TOOL ...]
-#   TOOL       just, cargo-deny, cargo-llvm-cov, sqlx-cli (default: all)
+#   TOOL       just, cargo-deny, cargo-llvm-cov, cargo-cyclonedx, sqlx-cli
+#              (default: all)
 #   TOOLS_DIR  where the programs go (default: ~/.local/bin)
 set -euo pipefail
 
@@ -19,6 +21,8 @@ deny_version=0.20.2
 deny_sha256=9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
 llvm_cov_version=0.9.1
 llvm_cov_sha256=3fca950394a3c49457657c158b1619cec8dfd2647ae5b48746734c0ab969a522
+cyclonedx_version=0.5.9
+cyclonedx_sha256=9bd3e599314f50810c9d98b8b68a617ff9d3cc20873968d90b29d121f6b226ff
 # The version of sqlx in backend/Cargo.toml.
 sqlx_version=0.9.0
 
@@ -36,10 +40,11 @@ mkdir -p "$dest"
 # fetch URL SHA256 PATH-IN-ARCHIVE NAME
 fetch() {
     local url=$1 sha256=$2 member=$3 name=$4
-    curl -sfL --retry 3 -o "$work/archive.tar.gz" "$url"
-    echo "$sha256  $work/archive.tar.gz" | sha256sum --check --status \
+    curl -sfL --retry 3 -o "$work/archive" "$url"
+    echo "$sha256  $work/archive" | sha256sum --check --status \
         || { echo "$url does not match its checksum" >&2; exit 1; }
-    tar -xzf "$work/archive.tar.gz" -C "$work" "$member"
+    # gzip or xz, as tar tells by itself.
+    tar -xf "$work/archive" -C "$work" "$member"
     install -m 0755 "$work/$member" "$dest/$name"
     rm -rf "${work:?}"/*
 }
@@ -61,6 +66,11 @@ install_tool() {
             fetch "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v$llvm_cov_version/cargo-llvm-cov-x86_64-unknown-linux-musl.tar.gz" \
                 "$llvm_cov_sha256" cargo-llvm-cov cargo-llvm-cov
             ;;
+        cargo-cyclonedx)
+            say "cargo-cyclonedx $cyclonedx_version"
+            fetch "https://github.com/CycloneDX/cyclonedx-rust-cargo/releases/download/cargo-cyclonedx-$cyclonedx_version/cargo-cyclonedx-x86_64-unknown-linux-musl.tar.xz" \
+                "$cyclonedx_sha256" cargo-cyclonedx-x86_64-unknown-linux-musl/cargo-cyclonedx cargo-cyclonedx
+            ;;
         sqlx-cli)
             if [[ $("$dest/sqlx" --version 2>/dev/null) == "sqlx-cli $sqlx_version" ]]; then
                 say "sqlx-cli $sqlx_version is there"
@@ -74,13 +84,13 @@ install_tool() {
             rm -rf "$work/sqlx"
             ;;
         *)
-            echo "unknown tool: $1 (just, cargo-deny, cargo-llvm-cov, sqlx-cli)" >&2
+            echo "unknown tool: $1 (just, cargo-deny, cargo-llvm-cov, cargo-cyclonedx, sqlx-cli)" >&2
             exit 2
             ;;
     esac
 }
 
-(($#)) || set -- just cargo-deny cargo-llvm-cov sqlx-cli
+(($#)) || set -- just cargo-deny cargo-llvm-cov cargo-cyclonedx sqlx-cli
 for tool in "$@"; do
     install_tool "$tool"
 done

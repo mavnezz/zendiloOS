@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use zendiloos_kernel::{PortError, RequestContext, Timestamp};
 
 use crate::application::{
-    Change, ConfigureError, DeviceUsers, HostNetwork, IfupdownHost, NetworkConfigurator, NetworkSource,
-    PendingChange,
+    Change, ConfigureError, DeviceUsers, HostNetwork, IfupdownHost, KeptSettings, NetworkConfigurator,
+    NetworkSource, PendingChange, SettingsStore,
 };
 use crate::domain::{
     Address, AddressScope, DefaultRoute, DeviceKind, Edit, IfupdownFile, Interface, InterfaceKind,
@@ -105,6 +105,29 @@ impl DeviceUsers for FakeUsers {
     }
 }
 
+/// zendiloOS's network settings as a database would keep them.
+#[derive(Default)]
+pub struct MemorySettings(pub Mutex<Option<KeptSettings>>);
+
+#[async_trait]
+impl SettingsStore for MemorySettings {
+    async fn kept(&self) -> Result<Option<KeptSettings>, PortError> {
+        Ok(locked(&self.0).clone())
+    }
+
+    async fn keep(&self, files: &[NetworkdFile], at: Timestamp) -> Result<(), PortError> {
+        *locked(&self.0) = Some(KeptSettings { files: files.to_vec(), kept_at: at, said: None });
+        Ok(())
+    }
+
+    async fn note_said(&self, said: Option<&str>) -> Result<(), PortError> {
+        if let Some(kept) = locked(&self.0).as_mut() {
+            kept.said = said.map(str::to_owned);
+        }
+        Ok(())
+    }
+}
+
 /// The files the agent would write for `edit`, in the keys zendiloosd
 /// reads back.
 fn files_after(files: &mut Vec<NetworkdFile>, edit: &Edit) {
@@ -112,6 +135,9 @@ fn files_after(files: &mut Vec<NetworkdFile>, edit: &Edit) {
     let network = |name: &str| format!("05-zendiloos-{name}.network");
     for gone in &edit.removed {
         files.retain(|file| file.name != netdev(gone) && file.name != network(gone));
+    }
+    for gone in &edit.unset {
+        files.retain(|file| file.name != network(gone));
     }
     for device in &edit.devices {
         let mut text = format!("# Members: {}\n[NetDev]\nName={}\n", device.members.join(" "), device.name);

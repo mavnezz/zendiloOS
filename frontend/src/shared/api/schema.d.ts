@@ -2814,6 +2814,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/network/keep-files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Keeps zendiloOS's files as they are as its settings, where they differ
+         *     from them: changed by hand on purpose, say. Nothing is written. Needs
+         *     `system.manage`.
+         */
+        post: operations["keep_network_files"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/network/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Writes zendiloOS's settings back over its files where they were changed
+         *     or lost outside it (`drift` in `GET /network/setup`), as one change:
+         *     unless it is confirmed within two minutes (`POST /network/confirm`, from
+         *     the address the NAS then has), the files are as they were. Needs
+         *     `system.manage`.
+         */
+        post: operations["restore_network"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/network/setup": {
         parameters: {
             query?: never;
@@ -6961,6 +7005,25 @@ export interface components {
             /** Format: int32 */
             vlan_id?: number | null;
         };
+        NetworkDifference: {
+            kind: components["schemas"]["NetworkDifferenceKind"];
+            /** @description The device's or interface's name. */
+            name: string;
+            part: components["schemas"]["NetworkPart"];
+        };
+        /** @enum {string} */
+        NetworkDifferenceKind: "missing" | "changed" | "added";
+        /** @description How zendiloOS's files differ from its settings. */
+        NetworkDrift: {
+            /** @description Devices first, each by name. */
+            differences: components["schemas"]["NetworkDifference"][];
+            /**
+             * Format: int64
+             * @description When the settings were confirmed, or taken from the files, in Unix
+             *     seconds.
+             */
+            kept_at: number;
+        };
         /**
          * @description How the machine is connected: its interfaces (without the loopback and
          *     the plumbing of containers), default routes and name servers.
@@ -6994,6 +7057,8 @@ export interface components {
          * @enum {string}
          */
         NetworkManagerKind: "networkd" | "ifupdown" | "network_manager" | "unknown";
+        /** @enum {string} */
+        NetworkPart: "device" | "interface";
         /** @description Whether the network can be changed here, and a change that waits. */
         NetworkSetup: {
             /**
@@ -7001,6 +7066,7 @@ export interface components {
              *     and removed.
              */
             devices: components["schemas"]["NetworkDevice"][];
+            drift?: components["schemas"]["NetworkDrift"] | null;
             /**
              * @description Of its bridges, the internal networks for VMs: without members or
              *     an address of the NAS's, which the NAS keeps itself off.
@@ -7284,9 +7350,14 @@ export interface components {
             device?: components["schemas"]["DeviceActionKind"] | null;
             /**
              * @description The interface whose settings changed, or the device made, changed
-             *     or removed; empty for a takeover.
+             *     or removed; empty for a takeover or a restore.
              */
             interface: string;
+            /**
+             * @description zendiloOS's settings were written back over files changed outside
+             *     it: unless confirmed, the files are as they were.
+             */
+            restore: boolean;
             /**
              * Format: int64
              * @description When the old settings return unless confirmed, in Unix seconds.
@@ -8437,6 +8508,25 @@ export interface components {
             role?: components["schemas"]["AccountRole"] | null;
         };
         /**
+         * @description Which kernel the NAS starts next: the newest one that has its ZFS
+         *     module, never a newer one without.
+         */
+        UpdateBoot: {
+            /** @description What stood in the way, where something did. */
+            detail?: string | null;
+            /**
+             * @description Null where zendiloOS does not choose it (`not_saved`, `not_grub`,
+             *     `failed`).
+             */
+            kernel?: string | null;
+            reason: components["schemas"]["UpdateBootReason"];
+        };
+        /**
+         * @description Why GRUB starts the kernel it starts.
+         * @enum {string}
+         */
+        UpdateBootReason: "newest" | "newest_lacks_zfs" | "no_zfs" | "not_saved" | "not_grub" | "failed";
+        /**
          * @description Which releases of zendiloOS are offered: each channel takes those of
          *     the steadier ones too.
          * @enum {string}
@@ -8462,7 +8552,7 @@ export interface components {
             /** @description It finishes an update that was cut off rather than updating. */
             finishes: boolean;
             id: string;
-            /** @description A newer kernel waits for a restart. */
+            /** @description Another kernel waits for a restart. */
             restart_needed: boolean;
             /** Format: int64 */
             started_at: number;
@@ -8522,6 +8612,7 @@ export interface components {
             nics: components["schemas"]["VmNicChoice"][];
         };
         UpdatesOverview: {
+            boot?: components["schemas"]["UpdateBoot"] | null;
             /**
              * Format: int64
              * @description When the last check was, Unix seconds.
@@ -8548,14 +8639,18 @@ export interface components {
             release?: components["schemas"]["AvailableRelease"] | null;
             /** @description Why GitHub could not be asked. */
             release_error?: string | null;
-            /** @description A newer kernel is installed and waits for a restart. */
+            /**
+             * @description A restart starts another kernel than the running one: the one
+             *     `boot` names, or the newest where zendiloOS does not choose.
+             */
             restart_needed: boolean;
             run?: components["schemas"]["UpdateRun"] | null;
             running_kernel?: string | null;
             settings: components["schemas"]["UpdateSettings"];
             /**
-             * @description The ZFS module is built for the newest kernel; without it a restart
-             *     would leave the pools behind.
+             * @description The ZFS module is built for the newest kernel. Without it GRUB keeps
+             *     starting an older kernel that has it (`boot`), or, where zendiloOS
+             *     does not choose, a restart would leave the pools behind.
              */
             zfs_ready: boolean;
         };
@@ -15617,7 +15712,7 @@ export interface operations {
                     "application/json": components["schemas"]["NetworkSetup"];
                 };
             };
-            /** @description `change_pending`, or `refused`: not managed by systemd-networkd, a name in use */
+            /** @description `change_pending`, `network_drift`, or `refused`: not managed by systemd-networkd, a name in use */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -15658,7 +15753,7 @@ export interface operations {
                     "application/json": components["schemas"]["DevicePlan"];
                 };
             };
-            /** @description `device_in_use` */
+            /** @description `device_in_use`, `network_drift` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -15702,7 +15797,7 @@ export interface operations {
                     "application/json": components["schemas"]["NetworkSetup"];
                 };
             };
-            /** @description `change_pending`, `refused` */
+            /** @description `change_pending`, `network_drift`, `refused` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -15742,7 +15837,7 @@ export interface operations {
                     "application/json": components["schemas"]["NetworkSetup"];
                 };
             };
-            /** @description `device_in_use` (the detail names the VMs), `change_pending`, `refused` */
+            /** @description `device_in_use` (the detail names the VMs), `change_pending`, `network_drift`, `refused` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -15786,7 +15881,7 @@ export interface operations {
                     "application/json": components["schemas"]["NetworkSetup"];
                 };
             };
-            /** @description `change_pending`, or `refused`: not managed by systemd-networkd, no such interface */
+            /** @description `change_pending`, `network_drift` (zendiloOS's files differ from its settings), or `refused`: not managed by systemd-networkd, no such interface */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -15797,6 +15892,63 @@ export interface operations {
             };
             /** @description `invalid_input` */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    keep_network_files: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetworkSetup"];
+                };
+            };
+            /** @description `change_pending`, or `refused`: not managed by systemd-networkd */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    restore_network: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Written back; waits for confirmation. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetworkSetup"];
+                };
+            };
+            /** @description `change_pending`, or `refused`: not managed by systemd-networkd, nothing differs, the host refused a file */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -60,8 +60,10 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 # - Debian's packages, Docker's among them, and zendiloOS's releases: apt
 #   runs outside this sandbox in a transient unit (systemd-run,
 #   zendiloos-packages.service, this binary as `run-packages`), which
-#   records its steps in /var/lib/zendiloos-packages; the agent only reads
-#   that and, before an update, the release zendiloosd downloaded.
+#   records its steps in /var/lib/zendiloos-packages and sets which kernel
+#   GRUB starts (grub-editenv in /boot, as the package's kernel hooks do);
+#   the agent only reads that and, before an update, the release zendiloosd
+#   downloaded.
 # - removable drives: mounted by systemd in transient mount units
 #   (systemd-mount) below /run/zendiloos-removable, unmounted, their
 #   places removed and their disks powered off in transient services

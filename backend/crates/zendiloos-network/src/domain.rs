@@ -5,6 +5,7 @@ use std::net::{IpAddr, Ipv4Addr};
 
 pub mod devices;
 pub mod ifupdown;
+pub mod kept;
 mod settings;
 
 pub use devices::{
@@ -12,6 +13,7 @@ pub use devices::{
     InvalidDevice, LinkFile, MAX_MEMBERS, NetworkdFile, NewDevice, Planning, Subject,
 };
 pub use ifupdown::{IfupdownFile, Refusal, TakeoverPlan, takeover_plan};
+pub use kept::{Difference, DifferenceKind, Part, differences, restoring};
 pub use settings::{
     InterfaceSettings, InvalidSettings, Ipv4Setting, Ipv6Setting, MAX_DNS, is_interface_name,
 };

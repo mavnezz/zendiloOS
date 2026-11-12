@@ -71,8 +71,8 @@ async fn creates_a_private_database_and_applies_all_migrations() {
         OpenReport {
             created: true,
             schema_before: None,
-            schema_after: 53,
-            applied: (1..=53).collect(),
+            schema_after: 54,
+            applied: (1..=54).collect(),
             backup: None
         }
     );
@@ -130,6 +130,8 @@ async fn creates_a_private_database_and_applies_all_migrations() {
             "homes_location",
             "installed_apps",
             "jobs",
+            "network_setting_files",
+            "network_settings",
             "notification_channels",
             "notification_deliveries",
             "notification_mail_server",
@@ -173,8 +175,8 @@ async fn reopening_an_up_to_date_database_changes_nothing() {
         report,
         OpenReport {
             created: false,
-            schema_before: Some(53),
-            schema_after: 53,
+            schema_before: Some(54),
+            schema_after: 54,
             applied: vec![],
             backup: None
         }
@@ -459,8 +461,9 @@ async fn the_vms_of_one_location_keep_their_disks_and_cards_where_they_were() {
     db.close().await;
 
     let (db, report) = open(&env).await;
-    // And the notifications' queue and the backup tasks' after it.
-    assert_eq!(report.applied, [51, 52, 53]);
+    // And the notifications' queue, the backup tasks' and the network's
+    // settings after it.
+    assert_eq!(report.applied, [51, 52, 53, 54]);
     let cold = Location { pool: "cold".into(), volume: 2 };
     let tank = Location { pool: "tank".into(), volume: 1 };
     let locations = super::SqliteVmLocations::new(db.clone()).list().await.unwrap();

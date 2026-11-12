@@ -194,7 +194,7 @@ async fn a_bridge_is_planned_made_and_kept_once_confirmed() {
     assert_eq!(made.status, StatusCode::ACCEPTED, "{:?}", made.body);
     assert_eq!(
         made.body["pending"],
-        json!({ "interface": "br0", "takeover": false, "device": "made", "revert_at": 120 })
+        json!({ "interface": "br0", "takeover": false, "restore": false, "device": "made", "revert_at": 120 })
     );
     assert_eq!(made.body["devices"][0]["members"], json!(["enp1s0", "enp2s0"]));
     assert_problem(
@@ -345,4 +345,73 @@ async fn bonds_and_vlans_are_made_and_what_is_wrong_is_named() {
         ))
         .await;
     assert_problem(&unknown, StatusCode::CONFLICT, "change_pending");
+}
+
+/// zendiloOS's files changed outside it: told on the setup, other changes
+/// refused, written back as a change with confirmation, or kept as they are.
+#[tokio::test]
+async fn files_changed_outside_zendiloos_are_restored_or_kept() {
+    use zendiloos_network::domain::NetworkdFile;
+    let h = Harness::new();
+    h.network_source.set(zendiloos_network::testing::three_cards());
+    let file =
+        |name: &str, text: &str| NetworkdFile { name: format!("05-zendiloos-{name}"), text: text.into() };
+    let confirmed = vec![file("enp2s0.network", "[Match]\nName=enp2s0\n[Network]\nAddress=10.0.0.5/24\n")];
+    *h.network_host.files.lock().unwrap() = confirmed.clone();
+    // As zendiloosd's start keeps them.
+    *h.network_settings.0.lock().unwrap() = Some(zendiloos_network::application::KeptSettings {
+        files: confirmed,
+        kept_at: zendiloos_kernel::Timestamp::from_unix_seconds(1_793_000_000),
+        said: None,
+    });
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let viewer = h.sign_in("bob", Role::ReadOnly).await;
+    assert_eq!(setup(&h, &viewer).await["drift"], Value::Null);
+
+    // Lost, and a file written by hand.
+    *h.network_host.files.lock().unwrap() =
+        vec![file("enp3s0.network", "[Match]\nName=enp3s0\n[Network]\nDHCP=ipv4\n")];
+    let drift = setup(&h, &viewer).await["drift"].clone();
+    assert_eq!(
+        drift["differences"],
+        json!([
+            { "part": "interface", "name": "enp2s0", "kind": "missing" },
+            { "part": "interface", "name": "enp3s0", "kind": "added" },
+        ])
+    );
+    let dhcp = json!({ "ipv4": { "mode": "dhcp" }, "ipv6": "automatic", "dns": [] });
+    let refused = h
+        .send(json(with_csrf(changing(Method::PUT, "/api/v1/network/interfaces/enp1s0"), &admin), dhcp))
+        .await;
+    assert_problem(&refused, StatusCode::CONFLICT, "network_drift");
+    let restore = || h.send(empty(with_csrf(changing(Method::POST, "/api/v1/network/restore"), &admin)));
+    let keep =
+        |session| h.send(empty(with_csrf(changing(Method::POST, "/api/v1/network/keep-files"), session)));
+    assert_problem(&keep(&viewer).await, StatusCode::FORBIDDEN, "forbidden");
+
+    let restored = restore().await;
+    assert_eq!(restored.status, StatusCode::ACCEPTED, "{:?}", restored.body);
+    assert_eq!(
+        (restored.body["pending"]["restore"].clone(), restored.body["drift"].clone()),
+        (json!(true), Value::Null)
+    );
+    assert_problem(&restore().await, StatusCode::CONFLICT, "change_pending");
+    confirm(&h, &admin).await;
+    assert_eq!(setup(&h, &viewer).await["drift"], Value::Null, "the files say the settings again");
+    let names: Vec<String> = h.network_host.files.lock().unwrap().iter().map(|f| f.name.clone()).collect();
+    assert_eq!(names, ["05-zendiloos-enp2s0.network"]);
+
+    // Changed again, on purpose: kept.
+    h.network_host
+        .files
+        .lock()
+        .unwrap()
+        .push(file("enp3s0.network", "[Match]\nName=enp3s0\n[Network]\nDHCP=ipv4\n"));
+    assert!(setup(&h, &viewer).await["drift"].is_object());
+    let kept = keep(&admin).await;
+    assert_eq!(kept.status, StatusCode::OK, "{:?}", kept.body);
+    assert_eq!(kept.body["drift"], Value::Null);
+    assert_eq!(h.network_settings.0.lock().unwrap().as_ref().unwrap().files.len(), 2);
+    let refused = restore().await;
+    assert_problem(&refused, StatusCode::CONFLICT, "refused");
 }

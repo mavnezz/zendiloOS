@@ -8,9 +8,9 @@ use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 use zendiloos_agent::config::Config;
 use zendiloos_agent::{
-    HostPaths, Operations, Server, VolumeJob, docker_bridges, lower_file_overrides, passwd, pin_project,
-    pin_shares, power_off_drive, run_backup_unit, run_iso_job, run_packages, run_upload_job, run_volume_job,
-    serve, unpin_project, unpin_shares,
+    HostPaths, Operations, Server, VolumeJob, choose_boot_kernel, docker_bridges, lower_file_overrides,
+    passwd, pin_project, pin_shares, power_off_drive, run_backup_unit, run_iso_job, run_packages,
+    run_upload_job, run_volume_job, serve, unpin_project, unpin_shares,
 };
 use zendiloos_agent_proto::{AppName, DiskName, ProjectName, Role};
 
@@ -70,6 +70,9 @@ enum Command {
     /// Let frames within the bridges zendiloOS made pass Docker's FORWARD
     /// chain, and nothing more (zendiloos-docker-bridges.service)
     DockerBridges,
+    /// Set GRUB to start the newest kernel that has its ZFS module (from
+    /// the package's kernel hooks and maintainer scripts)
+    ChooseBootKernel,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -159,6 +162,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         return Ok(());
     }
+    if let Some(Command::ChooseBootKernel) = &cli.command {
+        let said = choose_boot_kernel().map_err(|error| anyhow::anyhow!("{error}"))?;
+        println!("{said}");
+        return Ok(());
+    }
     if let Some(Command::PowerOffDrive { disk }) = &cli.command {
         let name = DiskName::parse(disk).map_err(|_| anyhow::anyhow!("{disk:?} is no disk"))?;
         power_off_drive(&HostPaths::default(), &name).map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -188,7 +196,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             | Command::CopyVmIso { .. }
             | Command::ReceiveVmImage { .. }
             | Command::BackupUnit { .. }
-            | Command::DockerBridges => unreachable!("handled above"),
+            | Command::DockerBridges
+            | Command::ChooseBootKernel => unreachable!("handled above"),
         };
         outcome.map_err(|error| anyhow::anyhow!("{name}: {error}"))?;
         println!("{name}: folders of shares {done}");

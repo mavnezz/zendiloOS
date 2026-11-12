@@ -503,7 +503,12 @@ impl Network {
                 .map(|(name, _, before)| Saved { name: name.clone(), before: before.clone() })
                 .collect(),
             made: plan.made.clone(),
-            links: edit.links.iter().map(|link| link.interface.clone()).collect(),
+            links: edit
+                .links
+                .iter()
+                .map(|link| link.interface.clone())
+                .chain(edit.unset.iter().cloned())
+                .collect(),
         };
         let text =
             serde_json::to_string_pretty(&record).map_err(|e| OperationError::Failed(e.to_string()))?;
@@ -600,6 +605,14 @@ impl Network {
                 read(&self.file(&link.interface))?,
             ));
         }
+        for gone in &edit.unset {
+            // Its own file only: the interface then has what systemd-networkd's
+            // other files give it, as before zendiloOS set it up.
+            let Some(before) = read(&self.file(gone))? else {
+                return refused(format!("there is no file of zendiloOS's for {}", gone.as_str()));
+            };
+            plan.files.push((network_name(gone), None, Some(before)));
+        }
         Ok(plan)
     }
 
@@ -618,8 +631,8 @@ impl Network {
             self.delete_link(device).await?;
         }
         self.networkd_reload().await?;
-        for link in &edit.links {
-            self.reconfigure(&link.interface).await?;
+        for link in edit.links.iter().map(|link| &link.interface).chain(&edit.unset) {
+            self.reconfigure(link).await?;
         }
         Ok(())
     }

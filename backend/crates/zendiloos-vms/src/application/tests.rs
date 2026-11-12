@@ -758,3 +758,168 @@ async fn the_location_there_was_stays_the_first() {
     assert_eq!(plugin.locations, [cold(), tank()]);
     assert_eq!(plugin.library(), Some(&cold()));
 }
+
+/// A small generator of pseudo-random numbers (xorshift*), the same for a
+/// seed: a failing case is found again by its seed.
+struct Draw(u64);
+
+impl Draw {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        usize::try_from(self.next() % n as u64).unwrap()
+    }
+
+    fn shuffle<T>(&mut self, items: &mut [T]) {
+        for i in (1..items.len()).rev() {
+            items.swap(i, self.below(i + 1));
+        }
+    }
+
+    fn network(&mut self) -> Network {
+        match self.below(4) {
+            0 => Network::User,
+            1 => Network::Bridge("br0".into()),
+            2 => Network::Internal("vmnet0".into()),
+            _ => Network::Direct("enp1s0".into()),
+        }
+    }
+
+    fn model(&mut self) -> NicModel {
+        if self.below(2) == 0 { NicModel::Virtio } else { NicModel::E1000e }
+    }
+
+    /// Cards in some of the four slots, in any order, each with a MAC
+    /// address the client made up (which zendiloOS does not take).
+    fn cards(&mut self, slots: &[u8]) -> Vec<Nic> {
+        let mut nics: Vec<Nic> = slots
+            .iter()
+            .map(|&slot| Nic {
+                slot,
+                model: self.model(),
+                network: self.network(),
+                mac: format!("02:00:00:00:00:{:02x}", self.below(256)),
+            })
+            .collect();
+        self.shuffle(&mut nics);
+        nics
+    }
+
+    fn slots(&mut self) -> Vec<u8> {
+        (0..4).filter(|_| self.below(3) > 0).collect()
+    }
+}
+
+/// Issue #71: a VM's cards had other MAC addresses in the answer to an edit
+/// than the VM had just before, twice in about ten runs of the VM test.
+/// Here VMs are edited at random from what GET shows, their cards sent in
+/// any order, cards added, removed and changed, other VMs made and changed
+/// at the same time. Each time a card in a slot it had keeps its address, a
+/// card in a new slot gets one no card ever had, and the answer is what is
+/// stored and what GET shows next.
+#[tokio::test]
+async fn cards_keep_their_addresses_through_random_edits_reorderings_and_concurrent_changes() {
+    for seed in 1..=30_u64 {
+        let mut draw = Draw(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        let test = TestVms::new(FakeVmHost::ready());
+        let mut ids = Vec::new();
+        for n in 0..3 {
+            let mut new = small(&format!("vm {n}"));
+            let slots = draw.slots();
+            new.settings.nics = draw.cards(&slots);
+            ids.push(made(&test, new).await);
+        }
+        let mut ever: BTreeSet<String> = test
+            .repository
+            .list()
+            .await
+            .unwrap()
+            .iter()
+            .flat_map(|vm| vm.settings.nics.clone())
+            .map(|nic| nic.mac)
+            .collect();
+        let mut created = 0;
+        for round in 0..20 {
+            let first = draw.below(ids.len());
+            let second = (first + 1 + draw.below(ids.len() - 1)) % ids.len();
+            let mut changes = Vec::new();
+            let mut befores = Vec::new();
+            for id in [&ids[first], &ids[second]] {
+                let before = test.vms.get(id, &context()).await.unwrap().vm;
+                let mut change = change_of(&before);
+                change.cpus = 1 + u16::try_from(draw.below(2)).unwrap();
+                // Some cards kept as they are (sent back with their own
+                // addresses or another VM's), some changed, some new.
+                let slots = draw.slots();
+                let mut nics = draw.cards(&slots);
+                for nic in &mut nics {
+                    if let Some(had) = before.settings.nics.iter().find(|had| had.slot == nic.slot)
+                        && draw.below(2) == 0
+                    {
+                        *nic = had.clone();
+                    }
+                    if draw.below(5) == 0 {
+                        nic.mac = ever.iter().nth(draw.below(ever.len())).cloned().unwrap_or_default();
+                    }
+                }
+                change.nics = nics;
+                changes.push(change);
+                befores.push(before);
+            }
+            let mut new = small(&format!("new {seed} {round}"));
+            let slots = draw.slots();
+            new.settings.nics = draw.cards(&slots);
+            let make = draw.below(3) == 0;
+            let (who, request) = (alice(), context());
+            let (one, two, three) = tokio::join!(
+                test.vms.update(&ids[first], changes[0].clone(), None, &who, &request),
+                test.vms.update(&ids[second], changes[1].clone(), None, &who, &request),
+                async { if make { Some(test.vms.create(new, &who, &request).await) } else { None } },
+            );
+            for (answer, before) in [(one, &befores[0]), (two, &befores[1])] {
+                let answer = answer.unwrap_or_else(|error| panic!("seed {seed}, round {round}: {error}")).vm;
+                let stored = test.repository.find(&answer.id).await.unwrap().unwrap();
+                let shown = test.vms.get(&answer.id, &context()).await.unwrap().vm;
+                assert_eq!(answer, stored, "seed {seed}, round {round}: the answer is the record");
+                assert_eq!(answer, shown, "seed {seed}, round {round}: GET shows the record");
+                let slots: Vec<u8> = answer.settings.nics.iter().map(|nic| nic.slot).collect();
+                assert!(slots.windows(2).all(|pair| pair[0] < pair[1]), "by slot: {slots:?}");
+                for nic in &answer.settings.nics {
+                    match before.settings.nics.iter().find(|had| had.slot == nic.slot) {
+                        Some(had) => assert_eq!(
+                            nic.mac, had.mac,
+                            "seed {seed}, round {round}: card {} of {} changed its address",
+                            nic.slot, answer.settings.name
+                        ),
+                        None => assert!(
+                            !ever.contains(&nic.mac),
+                            "seed {seed}, round {round}: a new card got {}, which a card had",
+                            nic.mac
+                        ),
+                    }
+                    assert!(crate::domain::is_mac(&nic.mac), "{}", nic.mac);
+                }
+            }
+            if let Some(Ok((view, job))) = three {
+                assert_eq!(finished(&test, &job).await.state, JobState::Succeeded);
+                ids.push(view.vm.id);
+                created += 1;
+            }
+            let all = test.repository.list().await.unwrap();
+            let macs: Vec<String> =
+                all.iter().flat_map(|vm| vm.settings.nics.iter().map(|nic| nic.mac.clone())).collect();
+            assert_eq!(
+                macs.iter().collect::<BTreeSet<_>>().len(),
+                macs.len(),
+                "seed {seed}: one address, one card"
+            );
+            ever.extend(macs);
+        }
+        assert!(created > 0, "seed {seed}: no VM was made meanwhile");
+    }
+}

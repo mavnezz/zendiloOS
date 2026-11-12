@@ -113,6 +113,7 @@ fn edit(edit: &Edit, bonds: &[String]) -> Result<proto::NetworkEdit, ConfigureEr
         Subject::Device(device, done) => {
             proto::NetworkChange::Device { device: name(device)?, action: action(*done) }
         }
+        Subject::Restore => proto::NetworkChange::Restore {},
     };
     let netdevs = edit
         .devices
@@ -145,7 +146,8 @@ fn edit(edit: &Edit, bonds: &[String]) -> Result<proto::NetworkEdit, ConfigureEr
         .collect::<Result<Vec<_>, _>>()?;
     let removed = edit.removed.iter().map(|device| name(device)).collect::<Result<Vec<_>, _>>()?;
     let links = edit.links.iter().map(|file| link(file, bonds)).collect::<Result<Vec<_>, _>>()?;
-    let fields = proto::NetworkEdit { change, netdevs, removed, links };
+    let unset = edit.unset.iter().map(|interface| name(interface)).collect::<Result<Vec<_>, _>>()?;
+    let fields = proto::NetworkEdit { change, netdevs, removed, links, unset };
     // Checked as the agent checks it: each device and interface once.
     let value = serde_json::to_value(&fields).map_err(|_| invalid("change"))?;
     serde_json::from_value(value).map_err(|_| invalid("change"))
@@ -167,6 +169,7 @@ fn pending(pending: proto::PendingNetwork) -> PendingChange {
                     proto::DeviceAction::Removed => DeviceAction::Removed,
                 },
             ),
+            proto::NetworkChange::Restore {} => Change::Restore,
         },
         revert_at: Timestamp::from_unix_seconds(pending.revert_at),
     }
@@ -310,6 +313,7 @@ mod tests {
             devices: vec![],
             removed: vec![],
             links: vec![LinkFile { settings, port_of: None, vlans: vec![], keep_up: false }],
+            unset: vec![],
             effects: vec![],
         };
         network.change(&apply(settings.clone()), 120, &context).await.unwrap();
@@ -351,6 +355,7 @@ mod tests {
             }],
             removed: vec![],
             links: vec![port("bond0", "br0"), port("enp2s0", "bond0")],
+            unset: vec![],
             effects: vec![],
         };
         let sent = edit(&made, &["bond0".into()]).unwrap();

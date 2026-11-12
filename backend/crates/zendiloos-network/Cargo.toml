@@ -12,12 +12,14 @@ publish.workspace = true
 [dependencies]
 zendiloos-kernel.workspace = true
 zendiloos-jobs.workspace = true
+zendiloos-notify.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 zendiloos-jobs = { workspace = true, features = ["testing"] }
+zendiloos-notify = { workspace = true, features = ["testing"] }
 tokio.workspace = true
 
 [features]

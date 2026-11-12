@@ -5,11 +5,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use zendiloos_jobs::{Job, JobError, Jobs};
 use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, PortError, RequestContext, Timestamp};
+use zendiloos_notify::{Level, NewNotification, Notifier};
 
 use crate::domain::{
-    Configuration, Device, DeviceAction, DeviceUpdate, Edit, IfupdownFile, InterfaceSettings, InvalidDevice,
-    InvalidSettings, Ipv4Setting, Network, NetworkdFile, NewDevice, Planning, Refusal, Subject, TakeoverPlan,
-    takeover_plan,
+    Configuration, Device, DeviceAction, DeviceUpdate, Difference, DifferenceKind, Edit, IfupdownFile,
+    InterfaceSettings, InvalidDevice, InvalidSettings, Ipv4Setting, Network, NetworkdFile, NewDevice, Part,
+    Planning, Refusal, Subject, TakeoverPlan, differences, restoring, takeover_plan,
 };
 
 /// How the machine is connected, read from the host.
@@ -40,6 +41,9 @@ pub enum Change {
     Takeover(Vec<String>),
     /// A bridge, bond or VLAN made, changed or removed.
     Device(String, DeviceAction),
+    /// zendiloOS's settings written back over files changed or lost
+    /// outside it.
+    Restore,
 }
 
 impl Change {
@@ -48,6 +52,7 @@ impl Change {
         match subject {
             Subject::Interface(interface) => Self::Interface(interface.clone()),
             Subject::Device(device, action) => Self::Device(device.clone(), *action),
+            Subject::Restore => Self::Restore,
         }
     }
 }
@@ -98,6 +103,55 @@ pub struct NetworkSetup {
     /// Of its bridges, the internal networks for VMs: without members or
     /// an address of the NAS's, which the NAS keeps itself off.
     pub internal: Vec<String>,
+    /// zendiloOS's files differ from its settings: changed or lost outside
+    /// it. Told while no change waits.
+    pub drift: Option<Drift>,
+}
+
+/// How zendiloOS's files differ from its settings as last confirmed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Drift {
+    pub differences: Vec<Difference>,
+    /// When the settings were confirmed (or taken from the files).
+    pub kept_at: Timestamp,
+}
+
+/// zendiloOS's network settings as last confirmed: its systemd-networkd
+/// files as they were then.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeptSettings {
+    pub files: Vec<NetworkdFile>,
+    pub kept_at: Timestamp,
+    /// The differences last told as a notification, so each is told once.
+    pub said: Option<String>,
+}
+
+/// Where zendiloOS keeps its network settings: its database.
+#[async_trait]
+pub trait SettingsStore: Send + Sync {
+    /// The settings as last confirmed; none before zendiloOS kept any.
+    async fn kept(&self) -> Result<Option<KeptSettings>, PortError>;
+    /// Keeps `files` as the settings from `at` on, with nothing said of
+    /// them.
+    async fn keep(&self, files: &[NetworkdFile], at: Timestamp) -> Result<(), PortError>;
+    /// Notes what was told of the differences.
+    async fn note_said(&self, said: Option<&str>) -> Result<(), PortError>;
+}
+
+/// What looking at the files at the start found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Looked {
+    /// systemd-networkd does not manage the network: there is nothing of
+    /// zendiloOS's to compare.
+    NotManaged,
+    /// A change waits: the files are not settled; look again later.
+    Pending,
+    /// The first look: the files as they are became the settings.
+    Kept,
+    /// The files say the settings.
+    Same,
+    /// They differ in so many ways.
+    Differs(usize),
 }
 
 /// Taking the network over from ifupdown, as it would go now.
@@ -129,8 +183,31 @@ pub enum ConfigureError {
     /// ifupdown sets up what a takeover would not carry over.
     #[error("not carried over: {}", refusals(.0))]
     NotCarriedOver(Vec<Refusal>),
+    /// zendiloOS's files differ from its settings: restored or kept first.
+    #[error("zendiloOS's network files differ from its settings: restore them or keep the files first")]
+    Drifted,
     #[error(transparent)]
     Port(#[from] PortError),
+}
+
+/// What differs, as a key: told once until it changes.
+fn said(found: &[Difference]) -> String {
+    found
+        .iter()
+        .map(|difference| {
+            let part = match difference.part {
+                Part::Device => "device",
+                Part::Interface => "interface",
+            };
+            let kind = match difference.kind {
+                DifferenceKind::Missing => "missing",
+                DifferenceKind::Changed => "changed",
+                DifferenceKind::Added => "added",
+            };
+            format!("{part} {} {kind}", difference.name)
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// `interfaces:12: br0: a bridge; …`
@@ -212,7 +289,9 @@ pub struct NetworkPorts {
     pub source: Arc<dyn NetworkSource>,
     pub configurator: Arc<dyn NetworkConfigurator>,
     pub users: Arc<dyn DeviceUsers>,
+    pub store: Arc<dyn SettingsStore>,
     pub jobs: Jobs,
+    pub notifier: Notifier,
     pub audit: Arc<dyn AuditLog>,
     pub clock: Arc<dyn Clock>,
 }
@@ -232,6 +311,7 @@ fn job_error(error: ConfigureError) -> JobError {
         ConfigureError::Invalid(_) | ConfigureError::InvalidDevice(_) => "invalid_input",
         ConfigureError::InUse(_) => "device_in_use",
         ConfigureError::NotCarriedOver(_) => "not_carried_over",
+        ConfigureError::Drifted => "network_drift",
         ConfigureError::Port(_) => "agent_failed",
     };
     JobError::new(code, Some(error.to_string()))
@@ -268,6 +348,7 @@ impl ConfigureNetwork {
             (Some(_), false, false) => Manager::Ifupdown,
             (None, false, false) => Manager::Unknown,
         };
+        let drift = self.drift(&host).await?;
         let takeover = match host.ifupdown {
             Some(ifupdown) if manager == Manager::Ifupdown => {
                 let network = self.ports.source.network().await?;
@@ -289,7 +370,145 @@ impl ConfigureNetwork {
             takeover,
             devices: configuration.devices,
             internal,
+            drift,
         })
+    }
+
+    /// How the files differ from the settings kept, while systemd-networkd
+    /// manages the network and no change waits (one that waits is in the
+    /// files until it is confirmed or goes back).
+    async fn drift(&self, host: &HostNetwork) -> Result<Option<Drift>, PortError> {
+        if !host.managed || host.pending.is_some() {
+            return Ok(None);
+        }
+        let Some(kept) = self.ports.store.kept().await? else { return Ok(None) };
+        let found = differences(&Configuration::read(&kept.files), &Configuration::read(&host.files));
+        Ok((!found.is_empty()).then_some(Drift { differences: found, kept_at: kept.kept_at }))
+    }
+
+    /// Refuses a change while the files differ from the settings: it would
+    /// be planned on files zendiloOS did not write, and confirming it would
+    /// keep them.
+    async fn refuse_drift(&self, host: &HostNetwork) -> Result<(), ConfigureError> {
+        match self.drift(host).await? {
+            Some(_) => Err(ConfigureError::Drifted),
+            None => Ok(()),
+        }
+    }
+
+    /// Keeps the files as they are as zendiloOS's settings.
+    async fn keep_files(&self, request: &RequestContext) -> Result<(), PortError> {
+        let host = self.ports.configurator.state(request).await?;
+        self.ports.store.keep(&host.files, self.ports.clock.now()).await
+    }
+
+    /// At the start, before anything changes the network: compares the
+    /// files with the settings kept. A first look keeps the files as the
+    /// settings; files that differ are told as a notification (each
+    /// difference once, also across restarts) and on the Network page,
+    /// never rewritten by themselves: written back at the start, a network
+    /// that worked could be cut off with nobody there to confirm it, and
+    /// one that did not would go back to it unconfirmed.
+    pub async fn look_at_files(&self, request: &RequestContext) -> Result<Looked, PortError> {
+        let host = self.ports.configurator.state(request).await?;
+        if !host.managed {
+            return Ok(Looked::NotManaged);
+        }
+        if host.pending.is_some() {
+            return Ok(Looked::Pending);
+        }
+        let Some(kept) = self.ports.store.kept().await? else {
+            self.ports.store.keep(&host.files, self.ports.clock.now()).await?;
+            tracing::info!(files = host.files.len(), "network: zendiloOS's settings kept from its files");
+            return Ok(Looked::Kept);
+        };
+        let found = differences(&Configuration::read(&kept.files), &Configuration::read(&host.files));
+        if found.is_empty() {
+            if kept.said.is_some() {
+                self.ports.store.note_said(None).await?;
+            }
+            return Ok(Looked::Same);
+        }
+        let said = said(&found);
+        tracing::warn!(differences = said, "network: zendiloOS's files differ from its settings");
+        if kept.said.as_deref() != Some(said.as_str()) {
+            let mut names: Vec<&str> = Vec::new();
+            for difference in &found {
+                if !names.contains(&difference.name.as_str()) {
+                    names.push(&difference.name);
+                }
+            }
+            self.ports
+                .notifier
+                .notify(
+                    NewNotification::new(Level::Warning, "network_drift")
+                        .with("count", found.len().to_string())
+                        .with("names", names.join(", ")),
+                )
+                .await;
+            self.ports.store.note_said(Some(&said)).await?;
+        }
+        Ok(Looked::Differs(found.len()))
+    }
+
+    /// Writes zendiloOS's settings back over the files, as one change that
+    /// goes back unless confirmed within two minutes; confirmed, the files
+    /// say the settings again.
+    pub async fn restore(
+        &self,
+        actor: &Actor,
+        request: &RequestContext,
+    ) -> Result<NetworkSetup, ConfigureError> {
+        let done = async {
+            let host = self.ports.configurator.state(request).await?;
+            if host.pending.is_some() {
+                return Err(ConfigureError::Pending);
+            }
+            if !host.managed {
+                return Err(ConfigureError::Refused(
+                    "systemd-networkd does not manage the network here".into(),
+                ));
+            }
+            let kept = self.ports.store.kept().await?;
+            let kept = kept
+                .ok_or_else(|| ConfigureError::Refused("zendiloOS keeps no network settings yet".into()))?;
+            let edit = restoring(&Configuration::read(&kept.files), &Configuration::read(&host.files))
+                .ok_or_else(|| {
+                    ConfigureError::Refused("the files say zendiloOS's settings already".into())
+                })?;
+            self.ports.configurator.change(&edit, CONFIRM_WITHIN_SECONDS, request).await
+        }
+        .await;
+        let outcome = if done.is_ok() { Outcome::Success } else { Outcome::Failure };
+        self.audit("network.restore", outcome, "", actor, request).await;
+        done?;
+        Ok(self.setup(request).await?)
+    }
+
+    /// Keeps the files as they are as zendiloOS's settings: changed by hand
+    /// on purpose, say.
+    pub async fn keep(
+        &self,
+        actor: &Actor,
+        request: &RequestContext,
+    ) -> Result<NetworkSetup, ConfigureError> {
+        let done = async {
+            let host = self.ports.configurator.state(request).await?;
+            if host.pending.is_some() {
+                return Err(ConfigureError::Pending);
+            }
+            if !host.managed {
+                return Err(ConfigureError::Refused(
+                    "systemd-networkd does not manage the network here".into(),
+                ));
+            }
+            Ok(self.ports.store.keep(&host.files, self.ports.clock.now()).await?)
+        }
+        .await;
+        let outcome = if done.is_ok() { Outcome::Success } else { Outcome::Failure };
+        self.audit("network.keep_files", outcome, "", actor, request).await;
+        done?;
+        Ok(self.setup(request).await?)
     }
 
     pub async fn apply(
@@ -309,6 +528,7 @@ impl ConfigureNetwork {
         let applied = async {
             // The VLANs on it stay; a member's settings are its device's.
             let host = self.ports.configurator.state(request).await?;
+            self.refuse_drift(&host).await?;
             let configuration = Configuration::read(&host.files);
             let network = network.unwrap_or_default();
             let edit = Planning { network: &network, configuration: &configuration }.settings(settings)?;
@@ -330,6 +550,7 @@ impl ConfigureNetwork {
         request: &RequestContext,
     ) -> Result<Edit, ConfigureError> {
         let host = self.ports.configurator.state(request).await?;
+        self.refuse_drift(&host).await?;
         let configuration = Configuration::read(&host.files);
         let network = self.ports.source.network().await?;
         let planning = Planning { network: &network, configuration: &configuration };
@@ -443,6 +664,10 @@ impl ConfigureNetwork {
         Ok(job)
     }
 
+    /// Keeps the change that waits; its files become zendiloOS's settings.
+    /// Changes are refused while the files differ from the settings, so
+    /// what is kept is the settings with this change: a restore's are the
+    /// settings themselves.
     pub async fn confirm(&self, actor: &Actor, request: &RequestContext) -> Result<(), ConfigureError> {
         let pending = self.ports.configurator.state(request).await?.pending;
         let confirmed = self.ports.configurator.confirm(request).await;
@@ -450,10 +675,16 @@ impl ConfigureNetwork {
         let target = match pending.map(|p| p.change) {
             Some(Change::Interface(interface) | Change::Device(interface, _)) => interface,
             Some(Change::Takeover(_)) => "ifupdown".into(),
-            None => String::new(),
+            Some(Change::Restore) | None => String::new(),
         };
         self.audit("network.confirm", outcome, &target, actor, request).await;
-        confirmed
+        confirmed?;
+        // The network is as confirmed; the settings follow, and if they
+        // cannot be kept now, the next start tells the difference.
+        if let Err(error) = self.keep_files(request).await {
+            tracing::error!(%error, "network: confirmed, but the settings cannot be kept");
+        }
+        Ok(())
     }
 }
 

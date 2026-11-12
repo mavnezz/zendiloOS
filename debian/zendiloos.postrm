@@ -3,6 +3,12 @@ set -e
 
 case "$1" in
     remove)
+        # Nothing chooses GRUB's kernel any more: it starts the newest
+        # again, as Debian's does (the setting stays until a purge, without
+        # an entry saved, which GRUB reads as its first).
+        if [ -f /boot/grub/grubenv ] && command -v grub-editenv >/dev/null 2>&1; then
+            grub-editenv /boot/grub/grubenv unset saved_entry || true
+        fi
         # The firewall's rules go with the package; nothing would keep them.
         if command -v nft >/dev/null 2>&1; then
             nft delete table inet zendiloos_firewall 2>/dev/null || true

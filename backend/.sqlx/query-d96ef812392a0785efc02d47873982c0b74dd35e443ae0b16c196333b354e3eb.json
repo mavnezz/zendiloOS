@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT kept_at, said FROM network_settings WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "kept_at",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "network_settings",
+            "name": "kept_at"
+          }
+        }
+      },
+      {
+        "name": "said",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "network_settings",
+            "name": "said"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "d96ef812392a0785efc02d47873982c0b74dd35e443ae0b16c196333b354e3eb"
+}

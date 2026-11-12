@@ -4,7 +4,11 @@
 #   1. the card's own address, made fixed and confirmed, stays
 #   2. an address that cuts the VM off is not confirmed: after the time to
 #      confirm, the confirmed settings return and the VM is reachable again
-#   3. back to DHCP, confirmed, and zendiloOS's file removed
+#   3. back to DHCP, confirmed: kept as zendiloOS's settings
+#   4. the card's file lost outside zendiloOS: once zendiloosd restarted,
+#      told as a notification and on the setup, other changes refused,
+#      written back as a change that is confirmed; lost again and kept as
+#      it is, which leaves the image's own settings as before
 #
 # Run it against a VM that nothing else needs: ZENDILOOS_VM=2 by default.
 # Needs the package installed and set up; account and password come from
@@ -82,7 +86,29 @@ say "3. Back to DHCP"
 call PUT "/network/interfaces/$card" '{"ipv4":{"mode":"dhcp"},"ipv6":"automatic","dns":[]}' >/dev/null
 wait_for "the API after DHCP" "call GET /network/setup | jq -e .pending" 60
 call POST /network/confirm >/dev/null
+[[ $(call GET /network/setup | jq .drift) == null ]] || fail "the confirmed file differs from the settings"
+
+say "4. A file lost outside zendiloOS is told, written back, or kept"
+before=$(call GET /notifications | jq '[.notifications[] | select(.code == "network_drift")] | length')
 vm "sudo rm -f $file && sudo networkctl reload && sudo networkctl reconfigure $card"
 wait_for "the API with the image's own settings" "call GET /network/setup | jq -e .managed" 60
+vm 'sudo systemctl restart zendiloosd'
+wait_for "zendiloosd" "call GET /network/setup | jq -e .managed" 60
+wait_for "the difference" "call GET /network/setup | jq -e --arg c '$card' '.drift.differences | any(.name == \$c and .kind == \"missing\")'" 60
+wait_for "the notification" "[[ \$(call GET /notifications | jq '[.notifications[] | select(.code == \"network_drift\")] | length') -gt $before ]]" 60
+refused=$(call PUT "/network/interfaces/$card" '{"ipv4":{"mode":"dhcp"},"ipv6":"automatic","dns":[]}')
+[[ $(jq -r .code <<<"$refused") == network_drift ]] || fail "a change while the files differ: $refused"
+restored=$(call POST /network/restore)
+[[ $(jq -r .pending.restore <<<"$restored") == true ]] || fail "restore: $restored"
+vm "sudo grep -q '^DHCP=ipv4' $file" || fail "not written back: $(vm "sudo cat $file" 2>&1)"
+wait_for "the API after the restore" "call GET /network/setup | jq -e .pending.restore" 60
+call POST /network/confirm >/dev/null
+[[ $(call GET /network/setup | jq -c '[.pending, .drift]') == '[null,null]' ]] || fail "after confirming: $(call GET /network/setup)"
+vm "networkctl status $card --no-pager | grep -q 'Network File: $file'" || fail "networkd does not use the file again"
+# Lost again, on purpose this time: kept as it is.
+vm "sudo rm -f $file && sudo networkctl reload && sudo networkctl reconfigure $card"
+wait_for "the API with the image's own settings" "call GET /network/setup | jq -e .drift" 60
+[[ $(call POST /network/keep-files | jq .drift) == null ]] || fail "the files were not kept"
+vm "sudo test ! -e $file" || fail "keeping wrote a file"
 
-say "Passed: confirmed settings stay, unconfirmed ones go back by themselves"
+say "Passed: confirmed settings stay, unconfirmed ones go back by themselves, files changed outside zendiloOS are told"

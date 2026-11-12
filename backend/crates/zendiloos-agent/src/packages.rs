@@ -32,11 +32,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 use zendiloos_agent_proto::{
-    PackageReport, PackageRun, PackageRunState, PackageTask, ReleaseChannel, ReleaseInstall, ReleasePackage,
-    Response, UpgradablePackage,
+    BootKernel, BootReason, PackageReport, PackageRun, PackageRunState, PackageTask, ReleaseChannel,
+    ReleaseInstall, ReleasePackage, Response, UpgradablePackage,
 };
 use zendiloos_exec::{Limits, Program};
 
+use crate::boot::{Boot, has_zfs};
 use crate::operations::OperationError;
 use crate::pools::HostPaths;
 
@@ -193,7 +194,7 @@ fn tempfile_folder() -> Result<PathBuf, OperationError> {
 }
 
 /// Debian's package tools the runner calls, where the kernels' modules lie
-/// and `/etc`: Debian's own, or stand-ins in tests.
+/// and `/etc`, and GRUB: Debian's own, or stand-ins in tests.
 #[derive(Debug, Clone)]
 struct Debian {
     apt_get: PathBuf,
@@ -203,6 +204,7 @@ struct Debian {
     systemctl: PathBuf,
     modules: PathBuf,
     etc: PathBuf,
+    boot: Boot,
 }
 
 impl Default for Debian {
@@ -215,6 +217,7 @@ impl Default for Debian {
             systemctl: "/usr/bin/systemctl".into(),
             modules: "/lib/modules".into(),
             etc: "/etc".into(),
+            boot: Boot::default(),
         }
     }
 }
@@ -359,7 +362,7 @@ impl Debian {
             PackageTask::Update => {
                 lists(&mut step)?;
                 step("debian")?;
-                self.apt(&["--with-new-pkgs", "--yes", "upgrade"])?;
+                self.started_safely(self.apt(&["--with-new-pkgs", "--yes", "upgrade"]))?;
                 if let Some(release) = release {
                     step("zendiloos")?;
                     self.install_release(paths, release)?;
@@ -373,9 +376,9 @@ impl Debian {
                 // Nothing fetched: what was unpacked is configured, and apt
                 // completes what is missing from the lists it has.
                 step("configure")?;
-                self.finish_interrupted()?;
+                self.started_safely(self.finish_interrupted())?;
                 step("repair")?;
-                self.apt(&["--fix-broken", "--yes", "install"])?;
+                self.started_safely(self.apt(&["--fix-broken", "--yes", "install"]))?;
                 step("modules")?;
                 let checked = self.host_report()?;
                 *report = Some(checked.clone());
@@ -390,16 +393,37 @@ impl Debian {
     }
 }
 
-/// Fails the run if the ZFS module is missing for the newest kernel.
+impl Debian {
+    /// What apt or dpkg did, after GRUB was set to start a kernel with its
+    /// ZFS module should it have failed: a kernel's package fails to be
+    /// configured when DKMS cannot build ZFS for it (its hooks, GRUB's and
+    /// zendiloOS's, then never run), and GRUB's configuration may list the
+    /// kernel all the same once something else writes it.
+    fn started_safely(&self, done: Result<(), String>) -> Result<(), String> {
+        if done.is_err() {
+            println!("{}", crate::boot::said(&self.boot.choose()));
+        }
+        done
+    }
+}
+
+/// Fails the run if the ZFS module is missing for the newest kernel,
+/// saying whether the NAS keeps starting one that has it.
 fn zfs_checked(report: &PackageReport) -> Result<(), String> {
     if report.zfs_ready {
         return Ok(());
     }
     let kernel = report.newest_kernel.clone().unwrap_or_default();
-    Err(format!(
-        "the ZFS module is missing for kernel {kernel}: do not restart; the pools would not be found. \
-         `dkms autoinstall -k {kernel}` builds it (the kernel's headers are needed)."
-    ))
+    let build = format!("`dkms autoinstall -k {kernel}` builds it (the kernel's headers are needed)");
+    match &report.boot {
+        Some(BootKernel { kernel: Some(started), reason: BootReason::NewestLacksZfs, .. }) => Err(format!(
+            "the ZFS module is missing for kernel {kernel}: the NAS keeps starting {started}, which has it, \
+             until it is built. {build}."
+        )),
+        _ => Err(format!(
+            "the ZFS module is missing for kernel {kernel}: do not restart; the pools would not be found. {build}."
+        )),
+    }
 }
 
 impl Debian {
@@ -601,7 +625,11 @@ impl Debian {
         let running_kernel = rustix::system::uname().release().to_string_lossy().into_owned();
         let newest_kernel = self.newest_kernel(&self.modules)?;
         let zfs_ready = newest_kernel.as_deref().is_none_or(|kernel| has_zfs(&self.modules.join(kernel)));
-        Ok(PackageReport { upgradable, running_kernel, newest_kernel, zfs_ready, interrupted })
+        // Chosen at every look, a check's too: the kernels may have changed
+        // since (installed by hand, a module built by hand), and the page
+        // says which one starts.
+        let boot = Some(self.boot.choose());
+        Ok(PackageReport { upgradable, running_kernel, newest_kernel, zfs_ready, interrupted, boot })
     }
 
     /// Whether dpkg left packages unpacked, half installed or half
@@ -643,12 +671,7 @@ impl Debian {
 
     /// `a` is a newer version than `b`, as dpkg orders them.
     fn newer(&self, a: &str, b: &str) -> Result<bool, String> {
-        let status = Command::new(&self.dpkg)
-            .args(["--compare-versions", a, "gt", b])
-            .stdin(Stdio::null())
-            .status()
-            .map_err(|e| format!("dpkg: {e}"))?;
-        Ok(status.success())
+        crate::boot::newer(&self.dpkg, a, b)
     }
 
     /// Finishes what an interrupted apt or dpkg left half done (a restart
@@ -696,23 +719,6 @@ fn upgradable(line: &str) -> Option<UpgradablePackage> {
     let to = inside.split_whitespace().next()?.to_owned();
     let security = inside.to_ascii_lowercase().contains("security");
     Some(UpgradablePackage { name: name.to_owned(), from, to, security })
-}
-
-/// A `zfs.ko*` somewhere below the kernel's modules (DKMS puts it in
-/// `updates/dkms`).
-fn has_zfs(kernel: &Path) -> bool {
-    fn walk(folder: &Path, depth: usize) -> bool {
-        let Ok(entries) = fs::read_dir(folder) else { return false };
-        entries.flatten().any(|entry| {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name == "zfs.ko" || name.starts_with("zfs.ko.") {
-                return true;
-            }
-            depth > 0 && entry.file_type().is_ok_and(|kind| kind.is_dir()) && walk(&entry.path(), depth - 1)
-        })
-    }
-    walk(kernel, 6)
 }
 
 fn run_text(program: &Path, args: &[&str]) -> Result<String, String> {
@@ -882,15 +888,6 @@ mod tests {
     }
 
     #[test]
-    fn zfs_is_found_where_dkms_puts_it() {
-        let kernel = tempfile::tempdir().unwrap();
-        assert!(!has_zfs(kernel.path()));
-        fs::create_dir_all(kernel.path().join("updates/dkms")).unwrap();
-        fs::write(kernel.path().join("updates/dkms/zfs.ko.xz"), "").unwrap();
-        assert!(has_zfs(kernel.path()));
-    }
-
-    #[test]
     fn dpkg_tells_of_an_update_it_did_not_finish() {
         let half = "The following packages are only half configured, probably due to problems\n\
             configuring them the first time.  The configuration should be retried using\n\
@@ -926,7 +923,7 @@ mod tests {
     /// there, `dpkg --configure -a` removes it (unless `stays` is there,
     /// or fails while `configure-fails` is); `dpkg-deb` reads a zendiloos
     /// 9.9.9 for amd64, `dpkg-query` knows no zendiloos. One kernel, with
-    /// ZFS built for it.
+    /// ZFS built for it, which GRUB lists (`crate::boot`'s machine).
     fn fake_debian(root: &Path) -> Debian {
         let log = root.join("debian.log");
         let script = |name: &str, body: &str| {
@@ -954,7 +951,8 @@ mod tests {
              *--configure*) [ -e $R/configure-fails ] && { echo 'dpkg: error processing package zfs-dkms' >&2; exit 1; }\n\
                [ -e $R/stays ] || rm -f $R/audit ;;\n\
              --print-architecture) echo amd64 ;;\n\
-             --compare-versions*) exit 1 ;;\n\
+             --compare-versions*) [ \"$2\" != \"$4\" ] && \\\n\
+               [ \"$(printf '%s\\n%s\\n' \"$2\" \"$4\" | sort -V | tail -n 1)\" = \"$2\" ] && exit 0; exit 1 ;;\n\
              esac\nexit 0",
         );
         let dpkg_deb = script(
@@ -963,13 +961,12 @@ mod tests {
         );
         let dpkg_query = script("dpkg-query", "[ -e $R/resolved-installed ] && echo 'install ok installed'");
         let systemctl = script("systemctl", "exit 0");
-        let modules = root.join("modules");
-        fs::create_dir_all(modules.join("6.12.57+deb13-amd64/updates/dkms")).unwrap();
-        fs::write(modules.join("6.12.57+deb13-amd64/modules.dep"), "").unwrap();
-        fs::write(modules.join("6.12.57+deb13-amd64/updates/dkms/zfs.ko.xz"), "").unwrap();
+        let kernel = "6.12.57+deb13-amd64";
+        let boot = crate::boot::tests::machine(root, &[kernel], &[kernel]);
+        let modules = boot.modules.clone();
         let etc = root.join("etc");
         fs::create_dir_all(&etc).unwrap();
-        Debian { apt_get, dpkg, dpkg_deb, dpkg_query, systemctl, modules, etc }
+        Debian { apt_get, dpkg, dpkg_deb, dpkg_query, systemctl, modules, etc, boot }
     }
 
     /// A NAS of fake tools in `root`, with the release 9.9.9 downloaded.
@@ -1034,6 +1031,69 @@ mod tests {
         let missing = run_with(&paths, &debian, "ab02", "update", None, None).unwrap_err();
         assert!(missing.contains("ZFS module is missing for kernel 6.12.57+deb13-amd64"), "{missing}");
         assert_eq!(recorded(&paths, UPDATE_FILE).state, PackageRunState::Failed);
+    }
+
+    #[test]
+    fn a_new_kernel_without_zfs_is_not_started_and_the_run_says_so() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, debian) = host(root.path());
+        let (old, new) = ("6.12.57+deb13-amd64", "6.12.63+deb13-amd64");
+        // The upgrade brought a kernel DKMS could not build ZFS for; GRUB
+        // lists it first.
+        crate::boot::tests::machine(root.path(), &[new, old], &[old]);
+        let failed = run_with(&paths, &debian, "ab01", "update", None, None).unwrap_err();
+        assert!(
+            failed.contains(&format!("missing for kernel {new}"))
+                && failed.contains(&format!("keeps starting {old}")),
+            "{failed}"
+        );
+        let report = recorded(&paths, UPDATE_FILE).report.unwrap();
+        assert_eq!(report.newest_kernel.as_deref(), Some(new));
+        assert_eq!(
+            report.boot,
+            Some(BootKernel { kernel: Some(old.into()), reason: BootReason::NewestLacksZfs, detail: None })
+        );
+        let saved = fs::read_to_string(root.path().join("boot/grub/grubenv")).unwrap();
+        assert!(saved.contains(&crate::boot::tests::entry_of(old)), "{saved}");
+
+        // A check sees it too.
+        run_with(&paths, &debian, "ab02", "check", None, None).unwrap();
+        assert_eq!(
+            recorded(&paths, STATE_FILE).report.unwrap().boot.unwrap().reason,
+            BootReason::NewestLacksZfs
+        );
+    }
+
+    /// A kernel's package fails to be configured when DKMS cannot build
+    /// ZFS for it; apt fails, and GRUB is set before the run ends.
+    #[test]
+    fn an_upgrade_that_fails_still_leaves_grub_on_a_kernel_with_zfs() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, debian) = host(root.path());
+        let (old, new) = ("6.12.57+deb13-amd64", "6.12.63+deb13-amd64");
+        crate::boot::tests::machine(root.path(), &[new, old], &[old]);
+        fs::write(root.path().join("boot/grub/grubenv"), "# GRUB Environment Block\n").unwrap();
+        // apt update succeeds, the upgrade fails.
+        let apt_get = root.path().join("apt-get");
+        let script = fs::read_to_string(&apt_get).unwrap();
+        fs::write(
+            &apt_get,
+            script.replace(
+                "*) [ -e $R/apt-fails ]",
+                "*upgrade*) exit 100 ;;\n             *) [ -e $R/apt-fails ]",
+            ),
+        )
+        .unwrap();
+        let failed = run_with(&paths, &debian, "ab01", "update", None, None).unwrap_err();
+        assert!(failed.contains("apt-get upgrade failed"), "{failed}");
+        let saved = fs::read_to_string(root.path().join("boot/grub/grubenv")).unwrap();
+        assert!(saved.contains(&crate::boot::tests::entry_of(old)), "{saved}");
+        // So does finishing it, when dpkg cannot configure the kernel.
+        fs::write(root.path().join("boot/grub/grubenv"), "# GRUB Environment Block\n").unwrap();
+        fs::write(root.path().join("configure-fails"), "").unwrap();
+        run_with(&paths, &debian, "ab02", "finish", None, None).unwrap_err();
+        let saved = fs::read_to_string(root.path().join("boot/grub/grubenv")).unwrap();
+        assert!(saved.contains(&crate::boot::tests::entry_of(old)), "{saved}");
     }
 
     #[test]

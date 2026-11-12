@@ -76,6 +76,7 @@ const managed: NetworkSetup = {
   takeover: null,
   devices: [],
   internal: [],
+  drift: null,
 }
 
 /** What the owner's NAS shows: ifupdown with DHCP on its first port. */
@@ -85,6 +86,7 @@ const ifupdown: NetworkSetup = {
   pending: null,
   devices: [],
   internal: [],
+  drift: null,
   takeover: {
     interfaces: [
       { name: 'eth0', ipv4: { mode: 'dhcp', keep: '192.168.1.20' }, ipv6: 'automatic', dns: [] },
@@ -161,6 +163,58 @@ beforeEach(() => {
 })
 
 describe('the network', () => {
+  it('tells files changed outside zendiloOS, and restores or keeps them', async () => {
+    const drift: NetworkSetup['drift'] = {
+      kept_at: 1_790_000_000,
+      differences: [
+        { part: 'device', name: 'br0', kind: 'missing' },
+        { part: 'interface', name: 'eth1', kind: 'added' },
+      ],
+    }
+    let restored = false
+    on('GET', '/api/v1/network/setup', () =>
+      restored
+        ? waiting({ interface: '', takeover: false, restore: true, device: null, revert_at: 9e9 })
+        : { ...managed, drift },
+    )
+    on('POST', '/api/v1/network/restore', () => {
+      restored = true
+      return waiting({
+        interface: '',
+        takeover: false,
+        restore: true,
+        device: null,
+        revert_at: 9e9,
+      })
+    })
+    on('POST', '/api/v1/network/keep-files', managed)
+    await mountApp(NetworkSection, { props: { canManage: true } })
+    const banner = document.querySelector('[data-drift]')?.textContent ?? ''
+    expect(banner).toContain(t('network.drift.device', { name: 'br0' }))
+    expect(banner).toContain(t('network.drift.kinds.missing'))
+    expect(banner).toContain(t('network.drift.kinds.added'))
+    // Nothing else changes meanwhile.
+    expect(page()).not.toContain(t('network.add.button'))
+
+    await click(t('network.drift.keep'))
+    expect(called('POST', '/api/v1/network/keep-files')).toHaveLength(1)
+    await click(t('network.drift.restore'))
+    expect(called('POST', '/api/v1/network/restore')).toHaveLength(1)
+    await settle()
+    expect(page()).toContain(t('network.pending.restoreTitle'))
+    expect(document.querySelector('[data-drift]')).toBeNull()
+  })
+
+  it('shows files changed outside zendiloOS to those who may only look', async () => {
+    on('GET', '/api/v1/network/setup', {
+      ...managed,
+      drift: { kept_at: 1, differences: [{ part: 'interface', name: 'eth0', kind: 'changed' }] },
+    })
+    await mountApp(NetworkSection, { props: { canManage: false } })
+    expect(page()).toContain(t('network.drift.title'))
+    expect(page()).not.toContain(t('network.drift.restore'))
+  })
+
   it('lists the interfaces and their addresses', async () => {
     await mountApp(NetworkSection, { props: { canManage: true } })
     expect(page()).toContain('192.168.1.20/24')
@@ -191,7 +245,12 @@ describe('the network', () => {
     on(
       'GET',
       '/api/v1/network/setup',
-      waiting({ interface: 'eth1', takeover: false, revert_at: Date.now() / 1000 + 120 }),
+      waiting({
+        interface: 'eth1',
+        takeover: false,
+        restore: false,
+        revert_at: Date.now() / 1000 + 120,
+      }),
     )
     await submit('[role="dialog"] form')
     expect(called('PUT', '/api/v1/network/interfaces/eth1')[0]?.body).toEqual({
@@ -215,7 +274,12 @@ describe('the network', () => {
     on(
       'GET',
       '/api/v1/network/setup',
-      waiting({ interface: 'eth0', takeover: false, revert_at: Date.now() / 1000 + 60 }),
+      waiting({
+        interface: 'eth0',
+        takeover: false,
+        restore: false,
+        revert_at: Date.now() / 1000 + 60,
+      }),
     )
     await mountApp(NetworkSection, { props: { canManage: true } })
     on('GET', '/api/v1/network/setup', managed)
@@ -268,7 +332,12 @@ describe('the network', () => {
     on(
       'GET',
       '/api/v1/network/setup',
-      waiting({ interface: '', takeover: true, revert_at: Date.now() / 1000 + 120 }),
+      waiting({
+        interface: '',
+        takeover: true,
+        restore: false,
+        revert_at: Date.now() / 1000 + 120,
+      }),
     )
     jobs.update(takeoverJob('succeeded'))
     await settle()
@@ -424,6 +493,7 @@ describe('the network', () => {
       waiting({
         interface: 'br0',
         takeover: false,
+        restore: false,
         device: 'made',
         revert_at: Date.now() / 1000 + 120,
       }),

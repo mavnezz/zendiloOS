@@ -326,6 +326,9 @@ pub enum Subject {
     /// One interface's settings.
     Interface(String),
     Device(String, DeviceAction),
+    /// zendiloOS's settings written back, where its files were changed or
+    /// lost outside it ([`super::kept`]).
+    Restore,
 }
 
 /// What becomes of an interface a change touches, for people to see
@@ -358,6 +361,9 @@ pub struct Edit {
     pub devices: Vec<Device>,
     pub removed: Vec<String>,
     pub links: Vec<LinkFile>,
+    /// Interfaces whose file of zendiloOS's goes (only a restore takes one
+    /// away: written outside zendiloOS).
+    pub unset: Vec<String>,
     pub effects: Vec<Effect>,
 }
 
@@ -620,7 +626,7 @@ impl Planning<'_> {
                 becomes: Becomes::Member { device: new.name.clone(), moved, dropped },
             });
         }
-        Ok(Edit { subject, devices: vec![device], removed: Vec::new(), links, effects })
+        Ok(Edit { subject, devices: vec![device], removed: Vec::new(), links, unset: Vec::new(), effects })
     }
 
     fn make_vlan(
@@ -676,7 +682,7 @@ impl Planning<'_> {
                 becomes: Becomes::Parent { vlan: new.name.clone(), carries: true },
             },
         ];
-        Ok(Edit { subject, devices: vec![device], removed: Vec::new(), links, effects })
+        Ok(Edit { subject, devices: vec![device], removed: Vec::new(), links, unset: Vec::new(), effects })
     }
 
     fn ours(&self, name: &str) -> Result<&Device, InvalidDevice> {
@@ -725,7 +731,7 @@ impl Planning<'_> {
             effects.push(Effect { interface: member.clone(), becomes });
         }
         let subject = Subject::Device(update.name.clone(), DeviceAction::Changed);
-        Ok(Edit { subject, devices: vec![device], removed: Vec::new(), links, effects })
+        Ok(Edit { subject, devices: vec![device], removed: Vec::new(), links, unset: Vec::new(), effects })
     }
 
     /// Removes a bridge, bond or VLAN zendiloOS made. `users` is what uses
@@ -769,7 +775,14 @@ impl Planning<'_> {
             }
         }
         let subject = Subject::Device(name.to_owned(), DeviceAction::Removed);
-        Ok(Edit { subject, devices: Vec::new(), removed: vec![name.to_owned()], links, effects })
+        Ok(Edit {
+            subject,
+            devices: Vec::new(),
+            removed: vec![name.to_owned()],
+            links,
+            unset: Vec::new(),
+            effects,
+        })
     }
 
     /// An interface's settings, as before: a member's are its bridge's or
@@ -790,6 +803,7 @@ impl Planning<'_> {
             devices: Vec::new(),
             removed: Vec::new(),
             links: vec![link],
+            unset: Vec::new(),
             effects: vec![Effect { interface, becomes: Becomes::Settings(settings) }],
         })
     }

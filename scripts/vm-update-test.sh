@@ -17,6 +17,14 @@
 #   5. an update cut off while dpkg configured (a package whose postinst
 #      fails until it may succeed) is found by a check and finished
 #      through the API
+#   6. a second kernel, newer than the running one, installed without its
+#      headers, so DKMS builds no ZFS for it (or with its module removed
+#      should it have been built): GRUB's default stays on the running
+#      kernel also once GRUB's configuration lists the new one first, a
+#      check says so, the default moves to the new kernel once a module is
+#      there and back once it is gone, and stays when the kernel goes again
+#      (the kernel from ZENDILOOS_TEST_KERNEL, a package name, else the
+#      newest of the running kernel's flavour in trixie-backports)
 #
 # Usage: scripts/vm-update-test.sh NEXT_DEB [CURRENT_DEB]
 #   NEXT_DEB     a package of a newer version than the installed one, e.g.
@@ -111,8 +119,29 @@ run_update() {
     vm 'cat /var/lib/zendiloos-packages/run.json'
 }
 
+# GRUB's default, as saved in its environment block.
+grub_default() { vm 'sudo grub-editenv /boot/grub/grubenv list' | sed -n 's/^saved_entry=//p'; }
+# The id of the entry that starts kernel $1 and nothing else.
+grub_entry_of() { printf '>gnulinux-%s-advanced-' "$1"; }
+# Whether dpkg orders version $1 after $2.
+newer_than() { vm "dpkg --compare-versions '$1' gt '$2'"; }
+# Runs a check through the API and waits for its end.
+check_now() {
+    local before
+    before=$(call GET /system/updates | jq '.checked_at // 0')
+    wait_for "a check to start" "[[ \$(status POST /system/updates/check) == 202 ]]" 900
+    wait_for "the check" "call GET /system/updates | jq -e '.phase == \"idle\" and .checked_at > $before'" 900
+}
+test_kernel=""
+
 cleanup() {
     set +e
+    if [[ -n $test_kernel ]]; then
+        vm "sudo DEBIAN_FRONTEND=noninteractive apt-get -q -y purge $test_kernel >/dev/null 2>&1"
+    fi
+    vm 'if [ -e /etc/apt/sources.list.d/zdl-backports.list ]; then
+            sudo rm -f /etc/apt/sources.list.d/zdl-backports.list && sudo apt-get -q update >/dev/null 2>&1
+        fi' 2>/dev/null
     vm "sudo rm -rf /etc/zendiloos/release-signing.pub /tmp/zdl-key $spool" 2>/dev/null
     vm 'sudo touch /run/zdl-half-done-may; sudo dpkg --purge zdl-half-done >/dev/null 2>&1;
         sudo rm -rf /run/zdl-half-done-may /tmp/zdl-half /tmp/zdl-half-done.deb' 2>/dev/null
@@ -229,5 +258,73 @@ jq -e '.state == "succeeded"' <<<"$run" >/dev/null || fail "finishing: $run"
 [[ -z $(vm 'sudo dpkg --audit') ]] || fail "dpkg still lists: $(vm 'sudo dpkg --audit')"
 call GET /system/updates | jq -e '.interrupted == false' >/dev/null || fail "the page still offers to finish"
 vm 'sudo dpkg --purge zdl-half-done >/dev/null && sudo rm -f /run/zdl-half-done-may'
+
+say "6. A newer kernel without its ZFS module is not started"
+vm "grep -qF 'set default=\"\${saved_entry}\"' /boot/grub/grub.cfg" \
+    || fail "GRUB's configuration does not start the saved entry: $(vm 'cat /etc/default/grub.d/zendiloos.cfg' 2>&1)"
+running=$(vm 'uname -r')
+# The newest kernel with its module: the running one, or one step 2 brought.
+check_now
+overview=$(call GET /system/updates)
+kept=$(jq -r 'select(.boot.reason == "newest") | .boot.kernel' <<<"$overview")
+[[ -n $kept ]] || fail "GRUB does not start the newest kernel: $(jq -c .boot <<<"$overview")"
+[[ $(grub_default) == *"$(grub_entry_of "$kept")"* ]] || fail "GRUB's default is not $kept: $(grub_default)"
+test_kernel=${ZENDILOOS_TEST_KERNEL:-}
+if [[ -z $test_kernel ]]; then
+    # 6.12.57+deb13-cloud-amd64: cloud-amd64
+    flavour=${running#*-}
+    vm 'echo "deb http://deb.debian.org/debian trixie-backports main" | sudo tee /etc/apt/sources.list.d/zdl-backports.list >/dev/null
+        sudo apt-get -q update >/dev/null'
+    # The versioned package the backports' meta package names, not the
+    # meta package itself: the system's own stays as it is.
+    test_kernel=$(vm "apt-cache -t trixie-backports depends linux-image-$flavour" \
+        | sed -n 's/^ *Depends: \(linux-image-[0-9][^ ]*\)$/\1/p' | head -n 1)
+    [[ -n $test_kernel ]] || fail "trixie-backports has no linux-image-$flavour"
+fi
+new=${test_kernel#linux-image-}
+newer_than "$new" "$kept" || fail "$new is not newer than $kept"
+echo "  installing $test_kernel without its headers (GRUB starts $kept, $running runs)"
+# DKMS's hook may fail the kernel's package without headers, or only warn;
+# GRUB's default must hold either way.
+vm "sudo DEBIAN_FRONTEND=noninteractive apt-get -q -y -t trixie-backports --no-install-recommends install $test_kernel \
+    >/tmp/zdl-kernel.log 2>&1 || sudo DEBIAN_FRONTEND=noninteractive apt-get -q -y --no-install-recommends install $test_kernel \
+    >>/tmp/zdl-kernel.log 2>&1" || echo "  apt failed (as DKMS may make it): $(vm 'tail -n 3 /tmp/zdl-kernel.log')"
+vm "test -d /lib/modules/$new" || fail "$test_kernel brought no modules: $(vm 'tail -n 20 /tmp/zdl-kernel.log')"
+if vm "ls /lib/modules/$new/updates/dkms/zfs.ko* >/dev/null 2>&1"; then
+    echo "  DKMS built ZFS for $new after all: its module is removed, as if the build had failed"
+    vm "sudo rm -f /lib/modules/$new/updates/dkms/zfs.ko*"
+    vm 'sudo /usr/libexec/zendiloos/zendiloos-agent choose-boot-kernel' >/dev/null || fail "choosing failed"
+fi
+# Whatever writes GRUB's configuration next lists the new kernel first;
+# GRUB without zendiloOS's default would start it.
+vm 'sudo update-grub >/dev/null 2>&1' || fail "update-grub failed"
+vm "grep -m 1 -E '^[[:space:]]*linux[[:space:]]' /boot/grub/grub.cfg" | grep -q "vmlinuz-$new " \
+    || fail "GRUB's first entry does not start $new: $(vm "grep -m 1 -E '^[[:space:]]*linux' /boot/grub/grub.cfg")"
+[[ $(grub_default) == *"$(grub_entry_of "$kept")"* ]] || fail "GRUB's default left $kept: $(grub_default)"
+check_now
+overview=$(call GET /system/updates)
+restart=false
+[[ $kept != "$running" ]] && restart=true
+jq -e --arg k "$kept" --arg n "$new" --argjson restart "$restart" '.boot.kernel == $k
+    and .boot.reason == "newest_lacks_zfs" and .newest_kernel == $n and (.zfs_ready | not)
+    and .restart_needed == $restart' <<<"$overview" >/dev/null \
+    || fail "the overview: $(jq -c '{boot, newest_kernel, zfs_ready, restart_needed}' <<<"$overview")"
+[[ $(grub_default) == *"$(grub_entry_of "$kept")"* ]] || fail "the check moved GRUB's default: $(grub_default)"
+echo "  GRUB keeps starting $kept; $new waits for its ZFS module"
+
+# A module there (a stand-in; the VM is not restarted): the new kernel
+# starts. Gone again: back to the kept one, by a check.
+vm "sudo install -d /lib/modules/$new/updates/dkms && sudo touch /lib/modules/$new/updates/dkms/zfs.ko.xz"
+vm 'sudo /usr/libexec/zendiloos/zendiloos-agent choose-boot-kernel' >/dev/null || fail "choosing failed"
+[[ $(grub_default) == *"$(grub_entry_of "$new")"* ]] || fail "GRUB's default is not $new with its module: $(grub_default)"
+vm "sudo rm -f /lib/modules/$new/updates/dkms/zfs.ko.xz"
+check_now
+[[ $(grub_default) == *"$(grub_entry_of "$kept")"* ]] || fail "a check left GRUB's default on $new: $(grub_default)"
+
+# The kernel removed: its hook chooses again, the default stays.
+vm "sudo DEBIAN_FRONTEND=noninteractive apt-get -q -y purge $test_kernel >/dev/null 2>&1" || fail "$test_kernel cannot be purged"
+test_kernel=""
+[[ $(grub_default) == *"$(grub_entry_of "$kept")"* ]] || fail "GRUB's default after the removal: $(grub_default)"
+if vm "grep -q 'vmlinuz-$new ' /boot/grub/grub.cfg"; then fail "GRUB still lists $new"; fi
 
 say "All update tests passed (put the VM back with: ZENDILOOS_VM=$ZENDILOOS_VM scripts/vm.sh install $current)"
