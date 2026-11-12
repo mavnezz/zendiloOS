@@ -48,14 +48,15 @@ use zendiloos_infra::sqlite::{
     Database, Occupants, SqliteAccountAddresses, SqliteAccounts, SqliteAppSources, SqliteAuditLog,
     SqliteBackupAccounts, SqliteBackupRuns, SqliteBackupSettings, SqliteBackupTasks, SqliteCertificates,
     SqliteChannels, SqliteDiskInventory, SqliteEjectedDrives, SqliteEnclosure, SqliteFirewall, SqliteGroups,
-    SqliteInstalledApps, SqliteJobs, SqliteNotifications, SqlitePreferences, SqliteProjects, SqliteSecurity,
-    SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares, SqliteSystemUpdates,
-    SqliteTwoFactor, SqliteUpdateSettings, SqliteVmImages, SqliteVmLocations, SqliteVms, SqliteVolumeBackups,
+    SqliteInstalledApps, SqliteJobs, SqliteNetworkSettings, SqliteNotifications, SqlitePreferences,
+    SqliteProjects, SqliteSecurity, SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares,
+    SqliteSystemUpdates, SqliteTwoFactor, SqliteUpdateSettings, SqliteVmImages, SqliteVmLocations, SqliteVms,
+    SqliteVolumeBackups,
 };
 use zendiloos_infra::updates::{GitHubReleases, installed_notes};
 use zendiloos_jobs::Jobs;
 use zendiloos_kernel::{AllWork, AuditLog, Clock, RequestContext};
-use zendiloos_network::application::{NetworkPorts, NetworkUseCases};
+use zendiloos_network::application::{ConfigureNetwork, Looked, NetworkPorts, NetworkUseCases};
 use zendiloos_notify::Notifier;
 use zendiloos_notify::channels::{ChannelPorts, Channels};
 use zendiloos_sharing::application::{FilesUseCases, SharingPorts, SharingUseCases};
@@ -297,10 +298,13 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         // A bridge, internal network or card a VM is on stays: the VMs'
         // records say which.
         users: Arc::new(zendiloos_infra::vms::VmsOnBridges::new(Arc::new(SqliteVms::new(database.clone())))),
+        store: Arc::new(SqliteNetworkSettings::new(database.clone())),
         jobs: jobs.clone(),
+        notifier: notifier.clone(),
         audit: audit.clone(),
         clock: Arc::new(SystemClock),
     });
+    spawn_network_look(network.configure.clone());
 
     let containers = Containers::new(ContainersPorts {
         engine: Arc::new(AgentDockerEngine::new(patient_agent)),
@@ -711,6 +715,27 @@ fn spawn_self_test_schedule(schedule: SelfTestSchedule) -> JoinHandle<()> {
             every_five_minutes.tick().await;
             schedule.run_due().await;
         }
+    })
+}
+
+/// Compares zendiloOS's network files with its settings once the agent
+/// answers and no change waits (one the agent's start undoes, say), and
+/// says how they differ; see [`ConfigureNetwork::look_at_files`]. Tried for
+/// half an hour at most.
+fn spawn_network_look(network: ConfigureNetwork) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        for _ in 0..60 {
+            match network.look_at_files(&RequestContext::default()).await {
+                Ok(Looked::Pending) => {}
+                Ok(looked) => {
+                    tracing::debug!(?looked, "network: zendiloOS's files looked at");
+                    return;
+                }
+                Err(error) => tracing::info!(%error, "network: the files cannot be looked at yet"),
+            }
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
+        tracing::warn!("network: the files were not settled for half an hour; not compared");
     })
 }
 

@@ -12,6 +12,7 @@ import { useI18n } from 'vue-i18n'
 
 import type { NetworkDevice, NetworkInterface, PlannedInterface } from '@/shared/api/types'
 import { problemMessage } from '@/shared/i18n'
+import { formatDateTime } from '@/shared/lib/format'
 import { useJobsStore } from '@/shared/jobs/store'
 import { cn } from '@/shared/lib/utils'
 import { Alert } from '@/shared/ui/alert'
@@ -35,9 +36,12 @@ const actions = useNetworkActions()
 const jobs = useJobsStore()
 
 const CHANGEABLE = ['ethernet', 'bridge', 'bond', 'vlan']
+/** zendiloOS's files differ from its settings: written back or kept first. */
+const drift = computed(() => (setup.value?.pending ? null : (setup.value?.drift ?? null)))
 const changeable = (item: NetworkInterface) =>
   setup.value?.managed === true &&
   props.canManage &&
+  !drift.value &&
   !item.member_of &&
   CHANGEABLE.includes(item.kind)
 
@@ -48,7 +52,7 @@ const dialogOpen = ref(false)
 const devices = computed(() => setup.value?.devices ?? [])
 const madeHere = (item: NetworkInterface) => devices.value.find((d) => d.name === item.name)
 const canAdd = computed(
-  () => setup.value?.managed === true && props.canManage && !setup.value.pending,
+  () => setup.value?.managed === true && props.canManage && !setup.value.pending && !drift.value,
 )
 const ADDABLE: DeviceKind[] = ['bridge', 'bond', 'vlan']
 const deviceKind = ref<DeviceKind | null>(null)
@@ -132,6 +136,21 @@ function change(item: NetworkInterface): void {
   dialogOpen.value = true
 }
 
+const settling = ref(false)
+/** Restores zendiloOS's settings, or keeps the files as they are. */
+async function settle(how: 'restore' | 'keep'): Promise<void> {
+  failure.value = null
+  settling.value = true
+  try {
+    await (how === 'restore' ? actions.restore() : actions.keepFiles())
+  } catch (problem) {
+    failure.value = problemMessage(problem)
+  } finally {
+    settling.value = false
+  }
+}
+const keptAt = computed(() => (drift.value ? formatDateTime(drift.value.kept_at * 1000) : ''))
+
 async function confirm(): Promise<void> {
   failure.value = null
   try {
@@ -162,6 +181,7 @@ const pendingTitle = computed(() => {
   const pending = setup.value?.pending
   if (!pending) return ''
   if (pending.takeover) return t('network.pending.takeoverTitle')
+  if (pending.restore) return t('network.pending.restoreTitle')
   if (pending.device)
     return t(`network.pending.deviceTitle.${pending.device}`, { name: pending.interface })
   return t('network.pending.title', { name: pending.interface })
@@ -170,6 +190,7 @@ const pendingHint = computed(() => {
   const pending = setup.value?.pending
   const seconds = secondsLeft.value
   if (pending?.takeover) return t('network.pending.takeoverHint', { seconds })
+  if (pending?.restore) return t('network.pending.restoreHint', { seconds })
   if (pending?.device) return t('network.pending.deviceHint', { seconds })
   return t('network.pending.hint', { seconds })
 })
@@ -202,6 +223,39 @@ const linkLocal = (item: NetworkInterface) => item.addresses.filter((a) => a.sco
       </div>
     </div>
     <template v-else-if="network">
+      <section
+        v-if="drift"
+        class="grid gap-3 rounded-xl border border-destructive/50 bg-destructive/5 p-4 text-sm"
+        role="alert"
+        aria-labelledby="network-drift"
+        data-drift
+      >
+        <h3 id="network-drift" class="font-medium">{{ t('network.drift.title') }}</h3>
+        <p class="text-muted-foreground">{{ t('network.drift.hint', { at: keptAt }) }}</p>
+        <ul class="grid gap-1">
+          <li
+            v-for="item in drift.differences"
+            :key="`${item.part}-${item.name}`"
+            class="flex flex-wrap gap-2"
+          >
+            <span class="font-mono">{{
+              t(`network.drift.${item.part}`, { name: item.name })
+            }}</span>
+            <span class="text-muted-foreground">{{ t(`network.drift.kinds.${item.kind}`) }}</span>
+          </li>
+        </ul>
+        <template v-if="canManage">
+          <p class="text-xs text-muted-foreground">{{ t('network.drift.restoreHint') }}</p>
+          <div class="flex flex-wrap justify-end gap-3">
+            <Button size="sm" variant="outline" :disabled="settling" @click="settle('keep')">
+              {{ t('network.drift.keep') }}
+            </Button>
+            <Button size="sm" :disabled="settling" @click="settle('restore')">
+              {{ t('network.drift.restore') }}
+            </Button>
+          </div>
+        </template>
+      </section>
       <section
         v-if="takeover"
         class="grid gap-3 rounded-xl border bg-card p-4 text-sm"

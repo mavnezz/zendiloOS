@@ -3281,6 +3281,7 @@ dependencies = [
  "tracing",
  "zendiloos-jobs",
  "zendiloos-kernel",
+ "zendiloos-notify",
 ]
 
 [[package]]

@@ -483,6 +483,9 @@ pub struct NetworkEdit {
     pub removed: Vec<InterfaceName>,
     /// `.network` files written.
     pub links: Vec<NetworkConfig>,
+    /// `.network` files of zendiloOS's that go, of interfaces that are no
+    /// device of its: written outside zendiloOS, its settings have none.
+    pub unset: Vec<InterfaceName>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -495,12 +498,14 @@ struct NetworkEditFields {
     removed: Vec<InterfaceName>,
     #[serde(default)]
     links: Vec<NetworkConfig>,
+    #[serde(default)]
+    unset: Vec<InterfaceName>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "a change makes, changes or removes up to 16 devices and writes up to 32 interfaces' files, each once, \
-     none for a device that goes"
+    "a change makes, changes or removes up to 16 devices and writes or removes up to 32 interfaces' files, \
+     each once, none for a device that goes"
 )]
 pub struct InvalidNetworkEdit;
 
@@ -519,13 +524,19 @@ impl TryFrom<NetworkEditFields> for NetworkEdit {
             .map(|netdev| netdev.name.clone())
             .chain(fields.removed.iter().cloned())
             .collect();
-        let links: Vec<InterfaceName> = fields.links.iter().map(|link| link.interface.clone()).collect();
+        let links: Vec<InterfaceName> = fields
+            .links
+            .iter()
+            .map(|link| link.interface.clone())
+            .chain(fields.unset.iter().cloned())
+            .collect();
         let valid = devices.len() <= Self::MAX_DEVICES
             && links.len() <= Self::MAX_LINKS
             && (!devices.is_empty() || !links.is_empty())
             && distinct(&devices)
             && distinct(&links)
             && !fields.removed.iter().any(|gone| links.contains(gone))
+            && !fields.unset.iter().any(|gone| devices.contains(gone))
             && fields.removed.iter().all(Netdev::allowed_name);
         if !valid {
             return Err(InvalidNetworkEdit);
@@ -535,13 +546,20 @@ impl TryFrom<NetworkEditFields> for NetworkEdit {
             netdevs: fields.netdevs,
             removed: fields.removed,
             links: fields.links,
+            unset: fields.unset,
         })
     }
 }
 
 impl From<NetworkEdit> for NetworkEditFields {
     fn from(edit: NetworkEdit) -> Self {
-        Self { change: edit.change, netdevs: edit.netdevs, removed: edit.removed, links: edit.links }
+        Self {
+            change: edit.change,
+            netdevs: edit.netdevs,
+            removed: edit.removed,
+            links: edit.links,
+            unset: edit.unset,
+        }
     }
 }
 
@@ -599,6 +617,9 @@ pub enum NetworkChange {
     /// A bridge, bond or VLAN made, changed or removed, with what that
     /// changed of other interfaces.
     Device { device: InterfaceName, action: DeviceAction },
+    /// zendiloOS's settings written back, as its database keeps them,
+    /// where its files were changed or lost outside it.
+    Restore {},
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

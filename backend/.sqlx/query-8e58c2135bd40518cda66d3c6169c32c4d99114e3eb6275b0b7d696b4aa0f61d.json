@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO network_settings (id, kept_at, said) VALUES (1, ?, NULL)\n             ON CONFLICT (id) DO UPDATE SET kept_at = excluded.kept_at, said = NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "8e58c2135bd40518cda66d3c6169c32c4d99114e3eb6275b0b7d696b4aa0f61d"
+}

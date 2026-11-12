@@ -85,5 +85,21 @@ export function useNetworkActions() {
         await refresh()
       }
     },
+    /** Writes zendiloOS's settings back over files changed outside it; to be confirmed. */
+    restore: async () => {
+      try {
+        return await unwrap(api.POST('/api/v1/network/restore'))
+      } finally {
+        await refresh()
+      }
+    },
+    /** Keeps the files as they are as zendiloOS's settings. */
+    keepFiles: async () => {
+      try {
+        return await unwrap(api.POST('/api/v1/network/keep-files'))
+      } finally {
+        await refresh()
+      }
+    },
   }
 }

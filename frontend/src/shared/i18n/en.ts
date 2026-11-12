@@ -1539,6 +1539,7 @@ const en = {
         updates_available: 'Updates available',
         updates_installed: 'Updates installed',
         updates_failed: 'Update failed',
+        network_drift: 'Network files changed outside zendiloOS',
         certificate_renewed: 'Certificate renewed',
         certificate_renewal_failed: 'Certificate not renewed',
         certificate_not_taken: 'New certificate not taken',
@@ -1747,6 +1748,24 @@ const en = {
       },
       deviceHint:
         'Confirm it, or everything returns as it was in {seconds} seconds, devices made go and devices removed come back.',
+      restoreTitle: "zendiloOS's network settings are written back",
+      restoreHint:
+        'Confirm it, from the address the NAS has now, or the files return as they were in {seconds} seconds.',
+    },
+    drift: {
+      title: "zendiloOS's network files were changed outside it",
+      hint: 'They no longer say the settings last confirmed in zendiloOS ({at}). The network keeps running as the files say; nothing else can be changed here until the settings are written back or the files are kept.',
+      device: 'Device {name}',
+      interface: 'Interface {name}',
+      kinds: {
+        missing: 'its file was lost',
+        changed: 'its file says otherwise',
+        added: 'a file zendiloOS did not write',
+      },
+      restore: "Restore zendiloOS's settings",
+      keep: 'Keep the files as they are',
+      restoreHint:
+        'Written back as one change, which has to be confirmed like any other: should the NAS become unreachable, the files return by themselves.',
     },
     add: {
       button: 'Add',
@@ -3535,6 +3554,10 @@ const en = {
     updates_failed: {
       title: 'Update failed',
       body: 'Control panel → Updates says why.',
+    },
+    network_drift: {
+      title: 'Network files changed',
+      body: "zendiloOS's network files differ from its settings ({names}). Control panel → Network restores the settings or keeps the files.",
     },
     snapshot_failed: {
       title: 'No snapshot of {share}',

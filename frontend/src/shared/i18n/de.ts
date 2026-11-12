@@ -1571,6 +1571,7 @@ const de: Messages = {
         updates_available: 'Updates verfügbar',
         updates_installed: 'Updates installiert',
         updates_failed: 'Update fehlgeschlagen',
+        network_drift: 'Netzwerkdateien außerhalb von zendiloOS geändert',
         certificate_renewed: 'Zertifikat erneuert',
         certificate_renewal_failed: 'Zertifikat nicht erneuert',
         certificate_not_taken: 'Neues Zertifikat nicht übernommen',
@@ -1736,6 +1737,24 @@ const de: Messages = {
       },
       deviceHint:
         'Bestätigen Sie es, sonst kehrt in {seconds} Sekunden alles zurück, wie es war: angelegte Geräte verschwinden, entfernte kommen wieder.',
+      restoreTitle: 'Die Netzwerkeinstellungen von zendiloOS sind zurückgeschrieben',
+      restoreHint:
+        'Bestätigen Sie es von der Adresse aus, die das NAS jetzt hat, sonst kehren die Dateien in {seconds} Sekunden zurück, wie sie waren.',
+    },
+    drift: {
+      title: 'Die Netzwerkdateien von zendiloOS wurden außerhalb von zendiloOS geändert',
+      hint: 'Sie entsprechen nicht mehr den zuletzt in zendiloOS bestätigten Einstellungen ({at}). Das Netz läuft weiter, wie die Dateien es sagen; hier lässt sich nichts anderes ändern, bis die Einstellungen zurückgeschrieben oder die Dateien übernommen sind.',
+      device: 'Gerät {name}',
+      interface: 'Schnittstelle {name}',
+      kinds: {
+        missing: 'seine Datei fehlt',
+        changed: 'seine Datei sagt etwas anderes',
+        added: 'eine Datei, die zendiloOS nicht geschrieben hat',
+      },
+      restore: 'Einstellungen von zendiloOS wiederherstellen',
+      keep: 'Dateien so übernehmen',
+      restoreHint:
+        'Als eine Änderung zurückgeschrieben, die wie jede andere bestätigt werden muss: Wird das NAS unerreichbar, kehren die Dateien von selbst zurück.',
     },
     kinds: {
       ethernet: 'Ethernet',
@@ -3597,6 +3616,10 @@ const de: Messages = {
     updates_failed: {
       title: 'Update fehlgeschlagen',
       body: 'Unter Systemsteuerung → Updates steht, woran es lag.',
+    },
+    network_drift: {
+      title: 'Netzwerkdateien geändert',
+      body: 'Die Netzwerkdateien von zendiloOS weichen von seinen Einstellungen ab ({names}). Unter Systemsteuerung → Netzwerk lassen sie sich wiederherstellen oder übernehmen.',
     },
     snapshot_failed: {
       title: 'Kein Snapshot von {share}',

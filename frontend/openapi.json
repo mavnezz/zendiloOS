@@ -9333,7 +9333,7 @@
             }
           },
           "409": {
-            "description": "`change_pending`, or `refused`: not managed by systemd-networkd, a name in use",
+            "description": "`change_pending`, `network_drift`, or `refused`: not managed by systemd-networkd, a name in use",
             "content": {
               "application/json": {
                 "schema": {
@@ -9388,7 +9388,7 @@
             }
           },
           "409": {
-            "description": "`device_in_use`",
+            "description": "`device_in_use`, `network_drift`",
             "content": {
               "application/json": {
                 "schema": {
@@ -9454,7 +9454,7 @@
             }
           },
           "409": {
-            "description": "`change_pending`, `refused`",
+            "description": "`change_pending`, `network_drift`, `refused`",
             "content": {
               "application/json": {
                 "schema": {
@@ -9508,7 +9508,7 @@
             }
           },
           "409": {
-            "description": "`device_in_use` (the detail names the VMs), `change_pending`, `refused`",
+            "description": "`device_in_use` (the detail names the VMs), `change_pending`, `network_drift`, `refused`",
             "content": {
               "application/json": {
                 "schema": {
@@ -9574,7 +9574,7 @@
             }
           },
           "409": {
-            "description": "`change_pending`, or `refused`: not managed by systemd-networkd, no such interface",
+            "description": "`change_pending`, `network_drift` (zendiloOS's files differ from its settings), or `refused`: not managed by systemd-networkd, no such interface",
             "content": {
               "application/json": {
                 "schema": {
@@ -9585,6 +9585,77 @@
           },
           "422": {
             "description": "`invalid_input`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/network/keep-files": {
+      "post": {
+        "tags": [
+          "network"
+        ],
+        "summary": "Keeps zendiloOS's files as they are as its settings, where they differ\nfrom them: changed by hand on purpose, say. Nothing is written. Needs\n`system.manage`.",
+        "operationId": "keep_network_files",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkSetup"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`change_pending`, or `refused`: not managed by systemd-networkd",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/network/restore": {
+      "post": {
+        "tags": [
+          "network"
+        ],
+        "summary": "Writes zendiloOS's settings back over its files where they were changed\nor lost outside it (`drift` in `GET /network/setup`), as one change:\nunless it is confirmed within two minutes (`POST /network/confirm`, from\nthe address the NAS then has), the files are as they were. Needs\n`system.manage`.",
+        "operationId": "restore_network",
+        "responses": {
+          "202": {
+            "description": "Written back; waits for confirmation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkSetup"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`change_pending`, or `refused`: not managed by systemd-networkd, nothing differs, the host refused a file",
             "content": {
               "application/json": {
                 "schema": {
@@ -21934,6 +22005,56 @@
           }
         }
       },
+      "NetworkDifference": {
+        "type": "object",
+        "required": [
+          "part",
+          "name",
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/NetworkDifferenceKind"
+          },
+          "name": {
+            "type": "string",
+            "description": "The device's or interface's name."
+          },
+          "part": {
+            "$ref": "#/components/schemas/NetworkPart"
+          }
+        }
+      },
+      "NetworkDifferenceKind": {
+        "type": "string",
+        "enum": [
+          "missing",
+          "changed",
+          "added"
+        ]
+      },
+      "NetworkDrift": {
+        "type": "object",
+        "description": "How zendiloOS's files differ from its settings.",
+        "required": [
+          "differences",
+          "kept_at"
+        ],
+        "properties": {
+          "differences": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NetworkDifference"
+            },
+            "description": "Devices first, each by name."
+          },
+          "kept_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When the settings were confirmed, or taken from the files, in Unix\nseconds."
+          }
+        }
+      },
       "NetworkInfo": {
         "type": "object",
         "description": "How the machine is connected: its interfaces (without the loopback and\nthe plumbing of containers), default routes and name servers.",
@@ -22028,6 +22149,13 @@
           "unknown"
         ]
       },
+      "NetworkPart": {
+        "type": "string",
+        "enum": [
+          "device",
+          "interface"
+        ]
+      },
       "NetworkSetup": {
         "type": "object",
         "description": "Whether the network can be changed here, and a change that waits.",
@@ -22044,6 +22172,17 @@
               "$ref": "#/components/schemas/NetworkDevice"
             },
             "description": "The bridges, bonds and VLANs zendiloOS made: these can be changed\nand removed."
+          },
+          "drift": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NetworkDrift",
+                "description": "zendiloOS's files differ from its settings as last confirmed:\nchanged or lost outside zendiloOS. Until they are written back\n(`POST /network/restore`) or kept (`POST /network/keep-files`), no\nother change is made. Null while a change waits."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "internal": {
             "type": "array",
@@ -22808,6 +22947,7 @@
         "required": [
           "interface",
           "takeover",
+          "restore",
           "revert_at"
         ],
         "properties": {
@@ -22824,7 +22964,11 @@
           },
           "interface": {
             "type": "string",
-            "description": "The interface whose settings changed, or the device made, changed\nor removed; empty for a takeover."
+            "description": "The interface whose settings changed, or the device made, changed\nor removed; empty for a takeover or a restore."
+          },
+          "restore": {
+            "type": "boolean",
+            "description": "zendiloOS's settings were written back over files changed outside\nit: unless confirmed, the files are as they were."
           },
           "revert_at": {
             "type": "integer",

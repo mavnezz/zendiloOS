@@ -755,8 +755,13 @@ mod tests {
             source,
             configurator: Arc::new(configurator),
             users: Arc::new(FakeUsers::default()),
+            store: Arc::new(zendiloos_network::testing::MemorySettings::default()),
             jobs: zendiloos_jobs::Jobs::new(
                 Arc::new(zendiloos_jobs::testing::MemoryJobs::default()),
+                Arc::new(zendiloos_jobs::testing::FixedClock),
+            ),
+            notifier: zendiloos_notify::Notifier::new(
+                Arc::new(zendiloos_notify::testing::MemoryNotifications::default()),
                 Arc::new(zendiloos_jobs::testing::FixedClock),
             ),
             audit: Arc::new(zendiloos_vms::testing::MemoryAudit::default()),

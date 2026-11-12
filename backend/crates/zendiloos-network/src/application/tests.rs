@@ -4,9 +4,11 @@ use std::time::Duration;
 use zendiloos_jobs::JobState;
 use zendiloos_jobs::testing::{FixedClock, MemoryJobs};
 
+use zendiloos_notify::testing::MemoryNotifications;
+
 use super::*;
 use crate::domain::{Ipv6Setting, Refusal};
-use crate::testing::{DIGEST, FakeConfigurator, FakeUsers, SettableNetwork, three_cards};
+use crate::testing::{DIGEST, FakeConfigurator, FakeUsers, MemorySettings, SettableNetwork, three_cards};
 
 #[derive(Default)]
 struct Audit(Mutex<Vec<(&'static str, Outcome, Option<String>)>>);
@@ -24,6 +26,8 @@ struct Setup {
     host: Arc<FakeConfigurator>,
     source: Arc<SettableNetwork>,
     users: Arc<FakeUsers>,
+    store: Arc<MemorySettings>,
+    notifications: Arc<MemoryNotifications>,
     audit: Arc<Audit>,
     jobs: Jobs,
 }
@@ -33,16 +37,20 @@ fn setup(host: FakeConfigurator) -> Setup {
     let audit = Arc::new(Audit::default());
     let source = Arc::new(SettableNetwork::default());
     let users = Arc::new(FakeUsers::default());
+    let store = Arc::new(MemorySettings::default());
+    let notifications = Arc::new(MemoryNotifications::default());
     let jobs = Jobs::new(Arc::new(MemoryJobs::default()), Arc::new(FixedClock));
     let network = NetworkUseCases::new(NetworkPorts {
         source: source.clone(),
         configurator: host.clone(),
         users: users.clone(),
+        store: store.clone(),
         jobs: jobs.clone(),
+        notifier: Notifier::new(notifications.clone(), Arc::new(FixedClock)),
         audit: audit.clone(),
         clock: Arc::new(FixedClock),
     });
-    Setup { network, host, source, users, audit, jobs }
+    Setup { network, host, source, users, store, notifications, audit, jobs }
 }
 
 fn alice() -> Actor {
@@ -324,4 +332,171 @@ async fn a_bridge_without_members_is_an_internal_network_and_a_cards_vms_keep_it
     });
     let setup = s.network.configure.device(into, &alice(), &request).await.unwrap();
     assert!(setup.internal.is_empty(), "{:?}", setup.internal);
+}
+
+fn networkd(name: &str, text: &str) -> NetworkdFile {
+    NetworkdFile { name: format!("05-zendiloos-{name}"), text: text.into() }
+}
+
+/// enp1s0 by DHCP and enp2s0 fixed, as the agent wrote them.
+fn confirmed_files() -> Vec<NetworkdFile> {
+    vec![
+        networkd("enp1s0.network", "[Match]\nName=enp1s0\n[Network]\nDHCP=ipv4\nIPv6AcceptRA=yes\n"),
+        networkd("enp2s0.network", "[Match]\nName=enp2s0\n[Network]\nAddress=10.0.0.5/24\n"),
+    ]
+}
+
+fn drift_codes(s: &Setup) -> Vec<String> {
+    s.notifications
+        .all()
+        .into_iter()
+        .filter(|n| n.code == "network_drift")
+        .map(|n| n.params["names"].clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn the_first_look_keeps_the_files_and_later_ones_tell_what_differs_once() {
+    let s = setup(FakeConfigurator::default());
+    s.source.set(three_cards());
+    *s.host.files.lock().unwrap() = confirmed_files();
+    let request = RequestContext::default();
+    assert_eq!(s.network.configure.look_at_files(&request).await.unwrap(), Looked::Kept);
+    assert_eq!(s.store.0.lock().unwrap().as_ref().unwrap().files, confirmed_files());
+    assert_eq!(s.network.configure.look_at_files(&request).await.unwrap(), Looked::Same);
+    assert!(s.network.configure.setup(&request).await.unwrap().drift.is_none());
+
+    // enp2s0's file lost, enp1s0's changed by hand.
+    s.host.files.lock().unwrap().retain(|file| !file.name.contains("enp2s0"));
+    s.host.files.lock().unwrap()[0].text = "[Match]\nName=enp1s0\n[Network]\nAddress=10.9.9.9/24\n".into();
+    assert_eq!(s.network.configure.look_at_files(&request).await.unwrap(), Looked::Differs(2));
+    assert_eq!(drift_codes(&s), ["enp1s0, enp2s0"]);
+    // Told once, also after a restart.
+    assert_eq!(s.network.configure.look_at_files(&request).await.unwrap(), Looked::Differs(2));
+    assert_eq!(drift_codes(&s).len(), 1);
+    let drift = s.network.configure.setup(&request).await.unwrap().drift.unwrap();
+    assert_eq!(
+        drift.differences,
+        [
+            Difference { part: Part::Interface, name: "enp1s0".into(), kind: DifferenceKind::Changed },
+            Difference { part: Part::Interface, name: "enp2s0".into(), kind: DifferenceKind::Missing },
+        ]
+    );
+    assert_eq!(drift.kept_at, FixedClock.now());
+
+    // Nothing else changes meanwhile: it would be planned on files
+    // zendiloOS did not write.
+    let settings = InterfaceSettings {
+        interface: "enp3s0".into(),
+        ipv4: Ipv4Setting::Dhcp { keep: None },
+        ipv6: Ipv6Setting::Off,
+        dns: vec![],
+    };
+    let refused = s.network.configure.apply(settings, &alice(), &request).await.unwrap_err();
+    assert!(matches!(refused, ConfigureError::Drifted), "{refused}");
+    assert_eq!(job_error(refused).code, "network_drift");
+    let refused = s.network.configure.plan(bridge(&["enp2s0"]), &request).await.unwrap_err();
+    assert!(matches!(refused, ConfigureError::Drifted), "{refused}");
+
+    // Written back, as one change that waits for confirmation.
+    let restored = s.network.configure.restore(&alice(), &request).await.unwrap();
+    assert_eq!(restored.pending.unwrap().change, Change::Restore);
+    assert!(restored.drift.is_none(), "not told while a change waits");
+    let edit = s.host.changes.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(edit.subject, Subject::Restore);
+    let written: Vec<&str> = edit.links.iter().map(|link| link.settings.interface.as_str()).collect();
+    assert_eq!(written, ["enp1s0", "enp2s0"]);
+    assert_eq!(s.network.configure.look_at_files(&request).await.unwrap(), Looked::Pending);
+    s.network.configure.confirm(&alice(), &request).await.unwrap();
+    assert!(s.network.configure.setup(&request).await.unwrap().drift.is_none());
+    assert_eq!(s.network.configure.look_at_files(&request).await.unwrap(), Looked::Same);
+    assert_eq!(s.store.0.lock().unwrap().as_ref().unwrap().said, None, "told again should it differ again");
+    let audit = s.audit.0.lock().unwrap().clone();
+    assert_eq!(
+        audit.iter().map(|(action, outcome, _)| (*action, *outcome)).collect::<Vec<_>>(),
+        [
+            ("network.apply", Outcome::Failure),
+            ("network.restore", Outcome::Success),
+            ("network.confirm", Outcome::Success)
+        ]
+    );
+    // Nothing differs: nothing to write back.
+    let refused = s.network.configure.restore(&alice(), &request).await.unwrap_err();
+    assert!(matches!(&refused, ConfigureError::Refused(why) if why.contains("already")), "{refused}");
+}
+
+#[tokio::test]
+async fn files_changed_on_purpose_are_kept_as_the_settings() {
+    let s = setup(FakeConfigurator::default());
+    *s.host.files.lock().unwrap() = confirmed_files();
+    let request = RequestContext::default();
+    s.network.configure.look_at_files(&request).await.unwrap();
+    s.host
+        .files
+        .lock()
+        .unwrap()
+        .push(networkd("enp3s0.network", "[Match]\nName=enp3s0\n[Network]\nDHCP=ipv4\n"));
+    let drift = s.network.configure.setup(&request).await.unwrap().drift.unwrap();
+    assert_eq!(drift.differences[0].kind, DifferenceKind::Added);
+
+    let kept = s.network.configure.keep(&alice(), &request).await.unwrap();
+    assert!(kept.drift.is_none());
+    assert_eq!(s.store.0.lock().unwrap().as_ref().unwrap().files.len(), 3);
+    assert_eq!(s.audit.0.lock().unwrap()[0].0, "network.keep_files");
+    assert!(s.host.changes.lock().unwrap().is_empty(), "nothing written");
+}
+
+#[tokio::test]
+async fn a_confirmed_change_becomes_the_settings_and_one_that_waits_is_no_difference() {
+    let s = setup(FakeConfigurator::default());
+    *s.host.files.lock().unwrap() = confirmed_files();
+    let request = RequestContext::default();
+    s.network.configure.look_at_files(&request).await.unwrap();
+    let settings = InterfaceSettings {
+        interface: "enp1s0".into(),
+        ipv4: Ipv4Setting::Static { address: "192.168.1.10".parse().unwrap(), prefix: 24, gateway: None },
+        ipv6: Ipv6Setting::Off,
+        dns: vec![],
+    };
+    let waiting = s.network.configure.apply(settings, &alice(), &request).await.unwrap();
+    assert!(waiting.drift.is_none() && waiting.pending.is_some());
+    // Not confirmed yet: the settings are as they were.
+    assert_eq!(s.store.0.lock().unwrap().as_ref().unwrap().files, confirmed_files());
+    s.network.configure.confirm(&alice(), &request).await.unwrap();
+    let kept = s.store.0.lock().unwrap().clone().unwrap();
+    assert!(kept.files.iter().any(|file| file.text.contains("Address=192.168.1.10/24")), "{:?}", kept.files);
+    assert!(s.network.configure.setup(&request).await.unwrap().drift.is_none());
+}
+
+#[tokio::test]
+async fn nothing_is_kept_or_compared_where_zendiloos_does_not_manage_the_network() {
+    let s = setup(FakeConfigurator::with_ifupdown(INSTALLER));
+    let request = RequestContext::default();
+    assert_eq!(s.network.configure.look_at_files(&request).await.unwrap(), Looked::NotManaged);
+    assert!(s.store.0.lock().unwrap().is_none());
+    for refused in [
+        s.network.configure.restore(&alice(), &request).await.unwrap_err(),
+        s.network.configure.keep(&alice(), &request).await.unwrap_err(),
+    ] {
+        assert!(
+            matches!(&refused, ConfigureError::Refused(why) if why.contains("does not manage")),
+            "{refused}"
+        );
+    }
+
+    // Managed without settings kept yet: nothing to restore.
+    let s = setup(FakeConfigurator::default());
+    let refused = s.network.configure.restore(&alice(), &request).await.unwrap_err();
+    assert!(matches!(&refused, ConfigureError::Refused(why) if why.contains("keeps no")), "{refused}");
+    // While a change waits, neither.
+    s.network.configure.look_at_files(&request).await.unwrap();
+    s.network.configure.device(bridge(&["enp2s0"]), &alice(), &request).await.ok();
+    *s.host.pending.lock().unwrap() =
+        Some(PendingChange { change: Change::Restore, revert_at: Timestamp::from_unix_seconds(1) });
+    for refused in [
+        s.network.configure.restore(&alice(), &request).await.unwrap_err(),
+        s.network.configure.keep(&alice(), &request).await.unwrap_err(),
+    ] {
+        assert!(matches!(refused, ConfigureError::Pending), "{refused}");
+    }
 }

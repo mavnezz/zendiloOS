@@ -313,6 +313,8 @@ pub(crate) struct Harness {
     pub(crate) network_source: Arc<SettableNetwork>,
     /// What uses a device: VMs on a bridge.
     pub(crate) network_users: Arc<FakeUsers>,
+    /// zendiloOS's network settings as confirmed.
+    pub(crate) network_settings: Arc<zendiloos_network::testing::MemorySettings>,
 }
 
 /// The App Center's projects, from the Docker fakes, as zendiloosd's
@@ -589,6 +591,7 @@ impl Harness {
         let network_host = Arc::new(zendiloos_network::testing::FakeConfigurator::default());
         let network_source = Arc::new(SettableNetwork::default());
         let network_users = Arc::new(FakeUsers::default());
+        let network_settings = Arc::new(zendiloos_network::testing::MemorySettings::default());
         let use_cases = UseCases {
             vms,
             backup,
@@ -604,7 +607,9 @@ impl Harness {
                 source: network_source.clone(),
                 configurator: network_host.clone(),
                 users: network_users.clone(),
+                store: network_settings.clone(),
                 jobs: jobs.clone(),
+                notifier: notifier.clone(),
                 audit: identity.audit.clone(),
                 clock: identity.clock.clone(),
             }),
@@ -676,6 +681,7 @@ impl Harness {
             network_host,
             network_source,
             network_users,
+            network_settings,
         }
     }
 
@@ -1883,6 +1889,8 @@ fn openapi_documents_every_route() {
             "/api/v1/network/devices/plan",
             "/api/v1/network/devices/{name}",
             "/api/v1/network/interfaces/{name}",
+            "/api/v1/network/keep-files",
+            "/api/v1/network/restore",
             "/api/v1/network/setup",
             "/api/v1/network/takeover",
             "/api/v1/notification-channels",
