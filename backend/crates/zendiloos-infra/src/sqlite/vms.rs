@@ -227,7 +227,7 @@ impl SqliteVms {
                WHERE ?1 IS NULL OR vm = ?1 ORDER BY vm, kind, device"#,
             id
         )
-        .fetch_all(pool)
+        .fetch_all(&mut *connection)
         .await
         .map_err(db_error)?;
         Devices::of(disks, nics, drives, host)
