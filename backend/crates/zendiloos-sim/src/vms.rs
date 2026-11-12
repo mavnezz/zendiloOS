@@ -9,8 +9,10 @@ use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 
 use zendiloos_agent_proto::{
-    ErrorCode, Request, Response, VM_IMAGE_UPLOAD_MAX, VMS_DATASET, VmAction, VmDiskSlot, VmId, VmImageFile,
-    VmImageId, VmNetwork, VmSpec, VmStorage, VolumeNumber,
+    ArchiveDigest, ErrorCode, HostIommu, HostNeeds, HostPciDevice, HostUsbDevice, PciAddress, Request,
+    Response, VM_BACKUP_MANIFEST, VM_IMAGE_UPLOAD_MAX, VMS_DATASET, VmAction, VmBackupFile, VmBackupPart,
+    VmConsistency, VmDiskSlot, VmId, VmImageFile, VmImageId, VmNetwork, VmSpec, VmStorage, VolumeNumber,
+    WrittenFile,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +43,83 @@ pub(crate) struct SimVms {
     pub(crate) uploads: BTreeMap<VmImageId, (u64, Receiving)>,
     /// Looks at the counters, for CPU time that grows.
     looks: u64,
+    /// Snapshots of the VMs' disks, in the order taken: the snapshot's
+    /// name, its schedules, its note and how consistent it is.
+    snapshots: Vec<(String, String, String, VmConsistency)>,
+    /// Backups written: their folder and files.
+    backups: BTreeMap<String, Vec<VmBackupFile>>,
+    /// The USB devices given to each VM.
+    usb: BTreeMap<VmId, Vec<zendiloos_agent_proto::VmUsbDevice>>,
+}
+
+/// What a backup of the simulated host's files hashes to: the file's name.
+fn sim_digest(name: &str) -> ArchiveDigest {
+    let hex: String = name.bytes().map(|b| format!("{b:02x}")).collect();
+    ArchiveDigest::parse(&format!("{hex:0<64}")[..64]).expect("64 hex digits are a digest")
+}
+
+/// The simulated machine's USB devices: a stick and a keyboard.
+fn sim_usb() -> Vec<HostUsbDevice> {
+    vec![
+        HostUsbDevice {
+            vendor: 0x0781,
+            product: 0x5583,
+            port: "1-1.2".into(),
+            manufacturer: Some("SanDisk".into()),
+            name: Some("Ultra Fit".into()),
+        },
+        HostUsbDevice {
+            vendor: 0x046d,
+            product: 0xc31c,
+            port: "1-1.3".into(),
+            manufacturer: Some("Logitech".into()),
+            name: Some("USB Keyboard".into()),
+        },
+    ]
+}
+
+/// The simulated machine's PCI devices, with an IOMMU: the host bridge, the
+/// SATA controller with the pools' disks, the NAS's network card, a second
+/// card nothing uses and a graphics card with its audio function.
+fn sim_pci() -> Vec<HostPciDevice> {
+    let device =
+        |address: &str, vendor, device, class, group, name: &str, needed: Option<HostNeeds>| HostPciDevice {
+            address: PciAddress::parse(address).expect("a PCI address"),
+            vendor,
+            device,
+            class,
+            vendor_name: Some(
+                if vendor == 0x8086 { "Intel Corporation" } else { "NVIDIA Corporation" }.into(),
+            ),
+            device_name: Some(name.into()),
+            iommu_group: Some(group),
+            driver: Some("sim".into()),
+            needed,
+        };
+    vec![
+        device("0000:00:00.0", 0x8086, 0x3e0f, 0x060000, 0, "Host Bridge", Some(HostNeeds::Bridge)),
+        device(
+            "0000:00:17.0",
+            0x8086,
+            0xa352,
+            0x010601,
+            1,
+            "SATA AHCI Controller",
+            Some(HostNeeds::Disk { disk: "sda".into() }),
+        ),
+        device(
+            "0000:00:1f.6",
+            0x8086,
+            0x15bc,
+            0x020000,
+            2,
+            "Ethernet Connection",
+            Some(HostNeeds::Network { interface: Some("enp1s0".into()) }),
+        ),
+        device("0000:02:00.0", 0x8086, 0x1533, 0x020000, 3, "I210 Gigabit Network Connection", None),
+        device("0000:01:00.0", 0x10de, 0x1c82, 0x030000, 4, "GP107 [GeForce GTX 1050 Ti]", None),
+        device("0000:01:00.1", 0x10de, 0x0fb9, 0x040300, 4, "GP107GL High Definition Audio Controller", None),
+    ]
 }
 
 fn error(code: ErrorCode, message: &str) -> Response {
@@ -55,8 +134,10 @@ impl SimVms {
             Request::VmHost {} => Response::VmHost {
                 kvm: true,
                 cpu_virtualization: Some("vmx".into()),
-                iommu: false,
+                iommu: true,
                 installed: self.installed,
+                swtpm: self.installed,
+                secure_boot: self.installed,
                 cores: 8,
                 memory_bytes: 16 << 30,
                 locations: self.locations.clone(),
@@ -184,6 +265,8 @@ impl SimVms {
             Request::DeleteVm { id } => {
                 self.domains.remove(id);
                 self.remove_disks(id, None);
+                let prefix = format!("{}-disk", id.as_str());
+                self.snapshots.retain(|(name, ..)| !name.contains(&prefix));
                 Response::Done
             }
             Request::VmStates {} => {
@@ -203,8 +286,201 @@ impl SimVms {
             Request::OpenVmConsole { .. } => {
                 error(ErrorCode::InvalidRequest, "a console is opened with its descriptor")
             }
+            Request::VmHostDevices {} => Response::VmHostDevices {
+                iommu: HostIommu {
+                    on: true,
+                    cmdline: vec!["intel_iommu=on".into()],
+                    cpu_vendor: Some("GenuineIntel".into()),
+                },
+                usb: sim_usb(),
+                pci: sim_pci(),
+            },
+            Request::ChangeVmUsb { spec, .. } => {
+                if !self.domains.contains_key(&spec.id) {
+                    missing(&spec.id)
+                } else {
+                    self.usb.insert(spec.id.clone(), spec.usb().to_vec());
+                    Response::Done
+                }
+            }
+            Request::SnapshotVm { id, label, schedules, note } => {
+                let Some(power) = self.domains.get(id).copied() else { return Some(missing(id)) };
+                let zvols = self.zvols_of(id);
+                if zvols.iter().any(|zvol| {
+                    self.snapshots.iter().any(|(name, ..)| *name == format!("{zvol}@{}", label.as_str()))
+                }) {
+                    return Some(error(ErrorCode::Conflict, "the snapshot exists"));
+                }
+                let consistency =
+                    if power == Power::Running { VmConsistency::Crash } else { VmConsistency::Off };
+                let schedules: Vec<&str> = schedules.iter().map(|frequency| frequency.as_str()).collect();
+                let schedules = if schedules.is_empty() { "-".to_owned() } else { schedules.join(",") };
+                let note = note.as_ref().map_or("-".to_owned(), |note| note.as_str().to_owned());
+                for zvol in zvols {
+                    self.snapshots.push((
+                        format!("{zvol}@{}", label.as_str()),
+                        schedules.clone(),
+                        note.clone(),
+                        consistency,
+                    ));
+                }
+                Response::VmSnapshotTaken { consistency }
+            }
+            Request::VmSnapshots {} => Response::VmSnapshots {
+                zfs_list: self
+                    .snapshots
+                    .iter()
+                    .enumerate()
+                    .map(|(number, (name, schedules, note, consistency))| {
+                        format!(
+                            "{name}\t{}\t{}\t{}\t{schedules}\t{note}\t{}\n",
+                            1_793_000_000 + number as u64 * 3600,
+                            64 << 20,
+                            512 << 20,
+                            consistency.as_str()
+                        )
+                    })
+                    .collect(),
+            },
+            Request::DestroyVmSnapshot { id, label } => {
+                let before = self.snapshots.len();
+                let wanted = format!("@{}", label.as_str());
+                let prefix = format!("{}-disk", id.as_str());
+                self.snapshots.retain(|(name, ..)| !(name.ends_with(&wanted) && name.contains(&prefix)));
+                if self.snapshots.len() < before {
+                    Response::Done
+                } else {
+                    error(ErrorCode::Forbidden, &format!("refused: there is no snapshot {}", label.as_str()))
+                }
+            }
+            Request::RollbackVmSnapshot { id, label, newer } => match self.domains.get(id) {
+                None => missing(id),
+                Some(Power::Running) => error(
+                    ErrorCode::Forbidden,
+                    "refused: the virtual machine is not shut off: shut it down first",
+                ),
+                Some(Power::Off) => {
+                    let prefix = format!("{}-disk", id.as_str());
+                    let wanted = format!("@{}", label.as_str());
+                    let Some(at) = self
+                        .snapshots
+                        .iter()
+                        .position(|(name, ..)| name.contains(&prefix) && name.ends_with(&wanted))
+                    else {
+                        return Some(error(
+                            ErrorCode::Forbidden,
+                            &format!("refused: there is no snapshot {}", label.as_str()),
+                        ));
+                    };
+                    let later: Vec<usize> = (at..self.snapshots.len())
+                        .filter(|index| {
+                            self.snapshots[*index].0.contains(&prefix)
+                                && !self.snapshots[*index].0.ends_with(&wanted)
+                        })
+                        .collect();
+                    if !later.is_empty() && !newer {
+                        return Some(error(
+                            ErrorCode::Forbidden,
+                            "refused: there are snapshots after it: they go with the rollback only if that is confirmed",
+                        ));
+                    }
+                    for index in later.into_iter().rev() {
+                        self.snapshots.remove(index);
+                    }
+                    Response::Done
+                }
+            },
+            Request::BackUpVm { id, folder, stem, .. } => {
+                if !self.domains.contains_key(id) {
+                    return Some(missing(id));
+                }
+                let Ok(folder) = folder.join(id.as_str()).and_then(|folder| folder.join(stem.as_str()))
+                else {
+                    return Some(error(ErrorCode::Forbidden, "refused: the folder's path is too long"));
+                };
+                if self.backups.contains_key(folder.as_str()) {
+                    return Some(error(ErrorCode::Forbidden, "refused: manifest.json exists already"));
+                }
+                let mut files: Vec<VmBackupFile> = self
+                    .zvols
+                    .iter()
+                    .filter_map(|(zvol, size)| {
+                        let slot = zvol.rsplit_once(&format!("{}-disk", id.as_str()))?.1.parse().ok()?;
+                        let part = VmBackupPart::Disk { slot: VmDiskSlot::new(slot).ok()?, volsize: *size };
+                        Some(VmBackupFile { part, bytes: size / 8, sha256: sim_digest(&part.file_name()) })
+                    })
+                    .collect();
+                files.push(VmBackupFile {
+                    part: VmBackupPart::Nvram,
+                    bytes: 540_672,
+                    sha256: sim_digest("nvram"),
+                });
+                let manifest = WrittenFile {
+                    path: folder.join(VM_BACKUP_MANIFEST).unwrap_or_else(|_| folder.clone()),
+                    bytes: 2048,
+                    device: 1,
+                    inode: 1000 + self.backups.len() as u64,
+                    modified: 1_793_000_000_000_000_000,
+                };
+                self.backups.insert(folder.as_str().to_owned(), files.clone());
+                let consistency = if self.domains.get(id) == Some(&Power::Running) {
+                    VmConsistency::Crash
+                } else {
+                    VmConsistency::Off
+                };
+                Response::VmBackedUp { folder, files, manifest, consistency }
+            }
+            Request::RestoreVm { spec, folder, files, over, remove, .. } => {
+                let Some(written) = self.backups.get(folder.as_str()) else {
+                    return Some(error(
+                        ErrorCode::Forbidden,
+                        &format!("refused: {} is not there any more", folder.as_str()),
+                    ));
+                };
+                if files.iter().any(|file| !written.contains(file)) {
+                    return Some(error(
+                        ErrorCode::Forbidden,
+                        "refused: a file is not the one the backup wrote: its SHA-256 differs",
+                    ));
+                }
+                match (self.domains.get(&spec.id), over) {
+                    (Some(Power::Running), true) => {
+                        return Some(error(
+                            ErrorCode::Forbidden,
+                            "refused: the virtual machine is not shut off: shut it down first",
+                        ));
+                    }
+                    (None, true) => return Some(missing(&spec.id)),
+                    (Some(_), false) => return Some(error(ErrorCode::Conflict, "the name is already taken")),
+                    _ => {}
+                }
+                if let Some(refusal) = self.refuse_devices(spec) {
+                    return Some(refusal);
+                }
+                self.domains.entry(spec.id.clone()).or_insert(Power::Off);
+                self.make_disks(spec);
+                for slot in remove {
+                    self.remove_disks(&spec.id, Some(*slot));
+                }
+                Response::Done
+            }
+            Request::EndVmWork { .. } => Response::VmWorkEnded { stopped: false },
+            Request::RemoveVmBackup { folder, .. } => {
+                self.backups.remove(folder.as_str());
+                Response::Done
+            }
             _ => return None,
         })
+    }
+
+    /// The VM's zvols, by name.
+    fn zvols_of(&self, id: &VmId) -> Vec<String> {
+        let prefix = format!("{}-disk", id.as_str());
+        self.zvols
+            .keys()
+            .filter(|zvol| zvol.rsplit('/').next().is_some_and(|disk| disk.starts_with(&prefix)))
+            .cloned()
+            .collect()
     }
 
     /// Whether a location is on `volume`.
@@ -529,6 +805,291 @@ fn picture(format: Format) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn spec(id: &str) -> VmSpec {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "os": "windows", "cpus": 1, "memory": 512, "firmware": "uefi",
+            "disks": [{"slot": 0, "size": 1, "bus": "sata", "location": {"pool": "tank", "volume": 1}}],
+            "nics": [], "drives": [], "boot": [{"disk": 0}],
+            "usb": [{"vendor": 1133, "product": 49948}], "tpm": true, "secure_boot": true,
+            "autostart": false, "library": 1
+        }))
+        .unwrap()
+    }
+
+    fn answer(vms: &mut SimVms, request: serde_json::Value) -> Response {
+        let request: Request = serde_json::from_value(request).unwrap();
+        vms.handle(&request).unwrap()
+    }
+
+    fn refused(response: Response, says: &str) {
+        match response {
+            Response::Error { message, .. } => {
+                assert!(message.contains(says), "{message} does not say {says}")
+            }
+            other => panic!("not refused: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn devices_snapshots_backups_and_restores_are_simulated() {
+        let mut vms = SimVms { installed: true, ..SimVms::default() };
+        vms.locations.push(VmStorage {
+            pool: zendiloos_agent_proto::PoolName::parse("tank").unwrap(),
+            volume: VolumeNumber::new(1).unwrap(),
+        });
+        let id = "0a1b2c3d4e5f";
+        assert_eq!(vms.handle(&Request::DefineVm { spec: spec(id) }), Some(Response::Done));
+        let Response::VmHostDevices { iommu, usb, pci } =
+            answer(&mut vms, serde_json::json!({"op": "vm_host_devices"}))
+        else {
+            panic!("no devices")
+        };
+        assert!(iommu.on && !usb.is_empty() && pci.iter().any(|device| device.needed.is_some()));
+        let usb_change =
+            serde_json::json!({"op": "change_vm_usb", "spec": spec(id), "attach": [], "detach": []});
+        assert_eq!(answer(&mut vms, usb_change), Response::Done);
+        refused(
+            answer(
+                &mut vms,
+                serde_json::json!({"op": "change_vm_usb", "spec": spec("0a1b2c3d4e60"), "attach": [], "detach": []}),
+            ),
+            "no virtual machine",
+        );
+
+        let snapshot = |label: &str| serde_json::json!({"op": "snapshot_vm", "id": id, "label": label, "schedules": ["daily"], "note": "first"});
+        assert_eq!(
+            answer(&mut vms, snapshot("zdl-2026-11-12_03.00.00")),
+            Response::VmSnapshotTaken { consistency: VmConsistency::Off }
+        );
+        assert!(matches!(
+            answer(&mut vms, snapshot("zdl-2026-11-12_03.00.00")),
+            Response::Error { code: ErrorCode::Conflict, .. }
+        ));
+        vms.domains.insert(VmId::parse(id).unwrap(), Power::Running);
+        assert_eq!(
+            answer(&mut vms, snapshot("zdl-2026-11-12_04.00.00")),
+            Response::VmSnapshotTaken { consistency: VmConsistency::Crash }
+        );
+        let Response::VmSnapshots { zfs_list } = answer(&mut vms, serde_json::json!({"op": "vm_snapshots"}))
+        else {
+            panic!("no list")
+        };
+        assert!(
+            zfs_list.contains(&format!("tank/zendiloos.vms/{id}-disk0@zdl-2026-11-12_03.00.00\t"))
+                && zfs_list.contains("\tdaily\tfirst\toff"),
+            "{zfs_list}"
+        );
+        let rollback = |label: &str, newer: bool| serde_json::json!({"op": "rollback_vm_snapshot", "id": id, "label": label, "newer": newer});
+        refused(answer(&mut vms, rollback("zdl-2026-11-12_03.00.00", true)), "not shut off");
+        vms.domains.insert(VmId::parse(id).unwrap(), Power::Off);
+        refused(answer(&mut vms, rollback("zdl-2026-11-12_03.00.00", false)), "snapshots after it");
+        refused(answer(&mut vms, rollback("zdl-2026-11-12_09.00.00", false)), "no snapshot");
+        assert_eq!(answer(&mut vms, rollback("zdl-2026-11-12_03.00.00", true)), Response::Done);
+        let destroy =
+            serde_json::json!({"op": "destroy_vm_snapshot", "id": id, "label": "zdl-2026-11-12_03.00.00"});
+        assert_eq!(answer(&mut vms, destroy.clone()), Response::Done);
+        refused(answer(&mut vms, destroy), "no snapshot");
+        refused(answer(&mut vms, rollback("zdl-2026-11-12_03.00.00", false)), "no snapshot");
+        refused(
+            answer(
+                &mut vms,
+                serde_json::json!({"op": "rollback_vm_snapshot", "id": "0a1b2c3d4e60", "label": "zdl-2026-11-12_03.00.00", "newer": false}),
+            ),
+            "no virtual machine",
+        );
+
+        let root = serde_json::json!({"kind": "share", "location": {"volume": 1, "share": "backups"}});
+        let backup = serde_json::json!({"op": "back_up_vm", "id": id, "root": root, "folder": "vm-backups",
+            "stem": "20261112-030000", "label": "zdl-2026-11-12_05.00.00", "settings": "{\"name\":\"win\"}"});
+        let Response::VmBackedUp { folder, files, manifest, consistency } = answer(&mut vms, backup.clone())
+        else {
+            panic!("not backed up")
+        };
+        assert_eq!(folder.as_str(), format!("vm-backups/{id}/20261112-030000"));
+        assert_eq!((files.len(), consistency), (2, VmConsistency::Off));
+        assert_eq!(manifest.path.as_str(), format!("{}/manifest.json", folder.as_str()));
+        refused(answer(&mut vms, backup), "exists already");
+        let restore = |id: &str,
+                       over: bool,
+                       files: &Vec<zendiloos_agent_proto::VmBackupFile>,
+                       folder: &str| {
+            serde_json::json!({"op": "restore_vm",
+            "spec": spec(id), "root": root, "folder": folder, "files": files, "over": over, "remove": [], "label": "zdl-2026-11-12_06.00.00"})
+        };
+        assert_eq!(answer(&mut vms, restore("0a1b2c3d4e60", false, &files, folder.as_str())), Response::Done);
+        assert!(vms.zvols.keys().any(|zvol| zvol.contains("0a1b2c3d4e60-disk0")));
+        assert!(matches!(
+            answer(&mut vms, restore("0a1b2c3d4e60", false, &files, folder.as_str())),
+            Response::Error { code: ErrorCode::Conflict, .. }
+        ));
+        assert_eq!(answer(&mut vms, restore(id, true, &files, folder.as_str())), Response::Done);
+        vms.domains.insert(VmId::parse(id).unwrap(), Power::Running);
+        refused(answer(&mut vms, restore(id, true, &files, folder.as_str())), "not shut off");
+        refused(
+            answer(&mut vms, restore("0a1b2c3d4e61", true, &files, folder.as_str())),
+            "no virtual machine",
+        );
+        let mut other = files.clone();
+        other[0].bytes += 1;
+        refused(answer(&mut vms, restore(id, true, &other, folder.as_str())), "SHA-256 differs");
+        refused(answer(&mut vms, restore(id, true, &files, "elsewhere")), "not there any more");
+        assert_eq!(
+            answer(&mut vms, serde_json::json!({"op": "end_vm_work", "id": id})),
+            Response::VmWorkEnded { stopped: false }
+        );
+        let remove = serde_json::json!({"op": "remove_vm_backup", "root": root, "folder": folder.as_str(), "files": [{"kind": "nvram"}]});
+        assert_eq!(answer(&mut vms, remove), Response::Done);
+        assert!(vms.backups.is_empty());
+        vms.domains.insert(VmId::parse(id).unwrap(), Power::Off);
+        refused(
+            answer(
+                &mut vms,
+                serde_json::json!({"op": "back_up_vm", "id": "0a1b2c3d4e61", "root": root, "folder": "", "stem": "20261112-030000",
+            "label": "zdl-2026-11-12_05.00.00", "settings": "{}"}),
+            ),
+            "no virtual machine",
+        );
+        refused(
+            answer(
+                &mut vms,
+                serde_json::json!({"op": "snapshot_vm", "id": "0a1b2c3d4e61", "label": "zdl-2026-11-12_05.00.00", "schedules": [], "note": null}),
+            ),
+            "no virtual machine",
+        );
+        assert_eq!(answer(&mut vms, serde_json::json!({"op": "delete_vm", "id": id})), Response::Done);
+        let Response::VmSnapshots { zfs_list } = answer(&mut vms, serde_json::json!({"op": "vm_snapshots"}))
+        else {
+            panic!("no list")
+        };
+        assert!(!zfs_list.contains(id), "its snapshots went with it");
+        assert_eq!(sim_digest("nvram").as_str().len(), 64);
+    }
+
+    #[test]
+    fn what_the_simulated_host_refuses_and_how_its_vms_run() {
+        let mut vms = SimVms::default();
+        let id = "0a1b2c3d4e5f";
+        refused(
+            answer(&mut vms, serde_json::json!({"op": "enable_vms", "pool": "tank", "volume": 1})),
+            "not installed",
+        );
+        refused(answer(&mut vms, serde_json::json!({"op": "delete_vm", "id": id})), "not set up");
+        vms.installed = true;
+        refused(answer(&mut vms, serde_json::json!({"op": "vm_images", "volume": 1})), "not set up there");
+        assert_eq!(
+            answer(&mut vms, serde_json::json!({"op": "enable_vms", "pool": "tank", "volume": 1})),
+            Response::Done
+        );
+        refused(
+            answer(&mut vms, serde_json::json!({"op": "enable_vms", "pool": "tank", "volume": 2})),
+            "not volume",
+        );
+        refused(
+            answer(&mut vms, serde_json::json!({"op": "finish_vm_image_upload", "image": "00000000000a"})),
+            "pipe",
+        );
+        refused(answer(&mut vms, serde_json::json!({"op": "open_vm_console", "id": id})), "descriptor");
+        // Devices the simulated host has not.
+        let with = |change: &dyn Fn(&mut serde_json::Value)| {
+            let mut spec = serde_json::to_value(spec(id)).unwrap();
+            change(&mut spec);
+            serde_json::json!({"op": "define_vm", "spec": spec})
+        };
+        let mac = "52:54:00:00:00:01";
+        for (network, says) in [
+            (serde_json::json!({"kind": "bridge", "bridge": "br9"}), "no bridge"),
+            (serde_json::json!({"kind": "direct", "card": "eth9"}), "no wired card"),
+            (serde_json::json!({"kind": "internal", "bridge": "lab9"}), "no internal network"),
+        ] {
+            let request = with(&|spec| {
+                spec["nics"] = serde_json::json!([{"slot": 0, "model": "virtio", "network": network.clone(), "mac": mac}])
+            });
+            refused(answer(&mut vms, request), says);
+        }
+        refused(
+            answer(
+                &mut vms,
+                with(&|spec| spec["drives"] = serde_json::json!([{"slot": 0, "image": "00000000000b"}])),
+            ),
+            "not in the library",
+        );
+        refused(
+            answer(
+                &mut vms,
+                with(&|spec| spec["disks"][0]["location"] = serde_json::json!({"pool": "cold", "volume": 2})),
+            ),
+            "pool cold",
+        );
+        refused(
+            answer(&mut vms, serde_json::json!({"op": "update_vm", "spec": spec(id), "remove": []})),
+            "no virtual machine",
+        );
+        assert_eq!(
+            answer(&mut vms, serde_json::json!({"op": "define_vm", "spec": spec(id)})),
+            Response::Done
+        );
+        let mut two = serde_json::to_value(spec(id)).unwrap();
+        two["disks"] = serde_json::json!([{"slot": 0, "size": 1, "bus": "sata", "location": {"pool": "tank", "volume": 1}},
+                                          {"slot": 1, "size": 2, "bus": "sata", "location": {"pool": "tank", "volume": 1}}]);
+        assert_eq!(
+            answer(&mut vms, serde_json::json!({"op": "update_vm", "spec": two, "remove": []})),
+            Response::Done
+        );
+        assert_eq!(
+            answer(&mut vms, serde_json::json!({"op": "update_vm", "spec": spec(id), "remove": [1]})),
+            Response::Done
+        );
+        assert!(!vms.zvols.keys().any(|zvol| zvol.ends_with("-disk1")));
+        assert_eq!(
+            answer(&mut vms, serde_json::json!({"op": "set_vm_autostart", "id": id, "autostart": true})),
+            Response::Done
+        );
+        refused(
+            answer(
+                &mut vms,
+                serde_json::json!({"op": "set_vm_autostart", "id": "0a1b2c3d4e60", "autostart": true}),
+            ),
+            "no virtual machine",
+        );
+        refused(
+            answer(&mut vms, serde_json::json!({"op": "control_vm", "id": id, "action": "shutdown"})),
+            "not running",
+        );
+        assert_eq!(
+            answer(&mut vms, serde_json::json!({"op": "control_vm", "id": id, "action": "start"})),
+            Response::Done
+        );
+        assert_eq!(
+            answer(&mut vms, serde_json::json!({"op": "control_vm", "id": id, "action": "reboot"})),
+            Response::Done
+        );
+        let Response::VmStates { virsh_list } = answer(&mut vms, serde_json::json!({"op": "vm_states"}))
+        else {
+            panic!("no states")
+        };
+        assert!(
+            virsh_list.contains(&format!("zendiloos-{id}")) && virsh_list.contains("running"),
+            "{virsh_list}"
+        );
+        refused(
+            answer(&mut vms, serde_json::json!({"op": "update_vm", "spec": spec(id), "remove": []})),
+            "not shut off",
+        );
+        let root = serde_json::json!({"kind": "drive", "drive": "1234-ABCD"});
+        let Response::VmBackedUp { consistency, .. } = answer(
+            &mut vms,
+            serde_json::json!({"op": "back_up_vm", "id": id, "root": root,
+            "folder": "", "stem": "20261112-030000", "label": "zdl-2026-11-12_05.00.00", "settings": "{}"}),
+        ) else {
+            panic!("not backed up")
+        };
+        assert_eq!(consistency, VmConsistency::Crash, "while it runs");
+        refused(
+            answer(&mut vms, serde_json::json!({"op": "disable_vms", "pool": "tank", "volume": 1})),
+            "holds the disk",
+        );
+    }
 
     #[test]
     fn the_console_speaks_rfb_without_authentication() {

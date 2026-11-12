@@ -7,6 +7,22 @@ use std::collections::BTreeSet;
 
 use zendiloos_kernel::Timestamp;
 
+mod backups;
+mod devices;
+mod snapshots;
+
+pub use backups::{
+    BackupFile, BackupPart, BackupPlace, BackupTarget, NewVmBackup, RestoreAs, VmBackup, backup_folder,
+    backup_stem,
+};
+pub use devices::{
+    HostDevices, HostNeeds, HostPci, HostUsb, Iommu, PCI_MAX, USB_MAX, UsbDevice, is_pci_address,
+};
+pub use snapshots::{
+    Consistency, Frequency, MAX_KEEP, SNAPSHOT_NAME_MAX, SnapshotSchedule, VmSnapshot, due, is_label,
+    label_at, label_time, prunable, schedules, snapshot_name,
+};
+
 /// A rule a request broke, in words for the person who sent it.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
@@ -118,7 +134,7 @@ impl OsPreset {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Firmware {
-    /// OVMF, Secure Boot off.
+    /// OVMF; with Secure Boot and Microsoft's keys if the VM says so.
     Uefi,
     /// SeaBIOS.
     Bios,
@@ -312,6 +328,11 @@ pub struct HostLimits {
     pub cards: Vec<String>,
     /// The locations of the VMs' storage there are, the first first.
     pub locations: Vec<Location>,
+    /// swtpm is installed: a VM can have a TPM.
+    pub swtpm: bool,
+    /// OVMF with Microsoft's keys enrolled is there: a VM can boot with
+    /// Secure Boot.
+    pub secure_boot: bool,
 }
 
 /// What an administrator chose for a VM.
@@ -328,6 +349,14 @@ pub struct VmSettings {
     /// The devices it boots from, first first; others it never boots from.
     pub boot: Vec<BootDevice>,
     pub autostart: bool,
+    /// The host's USB devices it is given, by vendor and product.
+    pub usb: Vec<UsbDevice>,
+    /// The host's PCI devices it is given, by address.
+    pub pci: Vec<String>,
+    /// A TPM 2.0 (swtpm), as Windows 11 asks for.
+    pub tpm: bool,
+    /// Secure Boot with Microsoft's keys enrolled; UEFI only.
+    pub secure_boot: bool,
 }
 
 /// Whether each of `items` has a key of its own.
@@ -350,9 +379,11 @@ pub fn is_mac(mac: &str) -> bool {
 
 impl VmSettings {
     /// A preset's settings under `name`: one disk, one card through the
-    /// NAS, one empty drive, booted from the drive first, no autostart.
+    /// NAS, one empty drive, booted from the drive first, no autostart; a
+    /// TPM and Secure Boot for Windows, as Windows 11 needs them.
     pub fn preset(name: &str, os: OsPreset) -> Self {
         let defaults = os.defaults();
+        let windows = os == OsPreset::Windows;
         Self {
             name: name.to_owned(),
             os,
@@ -374,6 +405,10 @@ impl VmSettings {
             drives: vec![Drive { slot: 0, image: None }],
             boot: vec![BootDevice::Drive(0), BootDevice::Disk(0)],
             autostart: false,
+            usb: Vec::new(),
+            pci: Vec::new(),
+            tpm: windows,
+            secure_boot: windows,
         }
     }
 
@@ -394,6 +429,8 @@ impl VmSettings {
         self.disks.sort_by_key(|disk| disk.slot);
         self.nics.sort_by_key(|nic| nic.slot);
         self.drives.sort_by_key(|drive| drive.slot);
+        self.usb.sort();
+        self.pci.sort();
     }
 
     /// Whether a disk of it is on the location of `pool`.
@@ -476,7 +513,44 @@ impl VmSettings {
         if self.boot.is_empty() || !unique(&self.boot, |device| *device) || !self.boot.iter().all(exists) {
             return Err(invalid("the boot order names devices the virtual machine has, each once"));
         }
+        self.check_security(host, before)?;
+        if self.usb.len() > USB_MAX || !unique(&self.usb, |device| *device) {
+            return Err(invalid(format!(
+                "a virtual machine is given up to {USB_MAX} USB devices, each once"
+            )));
+        }
+        if self.pci.len() > PCI_MAX
+            || !unique(&self.pci, Clone::clone)
+            || !self.pci.iter().all(|a| is_pci_address(a))
+        {
+            return Err(invalid(format!(
+                "a virtual machine is given up to {PCI_MAX} PCI devices, each once"
+            )));
+        }
         Ok(name)
+    }
+
+    /// A TPM needs swtpm, Secure Boot UEFI and OVMF with Microsoft's keys;
+    /// what it had `before` stays even where the host lost it since.
+    fn check_security(&self, host: &HostLimits, before: Option<&VmSettings>) -> Result<(), Invalid> {
+        if self.secure_boot && self.firmware != Firmware::Uefi {
+            return Err(invalid("Secure Boot needs UEFI"));
+        }
+        if self.tpm && !host.swtpm && !before.is_some_and(|before| before.tpm) {
+            return Err(invalid("a TPM needs swtpm: install the plugin's packages for it first"));
+        }
+        if self.secure_boot && !host.secure_boot && !before.is_some_and(|before| before.secure_boot) {
+            return Err(invalid("Secure Boot needs OVMF with Microsoft's keys, from Debian's ovmf"));
+        }
+        Ok(())
+    }
+
+    /// The USB devices it has and had not `before`, and those it had and
+    /// has not: plugged in and out while it runs.
+    pub fn usb_changes(&self, before: &VmSettings) -> (Vec<UsbDevice>, Vec<UsbDevice>) {
+        let attach = self.usb.iter().filter(|device| !before.usb.contains(device)).copied().collect();
+        let detach = before.usb.iter().filter(|device| !self.usb.contains(device)).copied().collect();
+        (attach, detach)
     }
 
     fn check_disks(&self, host: &HostLimits, before: Option<&VmSettings>) -> Result<(), Invalid> {
@@ -569,11 +643,15 @@ impl VmSettings {
     }
 
     /// Whether the hardware differs from `other`'s: everything but the
-    /// name, autostart and the images in the drives, which change while a
-    /// VM runs.
+    /// name, autostart, the images in the drives and the USB devices,
+    /// which change while a VM runs.
     pub fn hardware_differs(&self, other: &VmSettings) -> bool {
         let slots = |drives: &[Drive]| drives.iter().map(|drive| drive.slot).collect::<BTreeSet<_>>();
+        let pci = |list: &[String]| list.iter().cloned().collect::<BTreeSet<_>>();
         self.os != other.os
+            || self.tpm != other.tpm
+            || self.secure_boot != other.secure_boot
+            || pci(&self.pci) != pci(&other.pci)
             || self.cpus != other.cpus
             || self.memory_mib != other.memory_mib
             || self.firmware != other.firmware
@@ -907,6 +985,8 @@ mod tests {
             internal: vec!["vmnet0".into()],
             cards: vec!["enp1s0".into(), "bond0".into()],
             locations: vec![tank(), cold()],
+            swtpm: true,
+            secure_boot: true,
         }
     }
 
@@ -1091,6 +1171,57 @@ mod tests {
         let error = shrunk.check(&host(), &[], &[], Some(&grown)).unwrap_err();
         assert!(error.0.contains("disk 3 has 5 GiB and only grows"), "{error}");
         assert_eq!(shrunk.removed_disks(&grown), [0]);
+    }
+
+    #[test]
+    fn windows_gets_a_tpm_and_secure_boot_which_need_their_packages_and_uefi() {
+        let windows = VmSettings::preset("w", OsPreset::Windows);
+        assert!(windows.tpm && windows.secure_boot);
+        let linux = VmSettings::preset("l", OsPreset::Linux);
+        assert!(!linux.tpm && !linux.secure_boot);
+        let ok = VmSettings { tpm: true, secure_boot: true, ..small() };
+        assert!(ok.check(&host(), &[], &[], None).is_ok());
+        too(VmSettings { firmware: Firmware::Bios, ..ok.clone() }, "Secure Boot needs UEFI");
+        assert!(
+            VmSettings { firmware: Firmware::Bios, secure_boot: false, ..ok.clone() }
+                .check(&host(), &[], &[], None)
+                .is_ok(),
+            "a TPM with BIOS"
+        );
+        let bare = HostLimits { swtpm: false, secure_boot: false, ..host() };
+        let error = ok.check(&bare, &[], &[], None).unwrap_err();
+        assert!(error.0.contains("swtpm"), "{error}");
+        let error = VmSettings { tpm: false, ..ok.clone() }.check(&bare, &[], &[], None).unwrap_err();
+        assert!(error.0.contains("Microsoft's keys"), "{error}");
+        assert!(ok.check(&bare, &[], &[], Some(&ok)).is_ok(), "what it had stays");
+        for changed in
+            [VmSettings { tpm: false, ..ok.clone() }, VmSettings { secure_boot: false, ..ok.clone() }]
+        {
+            assert!(changed.hardware_differs(&ok));
+        }
+    }
+
+    #[test]
+    fn usb_devices_change_while_it_runs_pci_devices_are_hardware() {
+        let keyboard = UsbDevice { vendor: 0x046d, product: 0xc31c };
+        let stick = UsbDevice { vendor: 0x0781, product: 0x5583 };
+        let before = VmSettings { usb: vec![keyboard], ..small() };
+        let after = VmSettings { usb: vec![stick], ..small() };
+        assert!(!after.hardware_differs(&before), "USB devices plug in and out");
+        assert_eq!(after.usb_changes(&before), (vec![stick], vec![keyboard]));
+        let card = VmSettings { pci: vec!["0000:01:00.0".into()], ..small() };
+        assert!(card.hardware_differs(&small()));
+        assert!(card.check(&host(), &[], &[], None).is_ok());
+        too(VmSettings { pci: vec!["0000:01:00".into()], ..small() }, "PCI devices");
+        too(VmSettings { usb: vec![keyboard, keyboard], ..small() }, "USB devices");
+        let mut sorted = VmSettings {
+            usb: vec![stick, keyboard],
+            pci: vec!["0000:02:00.0".into(), "0000:01:00.0".into()],
+            ..small()
+        };
+        sorted.sort_devices();
+        assert_eq!(sorted.usb, [keyboard, stick]);
+        assert_eq!(sorted.pci, ["0000:01:00.0", "0000:02:00.0"]);
     }
 
     #[test]

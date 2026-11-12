@@ -35,6 +35,7 @@
 #virsh = "/usr/bin/virsh"
 #libvirtd = "/usr/sbin/libvirtd"
 #qemu = "/usr/bin/qemu-system-x86_64"
+#swtpm = "/usr/bin/swtpm"
 #systemd_tmpfiles = "/usr/bin/systemd-tmpfiles"
 
 #[storage]

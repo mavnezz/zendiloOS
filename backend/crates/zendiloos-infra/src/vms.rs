@@ -8,10 +8,36 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use zendiloos_kernel::{Actor, PortError, RequestContext};
 use zendiloos_network::application::DeviceUsers;
+use zendiloos_sharing::application::SharingUseCases;
 use zendiloos_sharing::application::{FilesError, FilesUseCases};
 use zendiloos_sharing::domain::{FilePath, ShareId};
-use zendiloos_vms::application::{IsoError, IsoFiles, IsoSource, VmRepository};
+use zendiloos_vms::application::{BackupShare, BackupShares, IsoError, IsoFiles, IsoSource, VmRepository};
 use zendiloos_vms::domain::IsoChoice;
+
+pub mod settings;
+
+/// [`BackupShares`] through the Sharing context: where a share is, by its id.
+#[derive(Clone)]
+pub struct SharesForVmBackups {
+    sharing: SharingUseCases,
+}
+
+impl SharesForVmBackups {
+    pub fn new(sharing: SharingUseCases) -> Self {
+        Self { sharing }
+    }
+}
+
+#[async_trait]
+impl BackupShares for SharesForVmBackups {
+    async fn locate(&self, share_id: i64) -> Result<Option<BackupShare>, PortError> {
+        let shares = self.sharing.list().await.map_err(|e| PortError::new("shares", e.to_string()))?;
+        Ok(shares
+            .into_iter()
+            .find(|share| share.id.get() == share_id)
+            .map(|share| BackupShare { name: share.name.to_string(), volume: share.volume }))
+    }
+}
 
 /// [`DeviceUsers`] from the VMs' records: a bridge, an internal network or
 /// a card is in use while a VM, running or not, has a card on it (directly,

@@ -78,6 +78,7 @@ impl Host {
             virsh: "/bin/false".into(),
             libvirtd: "/bin/false".into(),
             qemu: "/bin/false".into(),
+            swtpm: "/bin/false".into(),
             systemd_tmpfiles: "/bin/false".into(),
             rsync: "/bin/false".into(),
             ssh: "/bin/false".into(),

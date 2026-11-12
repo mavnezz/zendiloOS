@@ -8,9 +8,9 @@ use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 use zendiloos_agent::config::Config;
 use zendiloos_agent::{
-    HostPaths, Operations, Server, VolumeJob, choose_boot_kernel, docker_bridges, lower_file_overrides,
-    passwd, pin_project, pin_shares, power_off_drive, run_backup_unit, run_iso_job, run_packages,
-    run_upload_job, run_volume_job, serve, unpin_project, unpin_shares,
+    HostPaths, Operations, Server, VmBackupWork, VolumeJob, choose_boot_kernel, docker_bridges,
+    lower_file_overrides, passwd, pin_project, pin_shares, power_off_drive, run_backup_unit, run_iso_job,
+    run_packages, run_upload_job, run_vm_backup_job, run_volume_job, serve, unpin_project, unpin_shares,
 };
 use zendiloos_agent_proto::{AppName, DiskName, ProjectName, Role};
 
@@ -64,6 +64,13 @@ enum Command {
     /// Receive an image uploaded into the library of virtual machines from
     /// standard input, a pipe zendiloosd writes (likewise)
     ReceiveVmImage { job: String },
+    /// Back up a virtual machine's disks, UEFI variables and TPM into a
+    /// share or onto a drive (likewise)
+    BackUpVm { job: String },
+    /// Restore a virtual machine's backup onto its zvols (likewise)
+    RestoreVm { job: String },
+    /// Remove a virtual machine's backup (likewise)
+    RemoveVmBackup { job: String },
     /// A backup task's work: rsync between its places (a job of the system
     /// agent's, in a unit of its own), its secrets read from standard input
     BackupUnit { job: String },
@@ -120,6 +127,25 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         let job = job.clone();
         let done =
             tokio::task::spawn_blocking(move || run_volume_job(kind, &job, now, &mut std::io::stdout()))
+                .await?;
+        if !done {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    let vm_job = match &cli.command {
+        Some(Command::BackUpVm { job }) => Some((VmBackupWork::BackUp, job)),
+        Some(Command::RestoreVm { job }) => Some((VmBackupWork::Restore, job)),
+        Some(Command::RemoveVmBackup { job }) => Some((VmBackupWork::Remove, job)),
+        _ => None,
+    };
+    if let Some((work, job)) = vm_job {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| i64::try_from(since.as_secs()).unwrap_or(0));
+        let job = job.clone();
+        let done =
+            tokio::task::spawn_blocking(move || run_vm_backup_job(work, &job, now, &mut std::io::stdout()))
                 .await?;
         if !done {
             std::process::exit(1);
@@ -195,6 +221,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             | Command::ScanVolumeBackups { .. }
             | Command::CopyVmIso { .. }
             | Command::ReceiveVmImage { .. }
+            | Command::BackUpVm { .. }
+            | Command::RestoreVm { .. }
+            | Command::RemoveVmBackup { .. }
             | Command::BackupUnit { .. }
             | Command::DockerBridges
             | Command::ChooseBootKernel => unreachable!("handled above"),

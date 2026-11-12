@@ -12,16 +12,21 @@ use zendiloos_jobs::{Job, JobError, Jobs, Progress};
 use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, PortError, RequestContext};
 
 use crate::domain::{
-    BootDevice, Disk, Drive, Firmware, HostLimits, Invalid, IsoChoice, Location, Nic, PowerState, Vm,
-    VmAction, VmCounters, VmImage, VmSettings, check_name, is_vm_id,
+    BackupFile, BackupPlace, BootDevice, Consistency, Disk, Drive, Firmware, Frequency, HostDevices,
+    HostLimits, Invalid, IsoChoice, Location, NewVmBackup, Nic, PowerState, SnapshotSchedule, UsbDevice, Vm,
+    VmAction, VmBackup, VmCounters, VmImage, VmSettings, VmSnapshot, check_name, is_vm_id,
 };
 
+mod backups;
 mod images;
 mod locations;
+mod snapshots;
 mod stats;
 
+pub use backups::VmBackupView;
 pub use images::{ImageUpload, UploadTicket, VmImageView};
 pub use locations::{DatasetUsage, LocationView, VmOnLocation, ZvolUsage};
+pub use snapshots::{SNAPSHOTS_EVERY, VmSnapshots};
 pub use stats::{STATS_EVERY, VmStatsSubscription};
 
 /// The VMs as zendiloOS keeps them.
@@ -53,6 +58,52 @@ pub trait VmImageRepository: Send + Sync {
     /// `false`: another image has that name.
     async fn rename(&self, id: &str, name: &str) -> Result<bool, PortError>;
     async fn delete(&self, id: &str) -> Result<bool, PortError>;
+}
+
+/// How often each VM is snapshotted, and how many snapshots each schedule
+/// keeps.
+#[async_trait]
+pub trait VmScheduleRepository: Send + Sync {
+    /// Ordered by frequency.
+    async fn list(&self, vm: &str) -> Result<Vec<SnapshotSchedule>, PortError>;
+    /// Every VM's that has any.
+    async fn all(&self) -> Result<BTreeMap<String, Vec<SnapshotSchedule>>, PortError>;
+    async fn set(&self, vm: &str, schedules: &[SnapshotSchedule]) -> Result<(), PortError>;
+}
+
+/// The VMs' backups as zendiloOS records them; a backup stays recorded when
+/// its VM goes.
+#[async_trait]
+pub trait VmBackupRepository: Send + Sync {
+    /// Newest first.
+    async fn list(&self) -> Result<Vec<VmBackup>, PortError>;
+    async fn find(&self, id: i64) -> Result<Option<VmBackup>, PortError>;
+    /// Its id.
+    async fn create(&self, backup: &NewVmBackup) -> Result<i64, PortError>;
+    async fn delete(&self, id: i64) -> Result<bool, PortError>;
+}
+
+/// A share backups go to, found by its id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupShare {
+    pub name: String,
+    pub volume: u16,
+}
+
+/// The shares VMs' backups go to.
+#[async_trait]
+pub trait BackupShares: Send + Sync {
+    /// `None` if there is no such share.
+    async fn locate(&self, share_id: i64) -> Result<Option<BackupShare>, PortError>;
+}
+
+/// What a backup wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupWritten {
+    /// Its folder beneath the share's or drive's root.
+    pub folder: String,
+    pub files: Vec<BackupFile>,
+    pub consistency: Consistency,
 }
 
 /// The locations of the VMs' storage, in the order they were added: the
@@ -87,6 +138,11 @@ pub struct HostFacts {
     pub iommu: bool,
     /// libvirt and QEMU are installed.
     pub installed: bool,
+    /// swtpm is installed, for VMs with a TPM; also in `limits`.
+    pub swtpm: bool,
+    /// OVMF with Microsoft's keys is there, for Secure Boot; also in
+    /// `limits`.
+    pub secure_boot: bool,
     pub limits: HostLimits,
     /// The locations of the VMs' storage the host has, by volume.
     pub locations: Vec<Location>,
@@ -207,6 +263,77 @@ pub trait VmHost: Send + Sync {
     /// look for all.
     async fn counters(&self, context: &RequestContext) -> Result<BTreeMap<String, VmCounters>, PortError>;
     async fn open_console(&self, id: &str, context: &RequestContext) -> Result<ConsoleSession, HostError>;
+    /// The host's USB and PCI devices, and the IOMMU.
+    async fn host_devices(&self, context: &RequestContext) -> Result<HostDevices, PortError>;
+    /// Gives the VM the USB devices its settings name: defined anew, and
+    /// while it runs `attach` plugged in and `detach` pulled out at once.
+    async fn change_usb(
+        &self,
+        vm: &Vm,
+        library: u16,
+        attach: &[UsbDevice],
+        detach: &[UsbDevice],
+        context: &RequestContext,
+    ) -> Result<(), HostError>;
+    /// Snapshots every disk of the VM as `label`; how consistent it is.
+    async fn snapshot(
+        &self,
+        id: &str,
+        label: &str,
+        schedules: &[Frequency],
+        name: Option<&str>,
+        context: &RequestContext,
+    ) -> Result<Consistency, HostError>;
+    /// The snapshots of every VM zendiloOS made, its disks' together.
+    async fn snapshots(&self, context: &RequestContext) -> Result<Vec<VmSnapshot>, PortError>;
+    async fn destroy_snapshot(
+        &self,
+        id: &str,
+        label: &str,
+        context: &RequestContext,
+    ) -> Result<(), HostError>;
+    /// Returns a shut off VM's disks to `label`; with `newer`, the
+    /// snapshots after it go.
+    async fn rollback_snapshot(
+        &self,
+        id: &str,
+        label: &str,
+        newer: bool,
+        context: &RequestContext,
+    ) -> Result<(), HostError>;
+    /// Backs the VM up into `<folder>/<id>/<stem>` of `place`, from a
+    /// snapshot `label` taken for it. Dropping the future stops the work.
+    #[allow(clippy::too_many_arguments)]
+    async fn back_up(
+        &self,
+        vm: &Vm,
+        place: &BackupPlace,
+        folder: &str,
+        stem: &str,
+        label: &str,
+        steps: &dyn Steps,
+        context: &RequestContext,
+    ) -> Result<BackupWritten, HostError>;
+    /// Restores `backup` into `vm`: a new VM defined first, or (`over`) the
+    /// one it came from, shut off, returned to a snapshot `label` should
+    /// it fail; the disks in `remove` go. Dropping the future stops it.
+    #[allow(clippy::too_many_arguments)]
+    async fn restore(
+        &self,
+        vm: &Vm,
+        library: u16,
+        backup: &VmBackup,
+        over: bool,
+        remove: &[u8],
+        label: &str,
+        steps: &dyn Steps,
+        context: &RequestContext,
+    ) -> Result<(), HostError>;
+    /// Stops what still works on the VM's backup or restore; whether
+    /// anything did.
+    async fn end_work(&self, id: &str, context: &RequestContext) -> Result<bool, HostError>;
+    /// Removes a backup's files.
+    async fn remove_backup(&self, backup: &VmBackup, context: &RequestContext) -> Result<(), HostError>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -245,6 +372,9 @@ pub struct VmsPorts {
     pub repository: Arc<dyn VmRepository>,
     pub images: Arc<dyn VmImageRepository>,
     pub locations: Arc<dyn VmLocationRepository>,
+    pub schedules: Arc<dyn VmScheduleRepository>,
+    pub backups: Arc<dyn VmBackupRepository>,
+    pub shares: Arc<dyn BackupShares>,
     pub host: Arc<dyn VmHost>,
     pub isos: Arc<dyn IsoFiles>,
     pub ids: Arc<dyn VmIds>,
@@ -289,6 +419,9 @@ pub enum VmsError {
     /// The image is in the drives of these VMs.
     #[error("the image is in use by {}", .0.join(", "))]
     ImageInUse(Vec<String>),
+    /// A rollback would destroy these snapshots, taken after it.
+    #[error("snapshots after it go with it: {}", .0.join(", "))]
+    NewerSnapshots(Vec<String>),
     #[error("{0}")]
     Refused(String),
     #[error("{0}")]
@@ -377,6 +510,10 @@ pub struct VmChange {
     pub drives: Vec<Drive>,
     pub boot: Vec<BootDevice>,
     pub autostart: bool,
+    pub usb: Vec<UsbDevice>,
+    pub pci: Vec<String>,
+    pub tpm: bool,
+    pub secure_boot: bool,
 }
 
 /// The consoles each account has open.
@@ -420,9 +557,10 @@ impl Steps for JobSteps {
     }
 }
 
-/// A VM being deleted or changed: no second change of it meanwhile.
+/// A VM being deleted, changed, backed up or restored: no second such
+/// work on it meanwhile.
 struct Busy {
-    busy: Arc<Mutex<BTreeSet<String>>>,
+    busy: Arc<Mutex<BTreeMap<String, &'static str>>>,
     id: String,
 }
 
@@ -432,12 +570,17 @@ impl Drop for Busy {
     }
 }
 
+/// The backups and restores under way, by VM: what cancels each.
+type Work = Arc<Mutex<BTreeMap<String, Arc<tokio::sync::Notify>>>>;
+
 #[derive(Clone)]
 pub struct Vms {
     ports: Arc<VmsPorts>,
     consoles: Arc<OpenConsoles>,
-    /// VMs being deleted or changed.
-    busy: Arc<Mutex<BTreeSet<String>>>,
+    /// VMs being deleted, changed, backed up or restored, and which.
+    busy: Arc<Mutex<BTreeMap<String, &'static str>>>,
+    /// Backups and restores under way.
+    work: Work,
     /// The library and the drives that hold its images change one at a
     /// time: an image is never deleted while a VM is given it.
     library: Arc<tokio::sync::Mutex<()>>,
@@ -450,6 +593,7 @@ impl Vms {
             ports: Arc::new(ports),
             consoles: Arc::default(),
             busy: Arc::default(),
+            work: Arc::default(),
             library: Arc::default(),
             stats: Arc::default(),
         }
@@ -485,10 +629,12 @@ impl Vms {
         Ok(id)
     }
 
-    fn take_busy(&self, id: &str, what: &str) -> Result<Busy, VmsError> {
-        if !self.busy.lock().unwrap_or_else(PoisonError::into_inner).insert(id.to_owned()) {
-            return Err(VmsError::Refused(format!("the virtual machine is being {what}")));
+    fn take_busy(&self, id: &str, what: &'static str) -> Result<Busy, VmsError> {
+        let mut busy = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(doing) = busy.get(id) {
+            return Err(VmsError::Refused(format!("the virtual machine is being {doing}")));
         }
+        busy.insert(id.to_owned(), what);
         Ok(Busy { busy: Arc::clone(&self.busy), id: id.to_owned() })
     }
 
@@ -532,7 +678,8 @@ impl Vms {
         if !facts.kvm {
             return Err(VmsError::NoKvm);
         }
-        if facts.installed {
+        // Installed before VMs had a TPM: the run brings swtpm along.
+        if facts.installed && facts.swtpm {
             return Err(VmsError::Installed);
         }
         let this = self.clone();
@@ -571,6 +718,8 @@ impl Vms {
         let locations = self.ordered_locations(&facts).await?;
         let library = locations.first().cloned().ok_or(VmsError::NotSetUp)?;
         facts.limits.locations = locations;
+        facts.limits.swtpm = facts.swtpm;
+        facts.limits.secure_boot = facts.secure_boot;
         Ok((facts, library))
     }
 
@@ -658,6 +807,7 @@ impl Vms {
         let images = self.ready_images().await?;
         let images: Vec<&str> = images.iter().map(String::as_str).collect();
         let name = settings.check(&facts.limits, &taken, &images, None)?;
+        self.check_host_devices(&settings, None, context).await?;
         let vm = Vm {
             id: self.new_id().await?,
             settings: VmSettings { name, ..settings },
@@ -722,6 +872,31 @@ impl Vms {
         if vm.ready { Ok(vm) } else { Err(VmsError::Creating) }
     }
 
+    /// The host's USB and PCI devices, the IOMMU, and why the host keeps
+    /// the PCI devices it needs.
+    pub async fn host_devices(&self, context: &RequestContext) -> Result<HostDevices, VmsError> {
+        Ok(self.ports.host.host_devices(context).await?)
+    }
+
+    /// The host's devices a VM is to be given are there, and may go to it;
+    /// looked at only when it is given one it did not have `before`.
+    async fn check_host_devices(
+        &self,
+        settings: &VmSettings,
+        before: Option<&VmSettings>,
+        context: &RequestContext,
+    ) -> Result<(), VmsError> {
+        let (before_usb, before_pci) = before.map_or((&[][..], &[][..]), |b| (&b.usb[..], &b.pci[..]));
+        let new = settings.usb.iter().any(|device| !before_usb.contains(device))
+            || settings.pci.iter().any(|address| !before_pci.contains(address));
+        if !new {
+            return Ok(());
+        }
+        let devices = self.ports.host.host_devices(context).await?;
+        devices.check(&settings.usb, &settings.pci, before_usb, before_pci)?;
+        Ok(())
+    }
+
     /// Changes a VM. Its name, autostart and the images in its drives
     /// change whenever; everything else, its hardware, only while it is
     /// shut off. Removing a disk destroys it: `confirm` must then be its
@@ -747,7 +922,21 @@ impl Vms {
         let taken: Vec<&str> = others.iter().map(|other| other.settings.name.as_str()).collect();
         let macs: BTreeSet<String> =
             others.iter().flat_map(|other| other.settings.nics.iter().map(|nic| nic.mac.clone())).collect();
-        let VmChange { name, cpus, memory_mib, firmware, disks, mut nics, drives, boot, autostart } = change;
+        let VmChange {
+            name,
+            cpus,
+            memory_mib,
+            firmware,
+            disks,
+            mut nics,
+            drives,
+            boot,
+            autostart,
+            usb,
+            pci,
+            tpm,
+            secure_boot,
+        } = change;
         for nic in &mut nics {
             nic.mac.clear();
         }
@@ -762,6 +951,10 @@ impl Vms {
             drives,
             boot,
             autostart,
+            usb,
+            pci,
+            tpm,
+            secure_boot,
         };
         settings.sort_devices();
         settings.place_disks(Some(&vm.settings), &facts.limits.locations)?;
@@ -769,8 +962,10 @@ impl Vms {
         let images = self.ready_images().await?;
         let images: Vec<&str> = images.iter().map(String::as_str).collect();
         settings.name = settings.check(&facts.limits, &taken, &images, Some(&vm.settings))?;
+        self.check_host_devices(&settings, Some(&vm.settings), context).await?;
 
         let hardware = settings.hardware_differs(&vm.settings);
+        let (attach, detach) = settings.usb_changes(&vm.settings);
         let removed = settings.removed_disks(&vm.settings);
         let media = settings.changed_media(&vm.settings);
         if hardware {
@@ -791,6 +986,9 @@ impl Vms {
             } else {
                 for drive in &media {
                     self.ports.host.change_media(&changed, library.volume, *drive, context).await?;
+                }
+                if !attach.is_empty() || !detach.is_empty() {
+                    self.ports.host.change_usb(&changed, library.volume, &attach, &detach, context).await?;
                 }
                 if changed.settings.autostart != vm.settings.autostart {
                     self.ports.host.set_autostart(&vm.id, changed.settings.autostart, context).await?;
@@ -906,3 +1104,6 @@ fn cards(nics: &[Nic]) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod backup_tests;

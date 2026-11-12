@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", name, os, cpus, memory_mib, firmware, autostart AS \"autostart: bool\", boot,\n                      created_at, ready AS \"ready: bool\"\n               FROM vms WHERE id = ?",
+  "query": "SELECT id AS \"id!\", name, os, cpus, memory_mib, firmware, autostart AS \"autostart: bool\", boot,\n                      created_at, ready AS \"ready: bool\", tpm AS \"tpm: bool\", secure_boot AS \"secure_boot: bool\"\n               FROM vms WHERE id = ?",
   "describe": {
     "columns": [
       {
@@ -112,6 +112,28 @@
             "name": "ready"
           }
         }
+      },
+      {
+        "name": "tpm: bool",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "vms",
+            "name": "tpm"
+          }
+        }
+      },
+      {
+        "name": "secure_boot: bool",
+        "ordinal": 11,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "vms",
+            "name": "secure_boot"
+          }
+        }
       }
     ],
     "parameters": {
@@ -127,8 +149,10 @@
       false,
       false,
       false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "47c4e645330f39bdd045850895d43ea5f0311671a4e760274f0813cdc5aea06a"
+  "hash": "c5ff1b70bb30e7960fb0edf5c46e5f4ac09e619c6eb8afb47aeeb36cfb22f126"
 }

@@ -91,11 +91,11 @@ pub(crate) enum ArchiveError {
     Failed(String),
 }
 
-fn failed(what: impl std::fmt::Display, error: impl std::fmt::Display) -> ArchiveError {
+pub(crate) fn failed(what: impl std::fmt::Display, error: impl std::fmt::Display) -> ArchiveError {
     ArchiveError::Failed(format!("{what}: {error}"))
 }
 
-fn refused(reason: impl Into<String>) -> ArchiveError {
+pub(crate) fn refused(reason: impl Into<String>) -> ArchiveError {
     ArchiveError::Refused(reason.into())
 }
 
@@ -247,17 +247,17 @@ pub(crate) struct Swept {
 
 // Stat field types differ between architectures.
 #[allow(clippy::useless_conversion)]
-fn identity(stat: &Stat) -> (u64, u64) {
+pub(crate) fn identity(stat: &Stat) -> (u64, u64) {
     (u64::from(stat.st_dev), u64::from(stat.st_ino))
 }
 
-fn kind(stat: &Stat) -> FileType {
+pub(crate) fn kind(stat: &Stat) -> FileType {
     FileType::from_raw_mode(stat.st_mode)
 }
 
 /// When a file was last written, in nanoseconds since 1970.
 #[allow(clippy::useless_conversion, clippy::unnecessary_fallible_conversions)]
-fn modified(stat: &Stat) -> i64 {
+pub(crate) fn modified(stat: &Stat) -> i64 {
     i64::from(stat.st_mtime)
         .saturating_mul(1_000_000_000)
         .saturating_add(i64::try_from(stat.st_mtime_nsec).unwrap_or(0))
@@ -269,13 +269,13 @@ fn c_name(bytes: &[u8]) -> Result<CString, ArchiveError> {
 
 /// A folder by its absolute path, for reading, never through a link at its
 /// end; the places it is on are root's.
-fn open_folder(path: &Path, flags: OFlags) -> Result<OwnedFd, ArchiveError> {
+pub(crate) fn open_folder(path: &Path, flags: OFlags) -> Result<OwnedFd, ArchiveError> {
     open(path, flags | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty())
         .map_err(|e| failed(path.display(), e))
 }
 
 /// `path` beneath `base`, as [`BENEATH`] allows: `.` for the base itself.
-fn beneath(base: BorrowedFd<'_>, path: &[u8], flags: OFlags) -> Result<OwnedFd, Errno> {
+pub(crate) fn beneath(base: BorrowedFd<'_>, path: &[u8], flags: OFlags) -> Result<OwnedFd, Errno> {
     let relative: &[u8] = if path.is_empty() { b"." } else { path };
     openat2(
         base,
@@ -286,7 +286,7 @@ fn beneath(base: BorrowedFd<'_>, path: &[u8], flags: OFlags) -> Result<OwnedFd, 
     )
 }
 
-fn link_on_the_way(path: &str, error: Errno) -> ArchiveError {
+pub(crate) fn link_on_the_way(path: &str, error: Errno) -> ArchiveError {
     match error {
         Errno::LOOP | Errno::XDEV | Errno::NOTDIR => {
             refused(format!("{path} leads through a link or onto another file system"))
@@ -298,7 +298,7 @@ fn link_on_the_way(path: &str, error: Errno) -> ArchiveError {
 /// The folder `path` of the share, made with everything on the way as far
 /// as it is missing: mode 0777, which the folder's inherited ACL narrows,
 /// as for any new folder.
-fn make_folders(share: BorrowedFd<'_>, path: &SharePath) -> Result<OwnedFd, ArchiveError> {
+pub(crate) fn make_folders(share: BorrowedFd<'_>, path: &SharePath) -> Result<OwnedFd, ArchiveError> {
     let mut folder =
         beneath(share, b"", OFlags::PATH | OFlags::DIRECTORY).map_err(|e| failed("the share", e))?;
     let mut walked = String::new();
@@ -316,15 +316,15 @@ fn make_folders(share: BorrowedFd<'_>, path: &SharePath) -> Result<OwnedFd, Arch
 
 /// A file written under a hidden name of its own until it is complete:
 /// `.<name>.partial-<16 hex digits>`.
-struct Partial {
-    file: File,
-    hidden: String,
-    name: String,
+pub(crate) struct Partial {
+    pub(crate) file: File,
+    pub(crate) hidden: String,
+    pub(crate) name: String,
 }
 
 /// A hidden file of its own in `folder`, for what becomes `name` once
 /// complete: mode 0666, which the folder's inherited ACL narrows.
-fn create_partial(folder: BorrowedFd<'_>, name: &str) -> Result<Partial, ArchiveError> {
+pub(crate) fn create_partial(folder: BorrowedFd<'_>, name: &str) -> Result<Partial, ArchiveError> {
     for _ in 0..8 {
         let mut random = [0u8; 8];
         rustix::rand::getrandom(&mut random, rustix::rand::GetRandomFlags::empty())
@@ -343,7 +343,7 @@ fn create_partial(folder: BorrowedFd<'_>, name: &str) -> Result<Partial, Archive
 /// Takes away the group's and others' write permission from `file`, and
 /// with the group's the ACL mask's, so that only its owner, root, may
 /// change it; who may read it is as the folder's ACL made it.
-fn protect(file: &File, what: &str) -> Result<(), ArchiveError> {
+pub(crate) fn protect(file: &File, what: &str) -> Result<(), ArchiveError> {
     let stat = fstat(file).map_err(|e| failed(what, e))?;
     fchmod(file, Mode::from_raw_mode(stat.st_mode & 0o755))
         .map_err(|e| failed(format!("{what}: its mode"), e))
@@ -352,13 +352,13 @@ fn protect(file: &File, what: &str) -> Result<(), ArchiveError> {
 /// Removes `partial`'s hidden name: only that of this run; whoever may
 /// write the folder could have swapped it, which removes no more than a
 /// name.
-fn discard(folder: BorrowedFd<'_>, partial: &Partial) {
+pub(crate) fn discard(folder: BorrowedFd<'_>, partial: &Partial) {
     let _ = unlinkat(folder, partial.hidden.as_str(), AtFlags::empty());
 }
 
 /// Writes `content` into a new hidden file for `name` in `folder`, written
 /// out and made writable by root only; refused if `name` exists.
-fn write_partial(
+pub(crate) fn write_partial(
     folder: BorrowedFd<'_>,
     name: &str,
     content: impl FnOnce(&File) -> Result<(), ArchiveError>,
@@ -380,15 +380,15 @@ fn write_partial(
 }
 
 /// A file as written: its size and identity.
-struct Placed {
-    bytes: u64,
-    device: u64,
-    inode: u64,
-    modified: i64,
+pub(crate) struct Placed {
+    pub(crate) bytes: u64,
+    pub(crate) device: u64,
+    pub(crate) inode: u64,
+    pub(crate) modified: i64,
 }
 
 /// The size and identity of a file written.
-fn written_file(partial: &Partial) -> Result<Placed, ArchiveError> {
+pub(crate) fn written_file(partial: &Partial) -> Result<Placed, ArchiveError> {
     let stat = fstat(&partial.file).map_err(|e| failed(&partial.name, e))?;
     let (device, inode) = identity(&stat);
     Ok(Placed { bytes: u64::try_from(stat.st_size).unwrap_or(0), device, inode, modified: modified(&stat) })
@@ -396,7 +396,7 @@ fn written_file(partial: &Partial) -> Result<Placed, ArchiveError> {
 
 /// The names in `folder` (which may be opened as a path only) that `keep`
 /// says.
-fn names_in(folder: BorrowedFd<'_>, keep: impl Fn(&[u8]) -> bool) -> Result<Vec<CString>, Errno> {
+pub(crate) fn names_in(folder: BorrowedFd<'_>, keep: impl Fn(&[u8]) -> bool) -> Result<Vec<CString>, Errno> {
     let listed = openat(folder, c".", WALKED, Mode::empty())?;
     Ok(Dir::read_from(&listed)?
         .flatten()
@@ -417,7 +417,7 @@ fn is_partial_name(name: &[u8]) -> bool {
 /// stopped, or killed by its time or memory, while it wrote): regular files
 /// of this account named as [`create_partial`] names them, nothing else.
 /// How many went.
-fn sweep_partials(folder: BorrowedFd<'_>) -> u64 {
+pub(crate) fn sweep_partials(folder: BorrowedFd<'_>) -> u64 {
     let Ok(left) = names_in(folder, is_partial_name) else { return 0 };
     let me = rustix::process::geteuid().as_raw();
     let mut removed = 0;
@@ -435,7 +435,7 @@ fn sweep_partials(folder: BorrowedFd<'_>) -> u64 {
 
 /// Removes `name` from `folder` if it still is the file `id` (device and
 /// inode); never another.
-fn remove_if(folder: BorrowedFd<'_>, name: &str, id: (u64, u64)) {
+pub(crate) fn remove_if(folder: BorrowedFd<'_>, name: &str, id: (u64, u64)) {
     if let Ok(stat) = statat(folder, name, AtFlags::SYMLINK_NOFOLLOW)
         && kind(&stat) == FileType::RegularFile
         && identity(&stat) == id
@@ -478,18 +478,18 @@ fn put_in_place(
 }
 
 /// Bytes through, hashed and counted.
-struct Hashing<T> {
-    inner: T,
+pub(crate) struct Hashing<T> {
+    pub(crate) inner: T,
     hash: Sha256,
-    bytes: u64,
+    pub(crate) bytes: u64,
 }
 
 impl<T> Hashing<T> {
-    fn new(inner: T) -> Self {
+    pub(crate) fn new(inner: T) -> Self {
         Self { inner, hash: Sha256::new(), bytes: 0 }
     }
 
-    fn digest(&self) -> String {
+    pub(crate) fn digest(&self) -> String {
         self.hash.clone().finalize().iter().map(|b| format!("{b:02x}")).collect()
     }
 }
@@ -508,7 +508,7 @@ impl<W: Write> Write for Hashing<W> {
 }
 
 /// Reports how far it got, in percent of `total`, each time that changes.
-struct Progress<'a> {
+pub(crate) struct Progress<'a> {
     total: u64,
     done: u64,
     told: Option<u8>,
@@ -516,11 +516,11 @@ struct Progress<'a> {
 }
 
 impl<'a> Progress<'a> {
-    fn new(total: u64, report: &'a mut dyn FnMut(u8)) -> Self {
+    pub(crate) fn new(total: u64, report: &'a mut dyn FnMut(u8)) -> Self {
         Self { total, done: 0, told: None, report }
     }
 
-    fn add(&mut self, bytes: u64) {
+    pub(crate) fn add(&mut self, bytes: u64) {
         self.done += bytes;
         let percent = (self.done.min(self.total) * 100).checked_div(self.total).map_or(100, |p| p as u8);
         if self.told != Some(percent) {
@@ -1028,7 +1028,7 @@ pub(crate) fn back_up(
 
 /// The archive `path` of the share, opened for reading: beneath the share's
 /// root, through no link, a regular file.
-fn open_archive(share: BorrowedFd<'_>, path: &SharePath) -> Result<(File, u64), ArchiveError> {
+pub(crate) fn open_archive(share: BorrowedFd<'_>, path: &SharePath) -> Result<(File, u64), ArchiveError> {
     if path.is_root() {
         return Err(refused("no archive named"));
     }
@@ -1057,7 +1057,7 @@ fn open_archive(share: BorrowedFd<'_>, path: &SharePath) -> Result<(File, u64), 
 /// is its owner's, and neither its group nor others may write. Where it has
 /// an ACL, the group's bits are the ACL's mask: without write in them, no
 /// entry of the ACL may write either.
-fn root_only(stat: &Stat) -> Result<(), &'static str> {
+pub(crate) fn root_only(stat: &Stat) -> Result<(), &'static str> {
     if stat.st_uid != rustix::process::geteuid().as_raw() {
         return Err("not root's");
     }
@@ -1920,9 +1920,30 @@ impl VolumeJob {
     }
 }
 
-fn say(out: &mut dyn Write, line: &UnitLine) {
+pub(crate) fn say(out: &mut dyn Write, line: &UnitLine) {
     let _ = writeln!(out, "{}", serde_json::to_string(line).unwrap_or_default());
     let _ = out.flush();
+}
+
+/// What a unit did, as its last line, or in pieces before it when it is
+/// too long for one.
+pub(crate) fn say_value(out: &mut dyn Write, value: serde_json::Value) {
+    let text = value.to_string();
+    if text.len() <= PART_BYTES {
+        say(out, &UnitLine::Done(value));
+        return;
+    }
+    let mut rest = text.as_str();
+    while !rest.is_empty() {
+        let mut at = PART_BYTES.min(rest.len());
+        while !rest.is_char_boundary(at) {
+            at -= 1;
+        }
+        let (part, after) = rest.split_at(at);
+        say(out, &UnitLine::Part(part.to_owned()));
+        rest = after;
+    }
+    say(out, &UnitLine::Done(serde_json::Value::Null));
 }
 
 /// Runs a unit's job, printing [`UnitLine`]s to `out`; whether it was done.
@@ -1958,22 +1979,7 @@ pub fn run_volume_job(kind: VolumeJob, hex: &str, now: i64, out: &mut dyn Write)
     };
     match outcome {
         Ok(value) => {
-            let text = value.to_string();
-            if text.len() <= PART_BYTES {
-                say(out, &UnitLine::Done(value));
-            } else {
-                let mut rest = text.as_str();
-                while !rest.is_empty() {
-                    let mut at = PART_BYTES.min(rest.len());
-                    while !rest.is_char_boundary(at) {
-                        at -= 1;
-                    }
-                    let (part, after) = rest.split_at(at);
-                    say(out, &UnitLine::Part(part.to_owned()));
-                    rest = after;
-                }
-                say(out, &UnitLine::Done(serde_json::Value::Null));
-            }
+            say_value(out, value);
             true
         }
         Err(error) => {

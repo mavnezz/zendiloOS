@@ -7,10 +7,13 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 use zendiloos_kernel::{PortError, Timestamp};
-use zendiloos_vms::application::{VmImageRepository, VmLocationRepository, VmRepository};
+use zendiloos_vms::application::{
+    VmBackupRepository, VmImageRepository, VmLocationRepository, VmRepository, VmScheduleRepository,
+};
 use zendiloos_vms::domain::{
-    BootDevice, Disk, DiskBus, Drive, Firmware, ImageOrigin, Location, Network, Nic, NicModel, OsPreset, Vm,
-    VmImage, VmSettings,
+    BackupFile, BackupPart, BackupPlace, BootDevice, Consistency, Disk, DiskBus, Drive, Firmware, Frequency,
+    ImageOrigin, Location, Network, NewVmBackup, Nic, NicModel, OsPreset, SnapshotSchedule, UsbDevice, Vm,
+    VmBackup, VmImage, VmSettings,
 };
 
 use super::Database;
@@ -53,6 +56,8 @@ struct Row {
     boot: String,
     created_at: i64,
     ready: bool,
+    tpm: bool,
+    secure_boot: bool,
 }
 
 struct DiskRow {
@@ -79,12 +84,20 @@ struct DriveRow {
     image: Option<String>,
 }
 
+struct HostDeviceRow {
+    vm: String,
+    kind: String,
+    device: String,
+}
+
 /// Each VM's devices, by its id.
 #[derive(Default)]
 struct Devices {
     disks: BTreeMap<String, Vec<Disk>>,
     nics: BTreeMap<String, Vec<Nic>>,
     drives: BTreeMap<String, Vec<Drive>>,
+    usb: BTreeMap<String, Vec<UsbDevice>>,
+    pci: BTreeMap<String, Vec<String>>,
 }
 
 fn slot(value: i64, of: &str) -> Result<u8, PortError> {
@@ -92,8 +105,24 @@ fn slot(value: i64, of: &str) -> Result<u8, PortError> {
 }
 
 impl Devices {
-    fn of(disks: Vec<DiskRow>, nics: Vec<NicRow>, drives: Vec<DriveRow>) -> Result<Self, PortError> {
+    fn of(
+        disks: Vec<DiskRow>,
+        nics: Vec<NicRow>,
+        drives: Vec<DriveRow>,
+        host: Vec<HostDeviceRow>,
+    ) -> Result<Self, PortError> {
         let mut devices = Self::default();
+        for row in host {
+            match row.kind.as_str() {
+                "usb" => {
+                    let device = UsbDevice::parse(&row.device)
+                        .ok_or_else(|| stored(format!("USB device {}", row.device)))?;
+                    devices.usb.entry(row.vm).or_default().push(device);
+                }
+                "pci" => devices.pci.entry(row.vm).or_default().push(row.device),
+                other => return Err(stored(format!("host device of kind {other}"))),
+            }
+        }
         for row in disks {
             let disk = Disk {
                 slot: slot(row.slot, &row.vm)?,
@@ -145,6 +174,10 @@ impl Devices {
                 drives: self.drives.remove(&row.id).unwrap_or_default(),
                 boot,
                 autostart: row.autostart,
+                usb: self.usb.remove(&row.id).unwrap_or_default(),
+                pci: self.pci.remove(&row.id).unwrap_or_default(),
+                tpm: row.tpm,
+                secure_boot: row.secure_boot,
             },
             created_at: Timestamp::from_unix_seconds(row.created_at),
             ready: row.ready,
@@ -188,7 +221,16 @@ impl SqliteVms {
         .fetch_all(&mut *connection)
         .await
         .map_err(db_error)?;
-        Devices::of(disks, nics, drives)
+        let host = sqlx::query_as!(
+            HostDeviceRow,
+            r#"SELECT vm AS "vm!", kind AS "kind!", device AS "device!" FROM vm_host_devices
+               WHERE ?1 IS NULL OR vm = ?1 ORDER BY vm, kind, device"#,
+            id
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(db_error)?;
+        Devices::of(disks, nics, drives, host)
     }
 
     /// The VM's devices, as its settings have them, in place of those it had.
@@ -197,6 +239,14 @@ impl SqliteVms {
         sqlx::query!("DELETE FROM vm_disks WHERE vm = ?", id).execute(&mut **transaction).await?;
         sqlx::query!("DELETE FROM vm_nics WHERE vm = ?", id).execute(&mut **transaction).await?;
         sqlx::query!("DELETE FROM vm_drives WHERE vm = ?", id).execute(&mut **transaction).await?;
+        sqlx::query!("DELETE FROM vm_host_devices WHERE vm = ?", id).execute(&mut **transaction).await?;
+        let usb = vm.settings.usb.iter().map(|device| ("usb", device.id()));
+        let pci = vm.settings.pci.iter().map(|address| ("pci", address.clone()));
+        for (kind, device) in usb.chain(pci) {
+            sqlx::query!("INSERT INTO vm_host_devices (vm, kind, device) VALUES (?, ?, ?)", id, kind, device)
+                .execute(&mut **transaction)
+                .await?;
+        }
         for disk in &vm.settings.disks {
             let (slot, size, bus) = (i64::from(disk.slot), i64::from(disk.size_gib), disk.bus.as_str());
             let volume = i64::from(disk.location.volume);
@@ -247,7 +297,7 @@ impl VmRepository for SqliteVms {
         let rows = sqlx::query_as!(
             Row,
             r#"SELECT id AS "id!", name, os, cpus, memory_mib, firmware, autostart AS "autostart: bool", boot,
-                      created_at, ready AS "ready: bool"
+                      created_at, ready AS "ready: bool", tpm AS "tpm: bool", secure_boot AS "secure_boot: bool"
                FROM vms ORDER BY created_at, id"#
         )
         .fetch_all(&mut *transaction)
@@ -263,7 +313,7 @@ impl VmRepository for SqliteVms {
         let row = sqlx::query_as!(
             Row,
             r#"SELECT id AS "id!", name, os, cpus, memory_mib, firmware, autostart AS "autostart: bool", boot,
-                      created_at, ready AS "ready: bool"
+                      created_at, ready AS "ready: bool", tpm AS "tpm: bool", secure_boot AS "secure_boot: bool"
                FROM vms WHERE id = ?"#,
             id
         )
@@ -283,8 +333,9 @@ impl VmRepository for SqliteVms {
         let created_at = vm.created_at.unix_seconds();
         let mut transaction = self.db.pool().begin().await.map_err(db_error)?;
         let done = sqlx::query!(
-            "INSERT INTO vms (id, name, os, cpus, memory_mib, firmware, autostart, boot, created_at, ready)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            "INSERT INTO vms (id, name, os, cpus, memory_mib, firmware, autostart, boot, created_at, ready, tpm,
+                              secure_boot)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
             vm.id,
             settings.name,
             os,
@@ -294,7 +345,9 @@ impl VmRepository for SqliteVms {
             settings.autostart,
             boot,
             created_at,
-            vm.ready
+            vm.ready,
+            settings.tpm,
+            settings.secure_boot
         )
         .execute(&mut *transaction)
         .await
@@ -330,13 +383,17 @@ impl VmRepository for SqliteVms {
         let boot = boot_text(&settings.boot);
         let mut transaction = self.db.pool().begin().await.map_err(db_error)?;
         let done = sqlx::query!(
-            "UPDATE vms SET name = ?, cpus = ?, memory_mib = ?, firmware = ?, autostart = ?, boot = ? WHERE id = ?",
+            "UPDATE vms SET name = ?, cpus = ?, memory_mib = ?, firmware = ?, autostart = ?, boot = ?, tpm = ?,
+                            secure_boot = ?
+             WHERE id = ?",
             settings.name,
             cpus,
             memory,
             firmware,
             settings.autostart,
             boot,
+            settings.tpm,
+            settings.secure_boot,
             vm.id
         )
         .execute(&mut *transaction)
@@ -354,6 +411,244 @@ impl VmRepository for SqliteVms {
 
     async fn delete(&self, id: &str) -> Result<bool, PortError> {
         let done = sqlx::query!("DELETE FROM vms WHERE id = ?", id)
+            .execute(self.db.pool())
+            .await
+            .map_err(db_error)?;
+        Ok(done.rows_affected() == 1)
+    }
+}
+
+/// [`VmScheduleRepository`] on the `vm_snapshot_schedules` table.
+#[derive(Debug, Clone)]
+pub struct SqliteVmSchedules {
+    db: Database,
+}
+
+impl SqliteVmSchedules {
+    pub fn new(db: Database) -> Self {
+        Self { db }
+    }
+}
+
+fn schedule(frequency: &str, keep: i64) -> Result<SnapshotSchedule, PortError> {
+    Ok(SnapshotSchedule {
+        frequency: Frequency::parse(frequency).ok_or_else(|| stored(format!("frequency {frequency}")))?,
+        keep: u32::try_from(keep).map_err(|_| stored(format!("keep {keep}")))?,
+    })
+}
+
+#[async_trait]
+impl VmScheduleRepository for SqliteVmSchedules {
+    async fn list(&self, vm: &str) -> Result<Vec<SnapshotSchedule>, PortError> {
+        let rows = sqlx::query!(r#"SELECT frequency, keep FROM vm_snapshot_schedules WHERE vm = ?"#, vm)
+            .fetch_all(self.db.pool())
+            .await
+            .map_err(db_error)?;
+        let mut list =
+            rows.into_iter().map(|row| schedule(&row.frequency, row.keep)).collect::<Result<Vec<_>, _>>()?;
+        list.sort_by_key(|schedule| schedule.frequency);
+        Ok(list)
+    }
+
+    async fn all(&self) -> Result<BTreeMap<String, Vec<SnapshotSchedule>>, PortError> {
+        let rows =
+            sqlx::query!(r#"SELECT vm AS "vm!", frequency, keep FROM vm_snapshot_schedules ORDER BY vm"#)
+                .fetch_all(self.db.pool())
+                .await
+                .map_err(db_error)?;
+        let mut all: BTreeMap<String, Vec<SnapshotSchedule>> = BTreeMap::new();
+        for row in rows {
+            all.entry(row.vm).or_default().push(schedule(&row.frequency, row.keep)?);
+        }
+        for list in all.values_mut() {
+            list.sort_by_key(|schedule| schedule.frequency);
+        }
+        Ok(all)
+    }
+
+    async fn set(&self, vm: &str, schedules: &[SnapshotSchedule]) -> Result<(), PortError> {
+        let mut transaction = self.db.pool().begin().await.map_err(db_error)?;
+        sqlx::query!("DELETE FROM vm_snapshot_schedules WHERE vm = ?", vm)
+            .execute(&mut *transaction)
+            .await
+            .map_err(db_error)?;
+        for schedule in schedules {
+            let (frequency, keep) = (schedule.frequency.as_str(), i64::from(schedule.keep));
+            sqlx::query!(
+                "INSERT INTO vm_snapshot_schedules (vm, frequency, keep) VALUES (?, ?, ?)",
+                vm,
+                frequency,
+                keep
+            )
+            .execute(&mut *transaction)
+            .await
+            .map_err(db_error)?;
+        }
+        transaction.commit().await.map_err(db_error)
+    }
+}
+
+/// [`VmBackupRepository`] on the `vm_backups` table; the files and the
+/// VM's settings as JSON.
+#[derive(Debug, Clone)]
+pub struct SqliteVmBackups {
+    db: Database,
+}
+
+impl SqliteVmBackups {
+    pub fn new(db: Database) -> Self {
+        Self { db }
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FileJson {
+    part: String,
+    #[serde(default)]
+    slot: Option<u8>,
+    #[serde(default)]
+    volsize: Option<u64>,
+    bytes: u64,
+    sha256: String,
+}
+
+fn files_json(files: &[BackupFile]) -> String {
+    let files: Vec<FileJson> = files
+        .iter()
+        .map(|file| {
+            let (part, slot, volsize) = match file.part {
+                BackupPart::Disk { slot, volsize } => ("disk", Some(slot), Some(volsize)),
+                BackupPart::Nvram => ("nvram", None, None),
+                BackupPart::Tpm => ("tpm", None, None),
+            };
+            FileJson { part: part.to_owned(), slot, volsize, bytes: file.bytes, sha256: file.sha256.clone() }
+        })
+        .collect();
+    serde_json::to_string(&files).unwrap_or_default()
+}
+
+fn files_of(text: &str) -> Result<Vec<BackupFile>, PortError> {
+    let files: Vec<FileJson> =
+        serde_json::from_str(text).map_err(|e| stored(format!("a backup's files: {e}")))?;
+    files
+        .into_iter()
+        .map(|file| {
+            let part = match (file.part.as_str(), file.slot, file.volsize) {
+                ("disk", Some(slot), Some(volsize)) => BackupPart::Disk { slot, volsize },
+                ("nvram", _, _) => BackupPart::Nvram,
+                ("tpm", _, _) => BackupPart::Tpm,
+                (other, _, _) => return Err(stored(format!("a backup's file {other}"))),
+            };
+            Ok(BackupFile { part, bytes: file.bytes, sha256: file.sha256 })
+        })
+        .collect()
+}
+
+struct BackupRow {
+    id: i64,
+    vm: String,
+    vm_name: String,
+    place: String,
+    share_id: Option<i64>,
+    share: Option<String>,
+    volume: Option<i64>,
+    drive: Option<String>,
+    folder: String,
+    taken_at: i64,
+    consistency: String,
+    files: String,
+    settings: String,
+}
+
+fn backup(row: BackupRow) -> Result<VmBackup, PortError> {
+    let place = match (row.place.as_str(), row.share_id, row.share, row.volume, row.drive) {
+        ("share", Some(share_id), Some(share), Some(volume), _) => BackupPlace::Share {
+            share_id,
+            share,
+            volume: u16::try_from(volume).map_err(|_| stored(format!("volume of backup {}", row.id)))?,
+        },
+        ("drive", _, _, _, Some(drive)) => BackupPlace::Drive { drive },
+        (other, ..) => return Err(stored(format!("place {other} of backup {}", row.id))),
+    };
+    Ok(VmBackup {
+        id: row.id,
+        vm: row.vm,
+        vm_name: row.vm_name,
+        place,
+        folder: row.folder,
+        taken_at: Timestamp::from_unix_seconds(row.taken_at),
+        consistency: Consistency::parse(&row.consistency)
+            .ok_or_else(|| stored(format!("consistency {}", row.consistency)))?,
+        files: files_of(&row.files)?,
+        settings: crate::vms::settings::from_json(&row.settings).map_err(stored)?,
+    })
+}
+
+#[async_trait]
+impl VmBackupRepository for SqliteVmBackups {
+    async fn list(&self) -> Result<Vec<VmBackup>, PortError> {
+        let rows = sqlx::query_as!(
+            BackupRow,
+            r#"SELECT id AS "id!", vm, vm_name, place, share_id, share, volume, drive, folder, taken_at, consistency,
+                      files, settings
+               FROM vm_backups ORDER BY taken_at DESC, id DESC"#
+        )
+        .fetch_all(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        rows.into_iter().map(backup).collect()
+    }
+
+    async fn find(&self, id: i64) -> Result<Option<VmBackup>, PortError> {
+        let row = sqlx::query_as!(
+            BackupRow,
+            r#"SELECT id AS "id!", vm, vm_name, place, share_id, share, volume, drive, folder, taken_at, consistency,
+                      files, settings
+               FROM vm_backups WHERE id = ?"#,
+            id
+        )
+        .fetch_optional(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        row.map(backup).transpose()
+    }
+
+    async fn create(&self, new: &NewVmBackup) -> Result<i64, PortError> {
+        let (place, share_id, share, volume, drive) = match &new.place {
+            BackupPlace::Share { share_id, share, volume } => {
+                ("share", Some(*share_id), Some(share.clone()), Some(i64::from(*volume)), None)
+            }
+            BackupPlace::Drive { drive } => ("drive", None, None, None, Some(drive.clone())),
+        };
+        let taken_at = new.taken_at.unix_seconds();
+        let consistency = new.consistency.as_str();
+        let files = files_json(&new.files);
+        let settings = crate::vms::settings::to_json(&new.settings);
+        let done = sqlx::query!(
+            "INSERT INTO vm_backups (vm, vm_name, place, share_id, share, volume, drive, folder, taken_at, consistency,
+                                     files, settings)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            new.vm,
+            new.vm_name,
+            place,
+            share_id,
+            share,
+            volume,
+            drive,
+            new.folder,
+            taken_at,
+            consistency,
+            files,
+            settings
+        )
+        .execute(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        Ok(done.last_insert_rowid())
+    }
+
+    async fn delete(&self, id: i64) -> Result<bool, PortError> {
+        let done = sqlx::query!("DELETE FROM vm_backups WHERE id = ?", id)
             .execute(self.db.pool())
             .await
             .map_err(db_error)?;
@@ -698,6 +993,82 @@ mod tests {
         assert!(vms.delete("0a1b2c3d4e5f").await.unwrap());
         assert!(!vms.delete("0a1b2c3d4e5f").await.unwrap());
         assert!(vms.list().await.unwrap().iter().all(|vm| vm.id != "0a1b2c3d4e5f"));
+    }
+
+    #[tokio::test]
+    async fn a_vm_keeps_its_tpm_secure_boot_and_the_hosts_devices() {
+        let (_dir, db) = temporary_database().await;
+        let vms = SqliteVms::new(db);
+        let mut windows = vm("0a1b2c3d4e5f", "Windows 11");
+        assert!(windows.settings.tpm && windows.settings.secure_boot);
+        windows.settings.usb = vec![UsbDevice { vendor: 0x046d, product: 0xc31c }];
+        windows.settings.pci = vec!["0000:01:00.0".into(), "0000:01:00.1".into()];
+        assert!(vms.create(&windows).await.unwrap());
+        assert_eq!(vms.find(&windows.id).await.unwrap(), Some(windows.clone()));
+        let mut plain = windows.clone();
+        plain.settings.tpm = false;
+        plain.settings.secure_boot = false;
+        plain.settings.usb.clear();
+        plain.settings.pci = vec!["0000:02:00.0".into()];
+        assert!(vms.update(&plain).await.unwrap());
+        assert_eq!(vms.find(&windows.id).await.unwrap(), Some(plain.clone()));
+        // Secure Boot needs UEFI, also in the records.
+        let mut bios = plain.clone();
+        bios.settings.firmware = Firmware::Bios;
+        bios.settings.secure_boot = true;
+        assert!(vms.update(&bios).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn snapshot_schedules_and_backups_are_kept_a_backup_also_once_its_vm_went() {
+        let (_dir, db) = temporary_database().await;
+        let vms = SqliteVms::new(db.clone());
+        let schedules = SqliteVmSchedules::new(db.clone());
+        let backups = SqliteVmBackups::new(db);
+        let office = vm("0a1b2c3d4e5f", "office");
+        assert!(vms.create(&office).await.unwrap());
+        let daily = SnapshotSchedule { frequency: Frequency::Daily, keep: 7 };
+        let hourly = SnapshotSchedule { frequency: Frequency::Hourly, keep: 24 };
+        schedules.set(&office.id, &[daily, hourly]).await.unwrap();
+        assert_eq!(schedules.list(&office.id).await.unwrap(), [hourly, daily]);
+        assert_eq!(schedules.all().await.unwrap()[&office.id], [hourly, daily]);
+        schedules.set(&office.id, &[daily]).await.unwrap();
+        assert_eq!(schedules.list(&office.id).await.unwrap(), [daily]);
+
+        let new = |taken: i64, place: BackupPlace| NewVmBackup {
+            vm: office.id.clone(),
+            vm_name: "office".into(),
+            place,
+            folder: format!("vm-backups/{}/20261112-0{taken}0000", office.id),
+            taken_at: Timestamp::from_unix_seconds(1_793_000_000 + taken),
+            consistency: Consistency::Crash,
+            files: vec![
+                BackupFile {
+                    part: BackupPart::Disk { slot: 0, volsize: 64 << 30 },
+                    bytes: 1 << 30,
+                    sha256: "ab".repeat(32),
+                },
+                BackupFile { part: BackupPart::Nvram, bytes: 540_672, sha256: "cd".repeat(32) },
+                BackupFile { part: BackupPart::Tpm, bytes: 1_000, sha256: "ef".repeat(32) },
+            ],
+            settings: office.settings.clone(),
+        };
+        let share = BackupPlace::Share { share_id: 3, share: "backups".into(), volume: 1 };
+        let first = backups.create(&new(1, share.clone())).await.unwrap();
+        let second = backups.create(&new(2, BackupPlace::Drive { drive: "1234-ABCD".into() })).await.unwrap();
+        let listed = backups.list().await.unwrap();
+        assert_eq!(listed.iter().map(|b| b.id).collect::<Vec<_>>(), [second, first], "newest first");
+        let found = backups.find(first).await.unwrap().unwrap();
+        assert_eq!(
+            (found.place.clone(), found.files.clone(), found.settings.clone()),
+            (share, new(1, BackupPlace::Drive { drive: "x".into() }).files, office.settings.clone())
+        );
+        assert_eq!(found.consistency, Consistency::Crash);
+        assert!(vms.delete(&office.id).await.unwrap());
+        assert!(schedules.list(&office.id).await.unwrap().is_empty(), "the schedules went with it");
+        assert_eq!(backups.list().await.unwrap().len(), 2, "the backups stay");
+        assert!(backups.delete(first).await.unwrap() && !backups.delete(first).await.unwrap());
+        assert_eq!(backups.find(first).await.unwrap(), None);
     }
 
     #[tokio::test]

@@ -10,10 +10,15 @@ use zendiloos_jobs::testing::{FixedClock, MemoryJobs};
 use zendiloos_kernel::{Actor, AuditEntry, AuditLog, PortError, RequestContext};
 
 use crate::application::{
-    ConsoleSession, DatasetUsage, HostError, HostFacts, IsoError, IsoFiles, IsoSource, Steps, VmHost, VmIds,
-    VmImageRepository, VmLocationRepository, VmPool, VmRepository, Vms, VmsPorts, ZvolUsage,
+    BackupShare, BackupShares, BackupWritten, ConsoleSession, DatasetUsage, HostError, HostFacts, IsoError,
+    IsoFiles, IsoSource, Steps, VmBackupRepository, VmHost, VmIds, VmImageRepository, VmLocationRepository,
+    VmPool, VmRepository, VmScheduleRepository, Vms, VmsPorts, ZvolUsage,
 };
-use crate::domain::{HostLimits, IsoChoice, Location, PowerState, Vm, VmAction, VmCounters, VmImage};
+use crate::domain::{
+    BackupFile, BackupPart, BackupPlace, Consistency, Frequency, HostDevices, HostLimits, HostNeeds, HostPci,
+    HostUsb, Iommu, IsoChoice, Location, NewVmBackup, PowerState, SnapshotSchedule, UsbDevice, Vm, VmAction,
+    VmBackup, VmCounters, VmImage, VmSnapshot,
+};
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -105,6 +110,79 @@ impl VmLocationRepository for MemoryLocations {
         let before = locations.len();
         locations.retain(|location| location.pool != pool);
         Ok(locations.len() < before)
+    }
+}
+
+/// The VMs' snapshot schedules.
+#[derive(Default)]
+pub struct MemorySchedules(Mutex<BTreeMap<String, Vec<SnapshotSchedule>>>);
+
+#[async_trait]
+impl VmScheduleRepository for MemorySchedules {
+    async fn list(&self, vm: &str) -> Result<Vec<SnapshotSchedule>, PortError> {
+        Ok(lock(&self.0).get(vm).cloned().unwrap_or_default())
+    }
+
+    async fn all(&self) -> Result<BTreeMap<String, Vec<SnapshotSchedule>>, PortError> {
+        Ok(lock(&self.0)
+            .iter()
+            .filter(|(_, list)| !list.is_empty())
+            .map(|(vm, list)| (vm.clone(), list.clone()))
+            .collect())
+    }
+
+    async fn set(&self, vm: &str, schedules: &[SnapshotSchedule]) -> Result<(), PortError> {
+        lock(&self.0).insert(vm.to_owned(), schedules.to_vec());
+        Ok(())
+    }
+}
+
+/// The VMs' backups, numbered from 1.
+#[derive(Default)]
+pub struct MemoryBackups(Mutex<Vec<VmBackup>>);
+
+#[async_trait]
+impl VmBackupRepository for MemoryBackups {
+    async fn list(&self) -> Result<Vec<VmBackup>, PortError> {
+        let mut all = lock(&self.0).clone();
+        all.sort_by_key(|backup| std::cmp::Reverse((backup.taken_at, backup.id)));
+        Ok(all)
+    }
+
+    async fn find(&self, id: i64) -> Result<Option<VmBackup>, PortError> {
+        Ok(lock(&self.0).iter().find(|backup| backup.id == id).cloned())
+    }
+
+    async fn create(&self, backup: &NewVmBackup) -> Result<i64, PortError> {
+        let mut all = lock(&self.0);
+        let id = all.iter().map(|backup| backup.id).max().unwrap_or(0) + 1;
+        let NewVmBackup { vm, vm_name, place, folder, taken_at, consistency, files, settings } =
+            backup.clone();
+        all.push(VmBackup { id, vm, vm_name, place, folder, taken_at, consistency, files, settings });
+        Ok(id)
+    }
+
+    async fn delete(&self, id: i64) -> Result<bool, PortError> {
+        let mut all = lock(&self.0);
+        let before = all.len();
+        all.retain(|backup| backup.id != id);
+        Ok(all.len() < before)
+    }
+}
+
+/// Share 1 is `backups` on volume 1, unless renamed or gone.
+pub struct FakeBackupShares(pub Mutex<Option<BackupShare>>);
+
+impl Default for FakeBackupShares {
+    fn default() -> Self {
+        Self(Mutex::new(Some(BackupShare { name: "backups".into(), volume: 1 })))
+    }
+}
+
+#[async_trait]
+impl BackupShares for FakeBackupShares {
+    async fn locate(&self, share_id: i64) -> Result<Option<BackupShare>, PortError> {
+        Ok(if share_id == 1 { lock(&self.0).clone() } else { None })
     }
 }
 
@@ -203,6 +281,50 @@ pub struct FakeVmHost {
     pub zvols: Mutex<BTreeMap<String, u64>>,
     /// Uploads under way: what is written, and the bytes announced.
     uploads: Mutex<BTreeMap<String, (std::path::PathBuf, u64)>>,
+    /// Snapshots taken, in order: VM, label, name, schedules, consistency.
+    pub snapshots: Mutex<Vec<VmSnapshot>>,
+    /// The backups written, by folder.
+    pub written: Mutex<BTreeMap<String, Vec<BackupFile>>>,
+    /// The host's devices.
+    pub devices: Mutex<HostDevices>,
+    /// The next backup or restore waits for this to be notified first.
+    pub hold_work: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    /// The next restore fails with this.
+    pub fail_restore: Mutex<Option<String>>,
+}
+
+/// A keyboard plugged in; with an IOMMU, a graphics card with its sound in
+/// a group, the SATA controller the host needs.
+pub fn devices() -> HostDevices {
+    let pci = |address: &str, class: u32, group: u32, needed: Option<HostNeeds>| HostPci {
+        address: address.into(),
+        vendor: 0x10de,
+        device: 0x1c82,
+        class,
+        vendor_name: Some("NVIDIA Corporation".into()),
+        device_name: None,
+        iommu_group: Some(group),
+        driver: None,
+        needed,
+    };
+    HostDevices {
+        iommu: Iommu {
+            on: true,
+            cmdline: vec!["intel_iommu=on".into()],
+            cpu_vendor: Some("GenuineIntel".into()),
+        },
+        usb: vec![HostUsb {
+            device: UsbDevice { vendor: 0x046d, product: 0xc31c },
+            port: "1-2".into(),
+            manufacturer: Some("Logitech".into()),
+            name: Some("USB Keyboard".into()),
+        }],
+        pci: vec![
+            pci("0000:01:00.0", 0x030000, 1, None),
+            pci("0000:01:00.1", 0x040300, 1, None),
+            pci("0000:00:17.0", 0x010601, 2, Some(HostNeeds::Disk("sda".into()))),
+        ],
+    }
 }
 
 impl Default for FakeVmHost {
@@ -213,6 +335,8 @@ impl Default for FakeVmHost {
                 cpu_virtualization: Some("vmx".into()),
                 iommu: false,
                 installed: false,
+                swtpm: true,
+                secure_boot: true,
                 limits: HostLimits {
                     cores: 2,
                     memory_bytes: 2 << 30,
@@ -220,6 +344,8 @@ impl Default for FakeVmHost {
                     internal: vec!["vmnet0".into()],
                     cards: vec!["enp1s0".into(), "bond0".into()],
                     locations: Vec::new(),
+                    swtpm: false,
+                    secure_boot: false,
                 },
                 locations: Vec::new(),
             }),
@@ -231,6 +357,11 @@ impl Default for FakeVmHost {
             hold_define: Mutex::default(),
             zvols: Mutex::default(),
             uploads: Mutex::default(),
+            snapshots: Mutex::default(),
+            written: Mutex::default(),
+            devices: Mutex::new(devices()),
+            hold_work: Mutex::default(),
+            fail_restore: Mutex::default(),
         }
     }
 }
@@ -527,6 +658,184 @@ impl VmHost for FakeVmHost {
         });
         Ok(ConsoleSession { output, input })
     }
+
+    async fn host_devices(&self, _: &RequestContext) -> Result<HostDevices, PortError> {
+        Ok(lock(&self.devices).clone())
+    }
+
+    async fn change_usb(
+        &self,
+        vm: &Vm,
+        _: u16,
+        attach: &[UsbDevice],
+        detach: &[UsbDevice],
+        _: &RequestContext,
+    ) -> Result<(), HostError> {
+        let ids = |devices: &[UsbDevice]| devices.iter().map(|d| d.id()).collect::<Vec<_>>().join(",");
+        self.call(format!("usb {} +[{}] -[{}]", vm.id, ids(attach), ids(detach)));
+        Ok(())
+    }
+
+    async fn snapshot(
+        &self,
+        id: &str,
+        label: &str,
+        schedules: &[Frequency],
+        name: Option<&str>,
+        _: &RequestContext,
+    ) -> Result<Consistency, HostError> {
+        self.call(format!("snapshot {id} {label}"));
+        let state = lock(&self.domains).get(id).copied();
+        let consistency = match state {
+            None => return Err(HostError::Refused("no such domain".into())),
+            Some(PowerState::ShutOff) => Consistency::Off,
+            Some(_) => Consistency::Crash,
+        };
+        let mut snapshots = lock(&self.snapshots);
+        if snapshots.iter().any(|snapshot| snapshot.vm == id && snapshot.label == label) {
+            return Err(HostError::Refused("the snapshot exists".into()));
+        }
+        snapshots.push(VmSnapshot {
+            vm: id.to_owned(),
+            label: label.to_owned(),
+            taken_at: crate::domain::label_time(label)
+                .unwrap_or_else(|| zendiloos_kernel::Timestamp::from_unix_seconds(0)),
+            name: name.map(str::to_owned),
+            schedules: schedules.to_vec(),
+            consistency,
+            disks: vec![0],
+            used_bytes: 4096,
+            referenced_bytes: 8192,
+        });
+        Ok(consistency)
+    }
+
+    async fn snapshots(&self, _: &RequestContext) -> Result<Vec<VmSnapshot>, PortError> {
+        Ok(lock(&self.snapshots).clone())
+    }
+
+    async fn destroy_snapshot(&self, id: &str, label: &str, _: &RequestContext) -> Result<(), HostError> {
+        self.call(format!("destroy_snapshot {id} {label}"));
+        let mut snapshots = lock(&self.snapshots);
+        let before = snapshots.len();
+        snapshots.retain(|snapshot| !(snapshot.vm == id && snapshot.label == label));
+        if snapshots.len() < before {
+            Ok(())
+        } else {
+            Err(HostError::Refused("there is no such snapshot".into()))
+        }
+    }
+
+    async fn rollback_snapshot(
+        &self,
+        id: &str,
+        label: &str,
+        newer: bool,
+        _: &RequestContext,
+    ) -> Result<(), HostError> {
+        self.call(format!("rollback {id} {label} {newer}"));
+        let mut snapshots = lock(&self.snapshots);
+        let Some(at) = snapshots.iter().find(|s| s.vm == id && s.label == label).map(|s| s.taken_at) else {
+            return Err(HostError::Refused("there is no such snapshot".into()));
+        };
+        snapshots.retain(|snapshot| snapshot.vm != id || snapshot.taken_at <= at);
+        Ok(())
+    }
+
+    async fn back_up(
+        &self,
+        vm: &Vm,
+        place: &BackupPlace,
+        folder: &str,
+        stem: &str,
+        label: &str,
+        steps: &dyn Steps,
+        _: &RequestContext,
+    ) -> Result<BackupWritten, HostError> {
+        self.call(format!("back_up {} {} {folder} {stem} {label}", vm.id, place.shown()));
+        let held = lock(&self.hold_work).take();
+        if let Some(held) = held {
+            held.notified().await;
+        }
+        steps.step("backing_up", Some(50));
+        let folder = if folder.is_empty() {
+            format!("{}/{stem}", vm.id)
+        } else {
+            format!("{folder}/{}/{stem}", vm.id)
+        };
+        let mut files: Vec<BackupFile> = vm
+            .settings
+            .disks
+            .iter()
+            .map(|disk| BackupFile {
+                part: BackupPart::Disk { slot: disk.slot, volsize: u64::from(disk.size_gib) << 30 },
+                bytes: 1 << 20,
+                sha256: "ab".repeat(32),
+            })
+            .collect();
+        files.push(BackupFile { part: BackupPart::Nvram, bytes: 4096, sha256: "cd".repeat(32) });
+        lock(&self.written).insert(folder.clone(), files.clone());
+        let off = lock(&self.domains).get(&vm.id) == Some(&PowerState::ShutOff);
+        Ok(BackupWritten {
+            folder,
+            files,
+            consistency: if off { Consistency::Off } else { Consistency::Crash },
+        })
+    }
+
+    async fn restore(
+        &self,
+        vm: &Vm,
+        library: u16,
+        backup: &VmBackup,
+        over: bool,
+        remove: &[u8],
+        label: &str,
+        steps: &dyn Steps,
+        _: &RequestContext,
+    ) -> Result<(), HostError> {
+        let removed: Vec<String> = remove.iter().map(u8::to_string).collect();
+        self.call(format!(
+            "restore {} {library} {} over={over} [{}] {label}",
+            vm.id,
+            backup.folder,
+            removed.join(",")
+        ));
+        let held = lock(&self.hold_work).take();
+        if let Some(held) = held {
+            held.notified().await;
+        }
+        if !lock(&self.written).contains_key(&backup.folder) {
+            return Err(HostError::Refused(format!("{} is not there any more", backup.folder)));
+        }
+        if let Some(reason) = lock(&self.fail_restore).take() {
+            return Err(HostError::Failed(reason));
+        }
+        steps.step("restoring", Some(50));
+        if over {
+            match lock(&self.domains).get(&vm.id) {
+                Some(PowerState::ShutOff) => {}
+                _ => return Err(HostError::Refused("the virtual machine is not shut off".into())),
+            }
+        } else {
+            lock(&self.domains).insert(vm.id.clone(), PowerState::ShutOff);
+        }
+        self.make_disks(vm);
+        lock(&self.zvols)
+            .retain(|zvol, _| !remove.iter().any(|slot| zvol.ends_with(&format!("/{}-disk{slot}", vm.id))));
+        Ok(())
+    }
+
+    async fn end_work(&self, id: &str, _: &RequestContext) -> Result<bool, HostError> {
+        self.call(format!("end_work {id}"));
+        Ok(false)
+    }
+
+    async fn remove_backup(&self, backup: &VmBackup, _: &RequestContext) -> Result<(), HostError> {
+        self.call(format!("remove_backup {}", backup.folder));
+        lock(&self.written).remove(&backup.folder);
+        Ok(())
+    }
 }
 
 /// Share 1, `media` on volume 1, readable; share 2 not.
@@ -578,6 +887,9 @@ pub struct TestVms {
     pub repository: Arc<MemoryVms>,
     pub images: Arc<MemoryImages>,
     pub locations: Arc<MemoryLocations>,
+    pub schedules: Arc<MemorySchedules>,
+    pub backups: Arc<MemoryBackups>,
+    pub shares: Arc<FakeBackupShares>,
     pub jobs: Jobs,
     pub audit: Arc<MemoryAudit>,
 }
@@ -592,12 +904,18 @@ impl TestVms {
         let repository = Arc::new(MemoryVms::default());
         let images = Arc::new(images);
         let locations = Arc::new(MemoryLocations::default());
+        let schedules = Arc::new(MemorySchedules::default());
+        let backups = Arc::new(MemoryBackups::default());
+        let shares = Arc::new(FakeBackupShares::default());
         let audit = Arc::new(MemoryAudit::default());
         let jobs = Jobs::new(Arc::new(MemoryJobs::default()), Arc::new(FixedClock));
         let vms = Vms::new(VmsPorts {
             repository: repository.clone(),
             images: images.clone(),
             locations: locations.clone(),
+            schedules: schedules.clone(),
+            backups: backups.clone(),
+            shares: shares.clone(),
             host: host.clone(),
             isos: Arc::new(FakeIsos),
             ids: Arc::new(CountingIds::default()),
@@ -605,6 +923,6 @@ impl TestVms {
             audit: audit.clone(),
             clock: Arc::new(FixedClock),
         });
-        Self { vms, host, repository, images, locations, jobs, audit }
+        Self { vms, host, repository, images, locations, schedules, backups, shares, jobs, audit }
     }
 }

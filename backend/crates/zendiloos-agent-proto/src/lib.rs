@@ -101,11 +101,14 @@ pub use time::{
     TimeServer, TimeServers, TimeZone,
 };
 pub use vms::{
+    HostIommu, HostNeeds, HostPciDevice, HostUsbDevice, InvalidPciAddress, InvalidVmBackupSettings,
     InvalidVmCpus, InvalidVmDiskSize, InvalidVmId, InvalidVmImageId, InvalidVmMemory, InvalidVmSlot,
-    InvalidVmSpec, VM_CONSOLES, VM_DISKS_MAX, VM_DOMAIN_PREFIX, VM_DRIVES_MAX, VM_IMAGE_UPLOAD_MAX,
-    VM_IMAGES_DIRECTORY, VM_NICS_MAX, VMS_DATASET, VMS_DIRECTORY, VmAction, VmBoot, VmCpus, VmDevices,
-    VmDisk, VmDiskBus, VmDiskSize, VmDiskSlot, VmDrive, VmDriveSlot, VmFirmware, VmId, VmImageFile,
-    VmImageId, VmIsoSource, VmMemory, VmNetwork, VmNic, VmNicModel, VmNicSlot, VmOs, VmSpec, VmStorage,
+    InvalidVmSpec, PciAddress, VM_BACKUP_MANIFEST, VM_CONSOLES, VM_DISKS_MAX, VM_DOMAIN_PREFIX,
+    VM_DRIVES_MAX, VM_IMAGE_UPLOAD_MAX, VM_IMAGES_DIRECTORY, VM_NICS_MAX, VM_PCI_MAX, VM_USB_MAX,
+    VMS_DATASET, VMS_DIRECTORY, VmAction, VmBackupFile, VmBackupPart, VmBackupSettings, VmBoot,
+    VmConsistency, VmCpus, VmDevices, VmDisk, VmDiskBus, VmDiskSize, VmDiskSlot, VmDrive, VmDriveSlot,
+    VmFirmware, VmId, VmImageFile, VmImageId, VmIsoSource, VmMemory, VmNetwork, VmNic, VmNicModel, VmNicSlot,
+    VmOs, VmSpec, VmStorage, VmUsbDevice,
 };
 pub use web::TlsMinimum;
 
@@ -676,6 +679,89 @@ pub enum Request {
     OpenVmConsole {
         id: VmId,
     },
+    /// The host's USB and PCI devices a VM could be given, with the PCI
+    /// devices' IOMMU groups and why the host keeps those it needs, and
+    /// whether the IOMMU is on. Answers [`Response::VmHostDevices`].
+    VmHostDevices {},
+    /// Gives a VM the USB devices `spec` names, or takes them away: its
+    /// domain defined anew and, while it runs, `attach` plugged into it
+    /// and `detach` pulled out at once (hot-plug).
+    ChangeVmUsb {
+        spec: VmSpec,
+        attach: Vec<VmUsbDevice>,
+        detach: Vec<VmUsbDevice>,
+    },
+    /// Snapshots every disk of the VM, `<zvol>@<label>` on each location,
+    /// in one `zfs snapshot` per pool: while it runs, its file systems
+    /// frozen first by the QEMU guest agent if it answers, and the VM
+    /// paused meanwhile if its disks are on more than one pool without.
+    /// Answers [`Response::VmSnapshotTaken`].
+    SnapshotVm {
+        id: VmId,
+        label: SnapshotLabel,
+        schedules: Vec<SnapshotFrequency>,
+        note: Option<SnapshotNote>,
+    },
+    /// The snapshots of the VMs' zvols with their properties: `zfs list
+    /// -t snapshot` of the locations' datasets. Answers
+    /// [`Response::VmSnapshots`].
+    VmSnapshots {},
+    /// Destroys the snapshot `label` of every disk of the VM.
+    DestroyVmSnapshot {
+        id: VmId,
+        label: SnapshotLabel,
+    },
+    /// Returns a shut off VM's disks to the snapshot `label`; each disk
+    /// keeps its size. Refused if a disk has snapshots after it, unless
+    /// `newer`: they are destroyed then (`zfs rollback -r`). A disk without
+    /// that snapshot (added since) stays as it is.
+    RollbackVmSnapshot {
+        id: VmId,
+        label: SnapshotLabel,
+        newer: bool,
+    },
+    /// Backs up a VM into `<folder>/<id>/<stem>` beneath `root`: a snapshot
+    /// `label` of its disks taken (as [`Request::SnapshotVm`]), each disk
+    /// read from it into a zstd-compressed raw image, its UEFI variables
+    /// and its TPM's state, and a manifest with `settings`, all in a
+    /// transient unit that may write only there; the snapshot goes again.
+    /// Answers [`Response::VmBackedUp`].
+    BackUpVm {
+        id: VmId,
+        root: BackupRoot,
+        folder: SharePath,
+        stem: BackupStem,
+        label: SnapshotLabel,
+        settings: VmBackupSettings,
+    },
+    /// Restores a backup's `files` from `folder` beneath `root` into the VM
+    /// `spec` describes, checking each file's SHA-256 while it is read: a
+    /// new VM is defined first (its disks made), one there already
+    /// (`over`, shut off) gets a snapshot `label` of its disks first, to
+    /// which they return should the restore fail, its disks made or grown
+    /// as `spec` says, `remove` destroyed once it is defined anew.
+    RestoreVm {
+        spec: VmSpec,
+        root: BackupRoot,
+        folder: SharePath,
+        files: Vec<VmBackupFile>,
+        over: bool,
+        remove: Vec<VmDiskSlot>,
+        label: SnapshotLabel,
+    },
+    /// Stops what a backup or restore of the VM left running (its unit,
+    /// should its client have gone) and answers once nothing runs for it
+    /// any more. Answers [`Response::VmWorkEnded`].
+    EndVmWork {
+        id: VmId,
+    },
+    /// Removes a VM's backup: the files named, `<folder>` beneath `root`,
+    /// and the folder once empty.
+    RemoveVmBackup {
+        root: BackupRoot,
+        folder: SharePath,
+        files: Vec<VmBackupPart>,
+    },
     /// Whether rsync, the SSH client and rclone are installed, and the
     /// NAS's public key for SSH servers once made. Answers
     /// [`Response::BackupFacts`].
@@ -1130,6 +1216,16 @@ impl Request {
             Request::VmStates {} => "vm_states",
             Request::VmStats {} => "vm_stats",
             Request::OpenVmConsole { .. } => "open_vm_console",
+            Request::VmHostDevices {} => "vm_host_devices",
+            Request::ChangeVmUsb { .. } => "change_vm_usb",
+            Request::SnapshotVm { .. } => "snapshot_vm",
+            Request::VmSnapshots {} => "vm_snapshots",
+            Request::DestroyVmSnapshot { .. } => "destroy_vm_snapshot",
+            Request::RollbackVmSnapshot { .. } => "rollback_vm_snapshot",
+            Request::BackUpVm { .. } => "back_up_vm",
+            Request::RestoreVm { .. } => "restore_vm",
+            Request::EndVmWork { .. } => "end_vm_work",
+            Request::RemoveVmBackup { .. } => "remove_vm_backup",
             Request::BackupFacts {} => "backup_facts",
             Request::MakeBackupKey {} => "make_backup_key",
             Request::ScanBackupHostKeys { .. } => "scan_backup_host_keys",
@@ -1415,10 +1511,17 @@ pub enum Response {
         /// The CPU's virtualisation as `/proc/cpuinfo` names it: `vmx`
         /// (Intel VT-x) or `svm` (AMD-V); none if it has neither.
         cpu_virtualization: Option<String>,
-        /// An IOMMU is on (`/sys/class/iommu` lists one).
+        /// An IOMMU is on (`/sys/kernel/iommu_groups` lists groups).
         iommu: bool,
         /// libvirt's daemon, `virsh` and QEMU are installed.
         installed: bool,
+        /// swtpm is installed: VMs can have a TPM.
+        #[serde(default)]
+        swtpm: bool,
+        /// OVMF with Microsoft's keys enrolled is there, as a firmware
+        /// QEMU describes: VMs can boot with Secure Boot.
+        #[serde(default)]
+        secure_boot: bool,
         /// The machine's CPUs (threads) and memory.
         cores: u32,
         memory_bytes: u64,
@@ -1453,6 +1556,32 @@ pub enum Response {
     /// A VM's console was opened; the connected socket comes along
     /// ([`Request::OpenVmConsole`]).
     VmConsole {},
+    VmHostDevices {
+        iommu: HostIommu,
+        usb: Vec<HostUsbDevice>,
+        pci: Vec<HostPciDevice>,
+    },
+    VmSnapshotTaken {
+        consistency: VmConsistency,
+    },
+    VmSnapshots {
+        /// `zfs list -H -p -t snapshot -o name,creation,used,referenced,`
+        /// `zendiloos:schedule,zendiloos:note,zendiloos:consistency` of the
+        /// locations' datasets.
+        zfs_list: String,
+    },
+    /// What a VM's backup wrote into `folder`, its manifest last.
+    VmBackedUp {
+        folder: SharePath,
+        files: Vec<VmBackupFile>,
+        manifest: WrittenFile,
+        consistency: VmConsistency,
+    },
+    /// Whether anything of a VM's backup or restore was still running and
+    /// was stopped.
+    VmWorkEnded {
+        stopped: bool,
+    },
     BackupFacts {
         rsync: bool,
         /// The SSH client and `ssh-keygen`.
@@ -1836,6 +1965,11 @@ impl Request {
             | Request::CopyVmImage { .. }
             | Request::DeleteVm { .. }
             | Request::UpdateVm { .. }
+            // A VM's disks read or written whole: up to hours.
+            | Request::BackUpVm { .. }
+            | Request::RestoreVm { .. }
+            | Request::EndVmWork { .. }
+            | Request::RemoveVmBackup { .. }
             | Request::MoveDocker { .. }
             // Fetch images, start or stop containers.
             | Request::StartApp { .. }
@@ -1902,9 +2036,9 @@ impl Request {
         matches!(self, Request::ReadBurst { .. })
     }
 
-    /// A backup or restore of a volume, or what ends one: up to hours in
-    /// units of their own, in places of their own, so that the long places
-    /// stay free for deploys, pulls, drives and pools.
+    /// A backup or restore of a volume or a VM, or what ends one: up to
+    /// hours in units of their own, in places of their own, so that the
+    /// long places stay free for deploys, pulls, drives and pools.
     pub fn is_volume_work(&self) -> bool {
         matches!(
             self,
@@ -1913,6 +2047,10 @@ impl Request {
                 | Request::RemoveVolumeBackup { .. }
                 | Request::EndVolumeWork { .. }
                 | Request::ScanVolumeBackups { .. }
+                | Request::BackUpVm { .. }
+                | Request::RestoreVm { .. }
+                | Request::EndVmWork { .. }
+                | Request::RemoveVmBackup { .. }
         )
     }
 
@@ -1939,6 +2077,8 @@ impl Request {
                 | Request::VmImages { .. }
                 | Request::VmStates { .. }
                 | Request::VmStats { .. }
+                | Request::VmHostDevices { .. }
+                | Request::VmSnapshots { .. }
                 | Request::BackupFacts { .. }
                 | Request::ListBackup { .. }
                 | Request::AppsStatus { .. }

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
 use zendiloos_agent::config::Tools;
-use zendiloos_agent::{Erasable, ErasePolicy, HostPaths, Operations, Paths, VmPaths};
+use zendiloos_agent::{DevicePaths, Erasable, ErasePolicy, HostPaths, Operations, Paths, VmPaths};
 use zendiloos_agent_proto::{
     ErrorCode, InterfaceName, MacAddress, PoolName, Request, Response, Role, ShareLocation, ShareName,
     SharePath, VM_IMAGE_UPLOAD_MAX, VmAction, VmBoot, VmCpus, VmDevices, VmDisk, VmDiskBus, VmDiskSize,
@@ -211,6 +211,7 @@ fn host(installed: bool) -> Host {
         systemd_run,
         libvirtd: root.join("libvirtd"),
         qemu: root.join("qemu-system-x86_64"),
+        swtpm: root.join("swtpm"),
         systemd_tmpfiles: PathBuf::from("/usr/bin/systemd-tmpfiles"),
         rm: PathBuf::from("/bin/rm"),
         ..Tools::default()
@@ -218,6 +219,7 @@ fn host(installed: bool) -> Host {
     if installed {
         fs::write(&tools.libvirtd, "").unwrap();
         fs::write(&tools.qemu, "").unwrap();
+        fs::write(&tools.swtpm, "").unwrap();
     } else {
         tools.virsh = root.join("no-virsh");
     }
@@ -233,7 +235,18 @@ fn host(installed: bool) -> Host {
             kvm: root.join("kvm"),
             cpuinfo: root.join("cpuinfo"),
             meminfo: root.join("meminfo"),
-            iommu: root.join("iommu"),
+            devices: DevicePaths {
+                usb: root.join("sys/bus/usb/devices"),
+                pci: root.join("sys/bus/pci/devices"),
+                iommu_groups: root.join("iommu"),
+                cmdline: root.join("cmdline"),
+                pci_ids: root.join("pci.ids"),
+            },
+            firmware: root.join("firmware"),
+            nvram: root.join("nvram"),
+            swtpm: root.join("swtpm-state"),
+            transient: root.join("transient"),
+            passwd: root.join("passwd"),
             domains: root.join("domains"),
             consoles: root.join("consoles"),
             tmpfiles: root.join("tmpfiles.d/zendiloos-vms.conf"),
@@ -312,6 +325,7 @@ fn devices() -> VmDevices {
         nics: vec![nic(0, VmNetwork::User)],
         drives: vec![drive(0, None)],
         boot: vec![VmBoot::Disk(VmDiskSlot::new(0).unwrap())],
+        ..VmDevices::default()
     }
 }
 
@@ -362,12 +376,22 @@ async fn add_cold(host: &Host) {
 #[tokio::test]
 async fn the_machine_says_what_it_offers() {
     let host = host(true);
-    let Response::VmHost { kvm, cpu_virtualization, iommu, installed, cores, memory_bytes, locations } =
-        host.run(Request::VmHost {}).await
+    let Response::VmHost {
+        kvm,
+        cpu_virtualization,
+        iommu,
+        installed,
+        cores,
+        memory_bytes,
+        locations,
+        swtpm,
+        secure_boot,
+    } = host.run(Request::VmHost {}).await
     else {
         panic!("no facts")
     };
     assert!(kvm && installed && !iommu);
+    assert!(swtpm && !secure_boot, "swtpm there, no OVMF with Microsoft's keys");
     assert_eq!(cpu_virtualization.as_deref(), Some("vmx"));
     assert_eq!((cores, memory_bytes), (2, 2_027_168 * 1024));
     assert!(locations.is_empty());
@@ -616,7 +640,7 @@ async fn a_vm_that_is_off_changes_its_hardware_and_disks_only_grow() {
     let defined =
         at(&format!("virsh --connect qemu:///system define --validate /domains/zendiloos-{ID}.xml.new"));
     let disabled = at(&format!("virsh --connect qemu:///system autostart --disable zendiloos-{ID}"));
-    let removed = at(&format!("zfs destroy tank/zendiloos.vms/{ID}-disk1"));
+    let removed = at(&format!("zfs destroy -r tank/zendiloos.vms/{ID}-disk1"));
     assert!(grown < defined && made < defined && defined < disabled && disabled < removed, "{calls:?}");
     assert_eq!(
         host.zvols(),
@@ -864,11 +888,11 @@ async fn deleting_a_vm_removes_its_domain_disks_and_xml_but_not_the_library() {
             .unwrap_or_else(|| panic!("{prefix}: {calls:?}"))
     };
     let undefine = at(&format!(
-        "virsh --connect qemu:///system undefine --nvram --managed-save --snapshots-metadata zendiloos-{ID}"
+        "virsh --connect qemu:///system undefine --nvram --tpm --managed-save --snapshots-metadata zendiloos-{ID}"
     ));
     assert!(at(&format!("virsh --connect qemu:///system destroy zendiloos-{ID}")) < undefine);
-    assert!(undefine < at(&format!("zfs destroy tank/zendiloos.vms/{ID}-disk0")));
-    assert!(undefine < at(&format!("zfs destroy tank/zendiloos.vms/{ID}-disk3")));
+    assert!(undefine < at(&format!("zfs destroy -r tank/zendiloos.vms/{ID}-disk0")));
+    assert!(undefine < at(&format!("zfs destroy -r tank/zendiloos.vms/{ID}-disk3")));
     assert!(host.zvols().is_empty());
     assert!(!calls.iter().any(|call| call.contains("rm --force")), "the library's images stay");
     assert!(host.path(&format!("volume1/@vms/isos/{IMAGE}.iso")).exists());
@@ -995,7 +1019,7 @@ async fn disks_lie_on_the_locations_they_were_made_on() {
         host.run(Request::UpdateVm { spec: spec_with(one, false), remove: vec![slot(1)] }).await,
         Response::Done
     );
-    assert!(host.calls().contains(&format!("zfs destroy cold/zendiloos.vms/{ID}-disk1")));
+    assert!(host.calls().contains(&format!("zfs destroy -r cold/zendiloos.vms/{ID}-disk1")));
     assert_eq!(host.zvols(), [format!("tank/zendiloos.vms/{ID}-disk0")]);
 
     assert_eq!(

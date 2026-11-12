@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT vm AS \"vm!\", kind AS \"kind!\", device AS \"device!\" FROM vm_host_devices\n               WHERE ?1 IS NULL OR vm = ?1 ORDER BY vm, kind, device",
+  "describe": {
+    "columns": [
+      {
+        "name": "vm!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_host_devices",
+            "name": "vm"
+          }
+        }
+      },
+      {
+        "name": "kind!",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_host_devices",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "name": "device!",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vm_host_devices",
+            "name": "device"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "d92178577899b2ba8d9a9c37bf511d15a52f2a47f2490f2db305996f3a24ae7c"
+}

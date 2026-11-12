@@ -13,10 +13,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use zendiloos_agent_proto::{
-    AgentTransport, ErrorCode, InterfaceName, MacAddress, PackageRunState, PackageTask, PoolName, Report,
-    Request, RequestId, Response, ShareLocation, ShareName, SharePath, VmBoot, VmCpus, VmDevices, VmDisk,
-    VmDiskBus, VmDiskSize, VmDiskSlot, VmDrive, VmDriveSlot, VmFirmware, VmId, VmImageId, VmIsoSource,
-    VmMemory, VmNetwork, VmNic, VmNicModel, VmNicSlot, VmOs, VmSpec, VmStorage, VolumeNumber,
+    AgentTransport, ArchiveDigest, BackupRoot, BackupStem, ErrorCode, InterfaceName, MacAddress,
+    PackageRunState, PackageTask, PciAddress, PoolName, RemovableId, Report, Request, RequestId, Response,
+    ShareLocation, ShareName, SharePath, SnapshotFrequency, SnapshotLabel, SnapshotNote, VmBackupFile,
+    VmBackupPart, VmBackupSettings, VmBoot, VmConsistency, VmCpus, VmDevices, VmDisk, VmDiskBus, VmDiskSize,
+    VmDiskSlot, VmDrive, VmDriveSlot, VmFirmware, VmId, VmImageId, VmIsoSource, VmMemory, VmNetwork, VmNic,
+    VmNicModel, VmNicSlot, VmOs, VmSpec, VmStorage, VmUsbDevice, VolumeNumber,
 };
 use zendiloos_kernel::{PortError, RequestContext};
 use zendiloos_network::application::NetworkUseCases;
@@ -24,11 +26,13 @@ use zendiloos_network::domain::{InterfaceKind, Network as HostNetwork};
 use zendiloos_storage::application::ports::ZfsSource;
 use zendiloos_storage::domain::VdevState;
 use zendiloos_vms::application::{
-    ConsoleSession, DatasetUsage, HostError, HostFacts, IsoSource, Steps, VmHost, VmIds, VmPool, ZvolUsage,
+    BackupWritten, ConsoleSession, DatasetUsage, HostError, HostFacts, IsoSource, Steps, VmHost, VmIds,
+    VmPool, ZvolUsage,
 };
 use zendiloos_vms::domain::{
-    BootDevice, DiskBus, Firmware, HostLimits, Location, Network, NicModel, OsPreset, PowerState, Vm,
-    VmAction, VmCounters,
+    BackupFile, BackupPart, BackupPlace, BootDevice, Consistency, DiskBus, Firmware, Frequency, HostDevices,
+    HostLimits, HostNeeds, HostPci, HostUsb, Iommu, Location, Network, NicModel, OsPreset, PowerState,
+    UsbDevice, Vm, VmAction, VmBackup, VmCounters, VmSnapshot,
 };
 
 use super::{AgentStorage, WHAT, agent_error, call, call_raw, call_raw_reporting, unexpected};
@@ -300,6 +304,26 @@ fn spec(vm: &Vm, library: u16) -> Result<VmSpec, HostError> {
             BootDevice::Drive(slot) => drive_slot(*slot).map(VmBoot::Drive),
         })
         .collect::<Result<Vec<_>, HostError>>()?;
+    let usb = settings
+        .usb
+        .iter()
+        .map(|device| VmUsbDevice { vendor: device.vendor, product: device.product })
+        .collect();
+    let pci = settings
+        .pci
+        .iter()
+        .map(|address| PciAddress::parse(address).map_err(|_| invalid("PCI address")))
+        .collect::<Result<Vec<_>, HostError>>()?;
+    let devices = VmDevices {
+        disks,
+        nics,
+        drives,
+        boot,
+        usb,
+        pci,
+        tpm: settings.tpm,
+        secure_boot: settings.secure_boot,
+    };
     VmSpec::new(
         vm_id(&vm.id)?,
         match settings.os {
@@ -313,11 +337,136 @@ fn spec(vm: &Vm, library: u16) -> Result<VmSpec, HostError> {
             Firmware::Uefi => VmFirmware::Uefi,
             Firmware::Bios => VmFirmware::Bios,
         },
-        VmDevices { disks, nics, drives, boot },
+        devices,
         settings.autostart,
         volume_number(library)?,
     )
     .map_err(|error| HostError::Port(PortError::new(WHAT, format!("not a valid VM for the agent: {error}"))))
+}
+
+fn label(text: &str) -> Result<SnapshotLabel, HostError> {
+    SnapshotLabel::parse(text).map_err(|_| invalid("snapshot label"))
+}
+
+fn frequency(frequency: Frequency) -> SnapshotFrequency {
+    match frequency {
+        Frequency::Hourly => SnapshotFrequency::Hourly,
+        Frequency::Daily => SnapshotFrequency::Daily,
+        Frequency::Weekly => SnapshotFrequency::Weekly,
+        Frequency::Monthly => SnapshotFrequency::Monthly,
+    }
+}
+
+fn consistency(consistency: VmConsistency) -> Consistency {
+    match consistency {
+        VmConsistency::Off => Consistency::Off,
+        VmConsistency::Frozen => Consistency::Frozen,
+        VmConsistency::Crash => Consistency::Crash,
+    }
+}
+
+fn usb(devices: &[UsbDevice]) -> Vec<VmUsbDevice> {
+    devices.iter().map(|device| VmUsbDevice { vendor: device.vendor, product: device.product }).collect()
+}
+
+/// A backup's place as the agent takes it.
+fn root(place: &BackupPlace) -> Result<BackupRoot, HostError> {
+    Ok(match place {
+        BackupPlace::Share { share, volume, .. } => BackupRoot::Share {
+            location: ShareLocation {
+                volume: volume_number(*volume)?,
+                share: ShareName::parse(share).map_err(|_| invalid("share name"))?,
+            },
+        },
+        BackupPlace::Drive { drive } => {
+            BackupRoot::Drive { drive: RemovableId::parse(drive).map_err(|_| invalid("drive"))? }
+        }
+    })
+}
+
+fn folder(path: &str) -> Result<SharePath, HostError> {
+    if path.is_empty() {
+        Ok(SharePath::root())
+    } else {
+        SharePath::parse(path).map_err(|_| invalid("folder"))
+    }
+}
+
+fn part(part: BackupPart) -> Result<VmBackupPart, HostError> {
+    Ok(match part {
+        BackupPart::Disk { slot, volsize } => VmBackupPart::Disk { slot: disk_slot(slot)?, volsize },
+        BackupPart::Nvram => VmBackupPart::Nvram,
+        BackupPart::Tpm => VmBackupPart::Tpm,
+    })
+}
+
+fn backup_file(file: &BackupFile) -> Result<VmBackupFile, HostError> {
+    Ok(VmBackupFile {
+        part: part(file.part)?,
+        bytes: file.bytes,
+        sha256: ArchiveDigest::parse(&file.sha256).map_err(|_| invalid("SHA-256"))?,
+    })
+}
+
+/// `zfs list -H -p -r -t snapshot -o name,creation,used,referenced,
+/// zendiloos:schedule,zendiloos:note,zendiloos:consistency` of the
+/// locations' datasets: a snapshot per VM and label, of all its disks that
+/// have it. Snapshots of anything else, and labels zendiloOS does not give,
+/// are passed by.
+pub(crate) fn vm_snapshots(text: &str) -> Vec<VmSnapshot> {
+    let mut found: Vec<VmSnapshot> = Vec::new();
+    let suffix = format!("/{}/", zendiloos_agent_proto::VMS_DATASET);
+    for line in text.lines() {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let [name, creation, used, referenced, schedule, note, kept] = fields[..] else { continue };
+        let Some((zvol, label)) = name.split_once('@') else { continue };
+        let Some((_, disk)) = zvol.split_once(&suffix) else { continue };
+        let Some((id, slot)) = disk.split_once("-disk") else { continue };
+        let (Some(id), Ok(slot)) = (VmId::parse(id).ok(), slot.parse::<u8>()) else { continue };
+        if !zendiloos_vms::domain::is_label(label) {
+            continue;
+        }
+        let number = |text: &str| text.trim().parse::<u64>().unwrap_or(0);
+        let taken_at = zendiloos_vms::domain::label_time(label).or_else(|| {
+            creation.trim().parse::<i64>().ok().map(zendiloos_kernel::Timestamp::from_unix_seconds)
+        });
+        let Some(taken_at) = taken_at else { continue };
+        let schedules: Vec<Frequency> =
+            schedule.split(',').filter_map(|word| Frequency::parse(word.trim())).collect();
+        let name = Some(note.trim()).filter(|note| !note.is_empty() && *note != "-").map(str::to_owned);
+        let kind = Consistency::parse(kept.trim()).unwrap_or(Consistency::Crash);
+        match found.iter_mut().find(|snapshot| snapshot.vm == id.as_str() && snapshot.label == label) {
+            Some(snapshot) => {
+                snapshot.disks.push(slot);
+                snapshot.used_bytes += number(used);
+                snapshot.referenced_bytes += number(referenced);
+            }
+            None => found.push(VmSnapshot {
+                vm: id.as_str().to_owned(),
+                label: label.to_owned(),
+                taken_at,
+                name,
+                schedules,
+                consistency: kind,
+                disks: vec![slot],
+                used_bytes: number(used),
+                referenced_bytes: number(referenced),
+            }),
+        }
+    }
+    for snapshot in &mut found {
+        snapshot.disks.sort_unstable();
+    }
+    found
+}
+
+fn needs(needs: zendiloos_agent_proto::HostNeeds) -> HostNeeds {
+    match needs {
+        zendiloos_agent_proto::HostNeeds::Disk { disk } => HostNeeds::Disk(disk),
+        zendiloos_agent_proto::HostNeeds::Console => HostNeeds::Console,
+        zendiloos_agent_proto::HostNeeds::Network { interface } => HostNeeds::Network(interface),
+        zendiloos_agent_proto::HostNeeds::Bridge => HostNeeds::Bridge,
+    }
 }
 
 /// `Response::VmImageStored`'s bytes, or the agent's refusal or failure.
@@ -398,6 +547,8 @@ impl VmHost for AgentVms {
                 cpu_virtualization,
                 iommu,
                 installed,
+                swtpm,
+                secure_boot,
                 cores,
                 memory_bytes,
                 locations,
@@ -406,9 +557,20 @@ impl VmHost for AgentVms {
                 cpu_virtualization: cpu_virtualization.filter(|flag| flag == "vmx" || flag == "svm"),
                 iommu,
                 installed,
+                swtpm,
+                secure_boot,
                 limits: {
                     let VmNetworks { bridges, internal, cards } = self.networks(context).await;
-                    HostLimits { cores, memory_bytes, bridges, internal, cards, locations: Vec::new() }
+                    HostLimits {
+                        cores,
+                        memory_bytes,
+                        bridges,
+                        internal,
+                        cards,
+                        locations: Vec::new(),
+                        swtpm,
+                        secure_boot,
+                    }
                 },
                 locations: locations
                     .into_iter()
@@ -624,6 +786,180 @@ impl VmHost for AgentVms {
         }
     }
 
+    async fn host_devices(&self, context: &RequestContext) -> Result<HostDevices, PortError> {
+        match call(self.transport(), Request::VmHostDevices {}, context).await? {
+            Response::VmHostDevices { iommu, usb, pci } => Ok(HostDevices {
+                iommu: Iommu { on: iommu.on, cmdline: iommu.cmdline, cpu_vendor: iommu.cpu_vendor },
+                usb: usb
+                    .into_iter()
+                    .map(|device| HostUsb {
+                        device: UsbDevice { vendor: device.vendor, product: device.product },
+                        port: device.port,
+                        manufacturer: device.manufacturer,
+                        name: device.name,
+                    })
+                    .collect(),
+                pci: pci
+                    .into_iter()
+                    .map(|device| HostPci {
+                        address: device.address.as_str().to_owned(),
+                        vendor: device.vendor,
+                        device: device.device,
+                        class: device.class,
+                        vendor_name: device.vendor_name,
+                        device_name: device.device_name,
+                        iommu_group: device.iommu_group,
+                        driver: device.driver,
+                        needed: device.needed.map(needs),
+                    })
+                    .collect(),
+            }),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn change_usb(
+        &self,
+        vm: &Vm,
+        library: u16,
+        attach: &[UsbDevice],
+        detach: &[UsbDevice],
+        context: &RequestContext,
+    ) -> Result<(), HostError> {
+        let request =
+            Request::ChangeVmUsb { spec: spec(vm, library)?, attach: usb(attach), detach: usb(detach) };
+        self.done(request, context).await
+    }
+
+    async fn snapshot(
+        &self,
+        id: &str,
+        name: &str,
+        schedules: &[Frequency],
+        note: Option<&str>,
+        context: &RequestContext,
+    ) -> Result<Consistency, HostError> {
+        let request = Request::SnapshotVm {
+            id: vm_id(id)?,
+            label: label(name)?,
+            schedules: schedules.iter().map(|f| frequency(*f)).collect(),
+            note: note
+                .map(|note| SnapshotNote::parse(note).map_err(|_| invalid("snapshot's name")))
+                .transpose()?,
+        };
+        match call_raw(self.transport(), request, context).await? {
+            Response::VmSnapshotTaken { consistency: taken } => Ok(consistency(taken)),
+            other => Err(host_answer(other).err().unwrap_or_else(|| invalid("answer"))),
+        }
+    }
+
+    async fn snapshots(&self, context: &RequestContext) -> Result<Vec<VmSnapshot>, PortError> {
+        match call(self.transport(), Request::VmSnapshots {}, context).await? {
+            Response::VmSnapshots { zfs_list } => Ok(vm_snapshots(&zfs_list)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn destroy_snapshot(
+        &self,
+        id: &str,
+        name: &str,
+        context: &RequestContext,
+    ) -> Result<(), HostError> {
+        self.done(Request::DestroyVmSnapshot { id: vm_id(id)?, label: label(name)? }, context).await
+    }
+
+    async fn rollback_snapshot(
+        &self,
+        id: &str,
+        name: &str,
+        newer: bool,
+        context: &RequestContext,
+    ) -> Result<(), HostError> {
+        self.done(Request::RollbackVmSnapshot { id: vm_id(id)?, label: label(name)?, newer }, context).await
+    }
+
+    async fn back_up(
+        &self,
+        vm: &Vm,
+        place: &BackupPlace,
+        into: &str,
+        stem: &str,
+        name: &str,
+        steps: &dyn Steps,
+        context: &RequestContext,
+    ) -> Result<BackupWritten, HostError> {
+        let settings = crate::vms::settings::to_json(&vm.settings);
+        let request = Request::BackUpVm {
+            id: vm_id(&vm.id)?,
+            root: root(place)?,
+            folder: folder(into)?,
+            stem: BackupStem::parse(stem).map_err(|_| invalid("backup's name"))?,
+            label: label(name)?,
+            settings: VmBackupSettings::parse(&settings).map_err(|_| invalid("VM's settings"))?,
+        };
+        match call_raw_reporting(self.transport(), request, &Forward(steps), context).await? {
+            Response::VmBackedUp { folder, files, consistency: taken, .. } => Ok(BackupWritten {
+                folder: folder.as_str().to_owned(),
+                files: files
+                    .into_iter()
+                    .map(|file| BackupFile {
+                        part: match file.part {
+                            VmBackupPart::Disk { slot, volsize } => {
+                                BackupPart::Disk { slot: slot.get(), volsize }
+                            }
+                            VmBackupPart::Nvram => BackupPart::Nvram,
+                            VmBackupPart::Tpm => BackupPart::Tpm,
+                        },
+                        bytes: file.bytes,
+                        sha256: file.sha256.as_str().to_owned(),
+                    })
+                    .collect(),
+                consistency: consistency(taken),
+            }),
+            other => Err(host_answer(other).err().unwrap_or_else(|| invalid("answer"))),
+        }
+    }
+
+    async fn restore(
+        &self,
+        vm: &Vm,
+        library: u16,
+        backup: &VmBackup,
+        over: bool,
+        remove: &[u8],
+        name: &str,
+        steps: &dyn Steps,
+        context: &RequestContext,
+    ) -> Result<(), HostError> {
+        let request = Request::RestoreVm {
+            spec: spec(vm, library)?,
+            root: root(&backup.place)?,
+            folder: folder(&backup.folder)?,
+            files: backup.files.iter().map(backup_file).collect::<Result<_, _>>()?,
+            over,
+            remove: remove.iter().map(|slot| disk_slot(*slot)).collect::<Result<_, _>>()?,
+            label: label(name)?,
+        };
+        host_answer(call_raw_reporting(self.transport(), request, &Forward(steps), context).await?)
+    }
+
+    async fn end_work(&self, id: &str, context: &RequestContext) -> Result<bool, HostError> {
+        match call_raw(self.transport(), Request::EndVmWork { id: vm_id(id)? }, context).await? {
+            Response::VmWorkEnded { stopped } => Ok(stopped),
+            other => Err(host_answer(other).err().unwrap_or_else(|| invalid("answer"))),
+        }
+    }
+
+    async fn remove_backup(&self, backup: &VmBackup, context: &RequestContext) -> Result<(), HostError> {
+        let request = Request::RemoveVmBackup {
+            root: root(&backup.place)?,
+            folder: folder(&backup.folder)?,
+            files: backup.files.iter().map(|file| part(file.part)).collect::<Result<_, _>>()?,
+        };
+        self.done(request, context).await
+    }
+
     async fn open_console(&self, id: &str, context: &RequestContext) -> Result<ConsoleSession, HostError> {
         let request = Request::OpenVmConsole { id: vm_id(id)? };
         let request_id = context.request_id.as_deref().and_then(|id| RequestId::parse(id).ok());
@@ -699,6 +1035,31 @@ mod tests {
     use zendiloos_vms::domain::{Drive, VmSettings};
 
     use super::*;
+
+    #[test]
+    fn snapshots_are_read_per_vm_and_label_from_zfs_list() {
+        let text = "tank/zendiloos.vms/0a1b2c3d4e5f-disk0@zdl-2026-11-12_03.00.00\t1793000000\t4096\t8192\tdaily,hourly\tbefore the update\tfrozen\n\
+                    cold/zendiloos.vms/0a1b2c3d4e5f-disk1@zdl-2026-11-12_03.00.00\t1793000000\t1000\t2000\tdaily,hourly\tbefore the update\tfrozen\n\
+                    tank/zendiloos.vms/0a1b2c3d4e5f-disk0@zdl-2026-11-12_04.00.00\t1793003600\t0\t8192\t-\t-\tcrash\n\
+                    tank/zendiloos.vms/0a1b2c3d4e5f-disk0@manual\t1793003600\t0\t8192\t-\t-\tcrash\n\
+                    tank/photos@zdl-2026-11-12_03.00.00\t1793000000\t0\t0\t-\t-\t-\n\
+                    tank/zendiloos.vms/other-disk0@zdl-2026-11-12_03.00.00\t1793000000\t0\t0\t-\t-\t-\n";
+        let snapshots = vm_snapshots(text);
+        assert_eq!(snapshots.len(), 2, "{snapshots:?}");
+        let first = &snapshots[0];
+        assert_eq!((first.vm.as_str(), first.label.as_str()), ("0a1b2c3d4e5f", "zdl-2026-11-12_03.00.00"));
+        assert_eq!(first.disks, [0, 1]);
+        assert_eq!((first.used_bytes, first.referenced_bytes), (5096, 10192));
+        assert_eq!(first.schedules, [Frequency::Daily, Frequency::Hourly]);
+        assert_eq!(first.name.as_deref(), Some("before the update"));
+        assert_eq!(first.consistency, Consistency::Frozen);
+        let second = &snapshots[1];
+        assert_eq!(
+            (second.name.clone(), second.schedules.clone(), second.consistency),
+            (None, vec![], Consistency::Crash)
+        );
+        assert!(vm_snapshots("").is_empty());
+    }
 
     #[test]
     fn states_come_only_for_zendiloos_domains() {

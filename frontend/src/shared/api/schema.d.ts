@@ -1159,94 +1159,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/configuration/backup": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** The plan of the backups made on their own. Needs `system.manage`. */
-        get: operations["configuration_plan"];
-        /**
-         * Sets when and where the backups are made, how many are kept and the
-         *     passphrase; they are written as the administrator setting it. Needs
-         *     `system.manage`.
-         */
-        put: operations["set_configuration_plan"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/configuration/backup/download": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * A backup of the configuration as it is now: the database, the
-         *     certificates, Samba's passwords, the accounts' Linux users and the
-         *     host's settings, encrypted with the passphrase (age, scrypt). Needs
-         *     `system.manage`.
-         */
-        post: operations["download_configuration"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/configuration/backup/run": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Backs up into the plan's folder now, in a job. Needs `system.manage`. */
-        post: operations["run_configuration_backup"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/configuration/restore": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Restores a backup on this NAS: the body is the backup, the passphrase
-         *     in `X-Zendiloos-Passphrase` (base64 of its UTF-8). Checked first as a
-         *     whole: refused with the passphrase wrong, of another layout, or of a
-         *     database newer than this release knows (an older one is migrated).
-         *     The accounts' Linux users, the certificates, Samba's passwords and the
-         *     host's settings go back at once, the database at zendiloosd's start,
-         *     which follows; whoever is signed in signs in again with the accounts of
-         *     the backup. The network stays as it is. Needs `system.manage`; refused
-         *     while jobs run.
-         */
-        post: operations["restore_configuration"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/docker/backup-shares/{id}/readers": {
         parameters: {
             query?: never;
@@ -3377,28 +3289,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/setup/restore": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Restores a backup instead of creating the first administrator, as
-         *     `/configuration/restore` does; allowed as the setup is (the setup code
-         *     in `X-Zendiloos-Setup-Code`, or an open setup from the NAS's own
-         *     network). Afterwards the backup's accounts sign in.
-         */
-        post: operations["restore_instead_of_setup"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/shares": {
         parameters: {
             query?: never;
@@ -4062,30 +3952,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/system/hostname": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** The machine's name. Needs `system.view`. */
-        get: operations["host_name"];
-        /**
-         * Renames the machine. What derives from the name follows at once:
-         *     `<name>.local` (Avahi), the SMB name (Samba's NetBIOS name, the name in
-         *     uppercase) and WS-Discovery, which restart if they run (open SMB
-         *     connections end), `/etc/hosts`, the web interface's own certificate
-         *     (never an issued one) and the notifications. Needs `system.manage`.
-         */
-        put: operations["set_host_name"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/system/info": {
         parameters: {
             query?: never;
@@ -4373,6 +4239,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/vms/backups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every VM's backups, newest first; those of VMs that went too. Needs
+         *     `vms.manage`.
+         */
+        get: operations["list_vm_backups"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/backups/{backup}/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Deletes a backup: its files, then its record. Needs `vms.manage`. */
+        post: operations["delete_vm_backup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/backups/{backup}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restores a backup, as a job: every file checked against its SHA-256 as
+         *     recorded; a failure removes a new VM again, or returns the old one's
+         *     disks to what they were. Images no longer in the library leave their
+         *     drives empty, cards on networks that went go through the NAS, and the
+         *     host's USB and PCI devices are not given again. Needs `vms.manage`.
+         */
+        post: operations["restore_vm_backup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/devices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The host's USB and PCI devices with the PCI devices' IOMMU groups, why
+         *     the host keeps those it needs, and the IOMMU. Needs `vms.manage`.
+         */
+        get: operations["vm_host_devices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/vms/images": {
         parameters: {
             query?: never;
@@ -4554,8 +4500,9 @@ export interface paths {
         get: operations["get_vm"];
         /**
          * Changes a VM, its domain defined anew from its settings. Its name,
-         *     autostart and the images in its drives change while it runs (a medium
-         *     at once); anything else only while it is shut off. Needs `vms.manage`.
+         *     autostart, the images in its drives and the host's USB devices change
+         *     while it runs (a medium and a USB device at once); anything else only
+         *     while it is shut off. Needs `vms.manage`.
          */
         put: operations["update_vm"];
         post?: never;
@@ -4576,6 +4523,50 @@ export interface paths {
         /** Whether the VM starts with the machine. Needs `vms.manage`. */
         put: operations["set_vm_autostart"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/{id}/backups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Backs the VM up, as a job: a snapshot of its disks taken (so it may
+         *     run: the backup is as consistent as that snapshot), each disk as a
+         *     compressed raw image, its UEFI variables, its TPM's state and its
+         *     settings with a manifest. Needs `vms.manage`.
+         */
+        post: operations["back_up_vm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/{id}/backups/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancels the backup or restore the VM is in: its job ends as
+         *     `canceled`, the agent stops its unit, nothing half-written is kept, and a
+         *     restore over the VM returns its disks to what they were. Needs
+         *     `vms.manage`.
+         */
+        post: operations["cancel_vm_backup"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4647,6 +4638,86 @@ export interface paths {
         put?: never;
         /** Asks the guest to shut down (ACPI). Needs `vms.manage`. */
         post: operations["shut_down_vm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/{id}/snapshots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The VM's snapshots and schedules. Needs `vms.manage`. */
+        get: operations["list_vm_snapshots"];
+        put?: never;
+        /**
+         * Takes a snapshot of all the VM's disks at once. While it runs, the
+         *     snapshot is crash-consistent unless the QEMU guest agent froze its file
+         *     systems. Needs `vms.manage`.
+         */
+        post: operations["take_vm_snapshot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/{id}/snapshots/schedules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Replaces how often the VM is snapshotted and how many of each to keep;
+         *     looked at every five minutes. Snapshots of a schedule that goes stay.
+         *     Needs `vms.manage`.
+         */
+        put: operations["set_vm_snapshot_schedules"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/{id}/snapshots/{label}/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Deletes the snapshot of every disk of the VM. Needs `vms.manage`. */
+        post: operations["delete_vm_snapshot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/vms/{id}/snapshots/{label}/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Returns the VM's disks to the snapshot; the VM must be shut off. A disk
+         *     keeps its size, and one added since stays as it is. Needs `vms.manage`.
+         */
+        post: operations["rollback_vm_snapshot"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4971,6 +5042,14 @@ export interface components {
             size: number;
             tag: string;
             version: string;
+        };
+        BackUpVmRequest: {
+            /**
+             * @description A folder of the share or drive; the backup goes into
+             *     `<folder>/<id>/<YYYYMMDD-HHMMSS>`. None: its root.
+             */
+            folder?: string;
+            target: components["schemas"]["VmBackupTarget"];
         };
         /**
          * @description A cloud account signed in to. Its token, and its own client's secret if
@@ -5671,85 +5750,6 @@ export interface components {
             };
             severity: components["schemas"]["Severity"];
         };
-        /**
-         * @description When the backups are made.
-         * @enum {string}
-         */
-        ConfigurationFrequency: "daily" | "weekly";
-        ConfigurationLastRun: {
-            /** Format: int64 */
-            at: number;
-            error?: string | null;
-            file?: string | null;
-            succeeded: boolean;
-        };
-        /** @description The backups made on their own; the passphrase is never sent back. */
-        ConfigurationPlan: {
-            /**
-             * @description The administrator who set it up: the backups are written with that
-             *     account's access to the folder.
-             */
-            account?: string | null;
-            enabled: boolean;
-            frequency: components["schemas"]["ConfigurationFrequency"];
-            /**
-             * Format: int32
-             * @description The NAS's local time.
-             */
-            hour: number;
-            /**
-             * Format: int32
-             * @description How many are kept in the folder, the newest; 1 to 60.
-             */
-            keep: number;
-            /** Format: int32 */
-            keep_max: number;
-            last_run?: components["schemas"]["ConfigurationLastRun"] | null;
-            /** Format: int32 */
-            minute: number;
-            /** Format: int64 */
-            next_at?: number | null;
-            /** @description The fewest characters a passphrase has. */
-            passphrase_min: number;
-            passphrase_set: boolean;
-            target?: components["schemas"]["ConfigurationTarget"] | null;
-            /**
-             * Format: int32
-             * @description 0 is Monday; weekly only.
-             */
-            weekday?: number | null;
-        };
-        ConfigurationPlanRequest: {
-            enabled: boolean;
-            frequency: components["schemas"]["ConfigurationFrequency"];
-            /** Format: int32 */
-            hour: number;
-            /** Format: int32 */
-            keep: number;
-            /** Format: int32 */
-            minute: number;
-            /**
-             * Format: password
-             * @description Left out or empty: the one kept stays.
-             */
-            passphrase?: string | null;
-            target?: components["schemas"]["ConfigurationTarget"] | null;
-            /** Format: int32 */
-            weekday?: number | null;
-        };
-        /** @description Where the backups go. */
-        ConfigurationTarget: {
-            folder: string;
-            /** @enum {string} */
-            kind: "share";
-            /** Format: int64 */
-            share_id: number;
-        } | {
-            drive: string;
-            folder: string;
-            /** @enum {string} */
-            kind: "drive";
-        };
         ContainerHealthcheck: {
             /** Format: int64 */
             interval_seconds?: number | null;
@@ -5902,6 +5902,17 @@ export interface components {
             /** @description Up to 4. */
             nics: components["schemas"]["VmNicChoice"][];
             os: components["schemas"]["VmOs"];
+            /**
+             * @description The host's PCI devices by address, each with the rest of its IOMMU
+             *     group; up to 8.
+             */
+            pci?: string[];
+            /** @description Secure Boot with Microsoft's keys; UEFI only. */
+            secure_boot?: boolean;
+            /** @description A TPM 2.0 (swtpm); none if left out. */
+            tpm?: boolean;
+            /** @description The host's USB devices, `vendor:product`; up to 8. */
+            usb?: string[];
         };
         /** @description A VM recorded, and the job that makes it. */
         CreatedVm: {
@@ -6279,14 +6290,6 @@ export interface components {
              */
             complete: boolean;
             name: string;
-        };
-        DownloadRequest: {
-            /**
-             * Format: password
-             * @description At least 12 characters; nobody opens or restores the backup
-             *     without it.
-             */
-            passphrase: string;
         };
         EjectRemovable: {
             /**
@@ -6723,39 +6726,6 @@ export interface components {
         };
         /** @enum {string} */
         HookFormat: "json" | "text";
-        /** @description What came of a rename. */
-        HostNameRenamed: {
-            /**
-             * @description The web interface's own certificate was made anew for the name; if
-             *     not, it still names the old one.
-             */
-            certificate_renewed: boolean;
-            name: string;
-            /** @description As Samba and Windows show it. */
-            netbios_name: string;
-            /**
-             * @description The web interface serves that certificate: browsers meet a new one
-             *     and ask to trust it again.
-             */
-            own_certificate_served: boolean;
-        };
-        HostNameRequest: {
-            /**
-             * @description Letters, digits and `-`, at most 15, not digits only; kept in
-             *     lowercase.
-             */
-            name: string;
-        };
-        /** @description The machine's name. */
-        HostNameState: {
-            /** @description The most characters a new name may have (NetBIOS's limit). */
-            max_length: number;
-            /**
-             * @description As the system keeps it (`/etc/hostname`); one set elsewhere may be
-             *     longer than a new one may be.
-             */
-            name: string;
-        };
         ImageUpdate: {
             /** @description The containers made from it, by name. */
             containers: string[];
@@ -8048,37 +8018,28 @@ export interface components {
             /** @description The volume, for `existing`. */
             volume?: string | null;
         };
-        /** @description What came of a restore; zendiloosd starts again with it a moment later. */
-        RestoreResult: {
-            /**
-             * Format: int64
-             * @description When it was made, and by which version of zendiloOS.
-             */
-            created_at: number;
-            /** @description The name of the machine the backup was made of, which this one has now. */
-            host_name: string;
-            /**
-             * Format: int32
-             * @description The web interface's HTTPS port as the backup has it: where the
-             *     interface is once zendiloosd started again.
-             */
-            https_port?: number | null;
-            /**
-             * @description The network's files in the backup. Not put in force: the network is
-             *     set on its page, each change confirmed.
-             */
-            network: string[];
-            version: string;
-            /** @description What was not put back; the rest was. */
-            warnings: string[];
+        RestoreVmBackupRequest: {
+            as: components["schemas"]["VmRestoreAs"];
         };
         RestoredEntries: {
             /** @description Where each went, in the order asked. */
             paths: string[];
         };
+        /** @description The VM a restore makes or restores, and its job. */
+        RestoredVm: {
+            job: components["schemas"]["Job"];
+            vm: string;
+        };
         RollbackRequest: {
             /** @description The share's name, typed by the user. */
             confirm: string;
+        };
+        RollbackVmSnapshotRequest: {
+            /**
+             * @description The snapshots taken after it go with it (`zfs rollback -r`): only if
+             *     true, else a rollback to any but the newest is refused.
+             */
+            newer?: boolean;
         };
         RolledBack: {
             /** @description Labels of the later snapshots that went with the rollback. */
@@ -8624,6 +8585,10 @@ export interface components {
             /** @description Up to 200 characters, one line. */
             note?: string;
         };
+        TakeVmSnapshotRequest: {
+            /** @description Up to 64 characters; none: shown by its time. */
+            name?: string;
+        };
         TemperatureMetrics: {
             /** Format: float */
             celsius: number;
@@ -8888,6 +8853,12 @@ export interface components {
             name: string;
             /** @description A card of a slot it had keeps its MAC address. */
             nics: components["schemas"]["VmNicChoice"][];
+            /** @description PCI devices, a TPM and Secure Boot change only while it is off. */
+            pci?: string[];
+            secure_boot?: boolean;
+            tpm?: boolean;
+            /** @description USB devices change while it runs: plugged in and out at once. */
+            usb?: string[];
         };
         UpdatesOverview: {
             boot?: components["schemas"]["UpdateBoot"] | null;
@@ -8978,10 +8949,82 @@ export interface components {
             name: string;
             nics: components["schemas"]["VmNic"][];
             os: components["schemas"]["VmOs"];
+            /** @description The host's PCI devices it is given, by address (`0000:01:00.0`). */
+            pci: string[];
+            /** @description Secure Boot with Microsoft's keys enrolled. */
+            secure_boot: boolean;
             state: components["schemas"]["VmPowerState"];
+            /** @description A TPM 2.0 (swtpm). */
+            tpm: boolean;
+            /** @description The host's USB devices it is given, `vendor:product` (`046d:c31c`). */
+            usb: string[];
         };
         VmAutostartRequest: {
             autostart: boolean;
+        };
+        /** @description A backup of a VM. */
+        VmBackup: {
+            /**
+             * Format: int64
+             * @description What its files hold in all.
+             */
+            bytes: number;
+            consistency: components["schemas"]["VmConsistency"];
+            /** Format: int32 */
+            cpus: number;
+            disks_gib: number[];
+            files: components["schemas"]["VmBackupFile"][];
+            /** @description Its folder beneath the share's or drive's root, with `manifest.json`. */
+            folder: string;
+            /** Format: int64 */
+            id: number;
+            /** Format: int32 */
+            memory_mib: number;
+            /** @description The VM's settings then: its system, vCPUs, memory and disks. */
+            os: components["schemas"]["VmOs"];
+            /** @description The share's name, or the drive's id. */
+            place: string;
+            secure_boot: boolean;
+            /** Format: int64 */
+            taken_at: number;
+            target: components["schemas"]["VmBackupTarget"];
+            tpm: boolean;
+            /** @description The VM it came from, and whether it is still there. */
+            vm: string;
+            vm_exists: boolean;
+            vm_name: string;
+        };
+        VmBackupFile: {
+            /** Format: int64 */
+            bytes: number;
+            part: components["schemas"]["VmBackupFilePart"];
+            sha256: string;
+        };
+        /** @description What a file of a backup holds. */
+        VmBackupFilePart: {
+            /** @enum {string} */
+            kind: "disk";
+            /** Format: int32 */
+            slot: number;
+            /** Format: int64 */
+            volsize: number;
+        } | {
+            /** @enum {string} */
+            kind: "nvram";
+        } | {
+            /** @enum {string} */
+            kind: "tpm";
+        };
+        /** @description Where a backup goes or is. */
+        VmBackupTarget: {
+            /** @enum {string} */
+            kind: "share";
+            /** Format: int64 */
+            share_id: number;
+        } | {
+            drive: string;
+            /** @enum {string} */
+            kind: "drive";
         };
         /** @description A device a VM boots from. */
         VmBootDevice: {
@@ -8991,6 +9034,11 @@ export interface components {
         };
         /** @enum {string} */
         VmBootKind: "disk" | "drive";
+        /**
+         * @description How consistent a snapshot or backup is.
+         * @enum {string}
+         */
+        VmConsistency: "off" | "frozen" | "crash";
         /** @description A disk: a sparse zvol in its slot, 0 to 7, on its location. */
         VmDisk: {
             bus: components["schemas"]["VmDiskBus"];
@@ -9045,12 +9093,69 @@ export interface components {
              */
             cpu_virtualization?: string | null;
             /**
-             * @description An IOMMU is on (VT-d, AMD-Vi): devices could be handed to a VM
-             *     later.
+             * @description An IOMMU is on (VT-d, AMD-Vi): devices of the host's can be handed
+             *     to a VM.
              */
             iommu: boolean;
             /** @description `/dev/kvm` is there: the kernel can run VMs with the CPU's help. */
             kvm: boolean;
+            /** @description OVMF with Microsoft's keys enrolled is there, for Secure Boot. */
+            secure_boot: boolean;
+            /**
+             * @description swtpm is installed: VMs can have a TPM 2.0. Missing on a plugin
+             *     installed before; installing again brings it.
+             */
+            swtpm: boolean;
+        };
+        /** @description The host's devices a VM can be given. */
+        VmHostDevices: {
+            iommu: components["schemas"]["VmIommu"];
+            pci: components["schemas"]["VmHostPci"][];
+            usb: components["schemas"]["VmHostUsb"][];
+        };
+        /** @description Why the host keeps a PCI device. */
+        VmHostNeeds: {
+            disk: string;
+            /** @enum {string} */
+            kind: "disk";
+        } | {
+            /** @enum {string} */
+            kind: "console";
+        } | {
+            interface?: string | null;
+            /** @enum {string} */
+            kind: "network";
+        } | {
+            /** @enum {string} */
+            kind: "bridge";
+        };
+        /** @description A PCI function of the host's. */
+        VmHostPci: {
+            /** @description `0000:01:00.0`. */
+            address: string;
+            /** @description Class, subclass and interface in hex: `020000` is an Ethernet card. */
+            class: string;
+            device: string;
+            device_name?: string | null;
+            driver?: string | null;
+            /**
+             * Format: int32
+             * @description The devices of one group go to a VM together.
+             */
+            iommu_group?: number | null;
+            needed?: components["schemas"]["VmHostNeeds"] | null;
+            /** @description In hex: `8086`. */
+            vendor: string;
+            vendor_name?: string | null;
+        };
+        /** @description A USB device plugged into the host. */
+        VmHostUsb: {
+            /** @description `vendor:product` in hex, `046d:c31c`: how a VM is given it. */
+            id: string;
+            manufacturer?: string | null;
+            name?: string | null;
+            /** @description Where it is plugged in: `1-2.3`. */
+            port: string;
         };
         /** @description An ISO of the library, kept once for as many VMs as want it. */
         VmImage: {
@@ -9081,6 +9186,18 @@ export interface components {
             file: string;
             /** @enum {string} */
             kind: "upload";
+        };
+        /** @description The IOMMU, and what helps to switch it on. */
+        VmIommu: {
+            /** @description What the kernel's command line says of it (`intel_iommu=on`, …). */
+            cmdline: string[];
+            /** @description `intel`, `amd` or none: which hint switches it on. */
+            cpu_vendor?: string | null;
+            /**
+             * @description `/sys/kernel/iommu_groups` lists groups: PCI devices can be handed
+             *     to VMs.
+             */
+            on: boolean;
         };
         /**
          * @description A running VM's load. What libvirt cannot tell is none: the CPU on the
@@ -9253,6 +9370,65 @@ export interface components {
          * @enum {string}
          */
         VmPowerState: "running" | "paused" | "shutting_down" | "shut_off" | "crashed" | "suspended" | "creating" | "unknown";
+        /** @description How a backup is restored. */
+        VmRestoreAs: {
+            /** @enum {string} */
+            kind: "new";
+            name: string;
+            pool?: string | null;
+        } | {
+            confirm: string;
+            /** @enum {string} */
+            kind: "over";
+        };
+        /** @description What a rollback destroyed. */
+        VmRollback: {
+            /** @description The labels of the snapshots after it, gone. */
+            removed: string[];
+        };
+        /** @description A snapshot of all of a VM's disks at one moment. */
+        VmSnapshot: {
+            consistency: components["schemas"]["VmConsistency"];
+            /** @description The slots of the disks it has; a disk added later is not in it. */
+            disks: number[];
+            /** @description `zdl-YYYY-MM-DD_HH.MM.SS`, UTC: how it is named in ZFS. */
+            label: string;
+            name?: string | null;
+            /**
+             * Format: int64
+             * @description What the disks held then.
+             */
+            referenced_bytes: number;
+            /** @description The schedules it was taken for; none: by hand. */
+            schedules: components["schemas"]["VmSnapshotFrequency"][];
+            /** Format: int64 */
+            taken_at: number;
+            /**
+             * Format: int64
+             * @description What it costs: data changed since.
+             */
+            used_bytes: number;
+        };
+        /** @enum {string} */
+        VmSnapshotFrequency: "hourly" | "daily" | "weekly" | "monthly";
+        /** @description A schedule: how often, and how many of its snapshots to keep. */
+        VmSnapshotSchedule: {
+            frequency: components["schemas"]["VmSnapshotFrequency"];
+            /**
+             * Format: int32
+             * @description 1 to 100.
+             */
+            keep: number;
+        };
+        VmSnapshotSchedulesRequest: {
+            /** @description One per frequency. */
+            schedules: components["schemas"]["VmSnapshotSchedule"][];
+        };
+        /** @description A VM's snapshots, newest first, and its schedules. */
+        VmSnapshots: {
+            schedules: components["schemas"]["VmSnapshotSchedule"][];
+            snapshots: components["schemas"]["VmSnapshot"][];
+        };
         /** @description What the virtual machines use now. */
         VmStats: {
             /**
@@ -12039,189 +12215,6 @@ export interface operations {
             };
             /** @description `acme_not_installed`, or `refused`: an HTTP challenge without plain HTTP on port 80 */
             409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
-                };
-            };
-        };
-    };
-    configuration_plan: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ConfigurationPlan"];
-                };
-            };
-            /** @description `forbidden` */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
-                };
-            };
-        };
-    };
-    set_configuration_plan: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ConfigurationPlanRequest"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ConfigurationPlan"];
-                };
-            };
-            /** @description `forbidden`, `csrf_rejected` */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description `invalid_input`: a time, a folder, how many kept; on without a folder or passphrase */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
-                };
-            };
-        };
-    };
-    download_configuration: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DownloadRequest"];
-            };
-        };
-        responses: {
-            /** @description The backup, `zendiloos-config-<name>-<time>.tar.zst.age`. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/octet-stream": number[];
-                };
-            };
-            /** @description `forbidden`, `csrf_rejected` */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description `invalid_input`: a passphrase too short */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
-                };
-            };
-        };
-    };
-    run_configuration_backup: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Job"];
-                };
-            };
-            /** @description `not_planned`: no folder or passphrase yet */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
-                };
-            };
-        };
-    };
-    restore_configuration: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description Base64 of the passphrase's UTF-8. */
-                "x-zendiloos-passphrase": string;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/octet-stream": number[];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RestoreResult"];
-                };
-            };
-            /** @description `jobs_running`; `refused`: the host would not take it back (a name or ID taken), in its words */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description `wrong_passphrase`, `not_a_backup`, `unsupported_backup`, `backup_too_new`, `invalid_input` */
-            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -17406,70 +17399,6 @@ export interface operations {
             };
         };
     };
-    restore_instead_of_setup: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description Base64 of the passphrase's UTF-8. */
-                "x-zendiloos-passphrase": string;
-                /** @description The code on the console; none for an open setup. */
-                "x-zendiloos-setup-code"?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/octet-stream": number[];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RestoreResult"];
-                };
-            };
-            /** @description `setup_not_local`, `csrf_rejected` */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description `setup_completed`, `jobs_running`, `refused` */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description `invalid_setup_code`, `wrong_passphrase`, `not_a_backup`, `unsupported_backup`, `backup_too_new` */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description `too_many_attempts` */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
-                };
-            };
-        };
-    };
     list_shares: {
         parameters: {
             query?: never;
@@ -18948,75 +18877,6 @@ export interface operations {
             };
         };
     };
-    host_name: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HostNameState"];
-                };
-            };
-            /** @description `forbidden` */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
-                };
-            };
-        };
-    };
-    set_host_name: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["HostNameRequest"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HostNameRenamed"];
-                };
-            };
-            /** @description `forbidden`, `csrf_rejected` */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description `invalid_input`: not a name of letters, digits and -, too long, digits only, localhost */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
-                };
-            };
-        };
-    };
     info: {
         parameters: {
             query?: never;
@@ -19610,6 +19470,133 @@ export interface operations {
             };
         };
     };
+    list_vm_backups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VmBackup"][];
+                };
+            };
+        };
+    };
+    delete_vm_backup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                backup: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `refused`: the share or drive cannot be used */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    restore_vm_backup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                backup: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RestoreVmBackupRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestoredVm"];
+                };
+            };
+            /** @description `not_found`: no such backup, or its VM went */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `vm_running`; `name_taken`; `refused` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `confirmation_mismatch`; `invalid_input` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    vm_host_devices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VmHostDevices"];
+                };
+            };
+        };
+    };
     list_vm_images: {
         parameters: {
             query?: never;
@@ -20144,6 +20131,86 @@ export interface operations {
             };
         };
     };
+    back_up_vm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackUpVmRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `not_found`: no such VM or share */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `vm_creating`; `refused`: it is being changed, backed up or restored */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`: a folder or drive that is none */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cancel_vm_backup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `refused`: none runs */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     delete_vm: {
         parameters: {
             query?: never;
@@ -20301,6 +20368,195 @@ export interface operations {
                 };
             };
             /** @description `vm_creating`; `refused`: libvirt's reason */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_vm_snapshots: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VmSnapshots"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    take_vm_snapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TakeVmSnapshotRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VmSnapshot"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `vm_creating`; `refused` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_vm_snapshot_schedules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VmSnapshotSchedulesRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VmSnapshotSchedule"][];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`: 1 to 100 kept, one per frequency */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_vm_snapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                label: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    rollback_vm_snapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                label: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RollbackVmSnapshotRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VmRollback"];
+                };
+            };
+            /** @description `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `newer_snapshots`: the detail names the snapshots that would go; `vm_running`; `refused` */
             409: {
                 headers: {
                     [name: string]: unknown;

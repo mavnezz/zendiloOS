@@ -16,7 +16,7 @@ use crate::tests::{
     Harness, Reply, Session, assert_problem, changing, empty, get, json, with_cookie, with_csrf,
 };
 
-async fn finished(h: &Harness, job: &Value) -> zendiloos_jobs::Job {
+pub(super) async fn finished(h: &Harness, job: &Value) -> zendiloos_jobs::Job {
     let id = zendiloos_jobs::JobId::new(job["id"].as_i64().unwrap());
     for _ in 0..400 {
         let job = h.jobs.find(id).await.unwrap().unwrap();
@@ -28,17 +28,17 @@ async fn finished(h: &Harness, job: &Value) -> zendiloos_jobs::Job {
     panic!("the job did not finish");
 }
 
-async fn send(h: &Harness, session: &Session, method: Method, uri: &str, body: Value) -> Reply {
+pub(super) async fn send(h: &Harness, session: &Session, method: Method, uri: &str, body: Value) -> Reply {
     let builder = with_csrf(changing(method, uri), session);
     h.send(if body.is_null() { empty(builder) } else { json(builder, body) }).await
 }
 
-async fn read(h: &Harness, session: &Session, uri: &str) -> Reply {
+pub(super) async fn read(h: &Harness, session: &Session, uri: &str) -> Reply {
     h.send(empty(with_cookie(get(uri), session))).await
 }
 
 /// Installed and set up on `tank`.
-async fn ready(h: &Harness, admin: &Session) {
+pub(super) async fn ready(h: &Harness, admin: &Session) {
     let install = send(h, admin, Method::POST, "/api/v1/vms/plugin/install", Value::Null).await;
     assert_eq!(install.status, StatusCode::ACCEPTED, "{:?}", install.body);
     assert_eq!(finished(h, &install.body).await.state, zendiloos_jobs::JobState::Succeeded);
@@ -46,7 +46,7 @@ async fn ready(h: &Harness, admin: &Session) {
     assert_eq!(storage.status, StatusCode::OK, "{:?}", storage.body);
 }
 
-fn small(name: &str) -> Value {
+pub(super) fn small(name: &str) -> Value {
     json!({ "name": name, "os": "linux", "cpus": 1, "memory_mib": 256, "firmware": "uefi",
             "disks": [{ "slot": 0, "size_gib": 1, "bus": "virtio" }],
             "nics": [{ "slot": 0, "model": "virtio", "network": { "kind": "user" } }],
@@ -55,7 +55,7 @@ fn small(name: &str) -> Value {
 }
 
 /// What a VM has now, as a change asks for it.
-fn change_of(vm: &Value) -> Value {
+pub(super) fn change_of(vm: &Value) -> Value {
     let nics: Vec<Value> = vm["nics"]
         .as_array()
         .unwrap()
@@ -64,7 +64,8 @@ fn change_of(vm: &Value) -> Value {
         .collect();
     json!({ "name": vm["name"], "cpus": vm["cpus"], "memory_mib": vm["memory_mib"], "firmware": vm["firmware"],
             "disks": vm["disks"], "nics": nics, "drives": vm["drives"], "boot": vm["boot"],
-            "autostart": vm["autostart"] })
+            "autostart": vm["autostart"], "usb": vm["usb"], "pci": vm["pci"], "tpm": vm["tpm"],
+            "secure_boot": vm["secure_boot"] })
 }
 
 /// An ISO copied into the library from share 1: its id.
@@ -95,7 +96,10 @@ async fn the_plugin_says_what_the_machine_offers_and_needs_kvm() {
 
     let plugin = read(&h, &admin, "/api/v1/vms/plugin").await;
     assert_eq!(plugin.status, StatusCode::OK);
-    assert_eq!(plugin.body["hardware"], json!({ "kvm": true, "cpu_virtualization": "vmx", "iommu": false }));
+    assert_eq!(
+        plugin.body["hardware"],
+        json!({ "kvm": true, "cpu_virtualization": "vmx", "iommu": false, "swtpm": true, "secure_boot": true })
+    );
     assert_eq!((plugin.body["installed"].as_bool(), plugin.body["cores"].as_u64()), (Some(false), Some(2)));
     assert_eq!(plugin.body["storage"], Value::Null);
     let pools: Vec<(&str, &str)> = plugin.body["pools"]

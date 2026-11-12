@@ -10,5 +10,6 @@ mod errors;
 mod firewall;
 mod network;
 mod two_factor;
+mod vm_backups;
 mod vms;
 mod volumes;

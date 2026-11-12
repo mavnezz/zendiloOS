@@ -119,7 +119,18 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 #   consoles' folder is made by systemd-tmpfiles in one. A console is
 #   QEMU's VNC socket in /run/zendiloos-vms, opened without following a
 #   link and connected to (connecting needs no write access to /run), and
-#   handed to zendiloosd like a terminal's master;
+#   handed to zendiloosd like a terminal's master. The host's USB and PCI
+#   devices a VM may be given are read from /sys (and the PCI ID
+#   database), which network cards the host uses is asked of
+#   systemd-networkd (busctl), and a disk in use below a controller is
+#   found as when erasing disks (holders, mountinfo, swaps, an O_EXCL
+#   open); libvirt binds a PCI device to vfio-pci, outside this sandbox.
+#   Snapshots of a VM's disks are taken with zfs; a VM's backups and
+#   restores run in transient units (this binary as back-up-vm,
+#   restore-vm and remove-vm-backup) that may open the zvols' devices
+#   alone (DeviceAllow=block-zvol), read only for a backup, and write only
+#   the share or drive, or libvirt's folders of the UEFI variables and TPM
+#   states;
 # The contents of volumes are the files agent's (zendiloos-files.service).
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_CHOWN CAP_DAC_READ_SEARCH
