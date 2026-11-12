@@ -470,18 +470,22 @@ simple to audit.
   `docker`, `nginx`, `systemd-timesyncd`, `zendiloos-firewall`; for a
   network taken over from ifupdown `networking.service`,
   `systemd-networkd` and `systemd-resolved`). systemd is reloaded only
-  when a unit file or drop-in the agent writes changed (written only
-  then): every reload runs all generators again and is logged. Enabling
-  and disabling the file services, SSH and zendiloOS's own mount and pin
-  units goes with `--no-reload`, since it only links a unit, which systemd
-  reads at boot; without it systemctl reloads systemd each time, also
-  when nothing changed, which made a change of the file services and
-  every start of zendiloosd (which writes their configuration) reload it
-  four times. For the file services and SSH it also goes with
-  `SYSTEMCTL_SKIP_SYSV=1`: smbd and ssh have init scripts too, and for
-  those systemctl runs Debian's `update-rc.d`, which reloads systemd twice
-  whatever `--no-reload` says; their rc.d links count for nothing beside
-  the native units. What has
+  when something it reads changed, and then once: a unit file or drop-in
+  the agent writes (written only then), or a unit's link. Every reload
+  runs all generators again and is logged. Enabling and disabling the file
+  services, SSH and zendiloOS's own mount and pin units goes with
+  `--no-reload`; without it systemctl reloads systemd each time, also when
+  no link changed, which made a change of the file services and every
+  start of zendiloosd (which writes their configuration) reload it four
+  times. Afterwards the agent asks systemd whether it is behind the disk
+  (`NeedDaemonReload`; since systemd 257 every unit is, once a link
+  changed without a reload, and `systemctl status` warns about it) and
+  reloads if so. A new mount unit is linked before that reload and
+  started after it, so its file and link take one. For the file services
+  and SSH it also goes with `SYSTEMCTL_SKIP_SYSV=1`: smbd and ssh have
+  init scripts too, and for those systemctl runs Debian's `update-rc.d`,
+  which reloads systemd twice whatever `--no-reload` says; their rc.d
+  links count for nothing beside the native units. What has
   to run outside the agent's sandbox runs as a unit: transient ones through
   `systemd-run` (apt, acme.sh, `nginx -t`, `nft -c`) and `systemd-mount`
   (removable drives), or a unit of the package. The kernel's NFS server

@@ -257,9 +257,14 @@ async fn creates_a_mirror_with_equal_partitions_and_a_mount_unit() {
          -O mountpoint=legacy -O canmount=on \
          -O zendiloos:volume=2 media mirror /dev/disk/by-id/ata-FREE-1-part1 /dev/disk/by-id/ata-FREE-2-part1"
     );
+    // Linked first: the new unit's file and link take one reload.
     assert_eq!(
-        &calls[calls.len() - 2..],
-        ["systemctl daemon-reload", "systemctl enable --no-reload --now volume2.mount"]
+        &calls[calls.len() - 3..],
+        [
+            "systemctl enable --no-reload volume2.mount",
+            "systemctl daemon-reload",
+            "systemctl start volume2.mount"
+        ]
     );
     let unit = fs::read_to_string(host.path("units/volume2.mount")).unwrap();
     assert!(unit.contains("What=media\nWhere=/volume2\nType=zfs\n"), "{unit}");
@@ -490,7 +495,7 @@ async fn shares_are_datasets_with_their_own_mount_unit() {
         ),
         "{calls:#?}"
     );
-    assert_eq!(calls.last().unwrap(), "systemctl enable --no-reload --now volume1-my\\x2dphotos.mount");
+    assert_eq!(calls.last().unwrap(), "systemctl start volume1-my\\x2dphotos.mount");
     let unit = fs::read_to_string(host.path("units/volume1-my\\x2dphotos.mount")).unwrap();
     assert!(unit.contains("What=tank/my-photos\nWhere=/volume1/my-photos\nType=zfs\n"), "{unit}");
 
@@ -562,6 +567,8 @@ async fn writes_samba_and_nfs_configuration_after_checking_it() {
             "systemctl enable --no-reload --now avahi-daemon.socket avahi-daemon.service",
             "systemctl enable --no-reload --now nfs-server.service",
             "systemctl reload-or-restart nfs-server.service",
+            // Reloaded once if a link changed.
+            "systemctl show --property=NeedDaemonReload --value smbd.service",
         ]
     );
     let first = host.calls().len();
@@ -614,6 +621,7 @@ async fn servers_that_are_off_stop_and_stay_off_with_their_configuration_kept() 
             "systemctl disable --no-reload --now wsdd2.service",
             "systemctl disable --no-reload --now avahi-daemon.service avahi-daemon.socket",
             "systemctl disable --no-reload --now nfs-server.service",
+            "systemctl show --property=NeedDaemonReload --value smbd.service",
         ]
     );
 }
@@ -728,10 +736,7 @@ async fn docker_moves_onto_a_pool_zendiloos_made() {
 
     let calls = host.calls();
     assert!(calls.contains(&"zfs create -o mountpoint=legacy tank/zendiloos.docker".to_owned()), "{calls:?}");
-    assert!(
-        calls.contains(&"systemctl enable --no-reload --now volume1-\\x40docker.mount".to_owned()),
-        "{calls:?}"
-    );
+    assert!(calls.contains(&"systemctl start volume1-\\x40docker.mount".to_owned()), "{calls:?}");
     assert_eq!(calls.last().unwrap(), "systemctl restart docker");
     let unit = fs::read_to_string(host.path("units/volume1-\\x40docker.mount")).unwrap();
     assert!(unit.contains("What=tank/zendiloos.docker\nWhere=/volume1/@docker\n"), "{unit}");
@@ -1015,7 +1020,7 @@ async fn personal_folders_get_a_dataset_and_quotas_per_user() {
     let before = reloads();
     assert_eq!(host.run(homes("cold", 2)).await, Response::Done);
     assert_eq!(reloads(), before, "{:?}", host.calls());
-    assert_eq!(host.calls().last().unwrap(), "systemctl enable --no-reload --now volume2-\\x40homes.mount");
+    assert_eq!(host.calls().last().unwrap(), "systemctl start volume2-\\x40homes.mount");
     assert_refused(host.run(homes("tank", 2)).await, ErrorCode::Forbidden, "not managed");
 
     let quota = |bytes| Request::SetHomeQuota {

@@ -581,14 +581,18 @@ impl Pools {
     }
 
     /// Writes `unit` and has it started now and at every boot. systemd is
-    /// reloaded only when the file changed: a reload runs every generator
-    /// again and is logged. Enabling only links the unit, which systemd
-    /// reads at boot, so it reloads nothing either.
+    /// reloaded only when the file or its link changed, once: a reload runs
+    /// every generator again and is logged. Linked first, so that a new
+    /// unit's file and link are read by the same reload.
     async fn install_unit(&self, unit: &str, content: &str) -> Result<(), OperationError> {
-        if crate::durable::replace_if_changed(&self.paths.units.join(unit), content.as_bytes())? {
+        let changed = crate::durable::replace_if_changed(&self.paths.units.join(unit), content.as_bytes())?;
+        run(&self.systemctl, &["enable", "--no-reload", unit]).await?;
+        if changed {
             run(&self.systemctl, &["daemon-reload"]).await?;
+        } else {
+            reload_if_behind(&self.systemctl, unit).await?;
         }
-        run(&self.systemctl, &["enable", "--no-reload", "--now", unit]).await
+        run(&self.systemctl, &["start", unit]).await
     }
 
     /// Starts `units` again, the volume's before its shares', after a
@@ -1339,6 +1343,19 @@ pub(crate) async fn link_units(systemctl: &Program, args: &[&str]) -> Result<(),
         directory: None,
     };
     zendiloos_exec::run_with(systemctl, args, None, &surroundings, LIMITS).await?.success(systemctl)?;
+    Ok(())
+}
+
+/// Reloads systemd if what it holds of `unit` is behind the disk. Since
+/// systemd 257 that is so for every unit once any link changed without a
+/// reload, and `systemctl status` then warns that the unit changed on
+/// disk. Links go with `--no-reload`, so that one that stays as it was
+/// reloads nothing; this reloads once after one that changed.
+pub(crate) async fn reload_if_behind(systemctl: &Program, unit: &str) -> Result<(), OperationError> {
+    let behind = output(systemctl, &["show", "--property=NeedDaemonReload", "--value", unit]).await?;
+    if behind.trim() == "yes" {
+        run(systemctl, &["daemon-reload"]).await?;
+    }
     Ok(())
 }
 

@@ -6,9 +6,11 @@
 #   2. a share chosen for Time Machine is offered to Macs as one
 #   3. the discovery services follow their switches
 #   4. encryption required: a client that cannot encrypt is refused
-#   5. switching services on and off and restarting zendiloosd, which writes
-#      the servers' configuration at its start, make the agent reload
-#      systemd not once; systemd-gpt-auto-generator is masked
+#   5. changing the settings without switching a service and restarting
+#      zendiloosd, which writes the servers' configuration at its start,
+#      make the agent reload systemd not once; switching services on or off
+#      reloads it once, and leaves no unit behind the disk;
+#      systemd-gpt-auto-generator is masked
 #
 # Needs the VM running with the package installed and set up; account and
 # password as for vm-storage-test.sh. Uses two free disks of the VM for a
@@ -148,17 +150,30 @@ say "5. No reloads of systemd for units that did not change, and no GPT generato
     || fail "systemd-gpt-auto-generator is not masked"
 # From the journal's last entry on: a time could be older than entries a
 # clock set wrong once wrote.
-cursor=$(vm 'sudo journalctl -q -n 0 --show-cursor' | sed -n 's/^-- cursor: //p')
+journal_end() { vm 'sudo journalctl -q -n 0 --show-cursor' | sed -n 's/^-- cursor: //p'; }
+# systemd names who asked for each reload.
+reloads_since() {
+    vm "sudo journalctl -q --after-cursor '$1' _PID=1 -g 'Reload requested from client' -o cat" \
+        | grep -c 'unit zendiloos-agent.service' || true
+}
+behind() { vm 'systemctl show --property=NeedDaemonReload --value smbd.service'; }
+cursor=$(journal_end)
 [[ -n $cursor ]] || fail "no cursor of the journal"
-call PUT /file-services '{"smb":true,"nfs":true,"workgroup":"WORKGROUP","smb_min_protocol":"smb2_1","wsdd":false,"bonjour":false}' >/dev/null
 call PUT /file-services "$defaults" >/dev/null
-[[ $(state_of wsdd2) == "enabled active" ]] || fail "wsdd2 back: $(state_of wsdd2)"
+call PUT /file-services "$defaults" >/dev/null
 vm 'sudo systemctl restart zendiloosd'
 wait_for "zendiloosd" "curl -skf $api/health" 120
-# systemd names who asked for each reload.
-reloads=$(vm "sudo journalctl -q --after-cursor '$cursor' _PID=1 -g 'Reload requested from client' -o cat" \
-    | grep -c 'unit zendiloos-agent.service' || true)
-[[ $reloads == 0 ]] || fail "the agent reloaded systemd $reloads times"
+reloads=$(reloads_since "$cursor")
+[[ $reloads == 0 ]] || fail "the agent reloaded systemd $reloads times for links that stayed"
+for switched in '{"smb":true,"nfs":true,"workgroup":"WORKGROUP","smb_min_protocol":"smb2_1","wsdd":false,"bonjour":false}' \
+    "$defaults"; do
+    cursor=$(journal_end)
+    call PUT /file-services "$switched" >/dev/null
+    reloads=$(reloads_since "$cursor")
+    [[ $reloads == 1 ]] || fail "the agent reloaded systemd $reloads times for one switch"
+    [[ $(behind) == no ]] || fail "systemd is left behind the disk after a switch"
+done
+[[ $(state_of wsdd2) == "enabled active" ]] || fail "wsdd2 back: $(state_of wsdd2)"
 
 say "Cleaning up"
 call PUT /file-services "$defaults" >/dev/null
@@ -166,4 +181,4 @@ job_succeeded "$(call POST "/shares/$share/delete" '{"confirm":"machines"}' | jq
 call DELETE "/accounts/$mac" >/dev/null
 job_succeeded "$(call POST "/storage/pools/$pool/destroy" "{\"confirm\":\"$pool\"}" | jq -r .id)"
 
-say "Passed: SMB options, Time Machine, discovery, encryption, no reloads of systemd for nothing"
+say "Passed: SMB options, Time Machine, discovery, encryption, one reload of systemd per switch and none for nothing"

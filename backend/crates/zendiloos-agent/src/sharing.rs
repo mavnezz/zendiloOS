@@ -33,7 +33,7 @@ use zendiloos_exec::Program;
 use crate::acl::{self, Acl, Managed};
 use crate::config::Tools;
 use crate::operations::OperationError;
-use crate::pools::{HostPaths, link_units, run};
+use crate::pools::{HostPaths, link_units, reload_if_behind, run};
 
 pub use zendiloos_fileops::RECYCLE_DIRECTORY;
 /// How long a change of a share's own folder waits for the walk of the
@@ -371,10 +371,11 @@ impl Sharing {
         let before = fs::read_to_string(&self.paths.samba_config).unwrap_or_default();
         write_atomically(&self.paths.samba_config, &samba)?;
         // The services' units are their packages' and unchanged: enabling
-        // or disabling only links them, which systemd reads at boot. Without
-        // `--no-reload` systemctl would reload systemd for each, four times
-        // at every change of the shares and every start of zendiloosd, and
-        // without the SysV hooks skipped twice more for smbd's init script.
+        // or disabling only links them. Without `--no-reload` systemctl
+        // would reload systemd for each, four times at every change of the
+        // shares and every start of zendiloosd, and without the SysV hooks
+        // skipped twice more for smbd's init script; systemd is reloaded
+        // once at the end, and only if a service was switched on or off.
         if services.smb {
             link_units(&self.systemctl, &["enable", "--no-reload", "--now", "smbd.service"]).await?;
             // smbd announces itself and its Time Machine shares over Bonjour
@@ -425,6 +426,7 @@ impl Sharing {
                     .await?;
             }
         }
+        reload_if_behind(&self.systemctl, "smbd.service").await?;
         Ok(Response::Done)
     }
 
@@ -1193,7 +1195,8 @@ mod tests {
     }
 
     /// Sharing with testparm, systemctl and smbcontrol as scripts that
-    /// record what they are asked; testparm refuses while `refuse` is there.
+    /// record what they are asked; testparm refuses while `refuse` is there,
+    /// and systemd is behind the disk while `behind` is.
     fn applying(dir: &Path, exportfs: bool) -> Sharing {
         let log = dir.join("calls.log");
         let script = |name: &str, body: &str| {
@@ -1213,8 +1216,9 @@ mod tests {
                 "systemctl",
                 &format!(
                     "case \"$1\" in enable|disable) [ \"$SYSTEMCTL_SKIP_SYSV\" = 1 ] || \
-                     echo with SysV hooks >> {};; esac",
-                    log.display()
+                     echo with SysV hooks >> {};; show) [ -f {} ] && echo yes || echo no;; esac",
+                    log.display(),
+                    dir.join("behind").display()
                 ),
             ),
             smbcontrol: script("smbcontrol", ""),
@@ -1259,7 +1263,8 @@ mod tests {
         fs::remove_file(dir.path().join("refuse")).unwrap();
 
         // Everything off: the servers stop and stay off, and no connection
-        // is closed (there are none).
+        // is closed (there are none). Their links changed: one reload.
+        fs::write(dir.path().join("behind"), "").unwrap();
         let mut off = base_services();
         (off.smb, off.nfs, off.wsdd, off.bonjour) = (false, false, false, false);
         let media = ShareName::parse("media").unwrap();
@@ -1277,6 +1282,7 @@ mod tests {
         }
         assert!(!calls.contains("smbcontrol"), "{calls}");
         assert!(!calls.contains("with SysV hooks"), "{calls}");
+        assert_eq!(calls.matches("systemctl daemon-reload").count(), 1, "{calls}");
     }
 
     #[tokio::test]
@@ -1288,6 +1294,7 @@ mod tests {
         sharing.apply(&[smb("media", false)], &[], &base_services(), None, &[]).await.unwrap();
         let quiet = fs::read_to_string(dir.path().join("calls.log")).unwrap();
         assert!(!quiet.contains("smbcontrol"), "nothing taken away, nothing closed: {quiet}");
+        assert!(!quiet.contains("daemon-reload"), "no link changed, no reload: {quiet}");
         fs::remove_file(dir.path().join("calls.log")).unwrap();
 
         sharing.apply(&[smb("media", false)], &[], &base_services(), None, &[media, photos]).await.unwrap();

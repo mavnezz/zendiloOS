@@ -187,12 +187,15 @@ pub(crate) async fn place_unit(
     shares.sort_unstable();
     shares.dedup();
     let content = unit(&paths.agent, owner, &shares);
-    // systemd is reloaded only for a unit that changed: a project deployed
-    // again with the same folders changes nothing. Enabling only links it.
-    if crate::durable::replace_if_changed(&path, content.as_bytes())? {
-        systemctl(program, &["daemon-reload"]).await?;
+    // systemd is reloaded only for a unit or link that changed, once: a
+    // project deployed again with the same folders changes nothing.
+    let changed = crate::durable::replace_if_changed(&path, content.as_bytes())?;
+    systemctl(program, &["enable", "--no-reload", &name]).await?;
+    if changed {
+        systemctl(program, &["daemon-reload"]).await
+    } else {
+        crate::pools::reload_if_behind(program, &name).await
     }
-    systemctl(program, &["enable", "--no-reload", &name]).await
 }
 
 /// Stops (and so unpins) and removes `owner`'s unit, if there is one.
@@ -887,8 +890,9 @@ mod tests {
         let calls = fs::read_to_string(dir.path().join("calls.log")).unwrap();
         assert_eq!(
             calls,
-            "daemon-reload\nenable --no-reload zendiloos-app-jellyfin-shares.service\n\
+            "enable --no-reload zendiloos-app-jellyfin-shares.service\ndaemon-reload\n\
              enable --no-reload zendiloos-app-jellyfin-shares.service\n\
+             show --property=NeedDaemonReload --value zendiloos-app-jellyfin-shares.service\n\
              restart zendiloos-app-jellyfin-shares.service\n\
              disable --no-reload --now zendiloos-app-jellyfin-shares.service\ndaemon-reload\n",
             "nothing to remove the second time"

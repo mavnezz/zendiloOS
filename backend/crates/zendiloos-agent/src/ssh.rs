@@ -25,6 +25,7 @@ use zendiloos_exec::{Limits, Program};
 
 use crate::config::Tools;
 use crate::operations::OperationError;
+use crate::pools::{link_units, reload_if_behind};
 
 const LIMITS: Limits = Limits { timeout: Duration::from_secs(30), max_stdout: 64 * 1024 };
 const UNIT: &str = "ssh.service";
@@ -139,24 +140,25 @@ impl Ssh {
         let _ = self.run(&self.systemctl, &["stop", &timer]).await;
         let _ = self.run(&self.systemctl, &["reset-failed", &service]).await;
         // The unit is the package's and unchanged: enabling and disabling
-        // only link it, which systemd reads at boot, so none of them
-        // reloads systemd (every reload runs all generators again), neither
-        // itself nor through the SysV hooks for ssh's init script.
+        // only link it, so none of them reloads systemd (every reload runs
+        // all generators again), neither itself nor through the SysV hooks
+        // for ssh's init script; it is reloaded once if a link changed.
         if !config.enabled {
-            crate::pools::link_units(&self.systemctl, &["disable", "--no-reload", "--now", UNIT]).await?;
+            link_units(&self.systemctl, &["disable", "--no-reload", "--now", UNIT]).await?;
             // What a time-limited start enabled until the next boot.
-            crate::pools::link_units(&self.systemctl, &["disable", "--no-reload", "--runtime", UNIT]).await?;
+            link_units(&self.systemctl, &["disable", "--no-reload", "--runtime", UNIT]).await?;
+            reload_if_behind(&self.systemctl, UNIT).await?;
             return Ok(Response::Done);
         }
         if config.off_after.is_some() {
             // Enabled for good, it would outlive its timer across a restart.
-            crate::pools::link_units(&self.systemctl, &["disable", "--no-reload", UNIT]).await?;
-            crate::pools::link_units(&self.systemctl, &["enable", "--no-reload", "--runtime", "--now", UNIT])
-                .await?;
+            link_units(&self.systemctl, &["disable", "--no-reload", UNIT]).await?;
+            link_units(&self.systemctl, &["enable", "--no-reload", "--runtime", "--now", UNIT]).await?;
         } else {
-            crate::pools::link_units(&self.systemctl, &["disable", "--no-reload", "--runtime", UNIT]).await?;
-            crate::pools::link_units(&self.systemctl, &["enable", "--no-reload", "--now", UNIT]).await?;
+            link_units(&self.systemctl, &["disable", "--no-reload", "--runtime", UNIT]).await?;
+            link_units(&self.systemctl, &["enable", "--no-reload", "--now", UNIT]).await?;
         }
+        reload_if_behind(&self.systemctl, UNIT).await?;
         // A new port needs the listener anew; sshd re-executes on reload.
         self.run(&self.systemctl, &["reload-or-restart", UNIT]).await?;
         if let Some(off) = config.off_after {
@@ -174,9 +176,10 @@ impl Ssh {
                     "--timer-property=AccuracySec=1s",
                     "--collect",
                     "--setenv=SYSTEMCTL_SKIP_SYSV=1",
+                    // It changes a link: one reload, so that systemd is not
+                    // left behind the disk.
                     &systemctl,
                     "disable",
-                    "--no-reload",
                     "--runtime",
                     "--now",
                     UNIT,
