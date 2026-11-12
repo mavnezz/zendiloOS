@@ -20,7 +20,7 @@ Allowed: 0BSD, Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-C
 ## The programs
 
 zendiloosd and zendiloos-agent, built for x86-64 Linux, hold 260 crates of
-others (build scripts and what only they use aside), and 24 of zendiloOS's
+others (build scripts and what only they use aside), and 25 of zendiloOS's
 own (Apache-2.0).
 
 | Licence | Crates | Which |
@@ -72,4 +72,4 @@ besides, the libraries the programs link (`${shlibs:Depends}`).
 | --- | --- |
 | Depends | acl, ca-certificates, cron | cron-daemon, gdisk, nftables, nginx, openssl, passwd, samba, smartmontools, systemd, util-linux, zfs-dkms, zfsutils-linux |
 | Recommends | avahi-daemon, nfs-kernel-server, wsdd2 |
-| Suggests | docker-compose, docker.io, libvirt-clients, libvirt-daemon-driver-qemu, ovmf, passt, qemu-system-x86, qemu-utils |
+| Suggests | docker-compose, docker.io, libvirt-clients, libvirt-daemon-driver-qemu, openssh-client, ovmf, passt, qemu-system-x86, qemu-utils, rclone, rsync |
