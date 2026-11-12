@@ -563,6 +563,19 @@ impl Pools {
         Ok(())
     }
 
+    /// Has the login prompts print the console's text again: agetty reads
+    /// `/run/issue.d` only as it prints a prompt, and one printed before
+    /// the text was written (a slow machine, a board's serial console)
+    /// kept the old text, without the address to set the NAS up at.
+    /// Through a unit of the package, as the agent's sandbox may not write
+    /// `/run/agetty.reload`; a failure only goes into the log.
+    pub(crate) async fn reprint_console(&self) {
+        if let Err(error) = run(&self.systemctl, &["start", "--no-block", "zendiloos-console.service"]).await
+        {
+            tracing::warn!(%error, "the login prompts were not told to print the console's new text");
+        }
+    }
+
     /// Writes `unit` and has it started now and at every boot. systemd is
     /// reloaded only when the file or its link changed, once: a reload runs
     /// every generator again and is logged. Linked first, so that a new

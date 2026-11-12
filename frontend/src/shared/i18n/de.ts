@@ -15,6 +15,7 @@ const de: Messages = {
     docker: 'Docker',
     vms: 'Virtuelle Maschinen',
     'vm-console': 'VM-Konsole',
+    backup: 'Sicherung',
   },
   folderPicker: {
     pickFolder: 'Ordner auswählen',

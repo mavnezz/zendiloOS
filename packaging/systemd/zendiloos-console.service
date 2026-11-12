@@ -1,0 +1,12 @@
+[Unit]
+Description=zendiloOS: print the console's new text at the login prompts
+Documentation=https://github.com/mavnezz/zendiloOS
+
+# Started by zendiloos-agent once it wrote /run/issue.d/zendiloos.issue (the
+# web interface's address, and how to set it up). agetty reads that only as
+# it prints a prompt: one printed before the text was written, on a slow
+# machine or a board's serial console, kept the old text. The agent's
+# sandbox may not write /run/agetty.reload, so the reload runs here.
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/agetty --reload

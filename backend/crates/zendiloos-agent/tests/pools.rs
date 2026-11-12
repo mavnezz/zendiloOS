@@ -1334,3 +1334,21 @@ async fn only_a_pool_zendiloos_made_gets_its_mounts_and_a_mount_that_fails_is_to
         "the others are mounted"
     );
 }
+
+/// The console's text written, the login prompts print it again: one
+/// printed before it (a slow machine, a board's serial console) kept the
+/// old text without the address to set the NAS up at.
+#[tokio::test]
+async fn the_console_s_new_text_is_printed_at_the_prompts_again() {
+    let host = host(Erasable::Policy(ErasePolicy::Unused));
+    let shown = Request::ShowOnConsole { setup_code: None, open_setup: true };
+    assert_eq!(host.run(shown).await, Response::Done);
+    let issue = fs::read_to_string(host.path("zendiloos.issue")).unwrap();
+    assert!(issue.contains("to create the first administrator"), "{issue}");
+    assert_eq!(
+        host.calls().last().map(String::as_str),
+        Some("systemctl start --no-block zendiloos-console.service"),
+        "{:?}",
+        host.calls()
+    );
+}

@@ -309,7 +309,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           files=(dist/zendiloos_*.deb dist/zendiloos_*.cdx.json dist/SHA256SUMS dist/SHA256SUMS.minisig)
-          files+=($(ls dist/zendiloos-*-netinst.iso 2>/dev/null))
+          # The ISOs where there are (not for a development build): a glob
+          # matching nothing adds nothing, where ls failed the step.
+          shopt -s nullglob
+          files+=(dist/zendiloos-*-netinst.iso)
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             kind=()
             case "$GITHUB_REF_NAME" in *-*) kind=(--prerelease) ;; esac
