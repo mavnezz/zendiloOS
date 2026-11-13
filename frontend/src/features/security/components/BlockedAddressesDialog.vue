@@ -117,7 +117,7 @@ const until = (seconds: number | null | undefined) =>
       <form class="flex flex-wrap items-center gap-2" @submit.prevent="add">
         <Input
           v-model="address"
-          class="w-80 font-mono text-[13px]"
+          class="w-80 font-mono text-dense"
           :placeholder="t('security.blocks.addressPlaceholder')"
           :aria-label="t('security.blocks.address')"
           spellcheck="false"
@@ -143,7 +143,7 @@ const until = (seconds: number | null | undefined) =>
             <TableRow v-for="entry in blocked" :key="entry.address">
               <TableCell>
                 <span class="flex items-center gap-2">
-                  <span class="font-mono text-[13px]">{{ entry.address }}</span>
+                  <span class="font-mono text-dense">{{ entry.address }}</span>
                   <Badge :variant="entry.automatic ? 'warning' : 'secondary'">{{
                     entry.automatic ? t('security.blocks.automatic') : t('security.blocks.manual')
                   }}</Badge>
@@ -182,7 +182,7 @@ const until = (seconds: number | null | undefined) =>
       <form class="flex flex-wrap items-center gap-2" @submit.prevent="allow">
         <Input
           v-model="allowing"
-          class="w-64 font-mono text-[13px]"
+          class="w-64 font-mono text-dense"
           :placeholder="t('security.blocks.networkPlaceholder')"
           :aria-label="t('security.blocks.address')"
           spellcheck="false"
@@ -194,7 +194,7 @@ const until = (seconds: number | null | undefined) =>
       </form>
       <ul class="divide-y rounded-xl border bg-card">
         <li v-for="entry in allowed" :key="entry" class="flex items-center gap-2 px-4 py-2">
-          <span class="flex-1 font-mono text-[13px]">{{ entry }}</span>
+          <span class="flex-1 font-mono text-dense">{{ entry }}</span>
           <Button
             variant="ghost"
             size="icon"

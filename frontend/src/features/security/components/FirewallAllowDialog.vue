@@ -53,7 +53,7 @@ const valid = computed(
       <Input
         v-if="from === 'custom'"
         v-model="custom"
-        class="font-mono text-[13px]"
+        class="font-mono text-dense"
         placeholder="192.168.1.0/24"
         :aria-label="t('firewall.rule.sourceCustom')"
         :aria-invalid="!!custom && !sourceValid(custom)"

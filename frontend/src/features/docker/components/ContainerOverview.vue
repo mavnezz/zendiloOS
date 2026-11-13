@@ -6,7 +6,8 @@ import { useI18n } from 'vue-i18n'
 import type { DockerContainerDetails } from '@/shared/api/types'
 import { formatBytes, formatDateTime, formatDuration } from '@/shared/lib/format'
 import { Badge } from '@/shared/ui/badge'
-import { DefinitionList, PageTabs } from '@/shared/ui/page'
+import { InfoList } from '@/shared/ui/info-list'
+import { PageTabs } from '@/shared/ui/page'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/shared/ui/table'
 
 import { sharePath } from '../lib/navigation'
@@ -141,7 +142,7 @@ const other = computed(() => {
 <template>
   <div class="grid gap-6">
     <div class="grid gap-6 @3xl:grid-cols-[minmax(0,20rem)_1fr]">
-      <DefinitionList :items="summary" />
+      <InfoList :items="summary" />
       <UsageChart :containers="[container.name]" :seconds="900" />
     </div>
 
@@ -273,7 +274,7 @@ const other = computed(() => {
           <Badge v-if="details.privileges.privileged" variant="warning" class="w-fit">{{
             t('docker.details.privilegedWarning')
           }}</Badge>
-          <DefinitionList :items="privileges" />
+          <InfoList :items="privileges" />
           <Table v-if="details.privileges.devices.length">
             <TableHeader>
               <TableRow>
@@ -293,7 +294,7 @@ const other = computed(() => {
         </div>
       </template>
 
-      <DefinitionList v-else :items="other" />
+      <InfoList v-else :items="other" />
     </div>
   </div>
 </template>

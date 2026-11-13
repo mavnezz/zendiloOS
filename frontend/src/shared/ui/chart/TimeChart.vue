@@ -159,7 +159,7 @@ const hovered = computed(() => {
             <stop offset="100%" :stop-color="drawn.color" stop-opacity="0" />
           </linearGradient>
         </defs>
-        <g class="text-[10px]" fill="currentColor">
+        <g class="text-2xs" fill="currentColor">
           <template v-for="tick in ticks" :key="tick">
             <line
               :x1="MARGIN.left"

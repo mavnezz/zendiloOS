@@ -9,7 +9,8 @@ import { formatBytes, formatDateTime, formatDuration, formatPercent } from '@/sh
 import { PROJECT_URL } from '@/shared/lib/star-prompt'
 import { Button } from '@/shared/ui/button'
 import { Meter } from '@/shared/ui/meter'
-import { DefinitionList, PageCard, PageHeader } from '@/shared/ui/page'
+import { InfoList } from '@/shared/ui/info-list'
+import { PageCard, PageHeader } from '@/shared/ui/page'
 
 import { useHostName, useSystemInfo } from '../api'
 import HostNameDialog from './HostNameDialog.vue'
@@ -132,7 +133,7 @@ const share = (pool: Pool) => {
               <ExternalLink class="size-3.5" aria-hidden="true" />
             </a>
           </div>
-          <DefinitionList :items="device" />
+          <InfoList :items="device" />
         </div>
       </PageCard>
 
@@ -142,7 +143,7 @@ const share = (pool: Pool) => {
             <p class="text-2xl font-semibold tracking-tight">{{ formatDuration(uptime) }}</p>
             <p class="text-sm text-muted-foreground">{{ t('device.since', { time: since }) }}</p>
           </div>
-          <DefinitionList v-if="load" :items="[{ label: t('device.load'), value: load }]" />
+          <InfoList v-if="load" :items="[{ label: t('device.load'), value: load }]" />
         </div>
       </PageCard>
 
@@ -151,7 +152,7 @@ const share = (pool: Pool) => {
         :icon="Cpu"
         class="@6xl:col-start-2 @6xl:row-span-2 @6xl:row-start-1"
       >
-        <DefinitionList :items="hardware" />
+        <InfoList :items="hardware" />
       </PageCard>
 
       <PageCard

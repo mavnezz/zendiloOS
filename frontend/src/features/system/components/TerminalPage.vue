@@ -109,9 +109,13 @@ async function copy(text: string): Promise<void> {
     />
 
     <template v-else>
+      <PageDescription>
+        <p>{{ t('terminal.explanation') }}</p>
+        <p>{{ t('terminal.sessionsStay') }}</p>
+      </PageDescription>
       <Alert v-if="!installed" class="mb-5 max-w-3xl">
         {{ t('terminal.installHint') }}
-        <code class="font-mono text-[13px]">apt install openssh-server</code>
+        <code class="font-mono text-dense">apt install openssh-server</code>
       </Alert>
 
       <div class="grid max-w-3xl gap-5">
@@ -133,7 +137,7 @@ async function copy(text: string): Promise<void> {
             inputmode="numeric"
             maxlength="5"
             autocomplete="off"
-            class="w-28 font-mono text-[13px]"
+            class="w-28 font-mono text-dense"
             :disabled="!installed || !draft.enabled"
             :aria-invalid="!portOk"
           />
@@ -187,7 +191,7 @@ async function copy(text: string): Promise<void> {
             }}</span>
             <button
               type="button"
-              class="group inline-flex items-center gap-1.5 rounded-md bg-muted px-2 py-0.5 font-mono text-[13px] hover:bg-accent"
+              class="group inline-flex items-center gap-1.5 rounded-md bg-muted px-2 py-0.5 font-mono text-dense hover:bg-accent"
               :title="t('fileServices.copy')"
               @click="copy(command)"
             >
@@ -197,11 +201,6 @@ async function copy(text: string): Promise<void> {
           </template>
         </div>
       </section>
-
-      <PageDescription>
-        <p>{{ t('terminal.explanation') }}</p>
-        <p>{{ t('terminal.sessionsStay') }}</p>
-      </PageDescription>
     </template>
 
     <PageFooter

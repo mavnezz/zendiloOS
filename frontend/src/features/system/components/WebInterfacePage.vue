@@ -139,7 +139,7 @@ const secondsLeft = computed(() => {
   return at ? Math.max(0, Math.round(at - now.value / 1000)) : 0
 })
 
-const number = 'w-24 font-mono text-[13px]'
+const number = 'w-24 font-mono text-dense'
 </script>
 
 <!--
@@ -150,6 +150,9 @@ const number = 'w-24 font-mono text-[13px]'
 <template>
   <div class="flex min-h-full flex-col">
     <PageHeader :title="t('controlPanel.webInterface')" :description="t('webServer.description')" />
+    <PageDescription>
+      <p>{{ t('webServer.help') }}</p>
+    </PageDescription>
     <div class="grid max-w-3xl gap-6">
       <Alert v-if="loadError" variant="destructive">{{ problemMessage(loadError) }}</Alert>
       <div
@@ -217,9 +220,6 @@ const number = 'w-24 font-mono text-[13px]'
         </SettingRow>
       </template>
     </div>
-    <PageDescription>
-      <p>{{ t('webServer.help') }}</p>
-    </PageDescription>
     <div class="grow" aria-hidden="true" />
     <PageFooter
       v-if="draft && canManage"

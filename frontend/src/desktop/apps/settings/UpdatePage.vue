@@ -215,11 +215,11 @@ const cell = 'px-3 py-1.5 text-left'
           <dt class="text-muted-foreground">{{ t('updates.channel') }}</dt>
           <dd>{{ t(`updates.channels.${overview.settings.channel}`) }}</dd>
           <dt class="text-muted-foreground">{{ t('updates.kernel') }}</dt>
-          <dd class="font-mono text-[13px]">{{ overview.running_kernel ?? '–' }}</dd>
+          <dd class="font-mono text-dense">{{ overview.running_kernel ?? '–' }}</dd>
           <template v-if="overview.boot">
             <dt class="text-muted-foreground">{{ t('updates.bootKernel') }}</dt>
             <dd class="grid gap-0.5" data-boot>
-              <span v-if="overview.boot.kernel" class="font-mono text-[13px]">{{
+              <span v-if="overview.boot.kernel" class="font-mono text-dense">{{
                 overview.boot.kernel
               }}</span>
               <span
@@ -371,7 +371,7 @@ const cell = 'px-3 py-1.5 text-left'
               {{ showPackages ? t('updates.hidePackages') : t('updates.showPackages') }}
             </button>
             <div v-if="showPackages" class="max-h-80 overflow-auto rounded-md border">
-              <table class="w-full text-[13px]">
+              <table class="w-full text-dense">
                 <thead class="sticky top-0 bg-card text-xs text-muted-foreground">
                   <tr class="border-b">
                     <th :class="cell" class="font-normal">{{ t('updates.package') }}</th>

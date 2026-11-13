@@ -155,7 +155,7 @@ async function remove(): Promise<void> {
   }
 }
 
-const pill = 'h-7 rounded-full px-4 text-[13px] font-medium'
+const pill = 'h-7 rounded-full px-4 text-dense font-medium'
 const heading = 'flex items-center gap-2 text-xl font-semibold'
 const counter =
   'rounded-full bg-foreground/[0.07] px-2 text-sm font-normal text-muted-foreground tabular-nums'

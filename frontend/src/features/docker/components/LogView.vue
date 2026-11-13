@@ -23,6 +23,6 @@ watch(
 <template>
   <pre
     ref="box"
-    class="max-h-[60vh] min-h-48 overflow-auto rounded-lg bg-zinc-900 p-3 font-mono text-[12px] leading-5 whitespace-pre-wrap text-zinc-100"
+    class="max-h-[60vh] min-h-48 overflow-auto rounded-lg bg-zinc-900 p-3 font-mono text-xs leading-5 whitespace-pre-wrap text-zinc-100"
     >{{ loading ? t('docker.logs.loading') : text?.trim() || t('docker.logs.none') }}</pre>
 </template>

@@ -26,7 +26,7 @@ function indent(event: KeyboardEvent): void {
 <!-- A plain-text editor for configuration files, with line numbers. -->
 <template>
   <div
-    class="flex overflow-hidden rounded-lg border bg-muted/30 font-mono text-[13px] leading-5 focus-within:ring-[3px] focus-within:ring-ring/50"
+    class="flex overflow-hidden rounded-lg border bg-muted/30 font-mono text-dense leading-5 focus-within:ring-[3px] focus-within:ring-ring/50"
   >
     <div
       ref="gutter"

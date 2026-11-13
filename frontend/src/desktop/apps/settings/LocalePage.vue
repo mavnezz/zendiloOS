@@ -34,6 +34,9 @@ const language = computed({
     <PageTabs v-model="tab" :label="t('controlPanel.locale')" :tabs="tabs" />
     <ClockSettings v-if="tab === 'time'" :can-manage="session.can('system.manage')" />
     <template v-else>
+      <PageDescription>
+        <p>{{ t('locale.languageDescription') }}</p>
+      </PageDescription>
       <div class="grid max-w-xl gap-2">
         <Label for="locale-language">{{ t('locale.language') }}</Label>
         <NativeSelect id="locale-language" v-model="language" class="max-w-xs">
@@ -42,9 +45,6 @@ const language = computed({
           </option>
         </NativeSelect>
       </div>
-      <PageDescription>
-        <p>{{ t('locale.languageDescription') }}</p>
-      </PageDescription>
     </template>
   </div>
 </template>

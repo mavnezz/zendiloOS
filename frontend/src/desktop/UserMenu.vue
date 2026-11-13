@@ -75,7 +75,7 @@ async function confirmed(): Promise<void> {
         side="right"
         align="end"
         :side-offset="12"
-        class="glass glass-strong z-[900] min-w-52 rounded-xl p-1"
+        class="surface z-[900] bg-popover min-w-52 rounded-xl p-1"
       >
         <DropdownMenuLabel class="px-2 py-1.5">
           <p class="text-sm font-medium">{{ account?.name }}</p>

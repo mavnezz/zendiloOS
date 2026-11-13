@@ -132,6 +132,10 @@ function apply(): void {
 <template>
   <div v-if="isPending" class="h-64 max-w-xl animate-pulse rounded-lg bg-muted" />
   <template v-else-if="data">
+    <PageDescription>
+      <p>{{ t('clock.explanation') }}</p>
+      <p>{{ t('clock.serversExplanation') }}</p>
+    </PageDescription>
     <div class="grid max-w-xl gap-7">
       <div class="grid gap-2">
         <Label for="clock-zone">{{ t('clock.zone') }}</Label>
@@ -168,7 +172,7 @@ function apply(): void {
               :aria-label="`${t('clock.servers')} ${index + 1}`"
               autocomplete="off"
               spellcheck="false"
-              class="font-mono text-[13px]"
+              class="font-mono text-dense"
             />
             <Button
               variant="ghost"
@@ -202,7 +206,7 @@ function apply(): void {
           <CircleDashed v-else class="size-4" />
           <template v-if="data.synchronized && data.server_in_use">
             {{ t('clock.synchronizedWith') }}
-            <span class="font-mono text-[13px]">{{ data.server_in_use }}</span>
+            <span class="font-mono text-dense">{{ data.server_in_use }}</span>
           </template>
           <template v-else-if="data.synchronized">{{ t('clock.synchronized') }}</template>
           <template v-else>{{ t('clock.notSynchronized') }}</template>
@@ -218,7 +222,7 @@ function apply(): void {
             type="datetime-local"
             step="1"
             :disabled="!canManage"
-            class="w-auto font-mono text-[13px] tabular-nums"
+            class="w-auto font-mono text-dense tabular-nums"
           />
           <Button
             variant="outline"
@@ -241,11 +245,6 @@ function apply(): void {
 
       <p v-if="!canManage" class="text-sm text-muted-foreground">{{ t('clock.viewOnly') }}</p>
     </div>
-
-    <PageDescription>
-      <p>{{ t('clock.explanation') }}</p>
-      <p>{{ t('clock.serversExplanation') }}</p>
-    </PageDescription>
 
     <PageFooter
       :dirty="dirty"

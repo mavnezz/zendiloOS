@@ -251,6 +251,9 @@ function servicePorts(service: FirewallService): string {
   change applies at once and goes back by itself unless kept in time.
 -->
 <template>
+  <PageDescription>
+    <p>{{ t('firewall.help') }}</p>
+  </PageDescription>
   <div class="grid max-w-5xl gap-6">
     <Alert v-if="loadError" variant="destructive">{{ problemMessage(loadError) }}</Alert>
     <div
@@ -388,7 +391,7 @@ function servicePorts(service: FirewallService): string {
                   </div>
                 </TableCell>
                 <TableCell>{{ protocolLabel(rule) }}</TableCell>
-                <TableCell class="font-mono text-[13px]">
+                <TableCell class="font-mono text-dense">
                   {{ rule.source === 'any' ? t('firewall.anySource') : rule.source }}
                 </TableCell>
                 <TableCell>
@@ -461,9 +464,6 @@ function servicePorts(service: FirewallService): string {
       </SettingRow>
     </template>
   </div>
-  <PageDescription>
-    <p>{{ t('firewall.help') }}</p>
-  </PageDescription>
   <div class="grow" aria-hidden="true" />
   <PageFooter
     v-if="draft"

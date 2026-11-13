@@ -1276,7 +1276,7 @@ provide(EXPLORER, {
 
 <!-- The NAS's files: a tree of places on the left, what is in one on the right. -->
 <template>
-  <div class="relative flex h-full min-h-0 bg-muted/50 dark:bg-muted/30">
+  <div class="relative flex h-full min-h-0 bg-muted/40">
     <ContextMenu :actions="contextMenu" @select="(id) => choose(id, treeTarget ?? here)">
       <aside
         :class="
@@ -1301,9 +1301,7 @@ provide(EXPLORER, {
       @click="treeOpen = false"
     />
 
-    <div
-      class="m-2 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border bg-background shadow-sm @3xl:ml-0"
-    >
+    <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background @3xl:border-l">
       <ExplorerTopBar
         v-model:search="search"
         v-model:show-hidden="showHidden"

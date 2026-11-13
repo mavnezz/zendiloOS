@@ -167,11 +167,7 @@ function confirmRemove(): void {
 <template>
   <div class="grid gap-3">
     <div class="flex flex-wrap items-center gap-2">
-      <Button variant="secondary" :disabled="prune.isPending.value" @click="pruning = true">
-        <Eraser />
-        {{ t('docker.volumes.prune') }}
-      </Button>
-      <div class="relative ml-auto w-full max-w-60">
+      <div class="relative w-full max-w-60">
         <Search class="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input
           v-model="filter"
@@ -180,6 +176,15 @@ function confirmRemove(): void {
           :aria-label="t('docker.search')"
         />
       </div>
+      <Button
+        class="ml-auto"
+        variant="secondary"
+        :disabled="prune.isPending.value"
+        @click="pruning = true"
+      >
+        <Eraser />
+        {{ t('docker.volumes.prune') }}
+      </Button>
     </div>
     <Alert v-if="error || failure" variant="destructive">{{
       failure ?? problemMessage(error)

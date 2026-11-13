@@ -125,6 +125,10 @@ const isSoon = (id: string): id is keyof typeof soon => id in soon
     <div v-if="isPending || !draft" class="h-64 max-w-2xl animate-pulse rounded-lg bg-muted" />
 
     <template v-else-if="tab === 'smb'">
+      <PageDescription>
+        <p>{{ t('fileServices.explanation') }}</p>
+        <p>{{ t('fileServices.smb1Note') }}</p>
+      </PageDescription>
       <div class="grid max-w-3xl gap-5">
         <SettingRow :label="t('fileServices.smbSettings')" for="service-smb">
           <label class="flex items-center gap-3 pt-1 text-sm">
@@ -141,7 +145,7 @@ const isSoon = (id: string): id is keyof typeof soon => id in soon
             maxlength="15"
             autocomplete="off"
             spellcheck="false"
-            class="max-w-xs font-mono text-[13px] uppercase"
+            class="max-w-xs font-mono text-dense uppercase"
           />
           <p :class="workgroupValid ? 'text-xs text-muted-foreground' : 'text-xs text-destructive'">
             {{
@@ -177,7 +181,7 @@ const isSoon = (id: string): id is keyof typeof soon => id in soon
               <span v-if="index > 0" class="text-muted-foreground">{{ t('fileServices.or') }}</span>
               <button
                 type="button"
-                class="group inline-flex items-center gap-1.5 rounded-md bg-muted px-2 py-0.5 font-mono text-[13px] hover:bg-accent"
+                class="group inline-flex items-center gap-1.5 rounded-md bg-muted px-2 py-0.5 font-mono text-dense hover:bg-accent"
                 :title="t('fileServices.copy')"
                 @click="copy(path)"
               >
@@ -194,14 +198,12 @@ const isSoon = (id: string): id is keyof typeof soon => id in soon
           </button>
         </p>
       </section>
-
-      <PageDescription>
-        <p>{{ t('fileServices.explanation') }}</p>
-        <p>{{ t('fileServices.smb1Note') }}</p>
-      </PageDescription>
     </template>
 
     <template v-else-if="tab === 'nfs'">
+      <PageDescription>
+        <p>{{ t('fileServices.nfsExplanation') }}</p>
+      </PageDescription>
       <div class="grid max-w-3xl gap-5">
         <SettingRow :label="t('fileServices.nfsSettings')" for="service-nfs">
           <label class="flex items-center gap-3 pt-1 text-sm">
@@ -211,12 +213,12 @@ const isSoon = (id: string): id is keyof typeof soon => id in soon
           <p class="text-xs text-muted-foreground">{{ t('fileServices.nfsHint') }}</p>
         </SettingRow>
       </div>
-      <PageDescription>
-        <p>{{ t('fileServices.nfsExplanation') }}</p>
-      </PageDescription>
     </template>
 
     <template v-else-if="tab === 'advanced'">
+      <PageDescription>
+        <p>{{ t('fileServices.discoveryExplanation') }}</p>
+      </PageDescription>
       <div class="grid max-w-3xl gap-6">
         <SettingRow :label="t('fileServices.discovery')" for="service-wsdd">
           <label class="flex items-center gap-3 pt-1 text-sm">
@@ -276,9 +278,6 @@ const isSoon = (id: string): id is keyof typeof soon => id in soon
           </p>
         </SettingRow>
       </div>
-      <PageDescription>
-        <p>{{ t('fileServices.discoveryExplanation') }}</p>
-      </PageDescription>
     </template>
 
     <ComingLater

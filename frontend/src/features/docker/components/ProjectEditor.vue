@@ -163,7 +163,7 @@ function submit(accept: boolean): void {
         <Input
           id="project-name"
           v-model="name"
-          class="font-mono text-[13px]"
+          class="font-mono text-dense"
           autocomplete="off"
           spellcheck="false"
           :aria-invalid="name !== '' && !nameValid"
@@ -190,7 +190,7 @@ function submit(accept: boolean): void {
           <Input
             id="project-folder"
             v-model="folder"
-            class="flex-1 font-mono text-[13px]"
+            class="flex-1 font-mono text-dense"
             autocomplete="off"
             spellcheck="false"
             @input="folderTouched = true"
@@ -226,7 +226,7 @@ function submit(accept: boolean): void {
     }}</Alert>
 
     <div
-      class="sticky bottom-0 mt-auto flex flex-wrap items-center gap-3 border-t bg-background/95 py-3"
+      class="sticky bottom-0 mt-auto flex flex-wrap items-center gap-3 border-t bg-background py-3"
     >
       <label v-if="!editing" class="flex items-center gap-2 text-sm">
         <input v-model="start" type="checkbox" class="size-4 accent-primary" />

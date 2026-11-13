@@ -93,7 +93,7 @@ function download(): void {
       ref="box"
       role="log"
       :aria-label="t('docker.projects.log')"
-      class="max-h-[60vh] min-h-48 overflow-auto rounded-lg bg-zinc-900 p-3 font-mono text-[12px] leading-5 text-zinc-100"
+      class="max-h-[60vh] min-h-48 overflow-auto rounded-lg bg-zinc-900 p-3 font-mono text-xs leading-5 text-zinc-100"
     >
       <p v-if="isPending" class="text-zinc-400">{{ t('docker.logs.loading') }}</p>
       <p v-else-if="!shown.length" class="text-zinc-400">

@@ -142,7 +142,7 @@ function scanLine(pool: Pool): string | null {
       <p class="flex-1 text-xs text-muted-foreground">
         {{ t('storage.poolCount', { count: pools?.length ?? 0 }, pools?.length ?? 0) }}
       </p>
-      <Button v-if="canManage" size="sm" @click="creating = true">
+      <Button v-if="canManage" @click="creating = true">
         <Plus />
         {{ t('storage.create.button') }}
       </Button>
@@ -265,7 +265,7 @@ function scanLine(pool: Pool): string | null {
               {{ (device.disk && models.get(device.disk)) ?? '–' }}
             </TableCell>
             <TableCell
-              class="hidden max-w-72 truncate font-mono text-[11px] text-muted-foreground @3xl:table-cell"
+              class="hidden max-w-72 truncate font-mono text-2xs text-muted-foreground @3xl:table-cell"
               :title="device.name"
             >
               {{ device.name }}
