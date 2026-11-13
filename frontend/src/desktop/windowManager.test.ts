@@ -11,6 +11,7 @@ import {
   moveWindow,
   navigateWindow,
   openWindow,
+  reachesRight,
   resizeWindow,
   restoreDesktop,
   shownGeometry,
@@ -138,6 +139,20 @@ describe('the window manager', () => {
       width: 640,
       height: 480,
     })
+  })
+
+  it('tells when a window on screen reaches the strip along the right edge', () => {
+    // A window opens at the left: 640 wide from 48, well clear of the last 300.
+    let state = withWindows('files')
+    expect(reachesRight(state.windows, screen, 300)).toBe(false)
+    state = moveWindow(state, 'files', { x: 400, y: 0 }, screen)
+    expect(reachesRight(state.windows, screen, 300)).toBe(true)
+    // Out of the way, it no longer counts; a maximized one always does.
+    expect(reachesRight(minimizeWindow(state, 'files').windows, screen, 300)).toBe(false)
+    state = toggleMaximized(moveWindow(state, 'files', { x: 0, y: 0 }, screen), 'files')
+    expect(reachesRight(state.windows, screen, 300)).toBe(true)
+    // On a narrow screen the window is shown narrower, and still reaches.
+    expect(reachesRight(withWindows('files').windows, { width: 700, height: 760 }, 300)).toBe(true)
   })
 
   it('restores a stored desktop and drops what it does not know', () => {

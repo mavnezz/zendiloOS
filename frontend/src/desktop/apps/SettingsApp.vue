@@ -38,7 +38,12 @@ const sections = computed(() =>
 const groups = computed<NavGroup[]>(() => {
   const grouped: NavGroup[] = []
   for (const section of sections.value) {
-    const item = { id: section.id, label: t(section.label), icon: section.icon }
+    const item = {
+      id: section.id,
+      label: t(section.label),
+      icon: section.icon,
+      keywords: section.keywords ? t(section.keywords) : undefined,
+    }
     const last = grouped.at(-1)
     if (last && last.id === section.group) last.items.push(item)
     else
@@ -84,7 +89,7 @@ const { data: pools } = useQuery({
 
 <!-- The control panel: the NAS's settings and the account's. -->
 <template>
-  <AppFrame v-model:section="section" :groups="groups">
+  <AppFrame v-model:section="section" :groups="groups" :search="t('controlPanel.search')">
     <ComingLater
       v-if="current?.soon"
       :icon="current.icon"

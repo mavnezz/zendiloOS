@@ -3,7 +3,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 
 import { live, push, sample } from '@/shared/test-support/live'
-import { click, mountApp, page, press, screen, settle, type } from '@/desktop/testing/mount'
+import {
+  click,
+  labelled,
+  mountApp,
+  page,
+  press,
+  screen,
+  settle,
+  type,
+} from '@/desktop/testing/mount'
 import { called, on, reset } from '@/shared/test-support/server'
 import { i18n } from '@/shared/i18n'
 import { DELAY_MS, RETRY_MS } from '@/shared/lib/star-prompt'
@@ -33,6 +42,10 @@ async function shell(permissions?: string[]) {
   await router.push('/')
   return mountApp(DesktopShell, { permissions, global: { plugins: [router] } })
 }
+
+/** The launcher's panel, while it is open. */
+const launcher = () =>
+  document.querySelector(`[role="dialog"][aria-label="${t('desktop.launcher')}"]`)
 
 /** Opens a reka menu or popover the way a pointer does. */
 async function pointer(element: Element): Promise<void> {
@@ -173,9 +186,90 @@ describe('the desktop', () => {
     )
     icons[0]?.click()
     await settle()
-    await press(t('desktop.search'))
+    await press(t('desktop.launcher'))
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await settle()
+    expect(launcher()).toBeNull()
+  })
+
+  it('finds a page by what is set on it, and opens the result the arrow keys choose', async () => {
+    // jsdom does not scroll; the launcher keeps the chosen result in view.
+    const scrolled = vi.fn()
+    Element.prototype.scrollIntoView = scrolled
+    await shell()
+    await press(t('desktop.launcher'))
+    const field = `input[aria-label="${t('desktop.search')}"]`
+    const key = async (name: string) => {
+      document
+        .querySelector(field)!
+        .dispatchEvent(new KeyboardEvent('keydown', { key: name, cancelable: true }))
+      await settle()
+    }
+    const results = () =>
+      [...launcher()!.querySelectorAll('button')].map((item) => item.textContent?.trim())
+
+    // Nothing typed: the apps, and no arrow key chooses among them.
+    expect(results()).toContain(t('apps.files'))
+    await key('ArrowDown')
+    expect(launcher()!.querySelector('[data-selected]')).toBeNull()
+
+    // SSH is set on the Terminal page, which does not say so in its name.
+    await type(field, 'ssh')
+    expect(results().some((text) => text?.startsWith(t('controlPanel.terminal')))).toBe(true)
+    await type(field, 'no such thing')
+    expect(launcher()!.textContent).toContain(t('common.noMatch'))
+    await key('ArrowDown')
+
+    // Both storage pages; down, down wraps to the first, up to the last.
+    await type(field, t('controlPanel.groupStorage'))
+    const chosen = () => launcher()!.querySelector('[data-selected]')?.textContent
+    const first = chosen()
+    await key('ArrowDown')
+    const second = chosen()
+    expect(second).not.toBe(first)
+    await key('ArrowUp')
+    expect(chosen()).toBe(first)
+    await key('ArrowUp')
+    await key('Enter')
+    expect(launcher()).toBeNull()
+    const opened = useWindows().state.windows.find((window) => window.appId === 'settings')
+    expect(opened?.section).toBeDefined()
+    expect(scrolled).toHaveBeenCalled()
+  })
+
+  it('closes the launcher on a click elsewhere, and by its own switch', async () => {
+    await shell()
+    const down = (element: Element | Document) =>
+      element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    await press(t('desktop.launcher'))
+    // Inside it, a click is the launcher's own.
+    down(launcher()!.querySelector('input')!)
+    await settle()
+    expect(launcher()).not.toBeNull()
+    // Its switch in the bar closes it itself: once, not twice.
+    down(labelled(t('desktop.launcher')))
+    await press(t('desktop.launcher'))
+    expect(launcher()).toBeNull()
+    await press(t('desktop.launcher'))
+    down(document)
+    await settle()
+    expect(launcher()).not.toBeNull()
+    down(document.querySelector(`[aria-label="${t('desktop.desktop')}"]`)!)
+    await settle()
+    expect(launcher()).toBeNull()
+  })
+
+  it('lets the widgets make way for a window that reaches into their column', async () => {
+    await shell()
+    const widgets = () =>
+      document.querySelector<HTMLElement>(`aside[aria-label="${t('desktop.widgets')}"]`)!
+    expect(widgets().style.display).toBe('')
+    // Wider than the desktop here, so it reaches the right edge.
+    document.querySelectorAll<HTMLElement>(`[aria-label="${t('desktop.apps')}"] button`)[0]?.click()
+    await settle()
+    expect(widgets().style.display).toBe('none')
+    await press(t('desktop.showDesktop'))
+    expect(widgets().style.display).toBe('')
   })
 
   it('hides and shows the widgets, remembered in this browser', async () => {

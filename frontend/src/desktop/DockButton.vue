@@ -16,8 +16,6 @@ defineProps<{
   /** Shows the "this app is open" mark. */
   running?: boolean
   pressed?: boolean
-  /** As large as what it holds, instead of a square. */
-  fit?: boolean
 }>()
 defineEmits<{ click: [] }>()
 </script>
@@ -33,8 +31,7 @@ defineEmits<{ click: [] }>()
           :aria-pressed="pressed ?? (running ? active : undefined)"
           :class="
             cn(
-              'group relative flex shrink-0 items-center justify-center text-foreground/75 outline-none transition',
-              fit ? 'rounded-lg p-1' : 'size-11 rounded-tile',
+              'group relative flex size-11 shrink-0 items-center justify-center rounded-tile text-foreground/75 outline-none transition',
               'hover:bg-foreground/10 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring active:scale-95',
               pressed && 'bg-foreground/10 text-foreground',
             )
@@ -60,7 +57,7 @@ defineEmits<{ click: [] }>()
           :side-offset="10"
           class="z-[950] rounded-md bg-foreground px-2 py-1 text-xs text-background shadow-md"
         >
-          <slot name="tooltip">{{ label }}</slot>
+          {{ label }}
         </TooltipContent>
       </TooltipPortal>
     </TooltipRoot>

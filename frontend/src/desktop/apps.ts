@@ -48,6 +48,11 @@ export interface AppSection {
   /** Translation key of its name. */
   label: string
   icon: Component
+  /**
+   * Translation key of what else the page is found by: the settings on it
+   * that its name does not say (SSH on Terminal, DNS on Network).
+   */
+  keywords?: string
   /** Translation key of the heading it is listed under. */
   group?: string
   /** Accounts without it do not see the page. */
@@ -81,7 +86,7 @@ export const SETTINGS_APP: AppId = 'settings'
 export const MONITOR_SECTION = 'monitor'
 
 /** The control panel's pages, grouped as its navigation shows them. */
-export const SETTINGS_SECTIONS: AppSection[] = [
+const SETTINGS_PAGES: AppSection[] = [
   { id: 'device', label: 'controlPanel.device', icon: Info, group: 'controlPanel.groupGeneral' },
   {
     id: 'appearance',
@@ -193,6 +198,12 @@ export const SETTINGS_SECTIONS: AppSection[] = [
     permission: 'system.manage',
   },
 ]
+
+/** Each with what a search finds it by, kept with the translations. */
+export const SETTINGS_SECTIONS: AppSection[] = SETTINGS_PAGES.map((section) => ({
+  ...section,
+  keywords: `controlPanel.keywords.${section.id}`,
+}))
 
 /** Every app of the desktop, in the order of its icons. Features provide the pages; this puts them in windows. */
 export const APPS: AppDefinition[] = [

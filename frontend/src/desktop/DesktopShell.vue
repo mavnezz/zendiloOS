@@ -25,9 +25,12 @@ import StarPrompt from './StarPrompt.vue'
 import ToastStack from './ToastStack.vue'
 import UserMenu from './UserMenu.vue'
 import WidgetPanel from './WidgetPanel.vue'
+import { reachesRight } from './windowManager'
 import { useWindows } from './windows'
 
 const WIDGETS_KEY = 'zendiloos.widgets.open'
+/** The widgets' column and the gap to a window beside it, in pixels. */
+const WIDGETS_STRIP = 300
 
 const { t } = useI18n()
 const router = useRouter()
@@ -106,7 +109,20 @@ function toggleWidgets(): void {
   }
 }
 
-// Windows live in the desktop's area, between the bar and the widgets.
+/**
+ * The widgets lie on the desktop, along its right edge. A window that reaches
+ * into their column would cut them in half, so they make way for it and come
+ * back once it is moved, minimized or closed.
+ */
+const widgetsCovered = computed(() =>
+  reachesRight(
+    openWindows.value.map(({ window }) => window),
+    windows.viewport,
+    WIDGETS_STRIP,
+  ),
+)
+
+// Windows live in the desktop's area: everything beside the bar.
 const area = ref<HTMLElement | null>(null)
 let observer: ResizeObserver | null = null
 
@@ -191,8 +207,8 @@ async function signOut(): Promise<void> {
       @widgets="toggleWidgets"
       @sign-out="signOut"
     />
-    <div class="relative flex min-w-0 flex-1 gap-3">
-      <main ref="area" :aria-label="t('desktop.desktop')" class="relative min-w-0 flex-1">
+    <div class="relative min-w-0 flex-1">
+      <main ref="area" :aria-label="t('desktop.desktop')" class="relative h-full">
         <DesktopIcons :apps="apps" @open="open" />
         <AppWindow
           v-for="{ window, app } in openWindows"
@@ -204,7 +220,11 @@ async function signOut(): Promise<void> {
           :compact="false"
         />
       </main>
-      <WidgetPanel v-if="widgetsOpen" />
+      <WidgetPanel
+        v-if="widgetsOpen"
+        v-show="!widgetsCovered"
+        class="absolute top-0 right-0 max-h-full"
+      />
       <AppLauncher v-if="launcherOpen" :apps="apps" @close="launcherOpen = false" @open="open" />
     </div>
   </div>
