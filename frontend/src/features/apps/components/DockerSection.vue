@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useQueryClient } from '@tanstack/vue-query'
-import { ChevronDown, Container, LoaderCircle } from 'lucide-vue-next'
+import { Container, LoaderCircle } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -90,7 +90,7 @@ const select =
     <Alert v-if="error" variant="destructive">{{ problemMessage(error) }}</Alert>
     <header class="flex flex-wrap items-center gap-5 px-2">
       <span
-        class="grid size-20 shrink-0 place-items-center rounded-2xl bg-linear-to-br from-sky-400 to-blue-600 text-white shadow-sm"
+        class="grid size-20 shrink-0 place-items-center rounded-tile bg-linear-to-br from-sky-400 to-blue-600 text-white shadow-sm"
       >
         <Container class="size-10" />
       </span>
@@ -190,9 +190,6 @@ const select =
               {{ t('appStore.placeVolume', { number: volume.number, pool: volume.pool }) }}
             </option>
           </select>
-          <ChevronDown
-            class="pointer-events-none absolute top-1/2 right-3 size-4 -translate-y-1/2 text-muted-foreground"
-          />
         </div>
         <p class="pb-4 text-xs leading-relaxed text-muted-foreground">
           {{ t('appStore.docker.placeHint') }}

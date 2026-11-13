@@ -114,7 +114,7 @@ const hint = 'text-xs text-muted-foreground'
       <p class="text-sm font-medium">{{ t('docker.backups.importDialog.output') }}</p>
       <pre
         data-testid="import-output"
-        class="max-h-72 overflow-auto rounded-lg bg-zinc-900 p-3 font-mono text-[12px] leading-5 whitespace-pre-wrap text-zinc-100"
+        class="max-h-72 overflow-auto rounded-lg bg-zinc-900 p-3 font-mono text-xs leading-5 whitespace-pre-wrap text-zinc-100"
         >{{ lines.length ? lines.join('\n') : t('docker.backups.importDialog.waiting') }}</pre>
       <p class="flex items-center gap-2 text-sm" role="status">
         <template v-if="running">

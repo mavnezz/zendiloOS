@@ -93,7 +93,7 @@ async function save(): Promise<void> {
           rows="3"
           spellcheck="false"
           placeholder="nas.example.org"
-          class="w-full rounded-md border border-input bg-transparent px-2.5 py-1.5 font-mono text-[13px] shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:bg-input/30"
+          class="w-full rounded-md border border-input bg-transparent px-2.5 py-1.5 font-mono text-dense shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:bg-input/30"
         />
         <p class="text-xs text-muted-foreground">{{ t('appStore.acme.certificate.namesHint') }}</p>
       </div>

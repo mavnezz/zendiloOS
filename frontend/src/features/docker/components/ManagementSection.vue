@@ -200,7 +200,7 @@ const card = 'grid gap-4 rounded-xl border bg-card p-5'
             class="flex flex-wrap items-center gap-2"
           >
             <Badge variant="info">{{ t('docker.management.newer') }}</Badge>
-            <span class="font-mono text-[13px]">{{ image.reference }}</span>
+            <span class="font-mono text-dense">{{ image.reference }}</span>
             <span class="text-muted-foreground">{{ image.containers.join(', ') }}</span>
           </li>
         </ul>

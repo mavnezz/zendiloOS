@@ -10,7 +10,7 @@ import { CodeEditor } from './code-editor'
 import { AppFrame, PanelTabs } from './frame'
 import { Gauge } from './gauge'
 import { InfoList } from './info-list'
-import { DefinitionList, PageCard } from './page'
+import { PageCard, PageDescription } from './page'
 import { Sparkline } from './sparkline'
 
 /** ResizeObserver as the chart uses it: reports a width once observing. */
@@ -110,12 +110,27 @@ describe('small views', () => {
     ).toBe('100')
   })
 
+  it("fold a page's help away, on every page at once", async () => {
+    const options = { global: { plugins: [i18n] }, slots: { default: 'What this page does.' } }
+    const one = mount(PageDescription, options)
+    const other = mount(PageDescription, options)
+    expect(one.find('button').attributes('aria-expanded')).toBe('true')
+
+    await one.find('button').trigger('click')
+
+    expect(other.find('button').attributes('aria-expanded')).toBe('false')
+    expect(localStorage.getItem('zendiloos.help')).toBe('closed')
+    await other.find('button').trigger('click')
+    expect(one.find('button').attributes('aria-expanded')).toBe('true')
+    expect(localStorage.getItem('zendiloos.help')).toBe('open')
+  })
+
   it('list names and values', () => {
     const items = [
       { label: 'Kernel', value: '6.12', mono: true },
       { label: 'Host', value: 'nas' },
     ]
-    expect(mount(DefinitionList, { props: { items } }).text()).toContain('Kernel6.12')
+    expect(mount(InfoList, { props: { items } }).text()).toContain('Kernel6.12')
     expect(mount(InfoList, { props: { items } }).find('dd').attributes('title')).toBe('6.12')
     expect(mount(CardFooter, { slots: { default: 'Done' } }).text()).toBe('Done')
     expect(

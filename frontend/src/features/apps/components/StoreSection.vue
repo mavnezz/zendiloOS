@@ -58,7 +58,7 @@ function url(app: CatalogApp): string | undefined {
   return presence.kind === 'open' ? presence.url : undefined
 }
 
-const pill = 'h-7 rounded-full px-4 text-[13px] font-medium'
+const pill = 'h-7 rounded-full px-4 text-dense font-medium'
 </script>
 
 <!-- The apps of every catalog, or of one category: each with what can be done. -->

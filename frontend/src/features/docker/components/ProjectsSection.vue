@@ -115,11 +115,7 @@ function confirmDelete(): void {
 <template>
   <div class="grid gap-3">
     <div class="flex flex-wrap items-center gap-2">
-      <Button @click="emit('create')">
-        <Plus />
-        {{ t('docker.projects.create') }}
-      </Button>
-      <div class="relative ml-auto w-full max-w-60">
+      <div class="relative w-full max-w-60">
         <Search class="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input
           v-model="filter"
@@ -128,6 +124,10 @@ function confirmDelete(): void {
           :aria-label="t('docker.search')"
         />
       </div>
+      <Button class="ml-auto" @click="emit('create')">
+        <Plus />
+        {{ t('docker.projects.create') }}
+      </Button>
     </div>
     <Alert v-if="act.error.value || redeploy.error.value" variant="destructive">{{
       problemMessage(act.error.value ?? redeploy.error.value)

@@ -207,7 +207,7 @@ const row = 'flex items-center gap-3 rounded-lg border bg-card px-3 py-2.5'
     <Alert v-if="error" variant="destructive">{{ problemMessage(error) }}</Alert>
     <header class="flex flex-wrap items-center gap-5 px-2">
       <span
-        class="grid size-20 shrink-0 place-items-center rounded-2xl bg-linear-to-br from-emerald-400 to-teal-600 text-white shadow-sm"
+        class="grid size-20 shrink-0 place-items-center rounded-tile bg-linear-to-br from-emerald-400 to-teal-600 text-white shadow-sm"
       >
         <FileBadge class="size-10" />
       </span>

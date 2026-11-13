@@ -58,11 +58,7 @@ async function remove(): Promise<void> {
 <template>
   <div class="grid gap-3">
     <div class="flex flex-wrap items-center gap-2">
-      <Button @click="creating = true">
-        <UsersRound />
-        {{ t('people.createGroup') }}
-      </Button>
-      <div class="relative ml-auto w-full max-w-60">
+      <div class="relative w-full max-w-60">
         <ListFilter
           class="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
         />
@@ -73,6 +69,10 @@ async function remove(): Promise<void> {
           :aria-label="t('people.filter')"
         />
       </div>
+      <Button class="ml-auto" @click="creating = true">
+        <UsersRound />
+        {{ t('people.createGroup') }}
+      </Button>
     </div>
     <Alert v-if="error" variant="destructive">{{ problemMessage(error) }}</Alert>
     <div class="overflow-hidden rounded-xl border bg-card">

@@ -52,7 +52,7 @@ const heading = 'text-base font-semibold'
     <Alert v-if="error" variant="destructive">{{ problemMessage(error) }}</Alert>
     <header class="flex flex-wrap items-center gap-5 px-2">
       <span
-        class="grid size-20 shrink-0 place-items-center rounded-2xl bg-linear-to-br from-amber-400 to-orange-600 text-white shadow-sm"
+        class="grid size-20 shrink-0 place-items-center rounded-tile bg-linear-to-br from-amber-400 to-orange-600 text-white shadow-sm"
       >
         <HardDriveDownload class="size-10" />
       </span>

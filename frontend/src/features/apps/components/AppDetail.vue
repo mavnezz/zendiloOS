@@ -76,7 +76,7 @@ const heading = 'text-base font-semibold'
     <template v-if="app">
       <header class="flex flex-wrap items-center gap-5 px-2">
         <span
-          class="grid size-20 shrink-0 place-items-center overflow-hidden rounded-2xl border bg-card shadow-sm"
+          class="grid size-20 shrink-0 place-items-center overflow-hidden rounded-tile border bg-card shadow-sm"
         >
           <Blocks v-if="brokenIcon" class="size-9 text-muted-foreground" />
           <img

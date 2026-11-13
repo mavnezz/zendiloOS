@@ -42,7 +42,7 @@ function disk(name: string | null | undefined): Disk | undefined {
     :class="
       cn(
         'flex max-w-full min-w-0 gap-3 overflow-x-auto',
-        style === 'tower' && 'rounded-2xl border-2 border-border bg-muted/40 p-3',
+        style === 'tower' && 'rounded-tile border-2 border-border bg-muted/40 p-3',
         style === 'rack' && 'rounded-md border-2 border-border bg-muted/40 px-6 py-2',
         panel?.side === 'right' && 'flex-row-reverse',
       )

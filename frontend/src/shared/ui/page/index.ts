@@ -1,4 +1,3 @@
-export { default as DefinitionList } from './DefinitionList.vue'
 export { default as PageCard } from './PageCard.vue'
 export { default as PageDescription } from './PageDescription.vue'
 export { default as PageHeader } from './PageHeader.vue'

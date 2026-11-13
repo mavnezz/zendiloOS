@@ -65,15 +65,7 @@ function confirmRemove(): void {
 <template>
   <div class="grid gap-3">
     <div class="flex flex-wrap items-center gap-2">
-      <Button @click="pulling = true">
-        <Download />
-        {{ t('docker.images.pull') }}
-      </Button>
-      <Button variant="secondary" :disabled="prune.isPending.value" @click="pruning = true">
-        <Eraser />
-        {{ t('docker.images.prune') }}
-      </Button>
-      <div class="relative ml-auto w-full max-w-60">
+      <div class="relative w-full max-w-60">
         <Search class="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input
           v-model="filter"
@@ -82,6 +74,19 @@ function confirmRemove(): void {
           :aria-label="t('docker.search')"
         />
       </div>
+      <Button
+        class="ml-auto"
+        variant="secondary"
+        :disabled="prune.isPending.value"
+        @click="pruning = true"
+      >
+        <Eraser />
+        {{ t('docker.images.prune') }}
+      </Button>
+      <Button @click="pulling = true">
+        <Download />
+        {{ t('docker.images.pull') }}
+      </Button>
     </div>
     <Alert v-if="error" variant="destructive">{{ problemMessage(error) }}</Alert>
     <div v-if="isPending" class="h-40 animate-pulse rounded-xl bg-muted" />
@@ -111,7 +116,7 @@ function confirmRemove(): void {
                 }}</span>
               </span>
             </TableCell>
-            <TableCell class="font-mono text-[13px] text-muted-foreground">{{
+            <TableCell class="font-mono text-dense text-muted-foreground">{{
               short(image.id)
             }}</TableCell>
             <TableCell class="tabular-nums">{{ formatBytes(image.size_bytes) }}</TableCell>
@@ -148,7 +153,7 @@ function confirmRemove(): void {
       <form class="grid gap-3" @submit.prevent="fetch">
         <Input
           v-model="reference"
-          class="font-mono text-[13px]"
+          class="font-mono text-dense"
           placeholder="postgres:17"
           :aria-label="t('docker.images.reference')"
         />

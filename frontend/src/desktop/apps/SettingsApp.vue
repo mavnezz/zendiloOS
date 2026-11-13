@@ -109,11 +109,11 @@ const { data: pools } = useQuery({
         :title="t('controlPanel.network')"
         :description="t('controlPanel.networkDescription')"
       />
-      <NetworkSection :can-manage="session.can('system.manage')" />
       <PageDescription>
         <p>{{ t('controlPanel.networkHelp') }}</p>
         <p>{{ t('controlPanel.networkWarning') }}</p>
       </PageDescription>
+      <NetworkSection :can-manage="session.can('system.manage')" />
     </div>
     <UpdatePage v-else-if="section === 'update'" />
     <ConfigurationBackupPage v-else-if="section === 'configuration-backup'" />
@@ -140,10 +140,10 @@ const { data: pools } = useQuery({
         :title="t('controlPanel.notifications')"
         :description="t('controlPanel.notificationsDescription')"
       />
-      <ChannelsSection />
       <PageDescription>
         <p>{{ t('controlPanel.notificationsHelp') }}</p>
       </PageDescription>
+      <ChannelsSection />
     </div>
   </AppFrame>
 </template>

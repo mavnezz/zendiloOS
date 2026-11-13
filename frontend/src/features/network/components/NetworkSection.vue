@@ -318,7 +318,7 @@ const linkLocal = (item: NetworkInterface) => item.addresses.filter((a) => a.sco
       <div v-if="canAdd" class="flex justify-end">
         <DropdownMenuRoot :modal="false">
           <DropdownMenuTrigger as-child>
-            <Button size="sm" variant="outline"><Plus />{{ t('network.add.button') }}</Button>
+            <Button><Plus />{{ t('network.add.button') }}</Button>
           </DropdownMenuTrigger>
           <DropdownMenuPortal>
             <DropdownMenuContent

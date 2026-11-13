@@ -77,7 +77,7 @@ const tabs = computed(() => [
   { id: 'firewall', label: t('security.tabs.firewall') },
 ])
 
-const number = 'w-20 font-mono text-[13px]'
+const number = 'w-20 font-mono text-dense'
 const line = 'flex flex-wrap items-center gap-2 text-sm'
 </script>
 

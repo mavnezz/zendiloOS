@@ -68,7 +68,19 @@
   --chart-5: oklch(0.68 0.15 295);
 }
 
+/*
+ * Type sizes below Tailwind's own: `dense` for tables and technical values
+ * that would not fit at 14px, `2xs` for badges and captions, `3xs` for the
+ * labels of the bar's gauges. No other size is written out in a component.
+ *
+ * Corners: `md` for what is pressed or typed into, `lg` for rows and menu
+ * items, `xl` for cards; `tile` for app icons, `panel` and `window` for
+ * what floats over the desktop.
+ */
 @theme inline {
+  --text-dense: 0.8125rem;
+  --text-2xs: 0.6875rem;
+  --text-3xs: 0.5625rem;
   --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   --color-background: var(--background);
@@ -108,11 +120,15 @@
 }
 
 /*
- * Glass. Every floating surface (the bar, windows, widgets, menus) is a
+ * Glass. What sits on the desktop itself (the bar and the widgets) is a
  * sheet of translucent material over the wallpaper: blur, a saturation
  * boost so colour survives the blur, a bright hairline along the top edge
  * and a wide soft shadow. A viewer who asked for less transparency, or a
  * browser without backdrop-filter, gets solid surfaces.
+ *
+ * Windows, panels and menus are not glass but solid (.surface, below):
+ * they lie over one another and over the desktop's icons, and a title or
+ * a row of what lay behind showed through and was read with their own.
  */
 :root {
   --glass-blur: 20px;
@@ -173,6 +189,18 @@
     box-shadow:
       inset 0 1px 0 0 var(--glass-highlight),
       var(--glass-shadow-lifted);
+  }
+
+  /* A window, a panel or a menu: solid, with glass's shadow under it. */
+  .surface {
+    background-color: var(--background);
+    border: 1px solid var(--border);
+    box-shadow: var(--glass-shadow);
+  }
+
+  /* The window in front. */
+  .surface-lifted {
+    box-shadow: var(--glass-shadow-lifted);
   }
 
   /* The wet look on something you can press: a highlight from the top left. */
@@ -291,6 +319,17 @@
   }
   body {
     @apply bg-background font-sans text-foreground antialiased;
+  }
+  /* Every select looks alike, whichever component wrote it: the browser's
+     own arrow gone, ours at the right, and room for it whatever padding the
+     select was given. */
+  select {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23808080' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.5rem center;
+    background-size: 1rem;
+    padding-right: 1.875rem !important;
   }
   /* Browsers give a fieldset the width of its widest content, so a long
      disk model would widen a dialog instead of being cut short. */

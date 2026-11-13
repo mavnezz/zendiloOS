@@ -48,7 +48,7 @@ function confirmRemove(): void {
 <!-- The engine's networks: Docker's own, the projects' and the ones added here. -->
 <template>
   <div class="grid gap-3">
-    <div>
+    <div class="flex justify-end">
       <Button @click="adding = true">
         <Plus />
         {{ t('docker.networks.add') }}
@@ -82,7 +82,7 @@ function confirmRemove(): void {
               </span>
             </TableCell>
             <TableCell class="text-muted-foreground">{{ network.driver }}</TableCell>
-            <TableCell class="font-mono text-[13px] text-muted-foreground">{{
+            <TableCell class="font-mono text-dense text-muted-foreground">{{
               network.subnets.join(', ') || '–'
             }}</TableCell>
             <TableCell class="max-w-72 truncate" :title="network.containers.join(', ')">{{
@@ -115,7 +115,7 @@ function confirmRemove(): void {
           <Input
             id="network-name"
             v-model="draft.name"
-            class="font-mono text-[13px]"
+            class="font-mono text-dense"
             autocomplete="off"
           />
         </div>
@@ -124,7 +124,7 @@ function confirmRemove(): void {
           <Input
             id="network-subnet"
             v-model="draft.subnet"
-            class="font-mono text-[13px]"
+            class="font-mono text-dense"
             placeholder="172.30.0.0/24"
           />
         </div>
@@ -133,7 +133,7 @@ function confirmRemove(): void {
           <Input
             id="network-gateway"
             v-model="draft.gateway"
-            class="font-mono text-[13px]"
+            class="font-mono text-dense"
             placeholder="172.30.0.1"
             :disabled="!draft.subnet.trim()"
           />

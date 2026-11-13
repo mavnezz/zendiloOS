@@ -88,14 +88,14 @@ async function remove(): Promise<void> {
 <!-- The tasks as cards: add one, restore, and for each back up now or more. -->
 <template>
   <div class="grid gap-4">
-    <div class="flex flex-wrap gap-2">
-      <Button @click="creating = true"><Plus /> {{ t('backup.add') }}</Button>
+    <div class="flex flex-wrap justify-end gap-2">
       <Button
         variant="outline"
         :disabled="!tasks.length"
         @click="emit('restore', tasks[0]?.id ?? 0)"
         ><ArchiveRestore /> {{ t('backup.restore.title') }}</Button
       >
+      <Button @click="creating = true"><Plus /> {{ t('backup.add') }}</Button>
     </div>
     <Alert v-if="failure" variant="destructive">{{ failure }}</Alert>
     <Alert v-if="notice">{{ notice }}</Alert>

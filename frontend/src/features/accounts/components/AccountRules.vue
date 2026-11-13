@@ -104,6 +104,10 @@ const check = 'flex items-center gap-2.5 text-sm'
 
 <!-- Rules for every account: what a password must be, how long it lasts, and personal folders. -->
 <template>
+  <PageDescription v-if="ready">
+    <p>{{ t('people.rules.explanation') }}</p>
+    <p>{{ t('people.rules.expiryExplanation') }}</p>
+  </PageDescription>
   <div v-if="!ready" class="h-64 max-w-2xl animate-pulse rounded-lg bg-muted" />
   <div v-else class="grid max-w-2xl gap-8">
     <section class="grid gap-3">
@@ -181,11 +185,6 @@ const check = 'flex items-center gap-2.5 text-sm'
       <p class="text-sm text-muted-foreground">{{ t('people.rules.homesHint') }}</p>
     </section>
   </div>
-
-  <PageDescription v-if="ready">
-    <p>{{ t('people.rules.explanation') }}</p>
-    <p>{{ t('people.rules.expiryExplanation') }}</p>
-  </PageDescription>
 
   <PageFooter
     :dirty="policyDirty || homesDirty"

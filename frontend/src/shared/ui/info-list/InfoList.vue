@@ -8,7 +8,10 @@ import type { InfoItem } from '.'
 defineProps<{ items: InfoItem[]; class?: HTMLAttributes['class'] }>()
 </script>
 
-<!-- Names and values in two columns; technical values in a fixed-width font. -->
+<!--
+  Names and values in two columns, the one way a page lists them; technical
+  values in a fixed-width font. A long value wraps rather than being cut.
+-->
 <template>
   <dl
     :class="
@@ -17,7 +20,10 @@ defineProps<{ items: InfoItem[]; class?: HTMLAttributes['class'] }>()
   >
     <template v-for="item in items" :key="item.label">
       <dt class="text-muted-foreground">{{ item.label }}</dt>
-      <dd :class="cn('min-w-0 truncate', item.mono && 'font-mono text-[12px]')" :title="item.value">
+      <dd
+        :class="cn('min-w-0 wrap-anywhere', item.mono && 'font-mono text-xs')"
+        :title="item.value"
+      >
         {{ item.value }}
       </dd>
     </template>

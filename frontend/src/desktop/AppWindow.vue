@@ -91,9 +91,9 @@ const control =
     :class="
       cn(
         'absolute flex flex-col overflow-hidden text-foreground outline-none motion-safe:animate-window-in',
-        compact ? 'inset-0 bg-background' : 'glass',
+        compact ? 'inset-0 bg-background' : 'surface',
         !compact && (fills ? 'inset-0 rounded-none border-0' : 'rounded-window'),
-        !compact && active && 'glass-lifted',
+        !compact && active && 'surface-lifted',
       )
     "
     :style="style"
@@ -102,7 +102,7 @@ const control =
     <header
       :class="
         cn(
-          'relative flex h-11 shrink-0 touch-none items-center gap-1 border-b border-foreground/10 px-2 select-none',
+          'relative flex h-11 shrink-0 touch-none items-center gap-1 border-b bg-muted/60 px-2 select-none',
           !fills && 'cursor-grab active:cursor-grabbing',
         )
       "
@@ -166,8 +166,7 @@ const control =
         </button>
       </div>
     </header>
-    <!-- The page itself is opaque: reading text over a wallpaper is not a fair fight. -->
-    <div class="@container min-h-0 flex-1 overflow-hidden bg-background/92">
+    <div class="@container min-h-0 flex-1 overflow-hidden">
       <component :is="app.component" />
     </div>
     <template v-if="!fills">

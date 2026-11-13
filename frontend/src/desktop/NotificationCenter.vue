@@ -48,7 +48,7 @@ function clear(): void {
       <Bell class="size-5" />
       <span
         v-if="notifications.unread"
-        class="absolute top-1.5 right-1.5 flex min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] leading-4 font-medium text-white tabular-nums"
+        class="absolute top-1.5 right-1.5 flex min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-2xs leading-4 font-medium text-white tabular-nums"
       >
         {{ notifications.unread }}
       </span>
@@ -58,7 +58,7 @@ function clear(): void {
         side="right"
         align="end"
         :side-offset="12"
-        class="glass glass-strong z-[900] flex max-h-[70vh] w-80 flex-col rounded-panel"
+        class="surface z-[900] bg-popover flex max-h-[70vh] w-80 flex-col rounded-panel"
       >
         <div class="flex items-center justify-between border-b px-4 py-2.5">
           <h2 class="text-sm font-semibold">{{ t('desktop.notifications') }}</h2>

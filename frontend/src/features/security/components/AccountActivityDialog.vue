@@ -88,7 +88,7 @@ function result(outcome: string, reason: string | null | undefined): string {
                 }}</Badge>
               </span>
             </TableCell>
-            <TableCell class="font-mono text-[13px] text-muted-foreground">{{
+            <TableCell class="font-mono text-dense text-muted-foreground">{{
               session.address ?? '–'
             }}</TableCell>
             <TableCell class="text-muted-foreground">{{
@@ -129,7 +129,7 @@ function result(outcome: string, reason: string | null | undefined): string {
           <TableRow v-for="entry in logins?.entries" :key="entry.id">
             <TableCell class="text-muted-foreground">{{ at(entry.at) }}</TableCell>
             <TableCell class="font-medium">{{ entry.actor ?? '–' }}</TableCell>
-            <TableCell class="font-mono text-[13px] text-muted-foreground">{{
+            <TableCell class="font-mono text-dense text-muted-foreground">{{
               entry.client_ip ?? '–'
             }}</TableCell>
             <TableCell>

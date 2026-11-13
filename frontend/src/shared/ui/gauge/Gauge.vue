@@ -64,10 +64,7 @@ const tone = computed(() =>
         :class="['stroke-current transition-[stroke-dashoffset,color] duration-500', tone]"
       />
     </svg>
-    <span
-      v-if="$slots.default"
-      class="absolute text-[0.5625rem] leading-none font-medium tabular-nums"
-    >
+    <span v-if="$slots.default" class="absolute text-3xs leading-none font-medium tabular-nums">
       <slot />
     </span>
   </div>

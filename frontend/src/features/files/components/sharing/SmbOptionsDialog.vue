@@ -168,7 +168,7 @@ const box = 'mt-0.5 size-4 shrink-0 accent-primary'
             :aria-invalid="!patternValid"
             :aria-label="t('fileServices.advanced.vetoPattern')"
             placeholder="/*.tmp/Thumbs.db/.DS_Store/"
-            class="font-mono text-[13px]"
+            class="font-mono text-dense"
             spellcheck="false"
           />
           <p v-if="!patternValid" class="text-xs text-destructive">

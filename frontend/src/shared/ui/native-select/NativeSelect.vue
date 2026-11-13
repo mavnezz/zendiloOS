@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { ChevronDown } from 'lucide-vue-next'
 import type { HTMLAttributes } from 'vue'
 
 import { cn } from '@/shared/lib/utils'
@@ -10,7 +9,8 @@ const value = defineModel<string | number>({ required: true })
 
 <!--
   The browser's own list: fast with hundreds of entries (time zones), typed
-  into to jump, and native on phones.
+  into to jump, and native on phones. Its arrow is the one every select
+  gets (global.css).
 -->
 <template>
   <div :class="cn('relative', props.class)">
@@ -23,8 +23,5 @@ const value = defineModel<string | number>({ required: true })
     >
       <slot />
     </select>
-    <ChevronDown
-      class="pointer-events-none absolute top-1/2 right-2.5 size-4 -translate-y-1/2 text-muted-foreground"
-    />
   </div>
 </template>

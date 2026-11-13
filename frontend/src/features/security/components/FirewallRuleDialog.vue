@@ -165,7 +165,7 @@ function save(): void {
           <Input
             id="firewall-rule-ports"
             v-model="ports"
-            class="font-mono text-[13px]"
+            class="font-mono text-dense"
             placeholder="80, 443, 8000-8100"
             :aria-invalid="!!ports && !portsValid(ports)"
           />
@@ -185,7 +185,7 @@ function save(): void {
           <Input
             id="firewall-rule-custom"
             v-model="source"
-            class="font-mono text-[13px]"
+            class="font-mono text-dense"
             placeholder="192.168.1.0/24"
             :aria-label="t('firewall.rule.sourceCustom')"
             :aria-invalid="!!source && !sourceValid(source)"

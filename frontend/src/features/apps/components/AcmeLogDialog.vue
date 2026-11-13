@@ -56,7 +56,7 @@ watch(
     <pre
       ref="box"
       data-testid="acme-output"
-      class="h-72 overflow-auto rounded-lg bg-zinc-900 p-3 font-mono text-[12px] leading-5 whitespace-pre-wrap text-zinc-100"
+      class="h-72 overflow-auto rounded-lg bg-zinc-900 p-3 font-mono text-xs leading-5 whitespace-pre-wrap text-zinc-100"
       >{{
         lines.length
           ? lines.join('\n')

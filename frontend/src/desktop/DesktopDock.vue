@@ -93,7 +93,7 @@ function openApp(id: string, section?: string): void {
               :label="t('desktop.cpuUsage')"
               :value-text="formatPercent(latest.cpu_percent)"
             />
-            <span class="text-[0.5rem] leading-none font-medium text-foreground/60">CPU</span>
+            <span class="text-3xs leading-none font-medium text-foreground/60">CPU</span>
           </span>
           <span class="flex flex-col items-center gap-0.5">
             <Gauge
@@ -101,7 +101,7 @@ function openApp(id: string, section?: string): void {
               :label="t('desktop.memoryUsage')"
               :value-text="formatPercent(memory * 100)"
             />
-            <span class="text-[0.5rem] leading-none font-medium text-foreground/60">RAM</span>
+            <span class="text-3xs leading-none font-medium text-foreground/60">RAM</span>
           </span>
         </span>
         <template #tooltip>
@@ -114,7 +114,7 @@ function openApp(id: string, section?: string): void {
       <div
         v-if="net"
         :aria-label="t('desktop.network')"
-        class="flex flex-col items-center gap-0.5 text-[0.5625rem] leading-none text-foreground/70 tabular-nums"
+        class="flex flex-col items-center gap-0.5 text-3xs leading-none text-foreground/70 tabular-nums"
       >
         <span class="flex items-center gap-0.5"
           ><ArrowUp class="size-2.5" />{{ formatRate(net.sent) }}</span

@@ -114,7 +114,7 @@ const target = (item: Item) => item.kind === 'directory' && !item.personal
         }}</span>
         <span
           v-if="showOrigin && item.origin"
-          class="w-full truncate text-[11px] text-muted-foreground"
+          class="w-full truncate text-2xs text-muted-foreground"
           >{{ item.origin }}</span
         >
       </button>

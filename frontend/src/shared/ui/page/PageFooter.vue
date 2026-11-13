@@ -27,7 +27,7 @@ const { t } = useI18n()
 <template>
   <footer
     v-if="dirty || error"
-    class="sticky -bottom-(--frame-padding,0px) -mx-(--frame-padding,0px) mt-6 -mb-(--frame-padding,0px) flex flex-wrap items-center justify-end gap-3 border-t bg-background/92 px-(--frame-padding,1rem) py-3 backdrop-blur"
+    class="sticky -bottom-(--frame-padding,0px) -mx-(--frame-padding,0px) mt-6 -mb-(--frame-padding,0px) flex flex-wrap items-center justify-end gap-3 border-t bg-background px-(--frame-padding,1rem) py-3"
   >
     <p v-if="error" role="alert" class="mr-auto flex items-center gap-1.5 text-sm text-destructive">
       <CircleAlert class="size-4 shrink-0" />
