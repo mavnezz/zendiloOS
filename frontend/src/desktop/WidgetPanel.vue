@@ -144,7 +144,7 @@ const widget = 'glass glass-strong rounded-panel p-3.5'
               <p class="text-sm font-medium">
                 {{ busy ? t('desktop.systemBusy') : t('desktop.systemNormal') }}
               </p>
-              <p class="truncate text-xs text-muted-foreground">{{ info?.hostname }}</p>
+              <p class="truncate font-mono text-2xs text-muted-foreground">{{ info?.hostname }}</p>
             </div>
           </div>
           <dl class="mt-3 grid grid-cols-2 gap-2 border-t border-foreground/10 pt-3 text-xs">
@@ -156,7 +156,7 @@ const widget = 'glass glass-strong rounded-panel p-3.5'
             </div>
             <div class="min-w-0">
               <dt class="text-muted-foreground">{{ t('desktop.address') }}</dt>
-              <dd class="truncate font-medium tabular-nums">{{ address ?? '–' }}</dd>
+              <dd class="truncate font-mono font-medium">{{ address ?? '–' }}</dd>
             </div>
           </dl>
         </section>
@@ -226,7 +226,7 @@ const widget = 'glass glass-strong rounded-panel p-3.5'
               <div class="flex items-baseline justify-between gap-2 text-xs">
                 <span class="flex items-center gap-1.5 text-muted-foreground">
                   <Database class="size-3.5" />
-                  {{ pool.name }}
+                  <span class="font-mono text-2xs">{{ pool.name }}</span>
                 </span>
                 <span class="font-medium tabular-nums">{{
                   formatBytes(pool.available_bytes ?? 0)

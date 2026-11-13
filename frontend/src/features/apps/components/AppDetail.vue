@@ -88,7 +88,7 @@ const heading = 'text-base font-semibold'
           />
         </span>
         <div class="grid min-w-0 flex-1 gap-1">
-          <h2 class="flex flex-wrap items-center gap-2 text-xl font-semibold">
+          <h2 class="display flex flex-wrap items-center gap-2 text-xl">
             {{ appText(app, 'name', locale) }}
             <Badge v-if="!app.official" variant="warning">{{ t('appStore.unofficial') }}</Badge>
           </h2>

@@ -18,7 +18,7 @@ function action(record: AuditRecord): string | undefined {
 <template>
   <div class="grid content-start gap-6">
     <header class="grid gap-0.5">
-      <h2 class="text-xl font-semibold">{{ t('vms.sections.log') }}</h2>
+      <h2 class="display text-xl">{{ t('vms.sections.log') }}</h2>
       <p class="text-sm text-muted-foreground">{{ t('vms.log.description') }}</p>
     </header>
     <AuditLog prefix="vms." :action="action" file="zendiloos-vms-log" />

@@ -146,7 +146,7 @@ async function start(): Promise<void> {
 <!-- A task, a version, all or some of it, where to, and what to do with what is there. -->
 <template>
   <div class="grid max-w-3xl gap-5">
-    <h2 class="text-xl font-semibold">{{ t('backup.restore.title') }}</h2>
+    <h2 class="display text-xl">{{ t('backup.restore.title') }}</h2>
     <p v-if="!tasks.length" class="text-sm text-muted-foreground">
       {{ t('backup.restore.noTasks') }}
     </p>

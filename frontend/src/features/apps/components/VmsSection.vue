@@ -110,7 +110,7 @@ const select =
         <MonitorCog class="size-10" />
       </span>
       <div class="grid min-w-0 flex-1 gap-1">
-        <h2 class="text-xl font-semibold">{{ t('appStore.vms.name') }}</h2>
+        <h2 class="display text-xl">{{ t('appStore.vms.name') }}</h2>
         <p class="text-sm text-muted-foreground">{{ t('appStore.vms.subtitle') }}</p>
       </div>
       <span v-if="installing" class="flex items-center gap-2 text-sm text-muted-foreground">

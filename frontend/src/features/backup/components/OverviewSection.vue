@@ -45,7 +45,7 @@ const targets = computed(() =>
       <span
         class="grid size-14 shrink-0 place-items-center rounded-full"
         :class="{
-          'bg-emerald-500/15 text-emerald-600': glance.state === 'fine',
+          'bg-muted text-success': glance.state === 'fine',
           'bg-sky-500/15 text-sky-600': glance.state === 'running',
           'bg-amber-500/15 text-amber-600': glance.state === 'attention',
           'bg-muted text-muted-foreground': glance.state === 'empty',
@@ -57,7 +57,7 @@ const targets = computed(() =>
         <HardDriveDownload v-else class="size-8" />
       </span>
       <div class="grid gap-0.5">
-        <h2 class="text-xl font-semibold">{{ t(`backup.overview.states.${glance.state}`) }}</h2>
+        <h2 class="display text-xl">{{ t(`backup.overview.states.${glance.state}`) }}</h2>
         <p v-if="glance.state === 'empty'" class="text-sm text-muted-foreground">
           {{ t('backup.overview.emptyHint') }}
         </p>
@@ -124,8 +124,8 @@ const targets = computed(() =>
                 target.server
                   ? 'bg-muted-foreground'
                   : target.task.reachable
-                    ? 'bg-emerald-500'
-                    : 'bg-red-500'
+                    ? 'bg-success'
+                    : 'bg-destructive'
               "
             />
             <span class="font-medium">{{ target.task.name }}</span>

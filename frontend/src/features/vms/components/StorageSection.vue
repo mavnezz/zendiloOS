@@ -92,7 +92,7 @@ async function remove(): Promise<void> {
   <div class="grid content-start gap-6">
     <header class="flex flex-wrap items-center gap-3">
       <div class="grid min-w-0 flex-1 gap-0.5">
-        <h2 class="text-xl font-semibold">{{ t('vms.sections.storage') }}</h2>
+        <h2 class="display text-xl">{{ t('vms.sections.storage') }}</h2>
         <p class="text-sm text-muted-foreground">{{ t('vms.storage.description') }}</p>
       </div>
       <Button :disabled="!free.length" data-testid="vm-location-add" @click="adding = true">

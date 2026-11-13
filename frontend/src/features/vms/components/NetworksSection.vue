@@ -108,7 +108,7 @@ const empty: Record<Exclude<NetworkKind, 'user'>, string> = {
 <template>
   <div class="grid content-start gap-6">
     <header class="grid gap-0.5">
-      <h2 class="text-xl font-semibold">{{ t('vms.sections.networks') }}</h2>
+      <h2 class="display text-xl">{{ t('vms.sections.networks') }}</h2>
       <p class="text-sm text-muted-foreground">{{ t('vms.networks.description') }}</p>
     </header>
 

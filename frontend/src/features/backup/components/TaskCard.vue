@@ -53,7 +53,6 @@ const actions = computed<Action[]>(() => [
           <span
             class="flex items-center gap-1.5 font-medium"
             :class="{
-              'text-emerald-600 dark:text-emerald-400': status === 'succeeded',
               'text-sky-600 dark:text-sky-400': status === 'running',
               'text-amber-600 dark:text-amber-400':
                 status === 'partial' || status === 'unreachable',
@@ -61,7 +60,7 @@ const actions = computed<Action[]>(() => [
               'text-muted-foreground': status === 'never',
             }"
           >
-            <CircleCheck v-if="status === 'succeeded'" class="size-4" />
+            <CircleCheck v-if="status === 'succeeded'" class="size-4 text-success" />
             <LoaderCircle v-else-if="status === 'running'" class="size-4 animate-spin" />
             <CircleDashed v-else-if="status === 'never'" class="size-4" />
             <CircleAlert v-else class="size-4" />

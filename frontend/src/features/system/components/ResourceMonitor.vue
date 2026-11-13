@@ -60,7 +60,7 @@ const system = computed(() => {
   if (!value) return []
   const cores = value.cpu_cores ? `${value.cpu_cores} C / ` : ''
   return [
-    { label: t('dashboard.host'), value: value.hostname },
+    { label: t('dashboard.host'), value: value.hostname, mono: true },
     { label: t('dashboard.os'), value: value.os_name ?? 'Linux' },
     {
       label: t('dashboard.kernel'),
@@ -88,11 +88,11 @@ const system = computed(() => {
   ]
 })
 
-/** A temperature's colour: fine, warm, hot. */
+/** A temperature's colour: the interface's own while fine, then warm, hot. */
 function heat(celsius: number): string {
   if (celsius >= 80) return 'bg-destructive'
   if (celsius >= 65) return 'bg-warning'
-  return 'bg-success'
+  return 'bg-primary'
 }
 
 const percent = (value: number) => `${value.toFixed(0)} %`
@@ -163,9 +163,7 @@ const chart = { capacity: HISTORY, interval: 2 }
           @click="tab = tile.id as Tab"
         >
           <span class="text-xs text-muted-foreground">{{ tile.label }}</span>
-          <span class="text-lg leading-6 font-semibold tracking-tight tabular-nums">{{
-            tile.value
-          }}</span>
+          <span class="display text-lg leading-6 tabular-nums">{{ tile.value }}</span>
           <span class="truncate text-xs text-muted-foreground tabular-nums">{{ tile.hint }}</span>
           <Sparkline
             :values="tile.values"

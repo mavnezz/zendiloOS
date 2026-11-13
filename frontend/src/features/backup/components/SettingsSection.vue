@@ -75,7 +75,7 @@ async function save(): Promise<void> {
 <template>
   <div class="grid max-w-xl gap-10">
     <form class="grid gap-5" @submit.prevent="save">
-      <h2 class="text-xl font-semibold">{{ t('backup.settings.title') }}</h2>
+      <h2 class="display text-xl">{{ t('backup.settings.title') }}</h2>
       <Alert v-if="error" variant="destructive">{{ problemMessage(error) }}</Alert>
       <div class="grid gap-1.5">
         <Label for="backup-log-days">{{ t('backup.settings.logDays') }}</Label>

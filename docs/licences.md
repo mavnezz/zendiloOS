@@ -14,7 +14,8 @@ Allowed: 0BSD, Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-C
 | Exception | Licence | Why |
 | --- | --- | --- |
 | @novnc/novnc | MPL-2.0 | noVNC, the console of virtual machines, bundled unmodified: the MPL binds its own files only, whose source is published (debian/copyright names it) |
-| @fontsource-variable/geist | OFL-1.1 | the interface's font: the OFL lets fonts go with software, its text goes along |
+| @fontsource-variable/archivo | OFL-1.1 | the font of the interface's page titles and large figures: the OFL lets fonts go with software, its text goes along |
+| @fontsource-variable/geist | OFL-1.1 | the interface's font, likewise |
 | @fontsource-variable/jetbrains-mono | OFL-1.1 | the interface's monospaced font, likewise |
 
 ## The programs
@@ -51,7 +52,7 @@ curve25519-dalek-derive 0.1.1 is in the build for x86-64 only.
 
 ## The web interface
 
-Its bundle holds 54 packages from npm, as the build found them in it
+Its bundle holds 55 packages from npm, as the build found them in it
 (`frontend/dist/licences.json`; the tools that only build it are not
 there). Their licence texts go along with it: on the NAS in
 `/usr/share/zendiloos/webui/third-party-licences.txt`.
@@ -63,7 +64,7 @@ there). Their licence texts go along with it: on the NAS in
 | ISC | 1 | lucide-vue-next 1.0.0 |
 | MIT | 46 | @floating-ui/core 1.8.0, @floating-ui/dom 1.8.0, @floating-ui/utils 0.2.12, @floating-ui/vue 2.0.1, @intlify/core-base 11.4.18, @intlify/message-compiler 11.4.18, @intlify/shared 11.4.18, @tanstack/match-sorter-utils 9.2.6, @tanstack/query-core 5.106.1, @tanstack/virtual-core 3.19.11, @tanstack/vue-query 5.106.1, @tanstack/vue-virtual 3.13.52, @vue/devtools-api 6.6.4, @vue/devtools-api 8.2.1, @vue/devtools-kit 8.2.1, @vue/devtools-shared 8.2.1, @vue/reactivity 3.5.45, @vue/runtime-core 3.5.45, @vue/runtime-dom 3.5.45, @vue/shared 3.5.45, @vueuse/core 14.4.0, @vueuse/shared 14.4.0, @xterm/addon-fit 0.10.0, @xterm/xterm 5.5.0, aria-hidden 1.2.6, birpc 2.9.0, clsx 2.1.1, defu 6.1.7, hookable 5.5.3, linkify-it 6.1.0, markdown-it 15.0.3, mdurl 2.1.0, nostics 1.3.0, ohash 2.0.12, openapi-fetch 0.17.0, perfect-debounce 2.1.0, pinia 4.1.0, punycode.js 2.3.1, reka-ui 2.11.0, tailwind-merge 3.7.0, uc.micro 3.0.0, uqr 0.1.3, vue 3.5.45, vue-demi 0.14.10, vue-i18n 11.4.18, vue-router 5.4.0 |
 | MPL-2.0 | 1 | @novnc/novnc 1.7.0 |
-| OFL-1.1 | 2 | @fontsource-variable/geist 5.3.0, @fontsource-variable/jetbrains-mono 5.3.0 |
+| OFL-1.1 | 3 | @fontsource-variable/archivo 5.3.0, @fontsource-variable/geist 5.3.0, @fontsource-variable/jetbrains-mono 5.3.0 |
 
 ## Debian's packages
 

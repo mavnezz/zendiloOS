@@ -1,6 +1,7 @@
 import type { Router } from 'vue-router'
 
 import { fetchSetupRequired } from '@/features/auth/api'
+import { loadDeviceName } from '@/features/auth/device'
 import type { useSessionStore } from '@/features/auth/store'
 
 export type Page = 'setup' | 'login' | 'password' | 'desktop'
@@ -34,11 +35,10 @@ async function authState(session: ReturnType<typeof useSessionStore>): Promise<A
       const passwordChangeRequired = session.info?.account.password_change_required ?? false
       return { signedIn: true, setupRequired: false, passwordChangeRequired }
     }
-    return {
-      signedIn: false,
-      setupRequired: await fetchSetupRequired(),
-      passwordChangeRequired: false,
-    }
+    // With it, the name the setup and sign-in pages greet with: there
+    // before they are drawn, so nothing moves once it arrives.
+    const [setupRequired] = await Promise.all([fetchSetupRequired(), loadDeviceName()])
+    return { signedIn: false, setupRequired, passwordChangeRequired: false }
   } catch {
     // Server unreachable: the sign-in page will say so when used.
     return { signedIn: false, setupRequired: false, passwordChangeRequired: false }

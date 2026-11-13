@@ -35,7 +35,7 @@ const card = 'rounded-xl border bg-card p-5'
           </span>
           <div>
             <h3 class="font-semibold">Docker</h3>
-            <p class="text-sm" :class="error ? 'text-destructive' : 'text-success'">
+            <p class="text-sm" :class="error ? 'text-destructive' : 'text-muted-foreground'">
               {{ error ? t('docker.overview.down') : t('docker.overview.up') }}
             </p>
           </div>
@@ -43,25 +43,25 @@ const card = 'rounded-xl border bg-card p-5'
         <dl class="grid grid-cols-2 gap-4 @2xl:grid-cols-4">
           <div>
             <dt class="text-xs text-muted-foreground">{{ t('docker.sections.projects') }}</dt>
-            <dd class="text-xl font-semibold tabular-nums">
-              <span class="text-success">{{ overview?.projects_running ?? '–' }}</span
+            <dd class="display text-xl tabular-nums">
+              <span>{{ overview?.projects_running ?? '–' }}</span
               ><span class="text-muted-foreground">/{{ overview?.projects ?? '–' }}</span>
             </dd>
           </div>
           <div>
             <dt class="text-xs text-muted-foreground">{{ t('docker.sections.containers') }}</dt>
-            <dd class="text-xl font-semibold tabular-nums">
-              <span class="text-success">{{ overview?.containers_running ?? '–' }}</span
+            <dd class="display text-xl tabular-nums">
+              <span>{{ overview?.containers_running ?? '–' }}</span
               ><span class="text-muted-foreground">/{{ overview?.containers ?? '–' }}</span>
             </dd>
           </div>
           <div>
             <dt class="text-xs text-muted-foreground">{{ t('docker.sections.images') }}</dt>
-            <dd class="text-xl font-semibold tabular-nums">{{ overview?.images ?? '–' }}</dd>
+            <dd class="display text-xl tabular-nums">{{ overview?.images ?? '–' }}</dd>
           </div>
           <div>
             <dt class="text-xs text-muted-foreground">{{ t('docker.overview.data') }}</dt>
-            <dd class="text-xl font-semibold tabular-nums">
+            <dd class="display text-xl tabular-nums">
               {{ overview ? formatBytes(overview.data_bytes) : '–' }}
             </dd>
           </div>

@@ -278,7 +278,7 @@ const card = 'grid gap-4 rounded-xl border bg-card p-5'
         >
           <Database class="size-6 text-muted-foreground" />
           <span class="grid flex-1">
-            <span class="font-medium">{{ place.pool }}</span>
+            <span class="font-mono text-dense font-medium">{{ place.pool }}</span>
             <span class="text-xs text-muted-foreground">{{
               t('docker.management.volume', { n: place.volume })
             }}</span>

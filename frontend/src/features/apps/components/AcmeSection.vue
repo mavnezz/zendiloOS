@@ -212,7 +212,7 @@ const row = 'flex items-center gap-3 rounded-lg border bg-card px-3 py-2.5'
         <FileBadge class="size-10" />
       </span>
       <div class="grid min-w-0 flex-1 gap-1">
-        <h2 class="text-xl font-semibold">{{ t('appStore.acme.name') }}</h2>
+        <h2 class="display text-xl">{{ t('appStore.acme.name') }}</h2>
         <p class="text-sm text-muted-foreground">{{ t('appStore.acme.subtitle') }}</p>
       </div>
       <span v-if="installing" class="flex items-center gap-2 text-sm text-muted-foreground">

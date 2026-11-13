@@ -8,6 +8,7 @@ import type { SessionInfo } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
 
 import { completeSignIn, login } from '../api'
+import { deviceName } from '../device'
 import { useSessionStore } from '../store'
 import LoginPage from './LoginPage.vue'
 
@@ -52,10 +53,24 @@ beforeEach(() => {
   i18n.global.locale.value = 'en'
   vi.mocked(login).mockReset()
   vi.mocked(completeSignIn).mockReset()
+  deviceName.value = null
   document.body.innerHTML = ''
 })
 
 describe('LoginPage', () => {
+  it('says which NAS it belongs to, where the NAS tells its name', async () => {
+    vi.mocked(login).mockRejectedValue(new ApiProblem(401, 'invalid_credentials'))
+    const name = () => document.querySelector('[data-testid="device-name"]')
+
+    await renderLoginPage()
+    expect(name()).toBeNull()
+
+    document.body.innerHTML = ''
+    deviceName.value = 'attic'
+    await renderLoginPage()
+    expect(name()?.textContent?.trim()).toBe('attic')
+  })
+
   it('signs in and opens the desktop', async () => {
     vi.mocked(login).mockResolvedValue({ kind: 'signed_in', session })
 

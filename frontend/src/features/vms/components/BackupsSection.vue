@@ -71,7 +71,7 @@ async function remove(): Promise<void> {
 <template>
   <div class="grid content-start gap-6">
     <header class="grid gap-0.5">
-      <h2 class="text-xl font-semibold">{{ t('vms.sections.backups') }}</h2>
+      <h2 class="display text-xl">{{ t('vms.sections.backups') }}</h2>
       <p class="text-sm text-muted-foreground">{{ t('vms.backups.description') }}</p>
     </header>
     <Alert v-if="error" variant="destructive">{{ problemMessage(error) }}</Alert>

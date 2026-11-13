@@ -26,6 +26,12 @@ Copyright: 2014-2016 Vitaly Puzrin
 License: Expat
 Comment: pako, which noVNC vendors for its zlib decoding.
 
+Files: frontend/node_modules/@fontsource-variable/archivo/*
+Copyright: 2020 The Archivo Project Authors (https://github.com/Omnibus-Type/Archivo)
+License: OFL-1.1
+Comment: Archivo, the font of the web interface's page titles and large
+ figures, bundled into /usr/share/zendiloos/webui.
+
 Files: frontend/node_modules/@fontsource-variable/geist/*
 Copyright: 2024 The Geist Project Authors (https://github.com/vercel/geist-font)
 License: OFL-1.1

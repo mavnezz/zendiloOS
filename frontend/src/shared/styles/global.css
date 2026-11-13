@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@import '@fontsource-variable/archivo/wdth.css';
 @import '@fontsource-variable/geist';
 @import '@fontsource-variable/jetbrains-mono';
 
@@ -6,8 +7,10 @@
 
 /*
  * Design tokens. Components use the roles (bg-primary, text-muted-foreground,
- * ...), never raw colours. A neutral base with one blue; status colours for
- * what is fine, worth a look or wrong; chart colours in a fixed order.
+ * ...), never raw colours. A neutral base with one blue, the cobalt of the
+ * project's homepage (lighter in the dark, where it is text as often as a
+ * fill); status colours for what is fine, worth a look or wrong; chart
+ * colours in a fixed order.
  */
 :root {
   --radius: 0.625rem;
@@ -17,7 +20,7 @@
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.546 0.215 262.9);
+  --primary: #1f43f5;
   --primary-foreground: oklch(0.985 0 0);
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
@@ -28,7 +31,7 @@
   --destructive: oklch(0.577 0.245 27.325);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
-  --ring: oklch(0.546 0.215 262.9);
+  --ring: #1f43f5;
   --success: oklch(0.627 0.17 149.2);
   --warning: oklch(0.666 0.157 58.3);
   --info: oklch(0.62 0.15 240);
@@ -46,7 +49,7 @@
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.623 0.188 259.8);
+  --primary: #5a78ff;
   --primary-foreground: oklch(0.985 0 0);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
@@ -57,7 +60,7 @@
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.623 0.188 259.8);
+  --ring: #5a78ff;
   --success: oklch(0.792 0.209 151.7);
   --warning: oklch(0.769 0.188 70.08);
   --info: oklch(0.7 0.13 240);
@@ -82,6 +85,7 @@
   --text-2xs: 0.6875rem;
   --text-3xs: 0.5625rem;
   --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Archivo Variable', 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -164,6 +168,18 @@
 }
 
 @layer components {
+  /*
+   * The interface's second voice, for what a page is called and for the
+   * one large figure it leads with: Archivo, wide and heavy, as on the
+   * project's homepage. Everything that is read or operated stays Geist.
+   */
+  .display {
+    font-family: var(--font-display);
+    font-stretch: 112%;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+  }
+
   .glass {
     background-color: var(--glass-surface);
     backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));

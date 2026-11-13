@@ -176,7 +176,10 @@ function scanLine(pool: Pool): string | null {
         <Database class="size-4 shrink-0 text-muted-foreground" />
         <h3 class="font-mono text-sm font-semibold">{{ pool.name }}</h3>
         <span class="text-xs text-muted-foreground">
-          {{ formatPoolLayout(pool) }} · {{ pool.mount_point ?? t('storage.notMounted') }} ·
+          {{ formatPoolLayout(pool) }} ·
+          <span v-if="pool.mount_point" class="font-mono text-2xs">{{ pool.mount_point }}</span
+          ><template v-else>{{ t('storage.notMounted') }}</template>
+          ·
           {{ t('storage.redundancy', pool.redundancy) }}
         </span>
         <span class="flex-1" />

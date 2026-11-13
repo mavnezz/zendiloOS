@@ -25,9 +25,13 @@ const EXCEPTIONS = {
     licence: 'MPL-2.0',
     why: 'noVNC, the console of virtual machines, bundled unmodified: the MPL binds its own files only, whose source is published (debian/copyright names it)',
   },
+  '@fontsource-variable/archivo': {
+    licence: 'OFL-1.1',
+    why: "the font of the interface's page titles and large figures: the OFL lets fonts go with software, its text goes along",
+  },
   '@fontsource-variable/geist': {
     licence: 'OFL-1.1',
-    why: "the interface's font: the OFL lets fonts go with software, its text goes along",
+    why: "the interface's font, likewise",
   },
   '@fontsource-variable/jetbrains-mono': {
     licence: 'OFL-1.1',

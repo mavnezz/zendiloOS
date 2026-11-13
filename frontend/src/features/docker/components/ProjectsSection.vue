@@ -165,9 +165,9 @@ function confirmDelete(): void {
           </span>
         </div>
         <div class="grid min-w-32 text-center">
-          <span class="text-lg font-semibold tabular-nums">
-            <span class="text-success">{{ project.running }}</span> /
-            {{ project.containers.length }}
+          <span class="display text-lg tabular-nums">
+            {{ project.running }} /
+            <span class="text-muted-foreground">{{ project.containers.length }}</span>
           </span>
           <span class="text-xs text-muted-foreground">{{ t('docker.projects.runningOfAll') }}</span>
         </div>

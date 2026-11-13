@@ -6,7 +6,7 @@ use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
-use zendiloos_identity::domain::Permission;
+use zendiloos_identity::domain::{Permission, is_own_network};
 use zendiloos_kernel::Timestamp;
 use zendiloos_system::application::commands::{PowerError, SetHostNameError, SetSshError, SetTimeError};
 use zendiloos_system::domain::{
@@ -27,6 +27,7 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(metrics_history))
         .routes(routes!(time, set_time))
         .routes(routes!(host_name, set_host_name))
+        .routes(routes!(device_name))
         .routes(routes!(ssh, set_ssh))
         .routes(routes!(tls, set_tls))
 }
@@ -353,6 +354,30 @@ impl From<Renamed> for HostNameRenamed {
             own_certificate_served: renamed.own_certificate_served,
         }
     }
+}
+
+/// The machine's name for someone not signed in.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DeviceName {
+    /// None for a client that is not on the NAS's own network.
+    pub name: Option<String>,
+}
+
+/// The machine's name before anyone has signed in, so the sign-in page can
+/// say which NAS it belongs to.
+///
+/// Public, and therefore told only to a client on the NAS's own network:
+/// there the name is no secret, Avahi, Samba and the web interface's own
+/// certificate announce it. Anyone else gets none, and so does everyone
+/// when the name cannot be read.
+#[utoipa::path(get, path = "/system/name", tag = "system", responses((status = OK, body = DeviceName)))]
+async fn device_name(State(state): State<ApiState>, Client(client): Client) -> Json<DeviceName> {
+    let name = if client.client_ip.is_some_and(is_own_network) {
+        state.system.get_host_name.execute(&client).await.ok()
+    } else {
+        None
+    };
+    Json(DeviceName { name })
 }
 
 /// The machine's name. Needs `system.view`.

@@ -31,7 +31,8 @@ const tone = computed<SlotTone>(() => slotTone(props.place, report.value))
 const upright = computed(() => props.orientation === 'vertical' && props.form !== 'm2')
 
 const tones: Record<SlotTone, { tile: string; light: string }> = {
-  good: { tile: 'border-success/50 bg-success/[0.07]', light: 'bg-success' },
+  // Only its light says a slot is fine; a tint is for one that is not.
+  good: { tile: 'border-border bg-card', light: 'bg-success' },
   warning: { tile: 'border-warning/70 bg-warning/[0.10]', light: 'bg-warning' },
   failing: { tile: 'border-destructive/70 bg-destructive/[0.10]', light: 'bg-destructive' },
   asleep: { tile: 'border-info/50 bg-info/[0.06]', light: 'bg-info' },

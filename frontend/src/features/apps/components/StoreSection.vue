@@ -65,7 +65,7 @@ const pill = 'h-7 rounded-full px-4 text-dense font-medium'
 <template>
   <div class="grid gap-4">
     <div class="flex flex-wrap items-center gap-3">
-      <h2 class="text-xl font-semibold">{{ title }}</h2>
+      <h2 class="display text-xl">{{ title }}</h2>
       <span
         class="rounded-full bg-foreground/[0.07] px-2 text-sm text-muted-foreground tabular-nums"
         >{{ shown.length }}</span

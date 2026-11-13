@@ -200,9 +200,9 @@ function apply(): void {
         <p
           v-if="data.network_time"
           class="flex items-center gap-1.5 text-sm"
-          :class="data.synchronized ? 'text-success' : 'text-muted-foreground'"
+          :class="!data.synchronized && 'text-muted-foreground'"
         >
-          <CircleCheck v-if="data.synchronized" class="size-4" />
+          <CircleCheck v-if="data.synchronized" class="size-4 text-success" />
           <CircleDashed v-else class="size-4" />
           <template v-if="data.synchronized && data.server_in_use">
             {{ t('clock.synchronizedWith') }}

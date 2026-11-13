@@ -66,6 +66,7 @@ const select = 'h-9 rounded-md border bg-background px-3 text-sm shadow-xs'
         <Input
           id="nfs-client"
           v-model="client"
+          class="font-mono text-dense"
           autocomplete="off"
           spellcheck="false"
           :aria-invalid="client.trim() !== '' && (!valid || twice)"
