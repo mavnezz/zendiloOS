@@ -12,6 +12,8 @@ export interface NavItem {
   count?: number
   /** Something needs attention there. */
   alert?: boolean
+  /** What else a search of the navigation finds it by, besides its name. */
+  keywords?: string
 }
 
 export interface NavGroup {

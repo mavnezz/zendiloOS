@@ -171,6 +171,19 @@ export function shownGeometry(geometry: Geometry, viewport: Size): Geometry {
   return clampGeometry(geometry, viewport)
 }
 
+/**
+ * Whether a window on screen reaches into the strip `strip` wide along the
+ * right edge of `viewport`, where the desktop keeps its widgets.
+ */
+export function reachesRight(windows: WindowState[], viewport: Size, strip: number): boolean {
+  return windows.some((window) => {
+    if (window.minimized) return false
+    if (window.maximized) return true
+    const shown = shownGeometry(window.geometry, viewport)
+    return shown.x + shown.width > viewport.width - strip
+  })
+}
+
 /** The window in front, if any is visible. */
 export function activeWindow(state: DesktopState): string | null {
   const visible = state.windows.filter((window) => !window.minimized)

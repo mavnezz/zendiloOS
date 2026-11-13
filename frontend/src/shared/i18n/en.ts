@@ -558,6 +558,7 @@ const en = {
     comingLater: 'Coming later',
     reset: 'Reset',
     apply: 'Apply',
+    noMatch: 'Nothing matches.',
   },
   controlPanel: {
     groupGeneral: 'General',
@@ -578,6 +579,34 @@ const en = {
     webInterface: 'Web interface',
     terminal: 'Terminal',
     security: 'Security',
+    search: 'Search settings',
+    // What a search finds each page by, besides its name: what is set there.
+    keywords: {
+      device:
+        'name hostname rename version hardware processor CPU memory RAM mainboard firmware uptime kernel',
+      appearance: 'theme design dark light wallpaper background colour color language',
+      network:
+        'IP address DHCP DNS name servers gateway interface Ethernet Wi-Fi bridge bond VLAN MTU MAC IPv4 IPv6 LACP',
+      locale: 'clock date time zone NTP time servers language',
+      update: 'upgrade version channel release notes Debian packages apt kernel restart automatic',
+      'configuration-backup': 'settings export restore passphrase schedule USB',
+      'storage-pools':
+        'ZFS pool RAID RAIDZ mirror scrub data check rebuild resilver replace disk import volume',
+      'storage-disks':
+        'drives SMART self-test temperature serial number health NVMe SSD HDD enclosure slot warranty locate',
+      accounts:
+        'accounts groups password rules role administrator permissions quota personal folder 2FA two-factor',
+      'file-services':
+        'SMB Samba NFS rsync shares Windows macOS Time Machine workgroup Bonjour Avahi WS-Discovery discovery',
+      'web-interface': "HTTP HTTPS port certificate TLS SSL redirect Let's Encrypt ACME",
+      terminal: 'SSH shell command line console root key port',
+      monitor: 'CPU processor load memory RAM swap network temperature disks usage performance',
+      journal: 'system log journal kernel errors warnings',
+      audit: 'audit log changes sign-ins history CSV export who',
+      security:
+        'firewall rules ports block addresses failed logins sign-out timeout TLS account lock activity sessions',
+      notifications: 'email mail server SMTP webhook ntfy channels alerts recipients',
+    },
     notifications: 'Notifications',
     soon: {
       update: "Keeping zendiloOS and the NAS's Debian packages current, from the channel chosen.",
@@ -1436,15 +1465,10 @@ const en = {
   desktop: {
     dock: 'Dock',
     desktop: 'Desktop',
-    launcher: 'All apps',
-    allApps: 'All apps',
+    launcher: 'Apps and search',
     showDesktop: 'Show desktop',
     running: 'Open apps',
-    resources: 'Resources',
-    cpuUsage: 'Processor load',
-    memoryUsage: 'Memory in use',
     memory: 'Memory',
-    network: 'Network',
     upload: 'Sent',
     download: 'Received',
     widgets: 'Widgets',
@@ -1467,8 +1491,6 @@ const en = {
     uptime: 'Running for',
     address: 'Address',
     apps: 'Apps',
-    searchApps: 'Search apps',
-    noApps: 'No apps match.',
     notifications: 'Notifications',
     noNotifications: 'No notifications.',
     clearNotifications: 'Clear all',

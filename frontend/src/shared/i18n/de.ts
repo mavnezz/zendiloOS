@@ -575,6 +575,7 @@ const de: Messages = {
     comingLater: 'Kommt später',
     reset: 'Zurücksetzen',
     apply: 'Übernehmen',
+    noMatch: 'Nichts passt dazu.',
   },
   controlPanel: {
     groupGeneral: 'Allgemein',
@@ -595,6 +596,37 @@ const de: Messages = {
     webInterface: 'Weboberfläche',
     terminal: 'Terminal',
     security: 'Sicherheit',
+    search: 'Einstellungen suchen',
+    // Woran eine Suche jede Seite außer am Namen findet: was dort eingestellt wird.
+    keywords: {
+      device:
+        'Name Hostname umbenennen Version Hardware Prozessor CPU Arbeitsspeicher RAM Mainboard Firmware Laufzeit Kernel',
+      appearance: 'Design Theme dunkel hell Hintergrund Hintergrundbild Farbe Sprache',
+      network:
+        'IP Adresse DHCP DNS Nameserver Gateway Schnittstelle Ethernet WLAN Bridge Bond Bündel VLAN MTU MAC IPv4 IPv6 LACP',
+      locale: 'Uhr Datum Zeitzone NTP Zeitserver Sprache',
+      update:
+        'Aktualisierung Upgrade Version Kanal Versionshinweise Debian Pakete apt Kernel Neustart automatisch',
+      'configuration-backup':
+        'Einstellungen sichern Backup exportieren wiederherstellen Passphrase Zeitplan USB',
+      'storage-pools':
+        'ZFS Pool RAID RAIDZ Spiegel Scrub Datenprüfung Wiederherstellung Resilver Platte ersetzen importieren Volume',
+      'storage-disks':
+        'Platten Festplatten SMART Selbsttest Temperatur Seriennummer Zustand NVMe SSD HDD Gehäuse Einschub Garantie orten',
+      accounts:
+        'Konten Gruppen Passwort Passwortregeln Rolle Administrator Berechtigungen Kontingent Quota persönlicher Ordner 2FA Zwei-Faktor',
+      'file-services':
+        'SMB Samba NFS rsync Freigaben Windows macOS Time Machine Arbeitsgruppe Bonjour Avahi WS-Discovery Erkennung',
+      'web-interface': "HTTP HTTPS Port Zertifikat TLS SSL Umleitung Let's Encrypt ACME",
+      terminal: 'SSH Shell Kommandozeile Konsole root Schlüssel Port',
+      monitor:
+        'CPU Prozessor Last Arbeitsspeicher RAM Swap Netzwerk Temperatur Datenträger Auslastung Leistung',
+      journal: 'Systemprotokoll Journal Log Kernel Fehler Warnungen',
+      audit: 'Änderungsprotokoll Audit Log Änderungen Anmeldungen Verlauf CSV Export wer',
+      security:
+        'Firewall Regeln Ports IP-Sperre Adressen sperren fehlgeschlagene Anmeldungen Abmeldung Zeitlimit TLS Kontosperre Kontoaktivität Sitzungen',
+      notifications: 'E-Mail Mail Mailserver SMTP Webhook ntfy Kanäle Warnungen Empfänger',
+    },
     notifications: 'Benachrichtigungen',
     soon: {
       update: 'zendiloOS und die Debian-Pakete des NAS aktuell halten, aus dem gewählten Kanal.',
@@ -1473,15 +1505,10 @@ const de: Messages = {
   desktop: {
     dock: 'Dock',
     desktop: 'Schreibtisch',
-    launcher: 'Alle Apps',
-    allApps: 'Alle Apps',
+    launcher: 'Apps und Suche',
     showDesktop: 'Schreibtisch zeigen',
     running: 'Geöffnete Apps',
-    resources: 'Ressourcen',
-    cpuUsage: 'Prozessorlast',
-    memoryUsage: 'Belegter Arbeitsspeicher',
     memory: 'Arbeitsspeicher',
-    network: 'Netzwerk',
     upload: 'Gesendet',
     download: 'Empfangen',
     widgets: 'Widgets',
@@ -1504,8 +1531,6 @@ const de: Messages = {
     uptime: 'Laufzeit',
     address: 'Adresse',
     apps: 'Apps',
-    searchApps: 'Apps suchen',
-    noApps: 'Keine passende App.',
     notifications: 'Benachrichtigungen',
     noNotifications: 'Keine Benachrichtigungen.',
     clearNotifications: 'Alle entfernen',

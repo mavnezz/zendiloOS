@@ -158,30 +158,99 @@ describe('small views', () => {
 
   it('give an app a navigation that chooses its section', async () => {
     const section = ref('one')
-    const frame = mount({
-      render: () =>
-        h(
-          AppFrame,
-          {
-            groups: [
-              {
-                id: 'g',
-                label: 'General',
-                items: [
-                  { id: 'one', label: 'One', count: 2 },
-                  { id: 'two', label: 'Two', alert: true },
-                ],
-              },
-            ],
-            section: section.value,
-            'onUpdate:section': (value: string) => (section.value = value),
-          },
-          { default: () => 'content' },
-        ),
-    })
+    const frame = mount(
+      {
+        render: () =>
+          h(
+            AppFrame,
+            {
+              groups: [
+                {
+                  id: 'g',
+                  label: 'General',
+                  items: [
+                    { id: 'one', label: 'One', count: 2 },
+                    { id: 'two', label: 'Two', alert: true },
+                  ],
+                },
+              ],
+              section: section.value,
+              'onUpdate:section': (value: string) => (section.value = value),
+            },
+            { default: () => 'content' },
+          ),
+      },
+      { global: { plugins: [i18n] } },
+    )
     expect(frame.find('nav').attributes('aria-label')).toBe('One')
     await frame.findAll('nav button')[1]!.trigger('click')
     expect(section.value).toBe('two')
+    // Not asked for, the navigation has no search.
+    expect(frame.find('nav input').exists()).toBe(false)
+  })
+
+  it('search a navigation by name, group and keywords', async () => {
+    i18n.global.locale.value = 'en'
+    const section = ref('network')
+    const frame = mount(
+      {
+        render: () =>
+          h(
+            AppFrame,
+            {
+              search: 'Search settings',
+              groups: [
+                {
+                  id: 'general',
+                  label: 'General',
+                  items: [
+                    { id: 'network', label: 'Network', keywords: 'DNS gateway' },
+                    { id: 'locale', label: 'Time & language', keywords: 'NTP clock' },
+                  ],
+                },
+                {
+                  id: 'storage',
+                  label: 'Storage',
+                  items: [
+                    { id: 'pools', label: 'Pools', keywords: 'ZFS scrub' },
+                    { id: 'disks', label: 'Disks', keywords: 'SMART' },
+                  ],
+                },
+              ],
+              section: section.value,
+              'onUpdate:section': (value: string) => (section.value = value),
+            },
+            { default: () => 'content' },
+          ),
+      },
+      { global: { plugins: [i18n] } },
+    )
+    const field = frame.find('nav input')
+    const names = () => frame.findAll('nav button').map((item) => item.text())
+    expect(field.attributes('aria-label')).toBe('Search settings')
+    expect(names()).toEqual(['Network', 'Time & language', 'Pools', 'Disks'])
+
+    // By what is set on a page, whatever the case; the group's heading stays with it.
+    await field.setValue('ntp')
+    expect(names()).toEqual(['Time & language'])
+    expect(frame.find('nav').text()).toContain('General')
+    expect(frame.find('nav').text()).not.toContain('Storage')
+    // By the group's name: everything under it.
+    await field.setValue('storage')
+    expect(names()).toEqual(['Pools', 'Disks'])
+    // Enter opens the first that is left; the search stays as typed.
+    await field.trigger('keydown', { key: 'Enter' })
+    expect(section.value).toBe('pools')
+    expect(names()).toEqual(['Pools', 'Disks'])
+
+    await field.setValue('nothing like it')
+    expect(names()).toEqual([])
+    expect(frame.find('nav').text()).toContain(i18n.global.t('common.noMatch'))
+    // Enter then opens nothing, Escape brings everything back.
+    await field.trigger('keydown', { key: 'Enter' })
+    expect(section.value).toBe('pools')
+    await field.trigger('keydown', { key: 'Escape' })
+    expect(names()).toHaveLength(4)
   })
 
   it('edit text with line numbers, indenting on tab', async () => {
