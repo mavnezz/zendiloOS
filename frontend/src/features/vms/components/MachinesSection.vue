@@ -82,7 +82,7 @@ function forceOff(): void {
   <div class="grid content-start gap-6">
     <header class="flex flex-wrap items-center gap-3">
       <div class="grid min-w-0 flex-1 gap-0.5">
-        <h2 class="text-xl font-semibold">{{ t('vms.sections.machines') }}</h2>
+        <h2 class="display text-xl">{{ t('vms.sections.machines') }}</h2>
         <p v-if="plugin.storage" class="text-sm text-muted-foreground">
           {{
             t('appStore.placeVolume', { number: plugin.storage.volume, pool: plugin.storage.pool })

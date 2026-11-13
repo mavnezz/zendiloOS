@@ -45,7 +45,10 @@ const MEMBER: Record<RaidArray['members'][number]['state'], BadgeVariants['varia
       <header class="flex flex-wrap items-center gap-3">
         <Layers class="size-5 shrink-0 text-primary" />
         <div class="min-w-0 flex-1">
-          <h3 class="font-medium">{{ array.name }} · {{ formatRaidLevel(array.level) }}</h3>
+          <h3 class="font-medium">
+            <span class="font-mono text-sm font-semibold">{{ array.name }}</span> ·
+            {{ formatRaidLevel(array.level) }}
+          </h3>
           <p class="text-xs text-muted-foreground">
             <template v-if="array.size_bytes != null">{{ formatBytes(array.size_bytes) }}</template>
             <template v-if="array.devices_total != null">
@@ -98,7 +101,7 @@ const MEMBER: Record<RaidArray['members'][number]['state'], BadgeVariants['varia
           :key="member.device"
           class="flex items-center gap-2 rounded-lg border px-2.5 py-1 text-sm"
         >
-          <span class="font-medium">{{ member.device }}</span>
+          <span class="font-mono text-dense font-medium">{{ member.device }}</span>
           <Badge :variant="MEMBER[member.state]">{{ t(`storage.member.${member.state}`) }}</Badge>
         </li>
       </ul>

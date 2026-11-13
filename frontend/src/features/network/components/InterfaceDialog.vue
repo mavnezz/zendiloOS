@@ -152,7 +152,13 @@ const select = 'h-9 w-full rounded-md border bg-background px-3 text-sm'
         <div class="grid grid-cols-[1fr_5rem] gap-2">
           <div class="grid gap-1.5">
             <Label for="net-address">{{ t('network.change.address') }}</Label>
-            <Input id="net-address" v-model="form.address" placeholder="192.168.1.10" required />
+            <Input
+              id="net-address"
+              v-model="form.address"
+              class="font-mono text-dense"
+              placeholder="192.168.1.10"
+              required
+            />
           </div>
           <div class="grid gap-1.5">
             <Label for="net-prefix">{{ t('network.change.prefix') }}</Label>
@@ -161,12 +167,22 @@ const select = 'h-9 w-full rounded-md border bg-background px-3 text-sm'
         </div>
         <div class="grid gap-1.5">
           <Label for="net-gateway">{{ t('network.gateway') }}</Label>
-          <Input id="net-gateway" v-model="form.gateway" placeholder="192.168.1.1" />
+          <Input
+            id="net-gateway"
+            v-model="form.gateway"
+            class="font-mono text-dense"
+            placeholder="192.168.1.1"
+          />
         </div>
       </template>
       <div v-if="!off" class="grid gap-1.5">
         <Label for="net-dns">{{ t('network.nameServers') }}</Label>
-        <Input id="net-dns" v-model="form.dns" :placeholder="t('network.change.dnsFromDhcp')" />
+        <Input
+          id="net-dns"
+          v-model="form.dns"
+          class="font-mono text-dense placeholder:font-sans placeholder:text-sm"
+          :placeholder="t('network.change.dnsFromDhcp')"
+        />
         <p class="text-xs text-muted-foreground">{{ t('network.change.dnsHint') }}</p>
       </div>
       <div class="grid gap-1.5">

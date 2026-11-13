@@ -95,7 +95,7 @@ const select =
         <Container class="size-10" />
       </span>
       <div class="grid min-w-0 flex-1 gap-1">
-        <h2 class="text-xl font-semibold">Docker</h2>
+        <h2 class="display text-xl">Docker</h2>
         <p class="text-sm text-muted-foreground">{{ t('appStore.docker.subtitle') }}</p>
       </div>
       <span v-if="installing" class="flex items-center gap-2 text-sm text-muted-foreground">

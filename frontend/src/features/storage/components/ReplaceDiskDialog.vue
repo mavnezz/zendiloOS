@@ -100,7 +100,7 @@ async function replace(): Promise<void> {
         class="flex min-w-0 items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-accent/60"
       >
         <input v-model="disk" type="radio" :value="candidate.name" class="size-4 accent-primary" />
-        <span class="font-medium">{{ candidate.name }}</span>
+        <span class="font-mono text-dense font-medium">{{ candidate.name }}</span>
         <span class="min-w-0 flex-1 truncate text-muted-foreground">
           {{ candidate.model ?? t('storage.unknownModel') }} ·
           {{ formatBytes(candidate.size_bytes) }}

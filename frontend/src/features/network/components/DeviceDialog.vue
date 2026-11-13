@@ -299,6 +299,7 @@ async function submit(): Promise<void> {
                 <Input
                   id="device-address"
                   v-model="form.address"
+                  class="font-mono text-dense"
                   placeholder="10.10.0.2"
                   required
                 />
@@ -310,7 +311,7 @@ async function submit(): Promise<void> {
             </div>
             <div class="grid gap-1.5">
               <Label for="device-gateway">{{ t('network.gateway') }}</Label>
-              <Input id="device-gateway" v-model="form.gateway" />
+              <Input id="device-gateway" v-model="form.gateway" class="font-mono text-dense" />
             </div>
           </template>
           <div class="grid gap-1.5">
@@ -336,7 +337,7 @@ async function submit(): Promise<void> {
                 @change="toggle(item.name, ($event.target as HTMLInputElement).checked)"
               />
               <span class="font-mono">{{ item.name }}</span>
-              <span class="truncate text-xs text-muted-foreground">
+              <span class="truncate font-mono text-xs text-muted-foreground">
                 {{ item.addresses.find((a) => a.scope === 'global')?.address ?? item.mac ?? '' }}
               </span>
               <span

@@ -3,6 +3,7 @@ import { answer, cleanup, mountApp, on, problem } from '@/shared/testing/server'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { nextTick } from 'vue'
 
+import { deviceName } from '@/features/auth/device'
 import { useSessionStore } from '@/features/auth/store'
 import type { SessionInfo } from '@/shared/api/types'
 import { i18n } from '@/shared/i18n'
@@ -41,9 +42,12 @@ describe('the way to each page', () => {
   it('sends a browser without a session to the setup while it is needed, else to the sign-in', async () => {
     on('GET', '/api/v1/auth/session', () => problem(401, 'unauthenticated'))
     answer('GET', '/api/v1/setup', { required: true })
+    answer('GET', '/api/v1/system/name', { name: 'attic' })
     mountApp(App, { global: { plugins: [] } })
     let router = await start('/')
     expect(router.currentRoute.value.name).toBe('setup')
+    // With the way comes the name the page greets with.
+    expect(deviceName.value).toBe('attic')
 
     cleanup()
     on('GET', '/api/v1/auth/session', () => problem(401, 'unauthenticated'))
@@ -51,6 +55,8 @@ describe('the way to each page', () => {
     mountApp(App)
     router = await start('/password')
     expect(router.currentRoute.value.name).toBe('login')
+    // A NAS that does not tell its name (or does not answer) has none.
+    expect(deviceName.value).toBeNull()
   })
 
   it('sends a signed-in account to choose its password, or to the desktop', async () => {

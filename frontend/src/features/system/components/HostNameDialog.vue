@@ -67,7 +67,10 @@ function save() {
         <p>{{ t('hostName.done', { name: renamed.name, smb: renamed.netbios_name }) }}</p>
         <p v-if="newAddress">
           {{ t('hostName.newAddress') }}
-          <a :href="newAddress" class="inline-flex items-center gap-1 text-primary hover:underline">
+          <a
+            :href="newAddress"
+            class="inline-flex items-center gap-1 font-mono text-dense text-primary hover:underline"
+          >
             {{ newAddress }}
             <ExternalLink class="size-3.5" aria-hidden="true" />
           </a>

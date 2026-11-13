@@ -14,7 +14,6 @@ import type { NetworkDevice, NetworkInterface, PlannedInterface } from '@/shared
 import { problemMessage } from '@/shared/i18n'
 import { formatDateTime } from '@/shared/lib/format'
 import { useJobsStore } from '@/shared/jobs/store'
-import { cn } from '@/shared/lib/utils'
 import { Alert } from '@/shared/ui/alert'
 import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
@@ -217,7 +216,7 @@ const linkLocal = (item: NetworkInterface) => item.addresses.filter((a) => a.sco
       <p>{{ pendingHint }}</p>
       <p v-if="elsewhere">
         {{ t('network.pending.elsewhere') }}
-        <a class="font-medium underline" :href="`https://${newAddress}/`"
+        <a class="font-mono text-dense font-medium underline" :href="`https://${newAddress}/`"
           >https://{{ newAddress }}/</a
         >
       </p>
@@ -343,7 +342,11 @@ const linkLocal = (item: NetworkInterface) => item.addresses.filter((a) => a.sco
         <dt class="text-muted-foreground">{{ t('network.gateway') }}</dt>
         <dd>
           <template v-if="network.default_routes.length">
-            <span v-for="(route, index) in network.default_routes" :key="index" class="block">
+            <span
+              v-for="(route, index) in network.default_routes"
+              :key="index"
+              class="block font-mono text-dense"
+            >
               {{ route.gateway }}
               <span class="text-muted-foreground">({{ route.interface }})</span>
             </span>
@@ -352,7 +355,10 @@ const linkLocal = (item: NetworkInterface) => item.addresses.filter((a) => a.sco
         </dd>
         <dt class="text-muted-foreground">{{ t('network.nameServers') }}</dt>
         <dd>
-          {{ network.name_servers.length ? network.name_servers.join(', ') : t('network.none') }}
+          <span v-if="network.name_servers.length" class="font-mono text-dense">{{
+            network.name_servers.join(', ')
+          }}</span>
+          <span v-else class="text-muted-foreground">{{ t('network.none') }}</span>
         </dd>
       </dl>
 
@@ -365,9 +371,13 @@ const linkLocal = (item: NetworkInterface) => item.addresses.filter((a) => a.sco
           <header class="flex items-start gap-3">
             <component :is="icon(item)" class="mt-0.5 size-5 shrink-0 text-primary" />
             <div class="min-w-0 flex-1">
-              <h3 class="truncate font-medium">{{ item.name }}</h3>
+              <h3 class="truncate font-mono text-sm font-semibold">{{ item.name }}</h3>
               <p class="truncate text-xs text-muted-foreground">
-                {{ kind(item) }}<template v-if="item.mac"> · {{ item.mac }}</template> · MTU
+                {{ kind(item)
+                }}<template v-if="item.mac">
+                  · <span class="font-mono text-2xs">{{ item.mac }}</span></template
+                >
+                · MTU
                 {{ item.mtu
                 }}<template v-if="madeHere(item)"> · {{ t('network.devices.madeHere') }}</template>
               </p>
@@ -403,15 +413,7 @@ const linkLocal = (item: NetworkInterface) => item.addresses.filter((a) => a.sco
             >
               <Pencil />
             </Button>
-            <Badge
-              :class="
-                cn(
-                  item.state === 'up'
-                    ? 'bg-emerald-600/15 text-emerald-700 dark:text-emerald-300'
-                    : 'bg-muted text-muted-foreground',
-                )
-              "
-            >
+            <Badge :variant="item.state === 'up' ? 'success' : 'secondary'">
               {{ t(`network.states.${item.state}`) }}
             </Badge>
           </header>
@@ -426,7 +428,7 @@ const linkLocal = (item: NetworkInterface) => item.addresses.filter((a) => a.sco
           </p>
           <ul v-else-if="shown(item).length" class="grid gap-1 text-sm">
             <li v-for="address in shown(item)" :key="address.address" class="flex gap-2">
-              <span class="font-mono">{{ address.address }}/{{ address.prefix }}</span>
+              <span class="font-mono text-dense">{{ address.address }}/{{ address.prefix }}</span>
               <span class="text-muted-foreground">
                 {{ address.dynamic ? t('network.dynamic') : t('network.fixed') }}
               </span>
@@ -435,11 +437,11 @@ const linkLocal = (item: NetworkInterface) => item.addresses.filter((a) => a.sco
           <p v-else class="text-sm text-muted-foreground">{{ t('network.noAddress') }}</p>
           <p v-if="linkLocal(item).length" class="truncate text-xs text-muted-foreground">
             {{ t('network.linkLocal') }}:
-            {{
+            <span class="font-mono text-2xs">{{
               linkLocal(item)
                 .map((a) => a.address)
                 .join(', ')
-            }}
+            }}</span>
           </p>
         </section>
       </div>

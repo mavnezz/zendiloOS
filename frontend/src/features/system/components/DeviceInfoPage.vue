@@ -108,7 +108,7 @@ const share = (pool: Pool) => {
         <div v-if="info" class="grid gap-4">
           <div>
             <div class="flex items-center gap-2">
-              <p class="text-2xl font-semibold tracking-tight" data-testid="host-name">
+              <p class="font-mono text-xl font-semibold tracking-tight" data-testid="host-name">
                 {{ name }}
               </p>
               <Button
@@ -140,7 +140,7 @@ const share = (pool: Pool) => {
       <PageCard :title="t('device.uptime')" :icon="Clock" class="@6xl:col-start-1 @6xl:row-start-2">
         <div v-if="uptime !== undefined" class="grid gap-4">
           <div>
-            <p class="text-2xl font-semibold tracking-tight">{{ formatDuration(uptime) }}</p>
+            <p class="display text-2xl">{{ formatDuration(uptime) }}</p>
             <p class="text-sm text-muted-foreground">{{ t('device.since', { time: since }) }}</p>
           </div>
           <InfoList v-if="load" :items="[{ label: t('device.load'), value: load }]" />
@@ -164,7 +164,7 @@ const share = (pool: Pool) => {
         <div class="grid gap-4">
           <div v-for="pool in pools" :key="pool.guid" class="grid gap-1.5">
             <div class="flex items-baseline justify-between gap-2">
-              <span class="font-medium">{{ pool.name }}</span>
+              <span class="font-mono text-dense font-medium">{{ pool.name }}</span>
               <span class="text-muted-foreground tabular-nums">
                 {{
                   t('device.poolUse', {

@@ -4263,6 +4263,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/name": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The machine's name before anyone has signed in, so the sign-in page can
+         *     say which NAS it belongs to.
+         * @description Public, and therefore told only to a client on the NAS's own network:
+         *     there the name is no secret, Avahi, Samba and the web interface's own
+         *     certificate announce it. Anyone else gets none, and so does everyone
+         *     when the name cannot be read.
+         */
+        get: operations["device_name"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/power": {
         parameters: {
             query?: never;
@@ -6370,6 +6394,11 @@ export interface components {
             host: string;
             /** @description `rwm`: read, write, make nodes. */
             permissions: string;
+        };
+        /** @description The machine's name for someone not signed in. */
+        DeviceName: {
+            /** @description None for a client that is not on the NAS's own network. */
+            name?: string | null;
         };
         /** @description What a change of a device would do. */
         DevicePlan: {
@@ -20048,6 +20077,25 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    device_name: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeviceName"];
                 };
             };
         };

@@ -816,6 +816,27 @@ async fn health_is_public_and_reveals_nothing_else() {
 }
 
 #[tokio::test]
+async fn the_name_is_told_before_sign_in_only_on_the_own_network() {
+    let h = Harness::new();
+    let ask = |address: Option<&str>| {
+        let request = get("/api/v1/system/name");
+        h.send(empty(match address {
+            Some(address) => from_address(request, address),
+            None => request,
+        }))
+    };
+
+    let home = ask(Some("192.168.1.20")).await;
+    assert_eq!(home.status, StatusCode::OK);
+    assert_eq!(home.body, json!({ "name": "zendiloos" }));
+    // From the internet, or from nobody knows where: asked in vain.
+    let outside = ask(Some("203.0.113.9")).await;
+    assert_eq!(outside.status, StatusCode::OK);
+    assert_eq!(outside.body, json!({ "name": null }));
+    assert_eq!(ask(None).await.body, json!({ "name": null }));
+}
+
+#[tokio::test]
 async fn unknown_paths_and_methods_are_problems() {
     let h = Harness::new();
     let reply = h.send(empty(get("/api/v1/nope"))).await;
@@ -1805,8 +1826,9 @@ async fn a_wrong_current_password_is_not_mistaken_for_a_lost_session() {
 
 /// Routes anyone may call. Everything else must require a session; this
 /// guards against a handler that forgets its `Auth` argument.
-const PUBLIC: [(&str, &str); 6] = [
+const PUBLIC: [(&str, &str); 7] = [
     ("GET", "/api/v1/health"),
+    ("GET", "/api/v1/system/name"),
     ("GET", "/api/v1/setup"),
     ("POST", "/api/v1/setup"),
     ("POST", "/api/v1/setup/restore"),
@@ -2058,6 +2080,7 @@ fn openapi_documents_every_route() {
             "/api/v1/system/hostname",
             "/api/v1/system/info",
             "/api/v1/system/metrics/history",
+            "/api/v1/system/name",
             "/api/v1/system/power",
             "/api/v1/system/ssh",
             "/api/v1/system/time",

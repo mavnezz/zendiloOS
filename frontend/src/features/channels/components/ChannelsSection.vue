@@ -176,7 +176,7 @@ async function remove(): Promise<void> {
               </span>
             </li>
           </ul>
-          <p v-else class="truncate text-sm text-muted-foreground">
+          <p v-else class="truncate font-mono text-xs text-muted-foreground">
             {{ host(channel.target.url) }}
           </p>
           <p v-if="channel.last_delivery_at" class="text-xs text-muted-foreground">

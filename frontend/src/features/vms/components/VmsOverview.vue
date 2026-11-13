@@ -37,7 +37,7 @@ const total = computed(() => props.stats?.host_memory_bytes || props.plugin.memo
         <MonitorCog class="size-4" />
         {{ t('vms.overview.running') }}
       </span>
-      <span class="text-xl font-semibold tabular-nums">
+      <span class="display text-xl tabular-nums">
         {{ t('vms.overview.runningValue', { running, total: vms.length }) }}
       </span>
     </div>
@@ -46,7 +46,7 @@ const total = computed(() => props.stats?.host_memory_bytes || props.plugin.memo
         <Cpu class="size-4" />
         {{ t('vms.overview.cpu') }}
       </span>
-      <span class="text-xl font-semibold tabular-nums">
+      <span class="display text-xl tabular-nums">
         {{ stats ? formatPercent(stats.cpu_percent) : '–' }}
       </span>
       <Meter :value="(stats?.cpu_percent ?? 0) / 100" :label="t('vms.overview.cpu')" />
@@ -59,7 +59,7 @@ const total = computed(() => props.stats?.host_memory_bytes || props.plugin.memo
         <MemoryStick class="size-4" />
         {{ t('vms.overview.memory') }}
       </span>
-      <span class="text-xl font-semibold tabular-nums">
+      <span class="display text-xl tabular-nums">
         {{
           t('vms.overview.memoryValue', {
             assigned: formatBytes(assigned),

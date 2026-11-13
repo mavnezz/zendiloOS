@@ -383,7 +383,9 @@ function servicePorts(service: FirewallService): string {
                     :aria-label="t('firewall.columns.enabled')"
                   />
                 </TableCell>
-                <TableCell>{{ rule.interface || t('firewall.anyInterface') }}</TableCell>
+                <TableCell :class="rule.interface && 'font-mono text-dense'">{{
+                  rule.interface || t('firewall.anyInterface')
+                }}</TableCell>
                 <TableCell>
                   <div>{{ serviceName(rule) }}</div>
                   <div class="font-mono text-xs text-muted-foreground">

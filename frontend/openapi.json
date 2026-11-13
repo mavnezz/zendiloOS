@@ -13866,6 +13866,27 @@
         ]
       }
     },
+    "/api/v1/system/name": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "The machine's name before anyone has signed in, so the sign-in page can\nsay which NAS it belongs to.",
+        "description": "Public, and therefore told only to a client on the NAS's own network:\nthere the name is no secret, Avahi, Samba and the web interface's own\ncertificate announce it. Anyone else gets none, and so does everyone\nwhen the name cannot be read.",
+        "operationId": "device_name",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceName"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/system/power": {
       "post": {
         "tags": [
@@ -19963,6 +19984,19 @@
           "permissions": {
             "type": "string",
             "description": "`rwm`: read, write, make nodes."
+          }
+        }
+      },
+      "DeviceName": {
+        "type": "object",
+        "description": "The machine's name for someone not signed in.",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "None for a client that is not on the NAS's own network."
           }
         }
       },

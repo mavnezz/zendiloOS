@@ -164,7 +164,9 @@ const number = 'w-24 font-mono text-dense'
         <p>{{ t('webServer.pending.hint', { seconds: secondsLeft }) }}</p>
         <p v-if="newAddress">
           {{ t('webServer.pending.elsewhere') }}
-          <a class="font-medium underline" :href="newAddress">{{ newAddress }}</a>
+          <a class="font-mono text-dense font-medium underline" :href="newAddress">{{
+            newAddress
+          }}</a>
         </p>
         <div v-if="canManage" class="flex justify-end">
           <Button size="sm" @click="confirm">{{ t('webServer.pending.confirm') }}</Button>

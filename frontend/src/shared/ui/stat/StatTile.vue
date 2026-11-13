@@ -22,7 +22,7 @@ withDefaults(
 <template>
   <div :class="cn('grid content-start gap-0.5 border-l-2 pl-3', statTones[tone], $props.class)">
     <span class="text-xs text-muted-foreground">{{ label }}</span>
-    <span class="text-xl leading-7 font-semibold tracking-tight tabular-nums">{{ value }}</span>
+    <span class="display text-xl leading-7 tabular-nums">{{ value }}</span>
     <span v-if="hint" class="text-xs text-muted-foreground tabular-nums">{{ hint }}</span>
     <slot />
   </div>

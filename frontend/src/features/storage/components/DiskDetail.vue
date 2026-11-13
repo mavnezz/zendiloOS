@@ -106,7 +106,7 @@ function finding(item: SmartFinding): string {
         <ArrowLeft />
       </Button>
       <div class="min-w-0 flex-1">
-        <h3 class="truncate text-lg font-semibold">{{ name }}</h3>
+        <h3 class="truncate font-mono text-base font-semibold">{{ name }}</h3>
         <p v-if="disk" class="truncate text-sm text-muted-foreground">
           {{ disk.model ?? t('storage.unknownModel') }} · {{ formatBytes(disk.size_bytes) }}
         </p>
@@ -178,19 +178,19 @@ function finding(item: SmartFinding): string {
         <dl v-if="report.protocol !== 'emmc'" class="grid grid-cols-2 gap-3 @xl:grid-cols-4">
           <div class="rounded-lg border p-3">
             <dt class="text-xs text-muted-foreground">{{ t('storage.temperature') }}</dt>
-            <dd class="text-lg font-semibold tabular-nums">
+            <dd class="display text-lg tabular-nums">
               {{ report.temperature_celsius != null ? `${report.temperature_celsius} °C` : '–' }}
             </dd>
           </div>
           <div class="rounded-lg border p-3">
             <dt class="text-xs text-muted-foreground">{{ t('storage.powerOnHours') }}</dt>
-            <dd class="text-lg font-semibold tabular-nums">
+            <dd class="display text-lg tabular-nums">
               {{ report.power_on_hours != null ? formatCount(report.power_on_hours) : '–' }}
             </dd>
           </div>
           <div class="rounded-lg border p-3">
             <dt class="text-xs text-muted-foreground">{{ t('storage.powerCycles') }}</dt>
-            <dd class="text-lg font-semibold tabular-nums">
+            <dd class="display text-lg tabular-nums">
               {{ report.power_cycles != null ? formatCount(report.power_cycles) : '–' }}
             </dd>
           </div>
@@ -350,7 +350,7 @@ function finding(item: SmartFinding): string {
       <h4 class="font-medium">{{ t('storage.partitions') }}</h4>
       <ul class="grid gap-1 text-sm">
         <li v-for="partition in disk.partitions" :key="partition.name" class="flex gap-3">
-          <span class="w-28 shrink-0 font-medium">{{ partition.name }}</span>
+          <span class="w-28 shrink-0 font-mono text-dense font-medium">{{ partition.name }}</span>
           <span class="w-20 shrink-0 tabular-nums">{{ formatBytes(partition.size_bytes) }}</span>
           <span class="truncate text-muted-foreground">
             {{

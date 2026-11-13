@@ -73,7 +73,7 @@ const backupState = computed<{ text: string; variant: 'success' | 'secondary' | 
 <template>
   <div class="grid gap-4">
     <header class="grid gap-1 px-2">
-      <h2 class="text-xl font-semibold">{{ t('appStore.plugins.title') }}</h2>
+      <h2 class="display text-xl">{{ t('appStore.plugins.title') }}</h2>
       <p class="text-sm text-muted-foreground">{{ t('appStore.plugins.description') }}</p>
     </header>
     <ul class="grid gap-3">

@@ -439,7 +439,7 @@ async function create(): Promise<void> {
         <dt class="text-muted-foreground">{{ t('storage.create.disks') }}</dt>
         <dd>
           {{ t('storage.create.diskCount', chosen.length) }}
-          <span class="text-muted-foreground">({{ chosen.join(', ') }})</span>
+          <span class="font-mono text-xs text-muted-foreground">({{ chosen.join(', ') }})</span>
         </dd>
         <dt class="text-muted-foreground">{{ t('storage.create.estimatedUsable') }}</dt>
         <dd class="tabular-nums">{{ estimate ? formatBytes(estimate.usable) : '–' }}</dd>
@@ -455,7 +455,7 @@ async function create(): Promise<void> {
       <Alert v-if="error" variant="destructive">{{ error }}</Alert>
       <dl class="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm">
         <dt class="text-muted-foreground">{{ t('storage.create.name') }}</dt>
-        <dd class="font-medium">{{ plan.name }}</dd>
+        <dd class="font-mono text-dense font-medium">{{ plan.name }}</dd>
         <dt class="text-muted-foreground">{{ t('storage.create.layout') }}</dt>
         <dd>{{ t(`storage.create.layouts.${layout}.name`) }}</dd>
         <dt class="text-muted-foreground">{{ t('storage.create.capacity') }}</dt>
