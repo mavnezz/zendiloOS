@@ -3733,10 +3733,16 @@ secondary), `upsmon.conf` (the `MONITOR` line, `SHUTDOWNCMD
 first time (Debian's sample, or a configuration made by hand) is kept
 beside it as `<name>.before-zendiloos`. Debian's
 `nut-driver-enumerator` then makes the unit `nut-driver@ups` from
-`ups.conf`, and the agent enables and restarts `nut-server` and
-`nut-monitor` (for another device's UPS: disables the server). A driver
-that does not start, because the UPS is not plugged in, does not make
-the settings fail; the page then says that the UPS does not answer.
+`ups.conf` and starts the driver anew when its section changed, and the
+agent enables and restarts `nut-server` and `nut-monitor` (for another
+device's UPS: disables the server). Neither the enumerator nor the driver
+is waited for (`--no-block`): the enumerator waits a minute and a half
+for a driver it restarts, and a driver whose UPS is not plugged in, or
+does not answer on the network, takes that long to give up, which had a
+change run into nginx's timeout. A driver that does not start does not
+make the settings fail; systemd goes on trying it, the server takes it
+once it is there, and the page says meanwhile that the UPS does not
+answer.
 
 Settings that are in force already change nothing and interrupt nothing:
 no file is written and no unit restarted when the files say what they
