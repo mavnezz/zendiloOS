@@ -15,7 +15,7 @@ use zendiloos_storage::domain::{
     SelfTestKind, SmartReport, VolumeNumber,
 };
 
-use super::{WHAT, call, unexpected};
+use super::{WHAT, call, refusal, unexpected};
 use crate::storage::{emmc, lsblk, mdstat, smartctl, udev, zfs, zpool_import};
 
 /// The Storage context's sources, through the agent: it runs the tools,
@@ -196,7 +196,9 @@ impl AgentStorage {
             .await
             .map_err(|error| PortError::new(WHAT, error))?;
         match answer {
-            Response::Error { code: ErrorCode::Forbidden, message } => Err(AdminError::Refused(message)),
+            Response::Error { code: ErrorCode::Forbidden, message } => {
+                Err(AdminError::Refused(refusal(&message)))
+            }
             Response::Error { code: ErrorCode::Conflict, .. } => Err(AdminError::Conflict),
             Response::Error { code, message } => Err(super::agent_error(code, &message).into()),
             other => Ok(other),
@@ -219,7 +221,9 @@ impl AgentStorage {
             .map_err(|error| PortError::new(WHAT, error))?;
         match answer {
             Response::Done => Ok(()),
-            Response::Error { code: ErrorCode::Forbidden, message } => Err(AdminError::Refused(message)),
+            Response::Error { code: ErrorCode::Forbidden, message } => {
+                Err(AdminError::Refused(refusal(&message)))
+            }
             Response::Error { code: ErrorCode::Conflict, .. } => Err(AdminError::Conflict),
             Response::Error { code, message } => Err(super::agent_error(code, &message).into()),
             other => Err(unexpected(other).into()),

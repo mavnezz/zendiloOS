@@ -110,6 +110,13 @@ pub(crate) use self::{
     call as call_agent, expect_done as expect_agent_done, unexpected as unexpected_answer,
 };
 
+/// Why the agent refused, without the word it puts before its reason
+/// (`refused: apt is busy`): the error a refusal becomes says that itself,
+/// and said it twice.
+pub(crate) fn refusal(message: &str) -> String {
+    message.strip_prefix("refused: ").unwrap_or(message).to_owned()
+}
+
 /// What a port error says, with its causes: the agent's message is the
 /// source of the error that names it.
 pub(crate) fn reason(error: &PortError) -> String {
@@ -284,6 +291,15 @@ mod tests {
         let error = power.request(PowerAction::Reboot, &RequestContext::default()).await.unwrap_err();
         let cause = std::error::Error::source(&error).unwrap().to_string();
         assert!(cause.contains("systemctl failed"), "{cause}");
+    }
+
+    #[test]
+    fn a_refusal_is_given_without_the_agents_word_for_it() {
+        assert_eq!(refusal("refused: apt is busy with another run"), "apt is busy with another run");
+        // Only the word in front, and only once; anything else stays.
+        assert_eq!(refusal("refused: refused: twice"), "refused: twice");
+        assert_eq!(refusal("the disk is in use"), "the disk is in use");
+        assert_eq!(refusal(""), "");
     }
 
     #[tokio::test]

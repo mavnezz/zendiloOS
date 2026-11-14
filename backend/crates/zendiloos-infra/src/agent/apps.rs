@@ -14,7 +14,7 @@ use zendiloos_apps::application::ports::{AppHost, AppHostError, TemplateHost};
 use zendiloos_apps::domain::{AppVolume, Containers, HostFacts};
 use zendiloos_kernel::{PortError, RequestContext};
 
-use super::{WHAT, call_raw, unexpected};
+use super::{WHAT, call_raw, refusal, unexpected};
 
 /// Where the system agent keeps the apps' compose files: how their
 /// Compose projects are told from others.
@@ -53,8 +53,7 @@ async fn ask(
 ) -> Result<Response, AppHostError> {
     match call_raw(transport, request, context).await? {
         Response::Error { code: ErrorCode::Forbidden | ErrorCode::Conflict, message } => {
-            let reason = message.strip_prefix("refused: ").unwrap_or(&message);
-            Err(AppHostError::Refused(reason.to_owned()))
+            Err(AppHostError::Refused(refusal(&message)))
         }
         Response::Error { message, .. } => Err(AppHostError::Failed(message)),
         response => Ok(response),

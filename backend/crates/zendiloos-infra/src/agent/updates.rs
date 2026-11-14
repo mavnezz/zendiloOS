@@ -15,7 +15,7 @@ use zendiloos_updates::domain::{
     BootChoice, BootReason, Channel, HostReport, PackageUpdate, Release, RunState, UpdateRun,
 };
 
-use super::{WHAT, agent_error, call, call_raw, unexpected};
+use super::{WHAT, agent_error, call, call_raw, refusal, unexpected};
 
 /// How often a check is looked at, and for how long at most.
 const POLL: Duration = Duration::from_secs(2);
@@ -38,7 +38,9 @@ impl AgentUpdates {
     ) -> Result<String, HostError> {
         match call_raw(self.transport.as_ref(), Request::StartPackages { task, release }, context).await? {
             Response::PackagesStarted { id } => Ok(id),
-            Response::Error { code: ErrorCode::Forbidden, message } => Err(HostError::Refused(message)),
+            Response::Error { code: ErrorCode::Forbidden, message } => {
+                Err(HostError::Refused(refusal(&message)))
+            }
             Response::Error { code, message } => Err(agent_error(code, &message).into()),
             other => Err(unexpected(other).into()),
         }
@@ -207,6 +209,9 @@ mod tests {
             matches!(&refused, Err(HostError::Refused(why)) if why.contains("stable channel")),
             "{refused:?}"
         );
+        // Said as the administrator reads it: "refused" once, not the
+        // agent's word and the error's own.
+        assert_eq!(refused.unwrap_err().to_string(), "refused: the stable channel does not take it");
         assert_eq!(updates.latest(&context).await.unwrap(), None, "nothing ran");
 
         updates.start(Some(&build), Channel::Development, &context).await.unwrap();
