@@ -511,6 +511,12 @@ mod tests {
             serde_json::from_str::<UpsSource>(r#"{"kind":"simulated"}"#).unwrap(),
             UpsSource::Simulated
         );
-        assert!(serde_json::from_str::<UpsSource>(r#"{"kind":"simulated","port":"/etc/shadow"}"#).is_err());
+        // Nothing the agent does not know rides along with a driver's settings.
+        assert!(
+            serde_json::from_str::<UpsSource>(
+                r#"{"kind":"usb","driver":"usbhid-ups","vendor_id":null,"product_id":null,"serial":null,"port":"/etc/shadow"}"#
+            )
+            .is_err()
+        );
     }
 }
