@@ -97,6 +97,7 @@ async fn an_administrator_sets_a_usb_ups_and_reads_what_it_says() {
     assert_eq!(set.body["reading"]["on_battery"], true);
     assert_eq!(set.body["reading"]["status"], "OB DISCHRG");
     assert_eq!(set.body["reading"]["charge_percent"], 80);
+    assert_eq!(set.body["reading"]["shutting_down"], false, "on battery, not yet going down");
     assert!(!set.body.to_string().contains("for-others"), "the password is never sent back");
 
     let applied = h.ups_host.applied.lock().unwrap().clone();

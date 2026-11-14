@@ -176,8 +176,12 @@ pub struct UpsRequest {
 pub struct UpsReading {
     /// The power has failed: the UPS runs on battery.
     pub on_battery: bool,
-    /// The battery is low, or a shutdown is forced.
+    /// The UPS calls its battery low. It still does for a while after the
+    /// power is back, until the battery has charged.
     pub low_battery: bool,
+    /// The NAS is about to shut down: on battery with the battery low, or
+    /// because the time on battery is over.
+    pub shutting_down: bool,
     pub replace_battery: bool,
     pub charging: bool,
     /// NUT's `ups.status`, e.g. `OL CHRG`.
@@ -194,6 +198,7 @@ impl From<UpsState> for UpsReading {
         Self {
             on_battery: state.on_battery,
             low_battery: state.low_battery,
+            shutting_down: state.shutting_down(),
             replace_battery: state.replace_battery,
             charging: state.charging,
             status: state.status,

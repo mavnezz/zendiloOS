@@ -28,6 +28,7 @@ const READING: UpsReading = {
   status: 'OL CHRG',
   on_battery: false,
   low_battery: false,
+  shutting_down: false,
   charging: true,
   replace_battery: false,
   charge_percent: 87,
@@ -361,6 +362,7 @@ describe('the UPS page', () => {
       reading({
         on_battery: true,
         low_battery: true,
+        shutting_down: true,
         replace_battery: true,
         charge_percent: null,
         runtime_seconds: null,
@@ -369,9 +371,18 @@ describe('the UPS page', () => {
     )
     await queryClient.invalidateQueries({ queryKey: ['ups'] })
     await settle()
+    expect(text('ups-state')).toContain(t('ups.status.shuttingDown'))
     expect(text('ups-state')).toContain(t('ups.status.lowBattery'))
     expect(text('ups-state')).toContain(t('ups.status.replaceBattery'))
     expect(page()).not.toContain('87 %')
+
+    // Back on mains after a long power cut: the battery is low, nothing goes down.
+    on('GET', '/api/v1/ups', reading({ low_battery: true, charging: true, status: 'OL CHRG LB' }))
+    await queryClient.invalidateQueries({ queryKey: ['ups'] })
+    await settle()
+    expect(text('ups-state')).toContain(t('ups.status.onMains'))
+    expect(text('ups-state')).toContain(t('ups.status.lowBattery'))
+    expect(text('ups-state')).not.toContain(t('ups.status.shuttingDown'))
 
     on('GET', '/api/v1/ups', overview(USB))
     await queryClient.invalidateQueries({ queryKey: ['ups'] })
@@ -380,6 +391,32 @@ describe('the UPS page', () => {
     // Who may only look sees the settings and changes none.
     expect(document.querySelector<HTMLSelectElement>('#ups-source')?.disabled).toBe(true)
     expect(page()).not.toContain(t('ups.usb.detect'))
+  })
+
+  it('says that the NAS shuts down when its time on battery is over, not that the battery is low', async () => {
+    // As an Eaton on USB showed it a minute after its plug was pulled: 97 %, FSD.
+    const forced = overview(USB, {
+      reading: {
+        ...READING,
+        charging: false,
+        on_battery: true,
+        shutting_down: true,
+        charge_percent: 97,
+        status: 'FSD OB',
+      },
+    })
+    on('GET', '/api/v1/ups', forced)
+    const { queryClient } = await mountApp(UpsPage, { props: { canManage: true } })
+    expect(text('ups-state')).toBe(t('ups.status.shuttingDown'))
+    expect(page()).toContain('97 %')
+
+    // Then zendiloosd is stopped: no failure, the shutdown that was announced.
+    on('GET', '/api/v1/ups', problem(502, 'bad_gateway'))
+    await queryClient.invalidateQueries({ queryKey: ['ups'] })
+    await settle()
+    expect(text('ups-gone-down')).toBe(t('ups.status.goneDown'))
+    expect(page()).not.toContain(t('errors.unknown', { code: 'bad_gateway' }))
+    expect(text('ups-state')).toBe(t('ups.status.shuttingDown'))
   })
 
   it('says what the system refused and takes a change back', async () => {

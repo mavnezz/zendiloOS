@@ -3927,6 +3927,8 @@ const en = {
       onMains: 'On mains',
       onBattery: 'On battery',
       lowBattery: 'Battery low',
+      shuttingDown: 'Shutting down',
+      goneDown: 'The NAS is shutting down. This page answers again once it has started.',
       charging: 'Charging',
       replaceBattery: 'Replace battery',
       silent: 'The UPS does not answer.',
