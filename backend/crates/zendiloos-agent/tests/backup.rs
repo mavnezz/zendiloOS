@@ -84,6 +84,9 @@ fn host(installed: bool) -> Host {
         ssh: script(&root, "ssh", ""),
         ssh_keygen: script(&root, "ssh-keygen", ""),
         ssh_keyscan: script(&root, "ssh-keyscan", ""),
+        upsd: "/bin/false".into(),
+        upsmon: "/bin/false".into(),
+        nut_scanner: "/bin/false".into(),
         ..Tools::default()
     };
     let paths = Paths {

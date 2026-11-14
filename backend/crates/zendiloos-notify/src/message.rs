@@ -268,6 +268,93 @@ pub fn message(notification: &Notification, host: &str, language: Language) -> M
                 param("names")
             ),
         ),
+        "ups_on_battery" => {
+            // What happens next, by the rule set, and what the battery holds.
+            let rule = match (param("when"), german) {
+                ("charge_below", true) => format!(
+                    "Kommt der Strom nicht rechtzeitig zurück, fährt zendiloOS herunter, sobald der Ladestand unter \
+                     {} % fällt.",
+                    param("percent")
+                ),
+                ("charge_below", false) => format!(
+                    "Unless the power returns in time, zendiloOS shuts down when the charge falls below {} %.",
+                    param("percent")
+                ),
+                ("after_minutes", true) => format!(
+                    "Kommt der Strom nicht rechtzeitig zurück, fährt zendiloOS nach {} min auf Akku herunter.",
+                    param("minutes")
+                ),
+                ("after_minutes", false) => format!(
+                    "Unless the power returns in time, zendiloOS shuts down after {} min on battery.",
+                    param("minutes")
+                ),
+                (_, true) => "Kommt der Strom nicht rechtzeitig zurück, fährt zendiloOS herunter, sobald die USV \
+                              ihren Akku als fast leer meldet."
+                    .to_owned(),
+                (_, false) => "Unless the power returns in time, zendiloOS shuts down when the UPS reports its \
+                               battery as low."
+                    .to_owned(),
+            };
+            let battery = match (param("charge"), param("runtime"), german) {
+                ("", _, _) => String::new(),
+                (charge, "", true) => format!(" Der Akku ist zu {charge} % geladen."),
+                (charge, "", false) => format!(" The battery is at {charge} %."),
+                (charge, runtime, true) => {
+                    format!(" Der Akku ist zu {charge} % geladen und reicht für etwa {runtime} min.")
+                }
+                (charge, runtime, false) => {
+                    format!(" The battery is at {charge} % and lasts about {runtime} min.")
+                }
+            };
+            let title =
+                if german { "Stromausfall: die USV läuft auf Akku" } else { "Power cut: the UPS runs on battery" };
+            (title.to_owned(), format!("{rule}{battery}"))
+        }
+        "ups_shutdown" => {
+            let body = match (param("why") == "time", german) {
+                (true, true) => {
+                    "Das NAS lief so lange auf Akku, wie es unter Systemsteuerung → USV eingestellt ist."
+                }
+                (true, false) => "The NAS has run on battery for as long as Control panel → UPS allows.",
+                (false, true) => "Der Akku der USV ist fast leer.",
+                (false, false) => "The UPS's battery is almost empty.",
+            };
+            let title =
+                if german { "Stromausfall: das NAS fährt herunter" } else { "Power cut: the NAS shuts down" };
+            (title.to_owned(), body.to_owned())
+        }
+        "ups_on_mains" if german => (
+            "Strom ist zurück".to_owned(),
+            "Die USV läuft wieder am Netz und lädt ihren Akku.".to_owned(),
+        ),
+        "ups_on_mains" => (
+            "The power is back".to_owned(),
+            "The UPS runs on mains again and charges its battery.".to_owned(),
+        ),
+        "ups_unreachable" if german => (
+            "Die USV antwortet nicht".to_owned(),
+            "zendiloOS bekommt den Zustand der USV nicht mehr: Ein Stromausfall bliebe unbemerkt. Unter \
+             Systemsteuerung → USV steht, wo sie angeschlossen ist; prüfen Sie Kabel oder Netzwerk."
+                .to_owned(),
+        ),
+        "ups_unreachable" => (
+            "The UPS does not answer".to_owned(),
+            "zendiloOS no longer gets the UPS's state: a power cut would go unnoticed. Control panel → UPS says \
+             where it is connected; check the cable or the network."
+                .to_owned(),
+        ),
+        "ups_replace_battery" if german => (
+            "Die USV verlangt einen neuen Akku".to_owned(),
+            "Die USV meldet, dass ihr Akku ersetzt werden muss. Bis dahin hält sie einen Stromausfall womöglich \
+             nicht mehr durch."
+                .to_owned(),
+        ),
+        "ups_replace_battery" => (
+            "The UPS asks for a new battery".to_owned(),
+            "The UPS reports that its battery needs replacing. Until then it may not carry the NAS through a \
+             power cut."
+                .to_owned(),
+        ),
         "certificate_renewed" if german => (
             format!("Zertifikat für {} erneuert", param("name")),
             "Let's Encrypt hat das Zertifikat erneuert; zeigt die Weboberfläche es, nutzt sie es schon."
@@ -574,6 +661,26 @@ mod tests {
                 "Netzwerkdateien geändert",
             ),
             (
+                "ups_on_battery",
+                vec![("when", "low_battery")],
+                "Power cut: the UPS runs on battery",
+                "Stromausfall: die USV läuft auf Akku",
+            ),
+            (
+                "ups_shutdown",
+                vec![("why", "battery")],
+                "Power cut: the NAS shuts down",
+                "Stromausfall: das NAS fährt herunter",
+            ),
+            ("ups_on_mains", vec![], "The power is back", "Strom ist zurück"),
+            ("ups_unreachable", vec![], "The UPS does not answer", "Die USV antwortet nicht"),
+            (
+                "ups_replace_battery",
+                vec![],
+                "The UPS asks for a new battery",
+                "Die USV verlangt einen neuen Akku",
+            ),
+            (
                 "pools_not_imported",
                 vec![("names", "tank"), ("count", "1")],
                 "Pools not imported",
@@ -639,6 +746,48 @@ mod tests {
             message(&notification("updates_available", &debian), "nas", Language::English).title,
             "[nas] Updates available"
         );
+    }
+
+    #[test]
+    fn a_power_cut_says_what_happens_next_and_a_shutdown_why() {
+        let body = |code, params: &[(&str, &str)], language| {
+            message(&notification(code, params), "nas", language).body
+        };
+        let cut = |params: &[(&str, &str)], language| body("ups_on_battery", params, language);
+        assert_eq!(
+            cut(&[("when", "low_battery")], Language::English),
+            "Unless the power returns in time, zendiloOS shuts down when the UPS reports its battery as low."
+        );
+        assert!(cut(&[("when", "low_battery")], Language::German).ends_with("als fast leer meldet."));
+        let charge = [("when", "charge_below"), ("percent", "40"), ("charge", "87"), ("runtime", "25")];
+        assert_eq!(
+            cut(&charge, Language::English),
+            "Unless the power returns in time, zendiloOS shuts down when the charge falls below 40 %. The battery \
+             is at 87 % and lasts about 25 min."
+        );
+        assert!(
+            cut(&charge, Language::German)
+                .ends_with("unter 40 % fällt. Der Akku ist zu 87 % geladen und reicht für etwa 25 min.")
+        );
+        let minutes = [("when", "after_minutes"), ("minutes", "10"), ("charge", "87")];
+        assert!(
+            cut(&minutes, Language::English).ends_with("after 10 min on battery. The battery is at 87 %.")
+        );
+        assert!(
+            cut(&minutes, Language::German)
+                .ends_with("nach 10 min auf Akku herunter. Der Akku ist zu 87 % geladen.")
+        );
+
+        assert_eq!(
+            body("ups_shutdown", &[("why", "battery")], Language::English),
+            "The UPS's battery is almost empty."
+        );
+        assert_eq!(
+            body("ups_shutdown", &[("why", "battery")], Language::German),
+            "Der Akku der USV ist fast leer."
+        );
+        assert!(body("ups_shutdown", &[("why", "time")], Language::English).contains("Control panel → UPS"));
+        assert!(body("ups_shutdown", &[("why", "time")], Language::German).contains("Systemsteuerung → USV"));
     }
 
     #[test]

@@ -67,7 +67,7 @@ const fn kind(key: &'static str, group: Group, level: Level) -> Kind {
 }
 
 /// Every kind zendiloOS raises, in the order the table shows them.
-pub const KINDS: [Kind; 23] = [
+pub const KINDS: [Kind; 28] = [
     // Degraded a warning; faulted, removed or unavailable an error.
     kind("pool_trouble", Group::Storage, Level::Error),
     kind("pool_recovered", Group::Storage, Level::Success),
@@ -90,6 +90,12 @@ pub const KINDS: [Kind; 23] = [
     // zendiloOS's network files changed or lost outside it.
     kind("network_drift", Group::System, Level::Warning),
     kind("configuration_backup_failed", Group::System, Level::Error),
+    // A UPS: the power cut a warning, its battery running low an error.
+    kind("ups_on_battery", Group::System, Level::Warning),
+    kind("ups_shutdown", Group::System, Level::Error),
+    kind("ups_on_mains", Group::System, Level::Success),
+    kind("ups_unreachable", Group::System, Level::Warning),
+    kind("ups_replace_battery", Group::System, Level::Warning),
     kind("certificate_renewed", Group::Certificates, Level::Success),
     kind("certificate_renewal_failed", Group::Certificates, Level::Error),
     kind("certificate_not_taken", Group::Certificates, Level::Error),

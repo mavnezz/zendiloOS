@@ -30,6 +30,10 @@
 # Run in a transient unit: deletes the link of a bridge, bond or VLAN that goes.
 #ip = "/usr/sbin/ip"
 #sshd = "/usr/sbin/sshd"
+# Network UPS Tools, once they are installed from the UPS page:
+#upsd = "/usr/sbin/upsd"
+#upsmon = "/usr/sbin/upsmon"
+#nut_scanner = "/usr/bin/nut-scanner"
 #systemd_run = "/usr/bin/systemd-run"
 # Virtual machines, once the App Center's plugin installed them:
 #virsh = "/usr/bin/virsh"

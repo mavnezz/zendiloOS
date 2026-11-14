@@ -92,6 +92,9 @@ impl Host {
             ssh: "/bin/false".into(),
             ssh_keygen: "/bin/false".into(),
             ssh_keyscan: "/bin/false".into(),
+            upsd: "/bin/false".into(),
+            upsmon: "/bin/false".into(),
+            nut_scanner: "/bin/false".into(),
             rclone: "/bin/false".into(),
             dockerd: p("dockerd"),
         };
@@ -152,6 +155,7 @@ impl Host {
             firewall: FirewallPaths { directory: at("firewall") },
             vms: Default::default(),
             backup: Default::default(),
+            ups: Default::default(),
         };
         Operations::with_paths(role, &tools, Erasable::Policy(ErasePolicy::None), paths).unwrap()
     }

@@ -117,6 +117,12 @@ pub struct Tools {
     pub ssh: PathBuf,
     pub ssh_keygen: PathBuf,
     pub ssh_keyscan: PathBuf,
+    /// Network UPS Tools, which may be missing until they are installed
+    /// from the UPS page: the server and the monitor are only looked for
+    /// (their units run them), the scanner runs in a transient unit.
+    pub upsd: PathBuf,
+    pub upsmon: PathBuf,
+    pub nut_scanner: PathBuf,
 }
 
 impl Default for Tools {
@@ -165,6 +171,9 @@ impl Default for Tools {
             ssh: PathBuf::from("/usr/bin/ssh"),
             ssh_keygen: PathBuf::from("/usr/bin/ssh-keygen"),
             ssh_keyscan: PathBuf::from("/usr/bin/ssh-keyscan"),
+            upsd: PathBuf::from("/usr/sbin/upsd"),
+            upsmon: PathBuf::from("/usr/sbin/upsmon"),
+            nut_scanner: PathBuf::from("/usr/bin/nut-scanner"),
         }
     }
 }

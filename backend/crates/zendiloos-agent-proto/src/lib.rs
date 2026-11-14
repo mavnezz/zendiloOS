@@ -26,6 +26,7 @@ mod removable;
 mod services;
 mod ssh;
 mod time;
+mod ups;
 mod vms;
 mod web;
 
@@ -99,6 +100,11 @@ pub use ssh::{InvalidOffAfter, InvalidSshPort, OffAfter, RootLogin, SshConfig, S
 pub use time::{
     ClockTime, InvalidClockTime, InvalidTimeServer, InvalidTimeServers, InvalidTimeZone, MAX_TIME_SERVERS,
     TimeServer, TimeServers, TimeZone,
+};
+pub use ups::{
+    FoundUps, InvalidUpsConfig, InvalidUpsHost, InvalidUpsServerPort, InvalidUpsWord, InvalidUsbId,
+    SnmpVersion, UPS_LOCAL_USER, UPS_NAME, UPS_PORT, UpsAccount, UpsConfig, UpsHost, UpsServerPort,
+    UpsShutdown, UpsSource, UpsWord, UsbDriver, UsbId,
 };
 pub use vms::{
     HostIommu, HostNeeds, HostPciDevice, HostUsbDevice, InvalidPciAddress, InvalidVmBackupSettings,
@@ -611,6 +617,18 @@ pub enum Request {
     /// `off_after`, a timer turns it off again.
     SetSsh {
         config: SshConfig,
+    },
+    /// Whether Network UPS Tools are installed, and its SNMP driver.
+    /// Answers [`Response::UpsFacts`].
+    UpsFacts {},
+    /// The UPSes `nut-scanner` finds on USB. Answers [`Response::UpsFound`].
+    ScanUps {},
+    /// Writes NUT's configuration for `config` and starts what it needs:
+    /// the driver and the server for a UPS on this machine, the monitor in
+    /// every case. Without one, NUT is switched off (`MODE=none`) and its
+    /// units stopped.
+    SetUps {
+        config: Option<UpsConfig>,
     },
     /// The web interface's TLS settings zendiloOS wrote. Answers
     /// [`Response::WebTlsState`].
@@ -1330,6 +1348,9 @@ impl Request {
             Request::StartPackages { .. } => "start_packages",
             Request::PackagesState {} => "packages_state",
             Request::SetSsh { .. } => "set_ssh",
+            Request::UpsFacts {} => "ups_facts",
+            Request::ScanUps {} => "scan_ups",
+            Request::SetUps { .. } => "set_ups",
             Request::WebTlsState {} => "web_tls_state",
             Request::SetWebTls { .. } => "set_web_tls",
             Request::AcmeState {} => "acme_state",
@@ -1711,6 +1732,15 @@ pub enum Response {
     },
     FirewallState {
         pending: Option<PendingFirewall>,
+    },
+    UpsFacts {
+        /// NUT's server and monitor are installed.
+        installed: bool,
+        /// Its SNMP driver too (`nut-snmp`).
+        snmp: bool,
+    },
+    UpsFound {
+        devices: Vec<FoundUps>,
     },
     SshState {
         /// The server is installed.
@@ -2169,6 +2199,8 @@ impl Request {
                 | Request::ProjectFiles { .. }
                 | Request::NetworkState { .. }
                 | Request::SshState { .. }
+                | Request::UpsFacts { .. }
+                | Request::ScanUps { .. }
                 | Request::PackagesState { .. }
                 | Request::WebTlsState { .. }
                 | Request::AcmeState { .. }

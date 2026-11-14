@@ -4516,6 +4516,69 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/ups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The UPS: what is installed, its settings and what it says. Needs
+         *     `system.view`.
+         */
+        get: operations["ups"];
+        /**
+         * Sets where the UPS is and what the NAS does on battery, and puts it in
+         *     force: NUT's files are written and its services started, or stopped
+         *     without a UPS. What NUT's host refuses is not kept. Needs
+         *     `system.manage`.
+         */
+        put: operations["set_ups"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ups/install": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Installs Network UPS Tools from Debian, as a job; settings that are
+         *     there already are put in force when it is done. Needs `system.manage`.
+         */
+        post: operations["install_ups"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ups/scan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Looks for UPSes on USB (`nut-scanner`). Needs `system.manage`. */
+        post: operations["scan_ups"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/vms": {
         parameters: {
             query?: never;
@@ -9487,6 +9550,175 @@ export interface components {
         };
         UploadedFile: {
             path: string;
+        };
+        /** @description The account other devices follow the UPS with. */
+        UpsAccount: {
+            password_set: boolean;
+            user: string;
+        };
+        UpsAccountInput: {
+            /**
+             * Format: password
+             * @description Left out or empty: the one kept stays, for the same account.
+             */
+            password?: string | null;
+            user: string;
+        };
+        /** @description A UPS found on USB. */
+        UpsDevice: {
+            /** @description NUT's driver for it. */
+            driver: string;
+            product?: string | null;
+            product_id?: string | null;
+            serial?: string | null;
+            /** @description Whether that driver is one of `drivers`, which can be set. */
+            supported: boolean;
+            vendor?: string | null;
+            vendor_id?: string | null;
+        };
+        UpsDevices: {
+            devices: components["schemas"]["UpsDevice"][];
+        };
+        UpsOverview: {
+            /** @description The account's name other devices sign in with unless another is set. */
+            default_account: string;
+            /** @description NUT's drivers for a UPS on USB. */
+            drivers: string[];
+            /** @description Network UPS Tools are installed. */
+            installed: boolean;
+            /** @description The UPS's name in NUT on this NAS, which devices that follow ask for. */
+            name: string;
+            /**
+             * Format: int32
+             * @description The port NUT's server listens on.
+             */
+            port: number;
+            reading?: components["schemas"]["UpsReading"] | null;
+            settings: components["schemas"]["UpsSettings"];
+            /** @description Their SNMP driver too. */
+            snmp: boolean;
+        };
+        /** @description What the UPS says of itself. */
+        UpsReading: {
+            /** Format: int32 */
+            charge_percent?: number | null;
+            charging: boolean;
+            /** Format: int32 */
+            load_percent?: number | null;
+            /** @description The battery is low, or a shutdown is forced. */
+            low_battery: boolean;
+            manufacturer?: string | null;
+            model?: string | null;
+            /** @description The power has failed: the UPS runs on battery. */
+            on_battery: boolean;
+            replace_battery: boolean;
+            /** Format: int32 */
+            runtime_seconds?: number | null;
+            /** @description NUT's `ups.status`, e.g. `OL CHRG`. */
+            status: string;
+        };
+        UpsRequest: {
+            cut_power?: boolean;
+            serve?: components["schemas"]["UpsAccountInput"] | null;
+            shutdown: components["schemas"]["UpsShutdown"];
+            source?: components["schemas"]["UpsSourceInput"] | null;
+        };
+        UpsSettings: {
+            /**
+             * @description After the shutdown the UPS cuts its output, so that the NAS starts
+             *     again by itself when the power is back.
+             */
+            cut_power: boolean;
+            serve?: components["schemas"]["UpsAccount"] | null;
+            shutdown: components["schemas"]["UpsShutdown"];
+            source?: components["schemas"]["UpsSource"] | null;
+        };
+        /** @description When the NAS shuts down while the UPS runs on battery. */
+        UpsShutdown: {
+            /** @enum {string} */
+            kind: "low_battery";
+        } | {
+            /** @enum {string} */
+            kind: "charge_below";
+            /** Format: int32 */
+            percent: number;
+        } | {
+            /** @enum {string} */
+            kind: "after_minutes";
+            /** Format: int32 */
+            minutes: number;
+        };
+        /** @enum {string} */
+        UpsSnmpVersion: "v1" | "v2c";
+        /** @description Where the UPS is. */
+        UpsSource: {
+            /** @description One of `drivers`. */
+            driver: string;
+            /** @enum {string} */
+            kind: "usb";
+            product_id?: string | null;
+            serial?: string | null;
+            /**
+             * @description Four hexadecimal digits; with the product id and the serial
+             *     number they name one UPS among several.
+             */
+            vendor_id?: string | null;
+        } | {
+            address: string;
+            community: string;
+            /** @enum {string} */
+            kind: "snmp";
+            version: components["schemas"]["UpsSnmpVersion"];
+        } | {
+            host: string;
+            /** @enum {string} */
+            kind: "server";
+            /** @description A password is kept; it is never shown. */
+            password_set: boolean;
+            /** Format: int32 */
+            port: number;
+            /** @description The UPS's name there. */
+            ups: string;
+            user: string;
+        } | {
+            /** @enum {string} */
+            kind: "simulated";
+        };
+        /** @description As [`UpsSource`], to be set. */
+        UpsSourceInput: {
+            driver: string;
+            /** @enum {string} */
+            kind: "usb";
+            product_id?: string | null;
+            serial?: string | null;
+            vendor_id?: string | null;
+        } | {
+            address: string;
+            community: string;
+            /** @enum {string} */
+            kind: "snmp";
+            version: components["schemas"]["UpsSnmpVersion"];
+        } | {
+            host: string;
+            /** @enum {string} */
+            kind: "server";
+            /**
+             * Format: password
+             * @description Left out or empty: the one kept stays, for the same host and
+             *     account.
+             */
+            password?: string | null;
+            /**
+             * Format: int32
+             * @description 3493 unless given.
+             */
+            port?: number | null;
+            /** @description `ups` unless given. */
+            ups?: string | null;
+            user: string;
+        } | {
+            /** @enum {string} */
+            kind: "simulated";
         };
         UsageMoment: {
             /**
@@ -20559,6 +20791,167 @@ export interface operations {
                 content?: never;
             };
             /** @description `refused`: nothing waits */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    ups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpsOverview"];
+                };
+            };
+            /** @description `forbidden` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_ups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpsRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpsOverview"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `ups_not_installed`, `ups_snmp_missing`, `refused` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `invalid_input`; `ups_password_needed`: no password is kept for that account */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `agent_failed` */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    install_ups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `ups_installed` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    scan_ups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpsDevices"];
+                };
+            };
+            /** @description `forbidden`, `csrf_rejected` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `ups_not_installed` */
             409: {
                 headers: {
                     [name: string]: unknown;

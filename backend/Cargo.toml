@@ -21,6 +21,7 @@ zendiloos-backup = { path = "crates/zendiloos-backup" }
 zendiloos-recovery = { path = "crates/zendiloos-recovery" }
 zendiloos-containers = { path = "crates/zendiloos-containers" }
 zendiloos-updates = { path = "crates/zendiloos-updates" }
+zendiloos-ups = { path = "crates/zendiloos-ups" }
 zendiloos-exec = { path = "crates/zendiloos-exec" }
 zendiloos-fileops = { path = "crates/zendiloos-fileops" }
 zendiloos-identity = { path = "crates/zendiloos-identity" }

@@ -28,7 +28,7 @@ use zendiloos_infra::SystemClock;
 use zendiloos_infra::agent::{
     AgentAcme, AgentApps, AgentBackup, AgentDockerData, AgentDockerEngine, AgentFiles, AgentFirewall,
     AgentHostName, AgentNetwork, AgentPowerControl, AgentSharing, AgentSsh, AgentStorage,
-    AgentSystemAccounts, AgentTime, AgentUpdates, AgentVms, AgentVolumeArchiver, AgentWebTls,
+    AgentSystemAccounts, AgentTime, AgentUpdates, AgentUps, AgentVms, AgentVolumeArchiver, AgentWebTls,
     ChannelsFollowHostName, RandomPlanTokens, RandomVmIds, agent_version,
 };
 use zendiloos_infra::apps::{
@@ -55,8 +55,8 @@ use zendiloos_infra::sqlite::{
     SqliteFirewall, SqliteGroups, SqliteInstalledApps, SqliteJobs, SqliteNetworkSettings,
     SqliteNotifications, SqliteOperators, SqlitePreferences, SqliteProjects, SqliteSecurity,
     SqliteSelfTestPlans, SqliteSessions, SqliteShareProjects, SqliteShares, SqliteSystemUpdates,
-    SqliteTwoFactor, SqliteUpdateSettings, SqliteVmBackups, SqliteVmImages, SqliteVmLocations,
-    SqliteVmSchedules, SqliteVms, SqliteVolumeBackups,
+    SqliteTwoFactor, SqliteUpdateSettings, SqliteUpsSettings, SqliteVmBackups, SqliteVmImages,
+    SqliteVmLocations, SqliteVmSchedules, SqliteVms, SqliteVolumeBackups,
 };
 use zendiloos_infra::updates::{GitHubReleases, installed_notes};
 use zendiloos_jobs::Jobs;
@@ -74,6 +74,7 @@ use zendiloos_storage::application::self_tests::SelfTestSchedule;
 use zendiloos_storage::application::{StoragePorts, StorageUseCases};
 use zendiloos_system::application::{SystemPorts, SystemUseCases};
 use zendiloos_updates::application::{Updates, UpdatesPorts};
+use zendiloos_ups::application::{Ups, UpsPorts};
 use zendiloos_vms::application::{Vms, VmsPorts};
 
 use crate::config::{AgentTransportKind, Config, Source};
@@ -445,6 +446,27 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         interrupted => tracing::warn!(interrupted, "backup: runs were cut off when zendiloosd stopped"),
     }
     let backup_schedule = spawn_backup_schedule(backup.clone());
+
+    // A UPS: NUT watches it and shuts the machine down; zendiloOS keeps
+    // the settings and tells what the UPS's state does.
+    let ups = Ups::new(UpsPorts {
+        store: Arc::new(SqliteUpsSettings::new(database.clone())),
+        host: Arc::new(AgentUps::new(agent.clone())),
+        link: Arc::new(zendiloos_infra::ups::NutLink),
+        jobs: jobs.clone(),
+        notifier: notifier.clone(),
+        audit: audit.clone(),
+        clock: Arc::new(SystemClock),
+    });
+    // The machine follows the settings kept, as after a restored
+    // configuration; where they are in force the agent changes nothing.
+    let kept = ups.clone();
+    tokio::spawn(async move {
+        if let Err(error) = kept.apply_kept(&RequestContext::default()).await {
+            tracing::warn!(error = %error_chain(&error), "ups: cannot put the settings in force");
+        }
+    });
+    let ups_watch = spawn_ups_watch(ups.clone());
     let restart = ProcessRestart::new();
     let recovery = Recovery::new(RecoveryPorts {
         snapshots: Arc::new(ConfigurationSnapshots::new(
@@ -496,6 +518,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         vms,
         backup,
         recovery,
+        ups,
     };
     let state = ApiState::new(use_cases, config.secure_cookies);
     let app = zendiloos_api::router(state);
@@ -539,6 +562,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     snapshots.abort();
     vm_snapshots.abort();
     backup_schedule.abort();
+    ups_watch.abort();
     configuration_backups.abort();
     migrations.abort();
     self_tests.abort();
@@ -565,6 +589,19 @@ async fn stop(restart: ProcessRestart) {
         () = shutdown_requested() => {}
         () = restart.requested() => {}
     }
+}
+
+/// Every ten seconds: a look at the UPS, and a notification when its state
+/// changed (a power cut, its end, the shutdown, no answer). On battery
+/// every three: NUT waits ten seconds between deciding to shut down and
+/// doing it, and that is to be told before zendiloosd is stopped.
+fn spawn_ups_watch(ups: Ups) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let pause = if ups.watch().await { 3 } else { 10 };
+            tokio::time::sleep(Duration::from_secs(pause)).await;
+        }
+    })
 }
 
 /// Every minute: the configuration's backup whose time came.

@@ -64,6 +64,9 @@ const VMS_PACKAGES: [&str; 9] = [
 /// What backup tasks need: rsync, and the SSH client with ssh-keygen and
 /// ssh-keyscan (most systems have it already).
 const BACKUP_PACKAGES: [&str; 3] = ["rsync", "openssh-client", "rclone"];
+/// What following a UPS needs: NUT's drivers and server, its monitor, and
+/// the SNMP driver for a UPS with a network card.
+const UPS_PACKAGES: [&str; 3] = ["nut-server", "nut-client", "nut-snmp"];
 /// Lines of apt's output kept for a failure.
 const TAIL: usize = 15;
 /// The files of a release beside its package.
@@ -217,6 +220,7 @@ struct Debian {
     dpkg_deb: PathBuf,
     dpkg_query: PathBuf,
     systemctl: PathBuf,
+    udevadm: PathBuf,
     modules: PathBuf,
     etc: PathBuf,
     boot: Boot,
@@ -230,6 +234,7 @@ impl Default for Debian {
             dpkg_deb: "/usr/bin/dpkg-deb".into(),
             dpkg_query: "/usr/bin/dpkg-query".into(),
             systemctl: "/usr/bin/systemctl".into(),
+            udevadm: "/usr/bin/udevadm".into(),
             modules: "/lib/modules".into(),
             etc: "/etc".into(),
             boot: Boot::default(),
@@ -363,6 +368,29 @@ impl Debian {
                 let mut args = vec!["install", "--yes", "--no-install-recommends"];
                 args.extend(BACKUP_PACKAGES);
                 self.apt(&args)
+            }
+            PackageTask::InstallUps => {
+                lists(&mut step)?;
+                step("install")?;
+                // Debian installs NUT switched off (MODE=none in nut.conf):
+                // nothing of it does anything until a UPS is set up.
+                let mut args = vec!["install", "--yes", "--no-install-recommends"];
+                args.extend(UPS_PACKAGES);
+                self.apt(&args)?;
+                // NUT's udev rules hand a UPS on USB to its group. They
+                // count for what is plugged in from now on: a UPS that was
+                // there before would stay root's until pulled out and put
+                // back, and the driver, which is not root, could not open
+                // it. Debian's package asks udev to look again only where
+                // udev has an init script, which Debian 13 no longer has.
+                // Asked here instead; if that fails, the packages are
+                // installed all the same.
+                if let Err(error) =
+                    run_text(&self.udevadm, &["trigger", "--subsystem-match=usb", "--action=change"])
+                {
+                    println!("udev was not asked to look at the USB devices again: {error}");
+                }
+                Ok(())
             }
             PackageTask::InstallNetworkd => {
                 lists(&mut step)?;
@@ -1009,12 +1037,13 @@ mod tests {
         );
         let dpkg_query = script("dpkg-query", "[ -e $R/resolved-installed ] && echo 'install ok installed'");
         let systemctl = script("systemctl", "exit 0");
+        let udevadm = script("udevadm", "[ -e $R/udev-fails ] && exit 1; exit 0");
         let kernel = "6.12.57+deb13-amd64";
         let boot = crate::boot::tests::machine(root, &[kernel], &[kernel]);
         let modules = boot.modules.clone();
         let etc = root.join("etc");
         fs::create_dir_all(&etc).unwrap();
-        Debian { apt_get, dpkg, dpkg_deb, dpkg_query, systemctl, modules, etc, boot }
+        Debian { apt_get, dpkg, dpkg_deb, dpkg_query, systemctl, udevadm, modules, etc, boot }
     }
 
     /// A NAS of fake tools in `root`, with the release 9.9.9 downloaded.
@@ -1227,6 +1256,32 @@ mod tests {
         fs::remove_file(root.path().join("audit")).unwrap();
         let failed = run_with(&paths, &debian, "ab03", "check", None, None).unwrap_err();
         assert!(failed.contains("apt-get --simulate upgrade failed"), "{failed}");
+    }
+
+    #[test]
+    fn nut_comes_from_debian_and_udev_looks_at_a_ups_plugged_in_before() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, debian) = host(root.path());
+        run_with(&paths, &debian, "ab01", "install-ups", None, None).unwrap();
+        let calls = called(root.path());
+        let install = calls.iter().position(|call| call.contains(" install ")).unwrap();
+        assert!(
+            calls[install].ends_with("install --yes --no-install-recommends nut-server nut-client nut-snmp"),
+            "{calls:?}"
+        );
+        assert_eq!(calls[install + 1], "udevadm trigger --subsystem-match=usb --action=change", "{calls:?}");
+        assert_eq!(recorded(&paths, STATE_FILE).state, PackageRunState::Succeeded);
+
+        // udev not answering does not undo an installation.
+        fs::write(root.path().join("udev-fails"), "").unwrap();
+        run_with(&paths, &debian, "ab02", "install-ups", None, None).unwrap();
+        assert_eq!(recorded(&paths, STATE_FILE).state, PackageRunState::Succeeded);
+        // Not installed: udev is not asked.
+        fs::write(root.path().join("apt-fails"), "").unwrap();
+        let before = called(root.path()).iter().filter(|call| call.starts_with("udevadm")).count();
+        run_with(&paths, &debian, "ab03", "install-ups", None, None).unwrap_err();
+        let after = called(root.path()).iter().filter(|call| call.starts_with("udevadm")).count();
+        assert_eq!(before, after);
     }
 
     #[test]

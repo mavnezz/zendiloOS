@@ -56,6 +56,7 @@ hardened service that checks every request.
 - **Network**: addresses per card with confirmation, bridges, bonds and VLANs; an installation of Debian with ifupdown taken over on request
 - **Updates**: Debian and zendiloOS in one place, signed releases from three channels (stable, test, development)
 - **Configuration backup**: accounts, shares, settings and certificates in one file encrypted with a passphrase, downloaded or written on a schedule into a share or onto a USB drive, and restored on a fresh installation instead of its first setup; the old machine's pools imported there when you ask, their shares mounted again, and its network settings and firewall rules applied one by one, each confirmed
+- **UPS**: an uninterruptible power supply on USB, on the network (SNMP) or on another device, followed with Network UPS Tools; the NAS shuts down when the battery is low, below a charge or after some minutes on battery, tells you when the power fails and returns, and passes the UPS's state on to other devices fed by it
 - **Security**: two-factor sign-in, a firewall that covers Docker's published ports too, limits on failed logins, blocked addresses, sessions to end, SSH that switches itself off
 - **Notifications**: in the browser, by e-mail through one mail server and by webhook, chosen per kind
 

@@ -130,6 +130,50 @@ describe('the wording of update notices', () => {
   })
 })
 
+describe('the wording of UPS notices', () => {
+  const notice = (code: string, params: Record<string, string>): ServerNotification => ({
+    id: 1,
+    at: 0,
+    level: 'warning',
+    code,
+    params,
+  })
+
+  it('says by which rule the NAS shuts down, what the battery holds, and why it went down', async () => {
+    const { wording } = await import('./store')
+    const { i18n } = await import('@/shared/i18n')
+    i18n.global.locale.value = 'en'
+    expect(wording(notice('ups_on_battery', { when: 'low_battery' }))).toEqual({
+      title: 'Power cut: the UPS runs on battery',
+      body: 'Unless the power returns in time, zendiloOS shuts down when the UPS reports its battery as low.',
+    })
+    expect(
+      wording(
+        notice('ups_on_battery', {
+          when: 'charge_below',
+          percent: '40',
+          charge: '87',
+          runtime: '25',
+        }),
+      ).body,
+    ).toBe(
+      'Unless the power returns in time, zendiloOS shuts down when the charge falls below 40 %. The battery is at 87 % and lasts about 25 min.',
+    )
+    expect(
+      wording(notice('ups_on_battery', { when: 'after_minutes', minutes: '10', charge: '87' }))
+        .body,
+    ).toBe(
+      'Unless the power returns in time, zendiloOS shuts down after 10 min on battery. The battery is at 87 %.',
+    )
+    expect(wording(notice('ups_shutdown', { why: 'battery' })).body).toBe(
+      "The UPS's battery is almost empty.",
+    )
+    expect(wording(notice('ups_shutdown', { why: 'time' })).body).toContain('Control panel → UPS')
+    for (const code of ['ups_on_mains', 'ups_unreachable', 'ups_replace_battery'])
+      expect(wording(notice(code, {})).body).toBeTruthy()
+  })
+})
+
 describe('the wording of firewall notices', () => {
   const notice = (params: Record<string, string>): ServerNotification => ({
     id: 1,

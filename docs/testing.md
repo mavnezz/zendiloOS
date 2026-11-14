@@ -52,6 +52,7 @@ checks and how to run it.
 | `vm-hostname-test` | renaming the machine: the host name, `/etc/hosts`, Samba's NetBIOS name, `<name>.local` through Avahi, the certificate; the name put back |
 | `vm-web-server-test` | the web interface's ports and certificates, ACME |
 | `vm-notify-test` | notifications by e-mail and webhook |
+| `vm-ups-test` | a UPS: Network UPS Tools installed from its page, NUT's simulated UPS followed, a power cut and its end told, its state passed on to other devices with their account, the VM powered off below the charge set and, following a second NUT server as another device's, after its minutes on battery; started again, a UPS gone silent told |
 | `vm-network-test` | changing a card's addresses, a change that cuts the VM off going back |
 | `vm-network-takeover-test` | taking the network over from ifupdown, confirmed and not (VM 3) |
 | `vm-network-bridge-test` | bridges, bonds and VLANs, frames bridged past Docker's FORWARD chain (VM 3, with spare cards) |
@@ -117,6 +118,10 @@ arm64 release first).
 - **Real hardware.** zendiloOS has run only in QEMU machines. Trial
   operation on a real NAS with data one can lose is still to come; on
   arm64 no real board at all (see [arm64](#arm64)).
+- **A real UPS.** The VM test follows NUT's simulated UPS (`dummy-ups`).
+  NUT's drivers for USB and SNMP, the search for UPSs on USB, a UPS that
+  cuts its output after the shutdown and another make of NAS following
+  zendiloOS's UPS have not been tried under zendiloOS yet.
 - **Windows and macOS as clients.** SMB has been tested with `smbclient`
   inside the test VM, and discovery (WS-Discovery, Bonjour) is set up, but
   no Windows or macOS machine has used a share yet.

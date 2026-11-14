@@ -344,6 +344,9 @@ pub(crate) struct Harness {
     /// rsync pretended, not installed at first; drives a test plugs in.
     pub(crate) backup_host: Arc<zendiloos_backup::testing::FakeHost>,
     pub(crate) backup_drives: Arc<zendiloos_backup::testing::FakeDrives>,
+    /// NUT's host and the UPS's answers, pretended.
+    pub(crate) ups_host: Arc<zendiloos_ups::testing::FakeHost>,
+    pub(crate) ups_link: Arc<zendiloos_ups::testing::FakeLink>,
     /// The configuration backup's ports, pretended; its audit and jobs its own.
     pub(crate) recovery: zendiloos_recovery::testing::Fakes,
     /// The network's host, pretended: managed by systemd-networkd unless a
@@ -639,6 +642,17 @@ impl Harness {
                 audit: identity.audit.clone(),
                 clock: identity.clock.clone(),
             });
+        let ups_host = Arc::new(zendiloos_ups::testing::FakeHost::default());
+        let ups_link = Arc::new(zendiloos_ups::testing::FakeLink::default());
+        let ups = zendiloos_ups::application::Ups::new(zendiloos_ups::application::UpsPorts {
+            store: Arc::new(zendiloos_ups::testing::MemoryStore::default()),
+            host: ups_host.clone(),
+            link: ups_link.clone(),
+            jobs: jobs.clone(),
+            notifier: notifier.clone(),
+            audit: identity.audit.clone(),
+            clock: identity.clock.clone(),
+        });
         let (recovery, recovery_fakes) = zendiloos_recovery::testing::recovery();
         recovery_fakes.operators.0.lock().unwrap().clear();
         let network_host = Arc::new(zendiloos_network::testing::FakeConfigurator::default());
@@ -649,6 +663,7 @@ impl Harness {
             vms,
             backup,
             recovery,
+            ups,
             certificates,
             firewall: firewall.clone(),
             containers: docker_test.containers,
@@ -733,6 +748,8 @@ impl Harness {
             vm_host,
             backup_host,
             backup_drives,
+            ups_host,
+            ups_link,
             recovery: recovery_fakes,
             network_host,
             network_source,
@@ -2092,6 +2109,9 @@ fn openapi_documents_every_route() {
             "/api/v1/system/updates/settings",
             "/api/v1/system/web-server",
             "/api/v1/system/web-server/confirm",
+            "/api/v1/ups",
+            "/api/v1/ups/install",
+            "/api/v1/ups/scan",
             "/api/v1/vms",
             "/api/v1/vms/backups",
             "/api/v1/vms/backups/{backup}/delete",

@@ -590,6 +590,7 @@ const de: Messages = {
     locale: 'Uhrzeit & Sprache',
     update: 'Updates',
     configurationBackup: 'Konfigurationssicherung',
+    ups: 'USV',
     accounts: 'Benutzer',
     groups: 'Gruppen',
     fileServices: 'Dateidienste',
@@ -609,6 +610,7 @@ const de: Messages = {
         'Aktualisierung Upgrade Version Kanal Versionshinweise Debian Pakete apt Kernel Neustart automatisch',
       'configuration-backup':
         'Einstellungen sichern Backup exportieren wiederherstellen Passphrase Zeitplan USB',
+      ups: 'USV UPS unterbrechungsfreie Stromversorgung Akku Batterie Stromausfall Notstrom herunterfahren NUT SNMP USB APC Eaton CyberPower',
       'storage-pools':
         'ZFS Pool RAID RAIDZ Spiegel Scrub Datenprüfung Wiederherstellung Resilver Platte ersetzen importieren Volume',
       'storage-disks':
@@ -1722,6 +1724,11 @@ const de: Messages = {
         network_drift: 'Netzwerkdateien außerhalb von zendiloOS geändert',
         pools_not_imported: 'Pools nicht importiert',
         configuration_backup_failed: 'Sicherung der Konfiguration fehlgeschlagen',
+        ups_on_battery: 'Stromausfall: die USV läuft auf Akku',
+        ups_shutdown: 'Stromausfall: das NAS fährt herunter',
+        ups_on_mains: 'Strom ist zurück',
+        ups_unreachable: 'USV antwortet nicht',
+        ups_replace_battery: 'USV verlangt einen neuen Akku',
         certificate_renewed: 'Zertifikat erneuert',
         certificate_renewal_failed: 'Zertifikat nicht erneuert',
         certificate_not_taken: 'Neues Zertifikat nicht übernommen',
@@ -2890,6 +2897,7 @@ const de: Messages = {
       apps_uninstall: 'App entfernen',
       certificates_acme_install: 'ACME-Client installieren',
       network_take_over: 'zendiloOS das Netz verwalten lassen',
+      ups_install: 'Network UPS Tools installieren',
       certificates_issue: 'Zertifikat ausstellen',
       vms_install: 'libvirt und QEMU installieren',
       vms_create: 'Virtuelle Maschine anlegen',
@@ -3978,6 +3986,118 @@ const de: Messages = {
     checkDailyHint:
       'Das NAS benachrichtigt Sie über neue Updates; installiert wird nur auf Ihren Klick.',
   },
+  ups: {
+    description: 'Fährt das NAS rechtzeitig herunter, wenn der Strom ausfällt',
+    help: 'Eine unterbrechungsfreie Stromversorgung (USV) versorgt das NAS bei einem Stromausfall aus ihrem Akku. zendiloOS beobachtet sie: Es meldet, wenn der Strom ausfällt und wenn er zurück ist, und fährt das NAS herunter, bevor der Akku leer ist, damit nichts mitten im Schreiben abbricht.',
+    helpSources:
+      'Die USV hängt per USB am NAS, antwortet im Netzwerk über SNMP oder ist an einem anderen Gerät angeschlossen, das ihren Zustand weitergibt. Dieses NAS kann den Zustand seiner eigenen USV genauso weitergeben, an andere Geräte, die an ihr hängen.',
+    passwordKept: 'Unverändert',
+    install: {
+      title: 'Die Network UPS Tools sind nicht installiert',
+      text: 'zendiloOS beobachtet eine USV mit den Network UPS Tools (NUT) aus Debian. Sie sind klein und in einer Minute installiert.',
+      waiting: 'Eine USV ist schon eingerichtet; sie wird beobachtet, sobald sie installiert sind.',
+      action: 'Installieren',
+      running: 'Wird installiert …',
+      failed: 'Die Installation ist fehlgeschlagen.',
+    },
+    status: {
+      title: 'Zustand',
+      onMains: 'Am Netz',
+      onBattery: 'Auf Akku',
+      lowBattery: 'Akku fast leer',
+      charging: 'Lädt',
+      replaceBattery: 'Akku ersetzen',
+      silent: 'Die USV antwortet nicht.',
+      silentHint:
+        'Nach einer Änderung dauert es einige Sekunden, bis sie es tut. Bleibt sie stumm, prüfen Sie Kabel oder Adresse und den Treiber.',
+      charge: 'Ladestand',
+      runtime: 'Laufzeit',
+      runtimeHint: 'bei der jetzigen Last',
+      load: 'Last',
+      says: 'Die USV meldet:',
+    },
+    source: {
+      label: 'USV',
+      none: 'Keine',
+      usb: 'An diesem NAS, per USB',
+      snmp: 'Im Netzwerk, über SNMP',
+      server: 'An einem anderen Gerät (NUT-Server)',
+      simulated: 'Simuliert, für Tests',
+      hints: {
+        none: 'Ohne USV schaltet ein Stromausfall das NAS aus, wie es gerade ist.',
+        usb: 'Das USB-Kabel der USV steckt an diesem NAS.',
+        snmp: 'Die USV hat eine Netzwerkkarte, die über SNMP antwortet (v1 oder v2c).',
+        server:
+          'Die USV ist an einem anderen Gerät angeschlossen, auf dem die Network UPS Tools laufen, etwa an einem anderen NAS. Dieses NAS folgt ihr über das Netzwerk.',
+        simulated: 'Eine USV, die es nur in NUT gibt, um auszuprobieren, was geschieht.',
+      },
+    },
+    usb: {
+      device: 'Gerät',
+      any: 'Jede USV, die der Treiber findet',
+      detect: 'Erkennen',
+      forget: 'Jede USV',
+      none: 'Keine USV am USB gefunden. Steckt ihr USB-Kabel am NAS? Manche älteren werden nicht gefunden und brauchen ihren Treiber von Hand.',
+      unnamed: 'USV ohne Namen',
+      unsupported: '{driver}: hier nicht einstellbar',
+      deviceHint:
+        'Eine USV, die mit ihren USB-Kennungen benannt ist, bleibt die richtige, wenn eine zweite angesteckt wird.',
+      driver: 'Treiber',
+      driverHint:
+        'usbhid-ups passt zu den meisten heutigen USVs, etwa von APC, Eaton und CyberPower; ältere brauchen einen anderen.',
+    },
+    snmp: {
+      address: 'Adresse',
+      addressHint: 'Der Hostname oder die IPv4-Adresse der Netzwerkkarte der USV.',
+      community: 'Community',
+      version: 'Version',
+    },
+    server: {
+      host: 'Adresse',
+      port: 'Port',
+      name: 'Name der USV',
+      nameHint:
+        'Wie das andere Gerät seine USV nennt: „ups“ bei zendiloOS und einem Synology-NAS, „qnapups“ bei QNAP.',
+      user: 'Konto',
+      password: 'Passwort',
+      accountHint: 'Das Konto, das das andere Gerät für die hat, die seiner USV folgen.',
+    },
+    shutdown: {
+      label: 'Herunterfahren',
+      lowBattery: 'wenn die USV ihren Akku als fast leer meldet',
+      chargeBelow: 'wenn der Ladestand unter {percent} % fällt',
+      afterMinutes: 'nach {minutes} Minuten auf Akku',
+      percent: 'Ladestand in Prozent',
+      minutes: 'Minuten auf Akku',
+      hint: 'Was ein fast leerer Akku ist, entscheidet die USV selbst, meist bei 10 bis 20 Prozent. Ein eigener Ladestand tritt an dessen Stelle; eine Zeit auf Akku kommt hinzu. Ist der Strom rechtzeitig zurück, läuft das NAS weiter.',
+      hintServer:
+        'Was ein fast leerer Akku ist, entscheidet das andere Gerät. Eine Zeit auf Akku kommt hinzu; ein eigener Ladestand braucht die USV an diesem NAS.',
+    },
+    cut: {
+      label: 'Nach dem Herunterfahren',
+      text: 'Die USV ihren Ausgang abschalten lassen',
+      hint: 'Die USV schaltet ihren Ausgang kurz nach dem Herunterfahren des NAS ab und wieder ein, wenn der Strom zurück ist. Ist in der Firmware des NAS eingestellt, dass es startet, sobald Strom anliegt, startet es dann von selbst. Alles andere an der USV verliert ebenfalls den Strom.',
+    },
+    serve: {
+      label: 'Andere Geräte',
+      text: 'Den Zustand der USV weitergeben',
+      hint: 'Andere Geräte, die an dieser USV hängen, etwa ein zweites NAS, folgen ihr über dieses und fahren spätestens mit ihm herunter.',
+      accountHint:
+        'Das Konto, mit dem sich diese Geräte anmelden. Einem Synology-NAS lässt sich keines geben: Es meldet sich als „monuser“ mit dem Passwort „secret“ an.',
+      there: 'Am anderen Gerät eintragen',
+      address: 'Adresse',
+      firewall:
+        'Ist die Firewall an, legen Sie eine Regel an, die diesen Geräten den TCP-Port {port} erlaubt (Systemsteuerung → Sicherheit).',
+    },
+    problems: {
+      address: 'Füllen Sie die Adresse und die Namen aus.',
+      port: 'Ein Port ist eine Zahl von 1 bis 65535.',
+      password: 'Geben Sie das Passwort ein.',
+      account: 'Nennen Sie das Konto.',
+      percent: 'Der Ladestand zum Herunterfahren liegt zwischen 5 und 95 Prozent.',
+      minutes: 'Die Zeit auf Akku liegt zwischen 1 und 720 Minuten.',
+    },
+  },
   notices: {
     certificate_renewed: {
       title: 'Zertifikat für {name} erneuert',
@@ -4055,6 +4175,34 @@ const de: Messages = {
     configuration_backup_failed: {
       title: 'Keine Sicherung der Konfiguration',
       body: '{reason} Systemsteuerung → Konfigurationssicherung zeigt den Plan und den letzten Lauf.',
+    },
+    ups_on_battery: {
+      title: 'Stromausfall: die USV läuft auf Akku',
+      body: 'Kommt der Strom nicht rechtzeitig zurück, fährt zendiloOS herunter, sobald die USV ihren Akku als fast leer meldet.',
+      bodyCharge:
+        'Kommt der Strom nicht rechtzeitig zurück, fährt zendiloOS herunter, sobald der Ladestand unter {percent} % fällt.',
+      bodyMinutes:
+        'Kommt der Strom nicht rechtzeitig zurück, fährt zendiloOS nach {minutes} min auf Akku herunter.',
+      battery: 'Der Akku ist zu {charge} % geladen.',
+      batteryRuntime: 'Der Akku ist zu {charge} % geladen und reicht für etwa {runtime} min.',
+    },
+    ups_shutdown: {
+      title: 'Stromausfall: das NAS fährt herunter',
+      body: 'Der Akku der USV ist fast leer.',
+      bodyTime:
+        'Das NAS lief so lange auf Akku, wie es unter Systemsteuerung → USV eingestellt ist.',
+    },
+    ups_on_mains: {
+      title: 'Strom ist zurück',
+      body: 'Die USV läuft wieder am Netz und lädt ihren Akku.',
+    },
+    ups_unreachable: {
+      title: 'Die USV antwortet nicht',
+      body: 'Ein Stromausfall bliebe unbemerkt. Unter Systemsteuerung → USV steht, wo sie angeschlossen ist; prüfen Sie Kabel oder Netzwerk.',
+    },
+    ups_replace_battery: {
+      title: 'Die USV verlangt einen neuen Akku',
+      body: 'Bis er ersetzt ist, hält die USV einen Stromausfall womöglich nicht mehr durch.',
     },
     snapshot_failed: {
       title: 'Kein Snapshot von {share}',
@@ -4611,6 +4759,10 @@ const de: Messages = {
     iso_denied: 'Ihr Konto kann dieses ISO nicht lesen.',
     backup_not_installed: 'Installieren Sie zuerst das Plugin Sicherung.',
     backup_installed: 'rsync ist bereits installiert.',
+    ups_not_installed: 'Installieren Sie zuerst die Network UPS Tools.',
+    ups_installed: 'Die Network UPS Tools sind bereits installiert.',
+    ups_snmp_missing: 'Der SNMP-Treiber von NUT ist nicht installiert (das Paket nut-snmp).',
+    ups_password_needed: 'Geben Sie das Passwort ein.',
     folder_taken: 'Eine andere Aufgabe sichert in diesen Ordner',
     task_running: 'Die Aufgabe läuft; warten Sie, bis sie fertig ist, oder stoppen Sie sie.',
     task_not_running: 'Die Aufgabe läuft nicht.',

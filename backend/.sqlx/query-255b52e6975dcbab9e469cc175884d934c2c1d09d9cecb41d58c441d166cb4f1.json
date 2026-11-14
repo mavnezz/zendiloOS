@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT settings, local_password FROM ups_settings WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "settings",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ups_settings",
+            "name": "settings"
+          }
+        }
+      },
+      {
+        "name": "local_password",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ups_settings",
+            "name": "local_password"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "255b52e6975dcbab9e469cc175884d934c2c1d09d9cecb41d58c441d166cb4f1"
+}

@@ -11,6 +11,7 @@ mod firewall;
 mod network;
 mod pools;
 mod two_factor;
+mod ups;
 mod vm_backups;
 mod vms;
 mod volumes;
