@@ -174,7 +174,8 @@ impl Packages {
         {
             unseen(update);
         }
-        Ok(Response::Packages { run, update: update.map(Box::new) })
+        let running_kernel = Some(rustix::system::uname().release().to_string_lossy().into_owned());
+        Ok(Response::Packages { run, update: update.map(Box::new), running_kernel })
     }
 
     /// A run as the runner recorded it in `file`, if it did.
@@ -1667,17 +1668,25 @@ mod tests {
     async fn a_run_that_stopped_unseen_is_reported_as_failed() {
         let root = tempfile::tempdir().unwrap();
         let packages = packages(root.path());
-        assert_eq!(packages.state().await.unwrap(), Response::Packages { run: None, update: None });
+        // The kernel that runs is told with the runs: a run's report names
+        // the one that ran then.
+        let running = Some(rustix::system::uname().release().to_string_lossy().into_owned());
+        assert_eq!(
+            packages.state().await.unwrap(),
+            Response::Packages { run: None, update: None, running_kernel: running }
+        );
 
         record(&root.path().join("state"), &run(PackageTask::Update)).unwrap();
         fs::write(root.path().join("active"), "").unwrap();
-        let Response::Packages { run: Some(going), update: Some(update) } = packages.state().await.unwrap()
+        let Response::Packages { run: Some(going), update: Some(update), .. } =
+            packages.state().await.unwrap()
         else {
             panic!()
         };
         assert_eq!((going.state, update.state), (PackageRunState::Running, PackageRunState::Running));
         fs::remove_file(root.path().join("active")).unwrap();
-        let Response::Packages { run: Some(stopped), update: Some(update) } = packages.state().await.unwrap()
+        let Response::Packages { run: Some(stopped), update: Some(update), .. } =
+            packages.state().await.unwrap()
         else {
             panic!()
         };
@@ -1729,7 +1738,8 @@ mod tests {
         docker.id = "aa02".into();
         record(&state, &docker).unwrap();
         fs::write(root.path().join("active"), "").unwrap();
-        let Response::Packages { run: Some(latest), update: Some(kept) } = packages.state().await.unwrap()
+        let Response::Packages { run: Some(latest), update: Some(kept), .. } =
+            packages.state().await.unwrap()
         else {
             panic!()
         };
@@ -1747,7 +1757,8 @@ mod tests {
         cut_off.id = "aa04".into();
         record(&state, &cut_off).unwrap();
         record(&state, &docker).unwrap();
-        let Response::Packages { run: Some(latest), update: Some(kept) } = packages.state().await.unwrap()
+        let Response::Packages { run: Some(latest), update: Some(kept), .. } =
+            packages.state().await.unwrap()
         else {
             panic!()
         };
@@ -1756,7 +1767,8 @@ mod tests {
 
         // A broken record of the update keeps nobody from following a run.
         fs::write(state.join(UPDATE_FILE), "{").unwrap();
-        let Response::Packages { run: Some(latest), update: None } = packages.state().await.unwrap() else {
+        let Response::Packages { run: Some(latest), update: None, .. } = packages.state().await.unwrap()
+        else {
             panic!()
         };
         assert_eq!(latest.id, "aa02");

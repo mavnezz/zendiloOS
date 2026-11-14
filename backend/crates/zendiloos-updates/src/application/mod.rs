@@ -12,7 +12,8 @@ use zendiloos_notify::{Level, NewNotification, Notifier};
 
 use self::ports::{HostError, HostPackages, ReleaseSource, UpdateStore};
 use crate::domain::{
-    Channel, CheckResult, Release, RunState, UpdateRun, UpdateSettings, compare_versions, newest_for,
+    Channel, CheckResult, HostReport, Release, RunState, UpdateRun, UpdateSettings, compare_versions,
+    newest_for,
 };
 
 /// How often [`Updates::tick`] wants to run; a daily check comes after a
@@ -65,6 +66,9 @@ pub struct UpdateOverview {
     /// plugin's installation: they run apt too, but the page would show
     /// their steps as an update's.
     pub run: Option<UpdateRun>,
+    // The check's report and the run's name the kernel that runs now, not
+    // the one that ran when they were read: a restart since started the
+    // kernel it was needed for.
     pub phase: Phase,
 }
 
@@ -148,11 +152,14 @@ impl Updates {
     pub async fn overview(&self, request: &RequestContext) -> Result<UpdateOverview, UpdatesError> {
         let settings = self.ports.store.settings().await?;
         let (latest, update) = self.runs(request).await?;
-        let run = self.shown(latest, update).await?;
+        let mut run = self.shown(latest, update).await?;
         let mut check = self.ports.store.last_check().await?;
         if let Some(check) = &mut check {
             self.forget_installed(check, run.as_ref(), settings.channel);
         }
+        let reports = check.as_mut().and_then(|check| check.host.as_mut());
+        let reports = reports.into_iter().chain(run.as_mut().and_then(|run| run.report.as_mut()));
+        self.now_running(reports, request).await?;
         Ok(UpdateOverview {
             current: self.current.clone(),
             current_notes: self.current_notes.clone(),
@@ -201,10 +208,29 @@ impl Updates {
         {
             self.ports.store.save_last_run(run).await?;
             self.ports.store.save_said("run", &run.id).await?;
-            self.say_finished(run).await;
+            // Told after a restart, it needs none.
+            let mut told = run.clone();
+            self.now_running(told.report.as_mut(), &RequestContext::default()).await?;
+            self.say_finished(&told).await;
             return Ok(run.state == RunState::Failed);
         }
         Ok(false)
+    }
+
+    /// Names the kernel that runs now in reports read before: after a
+    /// restart another may run, the one the restart was needed for. Where
+    /// the NAS does not say, they stay as they were read.
+    async fn now_running<'a>(
+        &self,
+        reports: impl IntoIterator<Item = &'a mut HostReport>,
+        request: &RequestContext,
+    ) -> Result<(), UpdatesError> {
+        if let Some(kernel) = self.ports.host.running_kernel(request).await? {
+            for report in reports {
+                report.running_kernel.clone_from(&kernel);
+            }
+        }
+        Ok(())
     }
 
     /// A release no newer than what runs is no update any more, nor one
@@ -716,6 +742,10 @@ mod tests {
         async fn last_update(&self, context: &RequestContext) -> Result<Option<UpdateRun>, HostError> {
             self.host.last_update(context).await
         }
+
+        async fn running_kernel(&self, context: &RequestContext) -> Result<Option<String>, HostError> {
+            self.host.running_kernel(context).await
+        }
     }
 
     #[tokio::test]
@@ -815,6 +845,37 @@ mod tests {
         let finished: Vec<_> = s.said.all().into_iter().filter(|n| n.code == "updates_installed").collect();
         assert_eq!(finished.len(), 1, "a finished update is said once");
         assert_eq!(finished[0].params["restart"], "true");
+    }
+
+    #[tokio::test]
+    async fn a_restart_into_the_kernel_an_update_brought_needs_no_check_to_be_seen() {
+        let s = setup();
+        let request = RequestContext::default();
+        s.updates.check(None, &request).await.unwrap();
+        s.updates.apply(&alice(), &request).await.unwrap();
+        for _ in 0..100 {
+            if s.updates.overview(&request).await.unwrap().run.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let before = s.updates.overview(&request).await.unwrap();
+        assert!(before.check.unwrap().host.unwrap().restart_needed());
+        assert!(before.run.unwrap().report.unwrap().restart_needed());
+
+        // Restarted before anything was looked for or said again.
+        *s.host.running.lock().unwrap() = "6.12.57+deb13-amd64".into();
+        let after = s.updates.overview(&request).await.unwrap();
+        let host = after.check.unwrap().host.unwrap();
+        assert_eq!(host.running_kernel, "6.12.57+deb13-amd64");
+        assert!(!host.restart_needed());
+        assert!(!after.run.unwrap().report.unwrap().restart_needed(), "the run offers no restart");
+        let kept = s.store.check.lock().unwrap().clone().unwrap().host.unwrap();
+        assert_eq!(kept.running_kernel, "6.12.48+deb13-amd64", "what was read is kept as read");
+
+        s.updates.tick().await.unwrap();
+        let finished: Vec<_> = s.said.all().into_iter().filter(|n| n.code == "updates_installed").collect();
+        assert_eq!(finished[0].params["restart"], "false", "told after the restart");
     }
 
     #[tokio::test]

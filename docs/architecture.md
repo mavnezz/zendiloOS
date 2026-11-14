@@ -2319,7 +2319,11 @@ the newest has none yet; the newest, as none has one; or that GRUB does not
 start the saved entry (its configuration older than the setting:
 `update-grub` writes it anew), could not be told, or is not used. A restart
 is waiting when it starts another kernel than the running one, and the
-administrator starts it. Tested with fixtures of Debian 13's `grub.cfg` in
+administrator starts it. The running kernel is the one the agent names
+with the runs (`uname -r` as it answers), not the one a check's or a run's
+report names: they were read before, and after the restart the page would
+still say the old kernel ran and offer the restart again until the next
+check. Tested with fixtures of Debian 13's `grub.cfg` in
 the agent's tests, and in the second test VM (`scripts/vm-update-test.sh`,
 step 6): a newer kernel installed without its headers, so that DKMS builds
 no ZFS for it, leaves GRUB's default on the kernel it had also once GRUB's

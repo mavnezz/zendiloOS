@@ -46,16 +46,20 @@ impl AgentUpdates {
         }
     }
 
-    /// The latest run, and the last update's.
-    async fn runs(
-        &self,
-        context: &RequestContext,
-    ) -> Result<(Option<PackageRun>, Option<Box<PackageRun>>), HostError> {
+    /// The latest run, the last update's, and the kernel that runs.
+    async fn state(&self, context: &RequestContext) -> Result<State, HostError> {
         match call(self.transport.as_ref(), Request::PackagesState {}, context).await? {
-            Response::Packages { run, update } => Ok((run, update)),
+            Response::Packages { run, update, running_kernel } => Ok(State { run, update, running_kernel }),
             other => Err(unexpected(other).into()),
         }
     }
+}
+
+/// What the agent says of apt's runs.
+struct State {
+    run: Option<PackageRun>,
+    update: Option<Box<PackageRun>>,
+    running_kernel: Option<String>,
 }
 
 fn update_run(run: PackageRun) -> UpdateRun {
@@ -115,7 +119,7 @@ impl HostPackages for AgentUpdates {
         let deadline = tokio::time::Instant::now() + CHECK_TIME;
         loop {
             tokio::time::sleep(POLL).await;
-            match self.runs(context).await?.0 {
+            match self.state(context).await?.run {
                 Some(run) if run.id == id && run.state == PackageRunState::Succeeded => {
                     return run
                         .report
@@ -157,11 +161,15 @@ impl HostPackages for AgentUpdates {
     }
 
     async fn latest(&self, context: &RequestContext) -> Result<Option<UpdateRun>, HostError> {
-        Ok(self.runs(context).await?.0.map(update_run))
+        Ok(self.state(context).await?.run.map(update_run))
     }
 
     async fn last_update(&self, context: &RequestContext) -> Result<Option<UpdateRun>, HostError> {
-        Ok(self.runs(context).await?.1.map(|run| update_run(*run)))
+        Ok(self.state(context).await?.update.map(|run| update_run(*run)))
+    }
+
+    async fn running_kernel(&self, context: &RequestContext) -> Result<Option<String>, HostError> {
+        Ok(self.state(context).await?.running_kernel)
     }
 }
 
@@ -170,6 +178,7 @@ mod tests {
     use zendiloos_sim::SimulatedAgent;
 
     use super::*;
+    use crate::agent::scripted::Scripted;
 
     #[tokio::test]
     async fn a_check_and_an_update_run_through_the_agent() {
@@ -217,5 +226,17 @@ mod tests {
         updates.start(Some(&build), Channel::Development, &context).await.unwrap();
         let run = updates.latest(&context).await.unwrap().unwrap();
         assert_eq!(run.zendiloos.as_deref(), Some("0.3.0+dev.20261109120000.gabc1234"));
+    }
+
+    #[tokio::test]
+    async fn the_kernel_that_runs_is_the_agents_to_say() {
+        let context = RequestContext::default();
+        let updates = AgentUpdates::new(Arc::new(SimulatedAgent::new()));
+        assert_eq!(updates.running_kernel(&context).await.unwrap().as_deref(), Some("6.12.48+deb13-amd64"));
+
+        // An agent from before it said: the reports' kernel stands.
+        let older: Response = serde_json::from_str(r#"{"status":"packages","run":null}"#).unwrap();
+        let updates = AgentUpdates::new(Arc::new(Scripted::answering([older])));
+        assert_eq!(updates.running_kernel(&context).await.unwrap(), None);
     }
 }

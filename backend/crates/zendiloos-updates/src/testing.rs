@@ -59,6 +59,9 @@ pub struct FakeHost {
     pub interrupted: Mutex<bool>,
     /// How often finishing an update was started.
     pub finished: Mutex<usize>,
+    /// The kernel that runs; another once the NAS restarted into the one
+    /// an update brought.
+    pub running: Mutex<String>,
 }
 
 impl Default for FakeHost {
@@ -77,9 +80,13 @@ impl Default for FakeHost {
             channels: Mutex::default(),
             interrupted: Mutex::default(),
             finished: Mutex::default(),
+            running: Mutex::new(KERNEL.into()),
         }
     }
 }
+
+/// The kernel the NAS runs at first.
+const KERNEL: &str = "6.12.48+deb13-amd64";
 
 impl FakeHost {
     /// Records a run as the NAS's runner does: as the latest, and one that
@@ -94,15 +101,11 @@ impl FakeHost {
     fn report(&self) -> HostReport {
         HostReport {
             packages: self.packages.lock().unwrap().clone(),
-            running_kernel: "6.12.48+deb13-amd64".into(),
-            newest_kernel: Some("6.12.48+deb13-amd64".into()),
+            running_kernel: self.running.lock().unwrap().clone(),
+            newest_kernel: Some(KERNEL.into()),
             zfs_ready: true,
             interrupted: *self.interrupted.lock().unwrap(),
-            boot: Some(BootChoice {
-                kernel: Some("6.12.48+deb13-amd64".into()),
-                reason: BootReason::Newest,
-                detail: None,
-            }),
+            boot: Some(BootChoice { kernel: Some(KERNEL.into()), reason: BootReason::Newest, detail: None }),
         }
     }
 }
@@ -187,6 +190,10 @@ impl HostPackages for FakeHost {
 
     async fn last_update(&self, _: &RequestContext) -> Result<Option<UpdateRun>, HostError> {
         Ok(self.update.lock().unwrap().clone())
+    }
+
+    async fn running_kernel(&self, _: &RequestContext) -> Result<Option<String>, HostError> {
+        Ok(Some(self.running.lock().unwrap().clone()))
     }
 }
 

@@ -55,6 +55,11 @@ pub trait HostPackages: Send + Sync {
     /// The last run that updated, as the NAS keeps it apart: the runs
     /// after it (a check, a plugin installed) do not replace it.
     async fn last_update(&self, context: &RequestContext) -> Result<Option<UpdateRun>, HostError>;
+
+    /// The kernel that runs now; None where the NAS does not say. A
+    /// report names the one that ran when it was read: after a restart,
+    /// another may run.
+    async fn running_kernel(&self, context: &RequestContext) -> Result<Option<String>, HostError>;
 }
 
 /// Settings, the last check and what was said already.

@@ -179,6 +179,9 @@ fn ifupdown_digest(text: &str) -> zendiloos_agent_proto::FilesDigest {
         .unwrap_or_else(|_| unreachable!("64 hex digits"))
 }
 
+/// The kernel the simulated system runs.
+const SIM_KERNEL: &str = "6.12.48+deb13-amd64";
+
 /// Docker's packages and the latest run of apt, simulated.
 #[derive(Debug)]
 struct SimPackages {
@@ -273,13 +276,13 @@ impl SimPackages {
         };
         PackageReport {
             upgradable,
-            running_kernel: "6.12.48+deb13-amd64".into(),
-            newest_kernel: Some(if updated { "6.12.57+deb13-amd64" } else { "6.12.48+deb13-amd64" }.into()),
+            running_kernel: SIM_KERNEL.into(),
+            newest_kernel: Some(if updated { "6.12.57+deb13-amd64" } else { SIM_KERNEL }.into()),
             zfs_ready: true,
             interrupted: false,
             // GRUB starts the newest kernel, which has its ZFS module.
             boot: Some(BootKernel {
-                kernel: Some(if updated { "6.12.57+deb13-amd64" } else { "6.12.48+deb13-amd64" }.into()),
+                kernel: Some(if updated { "6.12.57+deb13-amd64" } else { SIM_KERNEL }.into()),
                 reason: BootReason::Newest,
                 detail: None,
             }),
@@ -816,7 +819,8 @@ impl AgentTransport for SimulatedAgent {
                     packages.resolved = true;
                 }
                 let update = packages.last_update().map(Box::new);
-                Response::Packages { run, update }
+                // The simulated system never restarts: its old kernel runs.
+                Response::Packages { run, update, running_kernel: Some(SIM_KERNEL.into()) }
             }
             Request::EnableDocker { .. }
                 if !self.packages.lock().unwrap_or_else(PoisonError::into_inner).docker =>
