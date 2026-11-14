@@ -145,6 +145,10 @@ pub struct HostFacts {
     /// OVMF with Microsoft's keys is there, for Secure Boot; also in
     /// `limits`.
     pub secure_boot: bool,
+    /// virt-firmware is there too: a VM with Secure Boot made now gets
+    /// Microsoft's certificates of 2023 as well as 2011's, for boot loaders
+    /// signed only with the newer ones.
+    pub secure_boot_2023: bool,
     pub limits: HostLimits,
     /// The locations of the VMs' storage the host has, by volume.
     pub locations: Vec<Location>,
@@ -156,6 +160,13 @@ pub struct HostFacts {
 pub const VM_ARCHITECTURES: [&str; 1] = ["amd64"];
 
 impl HostFacts {
+    /// Installed before VMs had a TPM, or before Secure Boot had
+    /// Microsoft's certificates of 2023: installing again brings what is
+    /// missing.
+    pub fn lacks_packages(&self) -> bool {
+        !self.swtpm || !self.secure_boot_2023
+    }
+
     /// zendiloOS offers VMs on the machine's architecture.
     pub fn architecture_supported(&self) -> bool {
         VM_ARCHITECTURES.contains(&self.architecture.as_str())
@@ -700,8 +711,9 @@ impl Vms {
         if !facts.kvm {
             return Err(VmsError::NoKvm);
         }
-        // Installed before VMs had a TPM: the run brings swtpm along.
-        if facts.installed && facts.swtpm {
+        // Installed before VMs had a TPM, or before virt-firmware was
+        // among the packages: the run brings what is missing along.
+        if facts.installed && !facts.lacks_packages() {
             return Err(VmsError::Installed);
         }
         let this = self.clone();

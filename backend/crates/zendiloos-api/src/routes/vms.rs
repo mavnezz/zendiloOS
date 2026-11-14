@@ -98,6 +98,11 @@ pub struct VmHardware {
     pub swtpm: bool,
     /// OVMF with Microsoft's keys enrolled is there, for Secure Boot.
     pub secure_boot: bool,
+    /// virt-firmware is installed too: a VM with Secure Boot made now
+    /// gets Microsoft's certificates of 2023 as well as 2011's, so boot
+    /// loaders signed only with the newer ones start. Missing on a plugin
+    /// installed before; installing again brings it.
+    pub secure_boot_2023: bool,
 }
 
 /// A location of the VMs' storage, or a pool zendiloOS made, by its name
@@ -175,6 +180,7 @@ fn plugin_dto(plugin: vms::VmPlugin) -> VmPlugin {
             iommu: facts.iommu,
             swtpm: facts.swtpm,
             secure_boot: facts.secure_boot,
+            secure_boot_2023: facts.secure_boot_2023,
         },
         installed: facts.installed,
         storage,

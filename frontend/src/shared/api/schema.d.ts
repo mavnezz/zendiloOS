@@ -9931,6 +9931,13 @@ export interface components {
             /** @description OVMF with Microsoft's keys enrolled is there, for Secure Boot. */
             secure_boot: boolean;
             /**
+             * @description virt-firmware is installed too: a VM with Secure Boot made now
+             *     gets Microsoft's certificates of 2023 as well as 2011's, so boot
+             *     loaders signed only with the newer ones start. Missing on a plugin
+             *     installed before; installing again brings it.
+             */
+            secure_boot_2023: boolean;
+            /**
              * @description swtpm is installed: VMs can have a TPM 2.0. Missing on a plugin
              *     installed before; installing again brings it.
              */

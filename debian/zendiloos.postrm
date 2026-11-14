@@ -25,11 +25,18 @@ case "$1" in
             "$tables" -w 10 -t filter -F ZENDILOOS-BRIDGES 2>/dev/null || true
             "$tables" -w 10 -t filter -X ZENDILOOS-BRIDGES 2>/dev/null || true
         done
+        # New VMs with Secure Boot get Debian's UEFI variables again. Those
+        # libvirt made from zendiloOS's template keep them, and the
+        # template stays for their fresh starts until a purge.
+        rm -f /etc/qemu/firmware/30-zendiloos-x86_64-secure-enrolled.json
+        rmdir /etc/qemu/firmware 2>/dev/null || true
         ;;
     purge)
         # Generated at installation; the database in /var/lib/zendiloos is
         # kept, since it holds the administrators' work.
         rm -rf /etc/zendiloos/tls /etc/zendiloos/nginx /etc/zendiloos/firewall /etc/zendiloos/network
+        # The agent's state: the template of the VMs' UEFI variables.
+        rm -rf /var/lib/zendiloos-agent
         # The generators the package masked, if they are still masked as it
         # left them; systemd runs them again from the next reload or boot.
         if [ -f /etc/zendiloos/masked-generators ]; then

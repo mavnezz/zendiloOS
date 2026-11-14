@@ -95,6 +95,7 @@ const MAX_DESCRIPTOR: u64 = 64 * 1024;
 
 pub(crate) mod backups;
 pub(crate) mod devices;
+mod firmware;
 mod snapshots;
 
 /// Where the agent looks at the machine and keeps the domains' XML; other
@@ -109,6 +110,15 @@ pub struct VmPaths {
     /// The firmware QEMU describes, `/usr/share/qemu/firmware`: OVMF with
     /// Microsoft's keys enrolled is there for Secure Boot.
     pub firmware: PathBuf,
+    /// The host's own descriptions of firmware, `/etc/qemu/firmware`, which
+    /// come before Debian's: zendiloOS's OVMF with Microsoft's certificates
+    /// of 2023 too is described there ([`firmware`]).
+    pub own_firmware: PathBuf,
+    /// Where zendiloOS keeps the UEFI variables that description starts a
+    /// VM from: the agent's state directory.
+    pub variables: PathBuf,
+    /// virt-firmware's copies of the certificates it enrols.
+    pub certificates: PathBuf,
     /// libvirt's copies of the VMs' UEFI variables, `<domain>_VARS.fd`.
     pub nvram: PathBuf,
     /// The TPMs' states, `<uuid>/tpm2/` each, as swtpm keeps them.
@@ -147,6 +157,9 @@ impl Default for VmPaths {
             meminfo: PathBuf::from("/proc/meminfo"),
             devices: DevicePaths::default(),
             firmware: PathBuf::from("/usr/share/qemu/firmware"),
+            own_firmware: PathBuf::from("/etc/qemu/firmware"),
+            variables: PathBuf::from("/var/lib/zendiloos-agent/firmware"),
+            certificates: PathBuf::from("/usr/lib/python3/dist-packages/virt/firmware/certs"),
             nvram: PathBuf::from("/var/lib/libvirt/qemu/nvram"),
             swtpm: PathBuf::from("/var/lib/libvirt/swtpm"),
             transient: PathBuf::from("/run/systemd/transient"),
@@ -173,6 +186,9 @@ pub(crate) struct VmTools {
     pub busctl: Program,
     /// Waits for a snapshot's device to show, for a backup.
     pub udevadm: Program,
+    /// Adds Microsoft's certificates of 2023 to the UEFI variables
+    /// (python3-virt-firmware); may be missing.
+    pub virt_fw_vars: Program,
     /// Only looked for: libvirt's daemon and QEMU, which libvirt runs, and
     /// swtpm, which it starts for a TPM.
     pub libvirtd: PathBuf,
@@ -376,6 +392,8 @@ impl Vms {
             installed: self.installed(),
             swtpm: self.tools.swtpm.exists(),
             secure_boot: self.secure_boot_firmware(),
+            secure_boot_2023: self.secure_boot_firmware()
+                && firmware::can_enrol(&self.firmware_places(), &self.tools.virt_fw_vars),
             cores,
             memory_bytes: memory_bytes(&meminfo),
             locations: vms_locations(&self.host),
@@ -396,6 +414,15 @@ impl Vms {
                     && ENROLLED.iter().all(|feature| text.contains(feature))
             },
         )
+    }
+
+    fn firmware_places(&self) -> firmware::FirmwarePlaces<'_> {
+        firmware::FirmwarePlaces {
+            debian: &self.paths.firmware,
+            own: &self.paths.own_firmware,
+            variables: &self.paths.variables,
+            certificates: &self.paths.certificates,
+        }
     }
 
     /// The host's USB and PCI devices, and the IOMMU.
@@ -1174,6 +1201,22 @@ impl Vms {
             uuid,
         };
         let xml = domain_xml(spec, &places);
+        if spec.firmware == VmFirmware::Uefi && spec.secure_boot() {
+            // libvirt picks the firmware as it defines the domain, and
+            // records the template its variables are made from then.
+            match firmware::ensure(&self.firmware_places(), &self.tools.virt_fw_vars).await {
+                Ok(true) => {}
+                Ok(false) => tracing::info!(
+                    vm = spec.id.as_str(),
+                    "vms: without virt-firmware the VM's UEFI variables have Microsoft's certificates of 2011 only"
+                ),
+                Err(error) => tracing::warn!(
+                    %error,
+                    vm = spec.id.as_str(),
+                    "vms: the UEFI variables with Microsoft's certificates of 2023 cannot be made; Debian's are taken"
+                ),
+            }
+        }
         fs::create_dir_all(&self.paths.domains)
             .map_err(|e| OperationError::Write(self.paths.domains.clone(), e))?;
         let file = self.domain_file(&spec.id);

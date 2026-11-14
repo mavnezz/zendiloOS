@@ -236,11 +236,14 @@ const en = {
       tpmOn: 'swtpm is installed: VMs can have a TPM 2.0, as Windows 11 needs.',
       tpmOff: 'swtpm is not installed yet: install the plugin again to bring it.',
       secureBoot: 'Secure Boot',
-      secureBootOn: 'OVMF with Microsoft’s keys is there: VMs can boot with Secure Boot.',
+      secureBootOn:
+        'OVMF with Microsoft’s keys of 2011 and 2023 is there: VMs can boot with Secure Boot.',
+      secureBoot2011:
+        'OVMF with Microsoft’s keys of 2011 only: boot loaders signed only with those of 2023, as newer Windows media are, are refused. Installing the plugin again brings virt-firmware, which adds them for new VMs.',
       secureBootOff: 'OVMF with Microsoft’s keys is not there.',
       reinstall: 'Install again',
       reinstallHint:
-        'The plugin was installed before VMs had a TPM: installing it again brings swtpm.',
+        'The plugin was installed before all of its packages were among it: installing it again brings what is missing.',
       host: 'The NAS',
       hostValue: '{cores} threads · {memory}',
       storage: 'Storage',
@@ -3633,7 +3636,11 @@ const en = {
         'swtpm is not installed: install the Virtual machines plugin again in the App Center, which brings it.',
       secureBoot: 'Secure Boot',
       secureBootHint:
-        'The UEFI firmware boots only what is signed, with Microsoft’s keys enrolled: Windows 11 needs it, and most Linux systems boot with it too.',
+        'The UEFI firmware boots only what is signed, with Microsoft’s keys of 2011 and 2023 enrolled: Windows 11 needs it, and most Linux systems boot with it too.',
+      secureBoot2011:
+        'New VMs get Microsoft’s keys of 2011 only: newer Windows media and boot loaders, signed with those of 2023, are refused. Install the Virtual machines plugin again in the App Center, which brings virt-firmware.',
+      accessDenied:
+        'Stops at “Access Denied” as it starts? The firmware refused the boot loader: it is not signed with a key the VM’s UEFI settings hold, as a repacked ISO is not, or the VM was made before they had Microsoft’s keys of 2023. Switching Secure Boot off and on again starts them afresh with today’s keys; or install with Secure Boot off.',
       secureBootBios: 'Secure Boot needs UEFI.',
       secureBootMissing:
         'OVMF with Microsoft’s keys is not there: install the Virtual machines plugin again in the App Center.',
@@ -3814,6 +3821,8 @@ const en = {
       closed: 'The console was closed.',
       notRunning: 'The VM is not running.',
       reconnect: 'Connect again',
+      accessDenied:
+        'Secure Boot is on: “Access Denied” as it starts means the firmware refused the boot loader. Under TPM and Secure Boot in the VM’s settings is what to do.',
     },
   },
   updates: {

@@ -140,6 +140,7 @@ impl SimVms {
                 installed: self.installed,
                 swtpm: self.installed,
                 secure_boot: self.installed,
+                secure_boot_2023: self.installed,
                 cores: 8,
                 memory_bytes: 16 << 30,
                 locations: self.locations.clone(),

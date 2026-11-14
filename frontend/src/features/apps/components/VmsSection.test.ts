@@ -25,6 +25,7 @@ function plugin(extra: Partial<VmPlugin> = {}): VmPlugin {
       iommu: true,
       swtpm: true,
       secure_boot: true,
+      secure_boot_2023: true,
     },
     installed: false,
     storage: null,
@@ -94,6 +95,7 @@ describe('the Virtual machines plugin', () => {
           iommu: false,
           swtpm: true,
           secure_boot: true,
+          secure_boot_2023: true,
         },
       }),
     )
@@ -120,6 +122,7 @@ describe('the Virtual machines plugin', () => {
           iommu: true,
           swtpm: false,
           secure_boot: true,
+          secure_boot_2023: true,
         },
       }),
     )
@@ -141,6 +144,43 @@ describe('the Virtual machines plugin', () => {
     expect(document.querySelector('[data-testid="vms-reinstall"]')).toBeNull()
   })
 
+  it('says that new VMs get Microsoft’s keys of 2011 only, and installs again for virt-firmware', async () => {
+    on(
+      'GET',
+      '/api/v1/vms/plugin',
+      plugin({
+        installed: true,
+        storage: { pool: 'tank', volume: 1 },
+        hardware: {
+          architecture: 'amd64',
+          architecture_supported: true,
+          kvm: true,
+          cpu_virtualization: 'vmx',
+          iommu: true,
+          swtpm: true,
+          secure_boot: true,
+          secure_boot_2023: false,
+        },
+      }),
+    )
+    on('POST', '/api/v1/vms/plugin/install', {
+      id: 11,
+      kind: 'vms.install',
+      target: 'libvirt',
+      state: 'running',
+      created_at: 0,
+      updated_at: 0,
+      output: [],
+    })
+    await mountApp(VmsSection)
+    expect(text('vms-tpm')).toContain(t('appStore.vms.tpmOn'))
+    expect(text('vms-secure-boot')).toContain(t('appStore.vms.secureBoot2011'))
+    expect(page()).toContain(t('appStore.vms.reinstallHint'))
+    expect(document.querySelectorAll('[data-testid="vms-reinstall"]')).toHaveLength(1)
+    await click(t('appStore.vms.reinstall'))
+    expect(called('POST', '/api/v1/vms/plugin/install')).toHaveLength(1)
+  })
+
   it('refuses to install on an architecture VMs are not offered on, and says why', async () => {
     on(
       'GET',
@@ -154,6 +194,7 @@ describe('the Virtual machines plugin', () => {
           iommu: false,
           swtpm: false,
           secure_boot: false,
+          secure_boot_2023: false,
         },
       }),
     )

@@ -30250,7 +30250,8 @@
           "kvm",
           "iommu",
           "swtpm",
-          "secure_boot"
+          "secure_boot",
+          "secure_boot_2023"
         ],
         "properties": {
           "architecture": {
@@ -30279,6 +30280,10 @@
           "secure_boot": {
             "type": "boolean",
             "description": "OVMF with Microsoft's keys enrolled is there, for Secure Boot."
+          },
+          "secure_boot_2023": {
+            "type": "boolean",
+            "description": "virt-firmware is installed too: a VM with Secure Boot made now\ngets Microsoft's certificates of 2023 as well as 2011's, so boot\nloaders signed only with the newer ones start. Missing on a plugin\ninstalled before; installing again brings it."
           },
           "swtpm": {
             "type": "boolean",

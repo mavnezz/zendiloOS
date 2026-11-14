@@ -44,6 +44,7 @@ impl Agent {
             libvirtd: "/bin/false".into(),
             qemu: "/bin/false".into(),
             swtpm: "/bin/false".into(),
+            virt_fw_vars: "/bin/false".into(),
             systemd_tmpfiles: "/bin/false".into(),
             rsync: "/bin/false".into(),
             ssh: "/bin/false".into(),

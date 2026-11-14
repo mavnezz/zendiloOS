@@ -37,6 +37,17 @@ const supported = computed(() => plugin.value?.hardware.architecture_supported !
 const ready = computed(() => vmsReady(plugin.value))
 /** Installed before VMs had a TPM: installing again brings swtpm. */
 const lacksTpm = computed(() => plugin.value?.installed === true && !plugin.value.hardware.swtpm)
+/**
+ * Installed before virt-firmware was among its packages: new VMs get
+ * Microsoft's keys of 2011 only, until installing again brings it.
+ */
+const only2011 = computed(
+  () =>
+    plugin.value?.installed === true &&
+    plugin.value.hardware.secure_boot &&
+    !plugin.value.hardware.secure_boot_2023,
+)
+const lacks = computed(() => lacksTpm.value || only2011.value)
 
 // Once a run ends, what the plugin is now.
 watch(
@@ -218,14 +229,24 @@ const select =
               }}</Badge>
             </span>
             <span class="text-muted-foreground">{{
-              plugin.hardware.secure_boot
-                ? t('appStore.vms.secureBootOn')
-                : t('appStore.vms.secureBootOff')
+              !plugin.hardware.secure_boot
+                ? t('appStore.vms.secureBootOff')
+                : only2011
+                  ? t('appStore.vms.secureBoot2011')
+                  : t('appStore.vms.secureBootOn')
             }}</span>
           </span>
+          <Button
+            v-if="only2011 && !lacksTpm && !installing"
+            size="sm"
+            variant="outline"
+            data-testid="vms-reinstall"
+            @click="install"
+            >{{ t('appStore.vms.reinstall') }}</Button
+          >
         </li>
       </ul>
-      <p v-if="lacksTpm" class="px-2 text-xs text-muted-foreground">
+      <p v-if="lacks" class="px-2 text-xs text-muted-foreground">
         {{ t('appStore.vms.reinstallHint') }}
       </p>
     </section>

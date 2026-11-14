@@ -25,6 +25,10 @@ const tpmMissing = computed(() => !props.plugin.hardware.swtpm && !props.before?
 const secureMissing = computed(
   () => !props.plugin.hardware.secure_boot && !props.before?.secure_boot,
 )
+/** New UEFI settings get Microsoft's keys of 2011 only: virt-firmware is missing. */
+const only2011 = computed(
+  () => props.plugin.hardware.secure_boot && !props.plugin.hardware.secure_boot_2023,
+)
 /** Another firmware or Secure Boot switched: the UEFI variables start afresh. */
 const fresh = computed(
   () =>
@@ -69,6 +73,18 @@ function set(key: 'tpm' | 'secureBoot', on: boolean): void {
         <p v-else-if="secureMissing" class="text-xs text-amber-700 dark:text-amber-300">
           {{ t('vms.security.secureBootMissing') }}
         </p>
+        <template v-else-if="form.secureBoot">
+          <p
+            v-if="only2011"
+            class="text-xs text-amber-700 dark:text-amber-300"
+            data-testid="vm-secure-boot-2011"
+          >
+            {{ t('vms.security.secureBoot2011') }}
+          </p>
+          <p class="text-xs text-muted-foreground" data-testid="vm-access-denied">
+            {{ t('vms.security.accessDenied') }}
+          </p>
+        </template>
       </div>
       <Switch
         id="vm-secure-boot"

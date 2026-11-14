@@ -28,6 +28,7 @@ const PLUGIN: VmPlugin = {
     iommu: false,
     swtpm: true,
     secure_boot: true,
+    secure_boot_2023: true,
   },
   installed: true,
   storage: { pool: 'tank', volume: 1 },
@@ -287,6 +288,9 @@ describe('the wizard for a new VM', () => {
       'true',
       'true',
     ])
+    // What a refused boot loader looks like, and nothing about keys of 2011 only.
+    expect(page()).toContain(t('vms.security.accessDenied'))
+    expect(document.querySelector('[data-testid="vm-secure-boot-2011"]')).toBeNull()
     radio('data-firmware', 'bios').dispatchEvent(new Event('change'))
     await settle()
     expect(secure.getAttribute('aria-checked')).toBe('false')
@@ -316,6 +320,23 @@ describe('the wizard for a new VM', () => {
       usb: ['046d:c31c'],
       pci: ['0000:01:00.0', '0000:01:00.1'],
     })
+  })
+
+  it('says that a VM gets Microsoft’s keys of 2011 only without virt-firmware', async () => {
+    await mountApp(CreateVmDialog, {
+      props: {
+        open: true,
+        plugin: { ...PLUGIN, hardware: { ...PLUGIN.hardware, secure_boot_2023: false } },
+        taken: [],
+        images: [DEBIAN],
+      },
+    })
+    await type('#vm-name', 'Windows 11')
+    radio('data-os', 'windows').dispatchEvent(new Event('change'))
+    await settle()
+    await next()
+    expect(document.querySelector('#vm-secure-boot')!.getAttribute('aria-checked')).toBe('true')
+    expect(page()).toContain(t('vms.security.secureBoot2011'))
   })
 
   it('says how to switch the IOMMU on where it is off', async () => {

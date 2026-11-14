@@ -1613,6 +1613,11 @@ pub enum Response {
         /// QEMU describes: VMs can boot with Secure Boot.
         #[serde(default)]
         secure_boot: bool,
+        /// virt-firmware is installed too: a VM with Secure Boot defined
+        /// now gets Microsoft's certificates of 2023 as well as 2011's,
+        /// for boot loaders signed only with the newer ones.
+        #[serde(default)]
+        secure_boot_2023: bool,
         /// The machine's CPUs (threads) and memory.
         cores: u32,
         memory_bytes: u64,

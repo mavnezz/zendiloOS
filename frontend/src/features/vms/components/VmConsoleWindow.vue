@@ -20,6 +20,13 @@ const vm = computed(() => vms.value?.find((candidate) => candidate.id === sectio
     <template v-if="vm">
       <p class="truncate border-b px-3 py-1.5 text-sm font-medium">{{ vm.name }}</p>
       <VmConsole v-if="vm.state !== 'shut_off'" :key="vm.id" :vm="vm.id" class="min-h-0 flex-1" />
+      <p
+        v-if="vm.state !== 'shut_off' && vm.secure_boot"
+        class="border-t px-3 py-1.5 text-xs text-muted-foreground"
+        data-testid="vm-console-access-denied"
+      >
+        {{ t('vms.consoleWindow.accessDenied') }}
+      </p>
       <p v-else class="grid flex-1 place-content-center text-sm text-muted-foreground">
         {{ t('vms.consoleWindow.notRunning') }}
       </p>

@@ -173,6 +173,7 @@ impl Operations {
                     systemd_run: Program::new(&tools.systemd_run)?,
                     busctl: Program::new(&tools.busctl)?,
                     udevadm: Program::new(&tools.udevadm)?,
+                    virt_fw_vars: Program::new(&tools.virt_fw_vars)?,
                     libvirtd: tools.libvirtd.clone(),
                     qemu: tools.qemu.clone(),
                     swtpm: tools.swtpm.clone(),

@@ -338,6 +338,7 @@ impl Default for FakeVmHost {
                 installed: false,
                 swtpm: true,
                 secure_boot: true,
+                secure_boot_2023: true,
                 limits: HostLimits {
                     cores: 2,
                     memory_bytes: 2 << 30,

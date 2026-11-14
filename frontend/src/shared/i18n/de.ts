@@ -246,11 +246,14 @@ const de: Messages = {
       tpmOff:
         'swtpm ist noch nicht installiert: Installieren Sie das Plugin erneut, das bringt es mit.',
       secureBoot: 'Secure Boot',
-      secureBootOn: 'OVMF mit Microsofts Schlüsseln ist da: VMs können mit Secure Boot starten.',
+      secureBootOn:
+        'OVMF mit Microsofts Schlüsseln von 2011 und 2023 ist da: VMs können mit Secure Boot starten.',
+      secureBoot2011:
+        'OVMF nur mit Microsofts Schlüsseln von 2011: Bootloader, die nur mit denen von 2023 signiert sind, wie neuere Windows-Medien, werden abgewiesen. Eine erneute Installation des Plugins bringt virt-firmware mit, das sie für neue VMs ergänzt.',
       secureBootOff: 'OVMF mit Microsofts Schlüsseln fehlt.',
       reinstall: 'Erneut installieren',
       reinstallHint:
-        'Das Plugin wurde installiert, bevor VMs ein TPM hatten: Eine erneute Installation bringt swtpm mit.',
+        'Das Plugin wurde installiert, bevor alle seine Pakete dazugehörten: Eine erneute Installation bringt mit, was fehlt.',
       host: 'Das NAS',
       hostValue: '{cores} Threads · {memory}',
       storage: 'Speicher',
@@ -3701,7 +3704,11 @@ const de: Messages = {
         'swtpm ist nicht installiert: Installieren Sie das Plugin Virtuelle Maschinen im App Center erneut, das bringt es mit.',
       secureBoot: 'Secure Boot',
       secureBootHint:
-        'Die UEFI-Firmware startet nur Signiertes, mit Microsofts Schlüsseln: Windows 11 braucht es, und die meisten Linux-Systeme starten damit auch.',
+        'Die UEFI-Firmware startet nur Signiertes, mit Microsofts Schlüsseln von 2011 und 2023: Windows 11 braucht es, und die meisten Linux-Systeme starten damit auch.',
+      secureBoot2011:
+        'Neue VMs bekommen nur Microsofts Schlüssel von 2011: Neuere Windows-Medien und Bootloader, mit denen von 2023 signiert, werden abgewiesen. Installieren Sie das Plugin Virtuelle Maschinen im App Center erneut, das bringt virt-firmware mit.',
+      accessDenied:
+        'Bleibt sie beim Start mit „Access Denied“ stehen? Die Firmware hat den Bootloader abgewiesen: Er ist mit keinem Schlüssel signiert, den die UEFI-Einstellungen der VM kennen, so wie ein umgepacktes ISO, oder die VM entstand, bevor sie Microsofts Schlüssel von 2023 bekamen. Secure Boot aus- und wieder einschalten lässt sie mit den heutigen Schlüsseln neu beginnen; oder installieren Sie mit Secure Boot aus.',
       secureBootBios: 'Secure Boot braucht UEFI.',
       secureBootMissing:
         'OVMF mit Microsofts Schlüsseln fehlt: Installieren Sie das Plugin Virtuelle Maschinen im App Center erneut.',
@@ -3890,6 +3897,8 @@ const de: Messages = {
       closed: 'Die Konsole wurde geschlossen.',
       notRunning: 'Die VM läuft nicht.',
       reconnect: 'Neu verbinden',
+      accessDenied:
+        'Secure Boot ist an: „Access Denied“ beim Start heißt, dass die Firmware den Bootloader abgewiesen hat. Was zu tun ist, steht unter TPM und Secure Boot in den Einstellungen der VM.',
     },
   },
   updates: {
