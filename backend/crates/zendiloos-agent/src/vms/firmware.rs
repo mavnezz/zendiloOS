@@ -306,7 +306,7 @@ done
         let log = fs::read_to_string(root.path().join("calls.log")).unwrap();
         assert!(
             log.contains(&format!("--add-kek {MICROSOFT} {}", certificates.join(KEK_2023).display())),
-            "{log}"
+            "the KEK of 2023 is added with Microsoft as its owner"
         );
         let described: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(own.join(DESCRIPTION)).unwrap()).unwrap();

@@ -669,7 +669,7 @@ async fn with_virt_firmware_a_vm_with_secure_boot_is_defined_with_microsofts_cer
     let calls = host.calls();
     let made = calls.iter().position(|call| call.starts_with("virt-fw-vars --input")).expect("made");
     let defined = calls.iter().position(|call| call.contains(" define ")).expect("defined");
-    assert!(made < defined, "libvirt picks the firmware as it defines the domain: {calls:?}");
+    assert!(made < defined, "libvirt picks the firmware as it defines the domain");
     let ours: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(host.path("etc-firmware/30-zendiloos-x86_64-secure-enrolled.json")).unwrap(),
     )
