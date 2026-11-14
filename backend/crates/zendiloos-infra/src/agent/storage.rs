@@ -411,6 +411,54 @@ mod tests {
 
     use super::*;
 
+    /// The storage context lists as disks what the agent takes as one: the
+    /// two rules are written twice, as the context does not know the
+    /// agent's protocol, and are held together here.
+    #[test]
+    fn a_disk_for_the_context_is_one_for_the_agent() {
+        let names = [
+            "sda",
+            "sdz",
+            "sdaa",
+            "sdabcd",
+            "sdabcde",
+            "vda",
+            "xvdb",
+            "hdc",
+            "nvme0n1",
+            "nvme12n3",
+            "nvme0n1p1",
+            "nvme0",
+            "nvme0n",
+            "mmcblk0",
+            "mmcblk0p1",
+            "mmcblk",
+            "zd0",
+            "zd16",
+            "zd0p1",
+            "zram0",
+            "nbd0",
+            "md0",
+            "dm-0",
+            "loop0",
+            "sr0",
+            "fd0",
+            "sda1",
+            "sd",
+            "",
+            "../sda",
+            "sda ",
+            "SDA",
+        ];
+        for name in names {
+            assert_eq!(
+                zendiloos_storage::domain::is_disk_name(name),
+                DiskName::parse(name).is_ok(),
+                "{name:?}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn reads_the_simulated_nas() {
         let storage = AgentStorage::new(Arc::new(SimulatedAgent::new()));

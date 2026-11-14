@@ -100,14 +100,38 @@ pub fn is_system_mount(mount_point: &str) -> bool {
 /// disk for the NAS.
 const MIN_DISK_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Whether `name` is the kernel's name of a whole disk of the machine:
+/// `sda`, `vdb`, `xvdc`, `hda`, `nvme0n1`, `mmcblk0`. These are the names
+/// the agent takes (its `DiskName`); nothing can be done with any other.
+/// The kernel calls more things a disk: a ZFS volume (`zd0`, the disk of a
+/// virtual machine), compressed memory (`zram0`), a network block device
+/// (`nbd0`).
+pub fn is_disk_name(name: &str) -> bool {
+    let letters = |s: &str| !s.is_empty() && s.len() <= 4 && s.bytes().all(|b| b.is_ascii_lowercase());
+    let digits = |s: &str| !s.is_empty() && s.len() <= 4 && s.bytes().all(|b| b.is_ascii_digit());
+    if let Some(rest) = name.strip_prefix("nvme") {
+        rest.split_once('n').is_some_and(|(controller, namespace)| digits(controller) && digits(namespace))
+    } else if let Some(rest) = name.strip_prefix("mmcblk") {
+        digits(rest)
+    } else {
+        ["sd", "vd", "xvd", "hd"].iter().any(|prefix| name.strip_prefix(prefix).is_some_and(letters))
+    }
+}
+
 /// The disks among the host's block devices, each classified by usage;
 /// `pools` must have their disks resolved ([`super::resolve_pool_disks`]).
 /// Loop devices, optical drives, empty card readers and floppy drives are
-/// not disks.
+/// not disks, nor is what only the kernel calls one ([`is_disk_name`]): a
+/// virtual machine's ZFS volume listed here would be offered for a new
+/// pool as an unused disk.
 pub fn disks(devices: &[BlockDevice], pools: &[Pool]) -> Vec<Disk> {
     devices
         .iter()
-        .filter(|device| device.kind == DeviceKind::Disk && device.size_bytes >= MIN_DISK_BYTES)
+        .filter(|device| {
+            device.kind == DeviceKind::Disk
+                && device.size_bytes >= MIN_DISK_BYTES
+                && is_disk_name(&device.name)
+        })
         .map(|device| Disk {
             name: device.name.clone(),
             model: device.model.clone(),
@@ -319,6 +343,45 @@ mod tests {
         ];
         let names: Vec<_> = disks(&devices, &[]).into_iter().map(|d| d.name).collect();
         assert_eq!(names, ["sdh"]);
+    }
+
+    #[test]
+    fn what_only_the_kernel_calls_a_disk_is_none() {
+        // A virtual machine's ZFS volume, as lsblk shows it: a disk
+        // without a transport, with the VM's partitions on it.
+        let zvol = disk("zd0", vec![partition("zd0p1", Some("ext4"), &[])]);
+        let devices = [
+            disk("sda", vec![]),
+            zvol,
+            disk("zd16", vec![]),
+            disk("zram0", vec![]),
+            disk("nbd0", vec![]),
+            disk("nvme0n1", vec![]),
+            disk("mmcblk0", vec![]),
+            disk("vdb", vec![]),
+        ];
+        let names: Vec<_> = disks(&devices, &[]).into_iter().map(|d| d.name).collect();
+        assert_eq!(names, ["sda", "nvme0n1", "mmcblk0", "vdb"]);
+        for name in ["sda", "sdaa", "vdb", "xvdc", "hda", "nvme0n1", "nvme10n2", "mmcblk0"] {
+            assert!(is_disk_name(name), "{name}");
+        }
+        // Partitions, other kinds of device and what is no name at all.
+        for name in [
+            "sda1",
+            "nvme0n1p1",
+            "nvme0",
+            "mmcblk0p1",
+            "zd0",
+            "zd0p1",
+            "md0",
+            "dm-0",
+            "loop0",
+            "sr0",
+            "",
+            "sd",
+        ] {
+            assert!(!is_disk_name(name), "{name}");
+        }
     }
 
     #[test]
