@@ -14,7 +14,7 @@ use zendiloos_sharing::domain::{
 };
 use zendiloos_storage::application::ports::ZfsSource;
 
-use super::{WHAT, agent_error, call_raw, call_raw_reporting, unexpected};
+use super::{WHAT, agent_error, call_raw, call_raw_reporting, refusal, unexpected};
 use crate::agent::AgentStorage;
 
 /// [`ShareHost`] through the agents: datasets and server configuration
@@ -37,7 +37,7 @@ async fn change(
 ) -> Result<(), HostError> {
     match call_raw(transport, request, context).await? {
         Response::Done => Ok(()),
-        Response::Error { code: ErrorCode::Forbidden, message } => Err(HostError::Refused(message)),
+        Response::Error { code: ErrorCode::Forbidden, message } => Err(HostError::Refused(refusal(&message))),
         Response::Error { code: ErrorCode::Conflict, .. } => Err(HostError::Conflict),
         Response::Error { code, message } => Err(agent_error(code, &message).into()),
         other => Err(unexpected(other).into()),
@@ -428,7 +428,9 @@ impl ShareHost for AgentSharing {
         let report = Lines(lines);
         match call_raw_reporting(self.files.as_ref(), request, &report, context).await? {
             Response::Done => Ok(()),
-            Response::Error { code: ErrorCode::Forbidden, message } => Err(HostError::Refused(message)),
+            Response::Error { code: ErrorCode::Forbidden, message } => {
+                Err(HostError::Refused(refusal(&message)))
+            }
             Response::Error { code, message } => Err(agent_error(code, &message).into()),
             other => Err(unexpected(other).into()),
         }

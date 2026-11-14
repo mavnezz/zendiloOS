@@ -14,7 +14,7 @@ use zendiloos_network::domain::{
     LinkFile, NetworkdFile, Subject,
 };
 
-use super::{WHAT, agent_error, call, call_raw, unexpected};
+use super::{WHAT, agent_error, call, call_raw, refusal, unexpected};
 
 /// How often apt's run is looked at while systemd-resolved is installed,
 /// and for how long at most.
@@ -42,7 +42,7 @@ impl AgentNetwork {
 /// The agent's no, in its words.
 fn refused(response: Response) -> ConfigureError {
     match response {
-        Response::Error { code: ErrorCode::Forbidden, message } => ConfigureError::Refused(message),
+        Response::Error { code: ErrorCode::Forbidden, message } => ConfigureError::Refused(refusal(&message)),
         Response::Error { code: ErrorCode::Conflict, .. } => ConfigureError::Pending,
         Response::Error { code, message } => agent_error(code, &message).into(),
         other => unexpected(other).into(),

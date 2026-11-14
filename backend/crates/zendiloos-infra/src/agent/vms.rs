@@ -35,7 +35,7 @@ use zendiloos_vms::domain::{
     UsbDevice, Vm, VmAction, VmBackup, VmCounters, VmSnapshot,
 };
 
-use super::{AgentStorage, WHAT, agent_error, call, call_raw, call_raw_reporting, unexpected};
+use super::{AgentStorage, WHAT, agent_error, call, call_raw, call_raw_reporting, refusal, unexpected};
 
 const PACKAGES_POLL: Duration = Duration::from_secs(2);
 const PACKAGES_TIMEOUT: Duration = Duration::from_secs(3600);
@@ -197,7 +197,7 @@ fn host_answer(response: Response) -> Result<(), HostError> {
     match response {
         Response::Done => Ok(()),
         Response::Error { code: ErrorCode::Forbidden | ErrorCode::Conflict, message } => {
-            Err(HostError::Refused(message.trim_start_matches("refused: ").to_owned()))
+            Err(HostError::Refused(refusal(&message)))
         }
         Response::Error { code: ErrorCode::Failed, message } => Err(HostError::Failed(message)),
         Response::Error { code, message } => Err(agent_error(code, &message).into()),
