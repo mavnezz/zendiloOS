@@ -211,8 +211,16 @@ mod tests {
         let scripted = Arc::new(Scripted::answering([
             Response::PackagesStarted { id: "ab01".into() },
             // Still running, then done.
-            Response::Packages { run: Some(run(PackageRunState::Running)), update: None },
-            Response::Packages { run: Some(run(PackageRunState::Succeeded)), update: None },
+            Response::Packages {
+                run: Some(run(PackageRunState::Running)),
+                update: None,
+                running_kernel: None,
+            },
+            Response::Packages {
+                run: Some(run(PackageRunState::Succeeded)),
+                update: None,
+                running_kernel: None,
+            },
         ]));
         AgentUps::new(scripted.clone()).install(&context()).await.unwrap();
         assert!(matches!(scripted.asked()[0], Request::StartPackages { task: PackageTask::InstallUps, .. }));
@@ -220,7 +228,11 @@ mod tests {
 
         let failing = Arc::new(Scripted::answering([
             Response::PackagesStarted { id: "ab01".into() },
-            Response::Packages { run: Some(run(PackageRunState::Failed)), update: None },
+            Response::Packages {
+                run: Some(run(PackageRunState::Failed)),
+                update: None,
+                running_kernel: None,
+            },
         ]));
         let failed = AgentUps::new(failing).install(&context()).await;
         assert!(matches!(&failed, Err(HostError::Failed(why)) if why == "apt said no"), "{failed:?}");

@@ -156,7 +156,7 @@ async fn the_plugin_installs_through_apt_and_keys_are_asked_for() {
     };
     let scripted = Arc::new(Scripted::answering([
         Response::PackagesStarted { id: "ab01".into() },
-        Response::Packages { run: Some(run(PackageRunState::Succeeded)), update: None },
+        Response::Packages { run: Some(run(PackageRunState::Succeeded)), update: None, running_kernel: None },
     ]));
     let host = AgentBackup::new(scripted.clone());
     host.install(&context()).await.unwrap();

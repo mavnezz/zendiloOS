@@ -1543,6 +1543,11 @@ pub enum Response {
         /// it. The same as `run` until another came.
         #[serde(default)]
         update: Option<Box<PackageRun>>,
+        /// The kernel that runs now (`uname -r`). A run's report names the
+        /// one that ran when the run read it, which a restart since may
+        /// have changed. None from an agent before it said.
+        #[serde(default)]
+        running_kernel: Option<String>,
     },
     Apps {
         /// `docker compose ls --all --format json`: every Compose project,
