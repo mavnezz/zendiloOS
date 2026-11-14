@@ -3738,8 +3738,9 @@ beside it as `<name>.before-zendiloos`. Debian's
 whose section changed is started anew by the agent, not left to the
 enumerator: that of NUT 2.8.1 settles for the driver's "live reload",
 which reports that it sufficed and leaves `ignorelb` as it was, so that a
-charge to shut down at would not be in force until the next restart (the
-VM test found it: the VM stayed up below the charge set). Neither the
+charge to shut down at would not be in force until the next restart
+(found with the simulated UPS: at 30 % with 40 % set, no low battery was
+reported). Neither the
 enumerator nor the driver is waited for (`--no-block`): the enumerator
 can wait a minute and a half for a driver, and a driver whose UPS is not
 plugged in, or does not answer on the network, takes that long to give
