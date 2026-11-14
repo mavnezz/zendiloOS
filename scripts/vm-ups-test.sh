@@ -17,19 +17,21 @@
 #      account signs in, a wrong password does not; the password is kept
 #      when left out and never shown
 #   6. a charge to shut down at: on battery above it the NAS stays up,
-#      below it the VM powers off; started again, NUT follows the UPS by
-#      itself
-#   7. another device's UPS: no driver and no server here, its state read
+#      below it the VM powers off, the shutdown told with its reason;
+#      started again, NUT follows the UPS by itself
+#   7. minutes on battery: a power cut that ends in time shuts nothing
+#      down, one that lasts powers the VM off
+#   8. another device's UPS: no driver and no server here, its state read
 #      from there; after the minutes on battery the VM powers off
-#   8. started again without the other device, the UPS is told as not
+#   9. started again without the other device, the UPS is told as not
 #      answering
-#   9. no UPS: NUT is switched off
+#  10. no UPS: NUT is switched off
 #
 # Needs the VM running with the package installed and set up; account and
 # password as for vm-storage-test.sh. Runs in the second VM by default (the
-# first holds a LAN test). The VM powers off twice and is started again
-# (scripts/vm.sh start); a VM that holds a guest which ignores its shutdown
-# takes minutes longer each time.
+# first holds a LAN test). The VM powers off three times and is started
+# again (scripts/vm.sh start); a VM that holds a guest which ignores its
+# shutdown takes minutes longer each time.
 set -euo pipefail
 
 export ZENDILOOS_VM=${ZENDILOOS_VM:-2}
@@ -83,9 +85,24 @@ ups() { call GET /ups; }
 put() {
     [[ $(status_of PUT /ups "$1") == 200 ]] || fail "not set ($1): $(cat "$work/answer")"
 }
+# Sets a UPS of the NAS's own and waits until its driver answers again.
+# Debian's enumerator starts the driver anew when its section changed, a
+# moment after the API answered: what is played before that is lost.
+put_own() {
+    put "$1"
+    sleep 2
+    wait_for "NUT's units to settle" "[[ -z \$(vm 'systemctl list-jobs --no-legend' | grep nut-) ]]" 120
+    wait_for "the driver" "[[ \$(vm 'systemctl is-active nut-driver@ups') == active ]]" 60
+    wait_for "the UPS to answer" "ups | jq -e '.reading.status == \"OL\"'" 60
+}
 # How many notifications of a kind there are.
 told() {
     call GET '/notifications?limit=100' | jq --arg code "$1" '[.notifications[] | select(.code == $code)] | length'
+}
+# What the newest notification of a kind says in one of its parameters.
+newest() {
+    call GET '/notifications?limit=100' \
+        | jq -r --arg code "$1" --arg key "$2" '[.notifications[] | select(.code == $code)] | max_by(.id) | .params[$key]'
 }
 # When a unit last started, as systemd counts.
 started() { vm "systemctl show -p ActiveEnterTimestampMonotonic --value $1"; }
@@ -210,8 +227,7 @@ done
 vm "sudo grep -q '^MODE=none' /etc/nut/nut.conf" || fail "a refused UPS reached nut.conf"
 
 say "3. A UPS on this NAS"
-put "{\"source\":{\"kind\":\"simulated\"},$low}"
-wait_for "the UPS to answer" "ups | jq -e '.reading.status == \"OL\"'" 60
+put_own "{\"source\":{\"kind\":\"simulated\"},$low}"
 ups | jq -e '.reading | (.on_battery | not) and (.low_battery | not) and .charge_percent == 100
     and .runtime_seconds == 1800 and .load_percent == 20 and .model == "Simulated UPS"' >/dev/null \
     || fail "the reading: $(ups | jq -c .reading)"
@@ -283,14 +299,15 @@ vm "sudo grep -q 'START-TIMER onbatt 1800' /etc/nut/upssched.conf" || fail "no t
     || fail "an account without a password was taken: $(cat "$work/answer")"
 
 say "6. Below the charge set, the NAS shuts down"
-put '{"source":{"kind":"simulated"},"shutdown":{"kind":"charge_below","percent":40},"cut_power":true,"serve":{"user":"monuser"}}'
+put_own '{"source":{"kind":"simulated"},"shutdown":{"kind":"charge_below","percent":40},"cut_power":true,"serve":{"user":"monuser"}}'
 vm "sudo grep -q 'override.battery.charge.low = 40' /etc/nut/ups.conf && sudo grep -q ignorelb /etc/nut/ups.conf" \
     || fail "ups.conf: $(vm 'sudo cat /etc/nut/ups.conf')"
 vm "sudo grep -q '^POWERDOWNFLAG /etc/killpower' /etc/nut/upsmon.conf" || fail "no POWERDOWNFLAG in upsmon.conf"
-wait_for "the UPS to answer again" "ups | jq -e '.reading.status == \"OL\"'" 60
 cut_before=$(told ups_on_battery)
 play 'battery.charge=60' 'ups.status=OB DISCHRG'
 wait_for "the power cut to be told" "(( \$(told ups_on_battery) > $cut_before ))" 60
+[[ $(newest ups_on_battery when) == charge_below && $(newest ups_on_battery percent) == 40
+    && $(newest ups_on_battery charge) == 60 ]] || fail "the power cut was told without its rule"
 sleep 20
 ups | jq -e '.reading.on_battery and (.reading.low_battery | not) and .reading.charge_percent == 60' >/dev/null \
     || fail "above the charge, the reading says: $(ups | jq -c .reading)"
@@ -299,6 +316,7 @@ down_before=$(told ups_shutdown)
 play 'battery.charge=30' 'ups.status=OB DISCHRG'
 off_and_on_again "the charge fell below 40 %"
 (( $(told ups_shutdown) > down_before )) || fail "the shutdown was not told before it came"
+[[ $(newest ups_shutdown why) == battery ]] || fail "the shutdown was told as $(newest ups_shutdown why)"
 for unit in nut-driver@ups nut-server nut-monitor; do
     wait_for "$unit after the start" "[[ \$(vm 'systemctl is-active $unit') == active ]]" 60
 done
@@ -307,7 +325,30 @@ wait_for "the UPS to answer after the start" "ups | jq -e '.reading.status == \"
 ups | jq -e '.settings | .cut_power and .shutdown == {"kind": "charge_below", "percent": 40}' >/dev/null \
     || fail "the settings after the start: $(ups | jq -c .settings)"
 
-say "7. The UPS of another device"
+say "7. After its minutes on battery, the NAS shuts down"
+put_own '{"source":{"kind":"simulated"},"shutdown":{"kind":"after_minutes","minutes":1}}'
+vm "sudo grep -q 'START-TIMER onbatt 60' /etc/nut/upssched.conf" || fail "no timer of a minute in upssched.conf"
+# A power cut that ends in time: the timer is dropped, the NAS stays up.
+back_before=$(told ups_on_mains)
+play 'ups.status=OB DISCHRG'
+sleep 20
+play 'ups.status=OL CHRG'
+wait_for "the power's return to be told" "(( \$(told ups_on_mains) > $back_before ))" 60
+sleep 60
+powered && [[ $(vm "systemctl is-active nut-monitor") == active ]] \
+    || fail "shut down although the power was back in time"
+# One that lasts.
+down_before=$(told ups_shutdown)
+began=$(date +%s)
+play 'ups.status=OB DISCHRG'
+off_and_on_again "a minute on battery"
+(( $(date +%s) - began >= 60 )) || fail "shut down before the minute was over"
+(( $(told ups_shutdown) > down_before )) || fail "the shutdown was not told before it came"
+[[ $(newest ups_shutdown why) == time ]] || fail "the shutdown was told as $(newest ups_shutdown why)"
+[[ $(newest ups_on_battery when) == after_minutes && $(newest ups_on_battery minutes) == 1 ]] \
+    || fail "the power cut was told without its rule"
+
+say "8. The UPS of another device"
 other_device
 wait_for "the other device's server" "[[ \$(vm 'upsc ups@localhost:$other_port ups.status 2>/dev/null') == OL ]]" 30
 put "{\"source\":{\"kind\":\"server\",\"host\":\"127.0.0.1\",\"port\":$other_port,\"ups\":\"ups\",\"user\":\"follower\",\"password\":\"follows\"},\"shutdown\":{\"kind\":\"after_minutes\",\"minutes\":1}}"
@@ -330,14 +371,14 @@ off_and_on_again "a minute on battery"
 took=$(( $(date +%s) - began ))
 say "   (the VM was back $took seconds after the power cut)"
 
-say "8. A UPS that no longer answers is told"
+say "9. A UPS that no longer answers is told"
 silent_before=$(told ups_unreachable)
 # The other device is gone with the restart: nothing answers on its port.
 ups | jq -e '.settings.source.kind == "server" and .reading == null' >/dev/null \
     || fail "without the other device, the page says: $(ups | jq -c '{source: .settings.source, reading}')"
 wait_for "the silence to be told" "(( \$(told ups_unreachable) > $silent_before ))" 120
 
-say "9. No UPS: NUT is switched off"
+say "10. No UPS: NUT is switched off"
 put "{\"source\":null,$low}"
 for unit in nut-server nut-monitor nut-driver@ups; do
     [[ $(vm "systemctl is-active $unit" || true) != active ]] || fail "$unit still runs"

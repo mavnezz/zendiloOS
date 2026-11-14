@@ -45,7 +45,7 @@ impl Host {
             systemctl: script(
                 "systemctl",
                 &format!(
-                    "case \"$*\" in\n  'show --property=NeedDaemonReload'*) echo no;;\n  'restart --no-block nut-driver@ups.service') exit 1;;\n  \
+                    "case \"$*\" in\n  'show --property=NeedDaemonReload'*) echo no;;\n  'start --no-block nut-driver@ups.service') exit 1;;\n  \
                      is-active*) [ ! -e {} ] || exit 3;;\nesac",
                     root.join("stopped").display()
                 ),
@@ -172,14 +172,14 @@ async fn a_usb_ups_gets_its_files_driver_server_and_monitor() {
     assert_eq!(host.mode("zendiloos-timer"), 0o750);
     assert_eq!(host.file("zendiloos-simulated.dev"), None, "no simulated UPS");
 
-    // The driver's unit fails (nothing is plugged in); the rest goes on.
+    // The driver's unit cannot be started (nothing is plugged in); the rest goes on.
     assert_eq!(
         host.calls(),
         [
             "systemctl restart --no-block nut-driver-enumerator.service",
             "systemctl enable --no-reload nut-server.service nut-monitor.service",
             "systemctl show --property=NeedDaemonReload --value nut-server.service",
-            "systemctl restart --no-block nut-driver@ups.service",
+            "systemctl start --no-block nut-driver@ups.service",
             "systemctl restart nut-server.service",
             "systemctl restart nut-monitor.service",
         ]

@@ -335,19 +335,21 @@ impl Ups {
         if !changed && self.all_active(if local { &[SERVER, MONITOR] } else { &[MONITOR] }).await {
             return Ok(Response::Done);
         }
-        // The driver's unit follows `ups.conf`: made for a UPS on this
-        // machine, removed for another device's. Neither Debian's
-        // enumerator, which restarts a driver whose section changed and
-        // waits a minute and a half for it, nor the driver is waited for:
-        // a UPS that is not plugged in, or does not answer on the network,
-        // keeps its driver from starting for as long as it tries, and
-        // systemd goes on trying. The settings hold all the same, and the
-        // server takes the driver once it is there.
+        // The driver's unit follows `ups.conf`: Debian's enumerator makes
+        // it for a UPS on this machine, starts it anew when its section
+        // changed and removes it for another device's. It is not waited
+        // for, as it waits a minute and a half for the driver, and a UPS
+        // that is not plugged in, or does not answer on the network, keeps
+        // its driver from starting for as long as it tries; systemd goes
+        // on trying. The settings hold all the same, and the server takes
+        // the driver once it is there.
         self.run(&["restart", "--no-block", ENUMERATOR]).await?;
         if local {
             link_units(&self.systemctl, &["enable", "--no-reload", SERVER, MONITOR]).await?;
             reload_if_behind(&self.systemctl, SERVER).await?;
-            let _ = self.run(&["restart", "--no-block", DRIVER]).await;
+            // A driver someone stopped runs again; one that runs is left
+            // to the enumerator.
+            let _ = self.run(&["start", "--no-block", DRIVER]).await;
             self.run(&["restart", SERVER]).await?;
         } else {
             link_units(&self.systemctl, &["disable", "--no-reload", "--now", SERVER]).await?;

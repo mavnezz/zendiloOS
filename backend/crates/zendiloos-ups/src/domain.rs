@@ -262,6 +262,20 @@ pub struct Found {
     pub serial: Option<String>,
 }
 
+impl Found {
+    /// The device with only what the settings would take: an id or a
+    /// serial number the scanner printed in another form (some UPSs give a
+    /// serial number with blanks, or none worth the name) is left out, so
+    /// that the UPS can still be chosen by the rest.
+    pub fn settable(mut self) -> Self {
+        let id = |id: Option<String>| id.filter(|id| is_usb_id(id)).map(|id| id.to_ascii_lowercase());
+        self.vendor_id = id(self.vendor_id);
+        self.product_id = id(self.product_id);
+        self.serial = self.serial.filter(|serial| is_name(serial));
+        self
+    }
+}
+
 /// What the UPS says of itself, from NUT's variables.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct UpsState {

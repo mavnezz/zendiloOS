@@ -378,7 +378,7 @@ impl Ups {
         if !self.ports.host.facts(context).await?.installed {
             return Err(UpsError::NotInstalled);
         }
-        Ok(self.ports.host.scan(context).await?)
+        Ok(self.ports.host.scan(context).await?.into_iter().map(Found::settable).collect())
     }
 
     /// One look at the UPS, and a notification for what changed since the

@@ -328,6 +328,19 @@ async fn the_scanner_s_devices_are_handed_on() {
         product: Some("Ellipse ECO".into()),
         serial: None,
     };
-    *fakes.host.found.lock().unwrap() = vec![eaton.clone()];
-    assert_eq!(ups.scan(&context()).await.unwrap(), [eaton]);
+    // A serial number the settings would not take: the UPS is offered without it.
+    let odd = Found {
+        vendor_id: Some("051D".into()),
+        product_id: Some("2".into()),
+        serial: Some("4B 1234".into()),
+        ..eaton.clone()
+    };
+    *fakes.host.found.lock().unwrap() = vec![eaton.clone(), odd.clone()];
+    assert_eq!(
+        ups.scan(&context()).await.unwrap(),
+        [
+            Found { product_id: Some("ffff".into()), ..eaton },
+            Found { vendor_id: Some("051d".into()), product_id: None, serial: None, ..odd }
+        ]
+    );
 }
