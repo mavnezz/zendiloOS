@@ -214,12 +214,7 @@ impl SnmpVersion {
 pub enum UpsSource {
     /// Plugged into this machine. Without ids, the driver takes the first
     /// UPS it finds; with them, the one they name.
-    Usb {
-        driver: UsbDriver,
-        vendor_id: Option<UsbId>,
-        product_id: Option<UsbId>,
-        serial: Option<UpsWord>,
-    },
+    Usb { driver: UsbDriver, vendor_id: Option<UsbId>, product_id: Option<UsbId>, serial: Option<UpsWord> },
     /// A UPS with a network card, asked over SNMP (`snmp-ups`).
     Snmp { address: UpsHost, community: UpsWord, version: SnmpVersion },
     /// The UPS of another device, which runs NUT's server: this machine
@@ -319,7 +314,9 @@ pub enum InvalidUpsConfig {
     Charge,
     #[error("the time on battery is from 1 to 720 minutes")]
     Minutes,
-    #[error("a charge to shut down at needs a UPS on this machine: one that another device has says itself when to shut down")]
+    #[error(
+        "a charge to shut down at needs a UPS on this machine: one that another device has says itself when to shut down"
+    )]
     ChargeNeedsDriver,
     #[error("only a UPS on this machine can be told to cut its output")]
     CutNeedsDriver,
@@ -413,7 +410,9 @@ mod tests {
         for good in ["monuser", "s3cret!", "a.b_c-d+e:f,g/h@i%j~k^l*(m)", &"x".repeat(64)] {
             assert!(UpsWord::parse(good).is_ok(), "{good}");
         }
-        for bad in ["", "two words", "quo\"te", "back\\slash", "hash#", "a=b", "line\nbreak", "tab\t", "ümlaut"] {
+        for bad in
+            ["", "two words", "quo\"te", "back\\slash", "hash#", "a=b", "line\nbreak", "tab\t", "ümlaut"]
+        {
             assert_eq!(UpsWord::parse(bad), Err(InvalidUpsWord), "{bad:?}");
         }
         assert!(UpsWord::parse(&"x".repeat(65)).is_err());
@@ -490,14 +489,17 @@ mod tests {
 
     #[test]
     fn a_source_reads_from_json_by_its_kind_and_takes_nothing_unknown() {
-        let source: UpsSource =
-            serde_json::from_str(r#"{"kind":"usb","driver":"usbhid-ups","vendor_id":"0463","product_id":"FFFF","serial":null}"#)
-                .unwrap();
+        let source: UpsSource = serde_json::from_str(
+            r#"{"kind":"usb","driver":"usbhid-ups","vendor_id":"0463","product_id":"FFFF","serial":null}"#,
+        )
+        .unwrap();
         assert!(matches!(source, UpsSource::Usb { driver: UsbDriver::UsbHid, .. }));
         assert!(serde_json::from_str::<UpsSource>(r#"{"kind":"usb","driver":"dummy-ups"}"#).is_err());
         assert!(
-            serde_json::from_str::<UpsSource>(r#"{"kind":"snmp","address":"10.0.0.9","community":"public","version":"v2c"}"#)
-                .is_ok()
+            serde_json::from_str::<UpsSource>(
+                r#"{"kind":"snmp","address":"10.0.0.9","community":"public","version":"v2c"}"#
+            )
+            .is_ok()
         );
         assert!(
             serde_json::from_str::<UpsSource>(
@@ -505,7 +507,10 @@ mod tests {
             )
             .is_err()
         );
-        assert_eq!(serde_json::from_str::<UpsSource>(r#"{"kind":"simulated"}"#).unwrap(), UpsSource::Simulated);
+        assert_eq!(
+            serde_json::from_str::<UpsSource>(r#"{"kind":"simulated"}"#).unwrap(),
+            UpsSource::Simulated
+        );
         assert!(serde_json::from_str::<UpsSource>(r#"{"kind":"simulated","port":"/etc/shadow"}"#).is_err());
     }
 }

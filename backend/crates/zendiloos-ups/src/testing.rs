@@ -11,7 +11,9 @@ use zendiloos_kernel::{AuditEntry, AuditLog, PortError, RequestContext, Timestam
 use zendiloos_notify::Notifier;
 use zendiloos_notify::testing::MemoryNotifications;
 
-use crate::application::{HostError, HostFacts, SettingsStore, Stored, Target, Ups, UpsHost, UpsLink, UpsPorts};
+use crate::application::{
+    HostError, HostFacts, SettingsStore, Stored, Target, Ups, UpsHost, UpsLink, UpsPorts,
+};
 use crate::domain::{Found, Settings};
 
 /// The password the store makes for the NAS's own account.

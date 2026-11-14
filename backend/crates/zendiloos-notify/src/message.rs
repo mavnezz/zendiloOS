@@ -268,6 +268,58 @@ pub fn message(notification: &Notification, host: &str, language: Language) -> M
                 param("names")
             ),
         ),
+        "ups_on_battery" if german => (
+            "Stromausfall: die USV läuft auf Akku".to_owned(),
+            "Die USV versorgt das NAS aus ihrem Akku. zendiloOS fährt herunter, wie es unter Systemsteuerung → USV \
+             eingestellt ist, wenn der Strom nicht rechtzeitig zurückkommt."
+                .to_owned(),
+        ),
+        "ups_on_battery" => (
+            "Power cut: the UPS runs on battery".to_owned(),
+            "The UPS feeds the NAS from its battery. zendiloOS shuts down as Control panel → UPS says, unless the \
+             power returns in time."
+                .to_owned(),
+        ),
+        "ups_battery_low" if german => (
+            "Akku der USV fast leer: das NAS fährt herunter".to_owned(),
+            "Der Akku der USV reicht nicht mehr lange. zendiloOS fährt jetzt herunter.".to_owned(),
+        ),
+        "ups_battery_low" => (
+            "The UPS's battery is low: the NAS shuts down".to_owned(),
+            "The UPS's battery will not last much longer. zendiloOS is shutting down now.".to_owned(),
+        ),
+        "ups_on_mains" if german => (
+            "Strom ist zurück".to_owned(),
+            "Die USV läuft wieder am Netz und lädt ihren Akku.".to_owned(),
+        ),
+        "ups_on_mains" => (
+            "The power is back".to_owned(),
+            "The UPS runs on mains again and charges its battery.".to_owned(),
+        ),
+        "ups_unreachable" if german => (
+            "Die USV antwortet nicht".to_owned(),
+            "zendiloOS bekommt den Zustand der USV nicht mehr: Ein Stromausfall bliebe unbemerkt. Unter \
+             Systemsteuerung → USV steht, wo sie angeschlossen ist; prüfen Sie Kabel oder Netzwerk."
+                .to_owned(),
+        ),
+        "ups_unreachable" => (
+            "The UPS does not answer".to_owned(),
+            "zendiloOS no longer gets the UPS's state: a power cut would go unnoticed. Control panel → UPS says \
+             where it is connected; check the cable or the network."
+                .to_owned(),
+        ),
+        "ups_replace_battery" if german => (
+            "Die USV verlangt einen neuen Akku".to_owned(),
+            "Die USV meldet, dass ihr Akku ersetzt werden muss. Bis dahin hält sie einen Stromausfall womöglich \
+             nicht mehr durch."
+                .to_owned(),
+        ),
+        "ups_replace_battery" => (
+            "The UPS asks for a new battery".to_owned(),
+            "The UPS reports that its battery needs replacing. Until then it may not carry the NAS through a \
+             power cut."
+                .to_owned(),
+        ),
         "certificate_renewed" if german => (
             format!("Zertifikat für {} erneuert", param("name")),
             "Let's Encrypt hat das Zertifikat erneuert; zeigt die Weboberfläche es, nutzt sie es schon."
@@ -572,6 +624,26 @@ mod tests {
                 vec![("names", "enp1s0, br0"), ("count", "2")],
                 "Network files changed",
                 "Netzwerkdateien geändert",
+            ),
+            (
+                "ups_on_battery",
+                vec![],
+                "Power cut: the UPS runs on battery",
+                "Stromausfall: die USV läuft auf Akku",
+            ),
+            (
+                "ups_battery_low",
+                vec![],
+                "The UPS's battery is low: the NAS shuts down",
+                "Akku der USV fast leer: das NAS fährt herunter",
+            ),
+            ("ups_on_mains", vec![], "The power is back", "Strom ist zurück"),
+            ("ups_unreachable", vec![], "The UPS does not answer", "Die USV antwortet nicht"),
+            (
+                "ups_replace_battery",
+                vec![],
+                "The UPS asks for a new battery",
+                "Die USV verlangt einen neuen Akku",
             ),
             (
                 "pools_not_imported",

@@ -13,6 +13,7 @@ use zendiloos_sharing::application::{FilesUseCases, SharingUseCases};
 use zendiloos_storage::application::StorageUseCases;
 use zendiloos_system::application::SystemUseCases;
 use zendiloos_updates::application::Updates;
+use zendiloos_ups::application::Ups;
 use zendiloos_vms::application::Vms;
 
 /// The use cases the handlers call, and how the API is exposed. Cheap to
@@ -39,6 +40,7 @@ pub struct ApiState {
     pub(crate) vms: Vms,
     pub(crate) backup: Backups,
     pub(crate) recovery: Recovery,
+    pub(crate) ups: Ups,
     /// Session cookies get `Secure` and the `__Host-` prefix. Only turn
     /// this off where the interface is reached over plain HTTP.
     pub(crate) secure_cookies: bool,
@@ -66,6 +68,7 @@ pub struct UseCases {
     pub vms: Vms,
     pub backup: Backups,
     pub recovery: Recovery,
+    pub ups: Ups,
 }
 
 impl ApiState {
@@ -91,6 +94,7 @@ impl ApiState {
             vms,
             backup,
             recovery,
+            ups,
         } = use_cases;
         Self {
             system,
@@ -113,6 +117,7 @@ impl ApiState {
             vms,
             backup,
             recovery,
+            ups,
             secure_cookies,
         }
     }

@@ -88,7 +88,10 @@ async fn a_usb_ups_is_put_in_force_kept_and_read_from_the_nas_itself() {
         &Target { host: "127.0.0.1".into(), port: 3493, ups: "ups".into() }
     );
     let audit = fakes.audit.0.lock().unwrap();
-    assert_eq!((audit[0].action, audit[0].outcome, audit[0].target.as_deref()), ("ups.update", Outcome::Success, Some("usb")));
+    assert_eq!(
+        (audit[0].action, audit[0].outcome, audit[0].target.as_deref()),
+        ("ups.update", Outcome::Success, Some("usb"))
+    );
 }
 
 #[tokio::test]
@@ -120,7 +123,11 @@ async fn a_ups_needs_nut_and_snmp_its_driver() {
     assert!(fakes.host.applied.lock().unwrap().is_empty());
 
     *fakes.host.facts.lock().unwrap() = HostFacts { installed: true, snmp: false };
-    let snmp = SourceInput::Snmp { address: "10.0.0.9".into(), community: "public".into(), version: SnmpVersion::V2c };
+    let snmp = SourceInput::Snmp {
+        address: "10.0.0.9".into(),
+        community: "public".into(),
+        version: SnmpVersion::V2c,
+    };
     assert!(matches!(ups.set(input(Some(snmp)), &alice(), &context()).await, Err(UpsError::SnmpMissing)));
 }
 
@@ -154,10 +161,7 @@ async fn a_password_left_out_stays_the_one_kept_for_the_same_account() {
         user: "monuser".into(),
         password: None,
     };
-    assert!(matches!(
-        ups.set(input(Some(other)), &alice(), &context()).await,
-        Err(UpsError::PasswordNeeded)
-    ));
+    assert!(matches!(ups.set(input(Some(other)), &alice(), &context()).await, Err(UpsError::PasswordNeeded)));
 
     // The same for the account other devices follow with.
     let serve = |user: &str, password: Option<&str>| SettingsInput {
@@ -187,7 +191,12 @@ async fn nut_is_installed_in_a_job_and_settings_that_wait_are_put_in_force() {
     // As after a configuration was restored on a fresh installation.
     *fakes.host.facts.lock().unwrap() = HostFacts { installed: false, snmp: false };
     let waiting = Settings {
-        source: Some(Source::Usb { driver: "usbhid-ups".into(), vendor_id: None, product_id: None, serial: None }),
+        source: Some(Source::Usb {
+            driver: "usbhid-ups".into(),
+            vendor_id: None,
+            product_id: None,
+            serial: None,
+        }),
         ..Settings::default()
     };
     *fakes.store.0.lock().unwrap() = waiting.clone();
@@ -196,7 +205,10 @@ async fn nut_is_installed_in_a_job_and_settings_that_wait_are_put_in_force() {
     assert_eq!((job.kind.as_str(), job.target.as_deref()), ("ups.install", Some("nut")));
     assert_eq!(finished(&fakes, &job).await.state, JobState::Succeeded);
     assert_eq!(*fakes.host.facts.lock().unwrap(), HostFacts { installed: true, snmp: true });
-    assert_eq!(fakes.host.applied.lock().unwrap().iter().map(|s| s.settings.clone()).collect::<Vec<_>>(), [waiting]);
+    assert_eq!(
+        fakes.host.applied.lock().unwrap().iter().map(|s| s.settings.clone()).collect::<Vec<_>>(),
+        [waiting]
+    );
     assert_eq!(fakes.audit.actions(), ["ups.install"]);
 }
 

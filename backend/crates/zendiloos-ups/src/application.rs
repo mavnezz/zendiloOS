@@ -11,8 +11,8 @@ use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, PortError, R
 use zendiloos_notify::{Level, NewNotification, Notifier};
 
 use crate::domain::{
-    Account, Event, Found, Invalid, Settings, ShutdownWhen, SnmpVersion, Source, UPS_NAME, UPS_PORT, UpsState,
-    Watch,
+    Account, Event, Found, Invalid, Settings, ShutdownWhen, SnmpVersion, Source, UPS_NAME, UPS_PORT,
+    UpsState, Watch,
 };
 
 /// The settings as they are kept, with the password of the NAS's own

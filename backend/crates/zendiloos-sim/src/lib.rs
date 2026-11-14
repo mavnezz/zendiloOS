@@ -53,6 +53,14 @@ const SMART_UNKNOWN: &str = r#"{"smartctl": {"messages": [{"string": "/dev/{{DEV
 /// Unix seconds; replaceable so tests control scrub and resilver progress.
 pub type SimClock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
+/// Network UPS Tools as the simulated machine has them: installed or not,
+/// and the settings they were last given.
+#[derive(Debug, Default)]
+struct SimUps {
+    installed: bool,
+    config: Option<zendiloos_agent_proto::UpsConfig>,
+}
+
 pub struct SimulatedAgent {
     received: Mutex<Vec<Request>>,
     /// Users and groups created while running.
@@ -88,6 +96,7 @@ pub struct SimulatedAgent {
     /// libvirt's domains and the VMs' storage; nothing runs.
     vms: Mutex<vms::SimVms>,
     backup: Mutex<backup::SimBackup>,
+    ups: Mutex<SimUps>,
 }
 
 #[derive(Debug, Default)]
@@ -208,6 +217,7 @@ impl SimPackages {
             | PackageTask::InstallAcme
             | PackageTask::InstallVms
             | PackageTask::InstallBackup
+            | PackageTask::InstallUps
             | PackageTask::InstallNetworkd => &[(0, "lists"), (1, "install"), (3, "")],
             PackageTask::Check => &[(0, "lists"), (2, "")],
             PackageTask::Update if run.release.is_some() => {
@@ -230,6 +240,7 @@ impl SimPackages {
                         | PackageTask::InstallAcme
                         | PackageTask::InstallVms
                         | PackageTask::InstallBackup
+                        | PackageTask::InstallUps
                         | PackageTask::InstallNetworkd
                 ) {
                     let done = run.task == PackageTask::Update;
@@ -411,6 +422,7 @@ impl SimulatedAgent {
             firewall: Mutex::default(),
             vms: Mutex::default(),
             backup: Mutex::default(),
+            ups: Mutex::default(),
         }
     }
 
@@ -627,6 +639,17 @@ impl SimulatedAgent {
     }
 
     /// Every request received so far, oldest first.
+    /// The settings NUT was last given; none while there is no UPS.
+    pub fn ups_config(&self) -> Option<zendiloos_agent_proto::UpsConfig> {
+        self.ups.lock().unwrap_or_else(PoisonError::into_inner).config.clone()
+    }
+
+    /// Network UPS Tools as if they had been installed already.
+    pub fn with_ups_installed(self) -> Self {
+        self.ups.lock().unwrap_or_else(PoisonError::into_inner).installed = true;
+        self
+    }
+
     pub fn received(&self) -> Vec<Request> {
         self.received.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
@@ -781,6 +804,11 @@ impl AgentTransport for SimulatedAgent {
                     run.state == PackageRunState::Succeeded && run.task == PackageTask::InstallBackup
                 }) {
                     self.backup.lock().unwrap_or_else(PoisonError::into_inner).installed = true;
+                }
+                if run.as_ref().is_some_and(|run| {
+                    run.state == PackageRunState::Succeeded && run.task == PackageTask::InstallUps
+                }) {
+                    self.ups.lock().unwrap_or_else(PoisonError::into_inner).installed = true;
                 }
                 if run.as_ref().is_some_and(|run| {
                     run.state == PackageRunState::Succeeded && run.task == PackageTask::InstallNetworkd
@@ -1136,6 +1164,39 @@ impl AgentTransport for SimulatedAgent {
                     Some(_) => Response::Done,
                     None => error(ErrorCode::Forbidden, "no change waits for confirmation"),
                 }
+            }
+            Request::UpsFacts {} => {
+                let installed = self.ups.lock().unwrap_or_else(PoisonError::into_inner).installed;
+                Response::UpsFacts { installed, snmp: installed }
+            }
+            Request::ScanUps {} => {
+                if !self.ups.lock().unwrap_or_else(PoisonError::into_inner).installed {
+                    return Ok(error(ErrorCode::Failed, "Network UPS Tools are not installed"));
+                }
+                Response::UpsFound {
+                    devices: vec![zendiloos_agent_proto::FoundUps {
+                        driver: "usbhid-ups".into(),
+                        vendor_id: Some("0463".into()),
+                        product_id: Some("FFFF".into()),
+                        vendor: Some("EATON".into()),
+                        product: Some("Ellipse ECO 650".into()),
+                        serial: Some("000000000".into()),
+                    }],
+                }
+            }
+            Request::SetUps { config } => {
+                let mut ups = self.ups.lock().unwrap_or_else(PoisonError::into_inner);
+                match config {
+                    None => ups.config = None,
+                    Some(_) if !ups.installed => {
+                        return Ok(error(ErrorCode::Failed, "Network UPS Tools are not installed"));
+                    }
+                    Some(config) => match config.clone().checked() {
+                        Ok(config) => ups.config = Some(config),
+                        Err(reason) => return Ok(error(ErrorCode::Forbidden, &format!("refused: {reason}"))),
+                    },
+                }
+                Response::Done
             }
             Request::SshState {} => {
                 let (config, off_at) = self.ssh.lock().unwrap_or_else(PoisonError::into_inner).clone();

@@ -49,6 +49,7 @@ pub const API_V1: &str = "/api/v1";
         (name = "certificates", description = "The ACME client plugin: accounts, challenges and certificates"),
         (name = "vms", description = "Virtual machines: the plugin, VMs through libvirt and their state"),
         (name = "backup", description = "Backup tasks: the plugin, tasks to places on the NAS and rsync servers, their log, restores"),
+        (name = "ups", description = "A UPS through Network UPS Tools: where it is, when the NAS shuts down on battery, the devices that follow it"),
     ),
     components(schemas(
         routes::live::LiveRequest,

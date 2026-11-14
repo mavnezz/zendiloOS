@@ -52,6 +52,9 @@ impl Host {
             ssh: "/bin/false".into(),
             ssh_keygen: "/bin/false".into(),
             ssh_keyscan: "/bin/false".into(),
+            upsd: "/bin/false".into(),
+            upsmon: "/bin/false".into(),
+            nut_scanner: "/bin/false".into(),
             rclone: "/bin/false".into(),
             lsblk: script("lsblk", &format!("cat {}", root.join("lsblk.json").display())),
             // Refuses to write a drive while `read-only` exists, as for a

@@ -691,6 +691,7 @@ mod tests {
                 "updates_installed",
                 "updates_failed",
                 "configuration_backup_failed",
+                "ups_battery_low",
                 "certificate_renewal_failed",
                 "certificate_not_taken",
                 "docker_backup_failed",

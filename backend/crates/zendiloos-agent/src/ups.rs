@@ -311,8 +311,7 @@ impl Ups {
         let Some(config) = config else {
             return self.off().await;
         };
-        let config =
-            &config.clone().checked().map_err(|error| OperationError::Refused(error.to_string()))?;
+        let config = &config.clone().checked().map_err(|error| OperationError::Refused(error.to_string()))?;
         if !self.installed() {
             return Err(not_installed());
         }
@@ -396,9 +395,7 @@ fn not_installed() -> OperationError {
 
 #[cfg(test)]
 mod tests {
-    use zendiloos_agent_proto::{
-        SnmpVersion, UpsAccount, UpsHost, UpsServerPort, UpsWord, UsbDriver, UsbId,
-    };
+    use zendiloos_agent_proto::{SnmpVersion, UpsAccount, UpsHost, UpsServerPort, UpsWord, UsbDriver, UsbId};
 
     use super::*;
 
@@ -527,7 +524,10 @@ mod tests {
             "{ups}"
         );
         let simulated = config(UpsSource::Simulated);
-        assert!(ups_conf(Some(&simulated)).ends_with("[ups]\n    driver = dummy-ups\n    port = zendiloos-simulated.dev\n"));
+        assert!(
+            ups_conf(Some(&simulated))
+                .ends_with("[ups]\n    driver = dummy-ups\n    port = zendiloos-simulated.dev\n")
+        );
         // Its state is set with upsrw, which the monitor's account may then do.
         assert!(upsd_users(Some(&simulated)).contains("    actions = SET\n    instcmds = ALL\n"));
         assert!(!upsd_users(Some(&config(usb()))).contains("actions"));

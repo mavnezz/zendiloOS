@@ -179,6 +179,7 @@ fn host(erasable: Erasable) -> Host {
         firewall: Default::default(),
         vms: Default::default(),
         backup: Default::default(),
+        ups: Default::default(),
         accounts: AccountFiles {
             passwd: root.join("passwd"),
             group: root.join("group"),

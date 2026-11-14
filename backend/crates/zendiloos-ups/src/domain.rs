@@ -111,9 +111,7 @@ pub enum Invalid {
     UpsName,
     #[error("the account's name may hold letters, digits and . _ - only, at most 64")]
     User,
-    #[error(
-        "the password may hold 1 to 64 letters, digits and . _ - + : , / @ % ! ~ ^ * ( ), no blank"
-    )]
+    #[error("the password may hold 1 to 64 letters, digits and . _ - + : , / @ % ! ~ ^ * ( ), no blank")]
     Password,
     #[error("the community may hold 1 to 64 letters, digits and . _ - + : , / @ % ! ~ ^ * ( ), no blank")]
     Community,
@@ -293,7 +291,9 @@ impl UpsState {
         let number = |name: &str| variables.get(name)?.trim().parse::<f64>().ok().filter(|n| *n >= 0.0);
         let percent = |name: &str| number(name).map(|n| n.min(100.0).round() as u8);
         let text = |names: &[&str]| {
-            names.iter().find_map(|name| variables.get(*name).map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()))
+            names
+                .iter()
+                .find_map(|name| variables.get(*name).map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()))
         };
         Some(Self {
             on_battery: has("OB"),
@@ -364,8 +364,11 @@ impl Watch {
             low_battery: state.low_battery,
             replace_battery: state.replace_battery,
         };
-        let before =
-            self.seen.replace(now).unwrap_or(Seen { on_battery: false, low_battery: false, replace_battery: false });
+        let before = self.seen.replace(now).unwrap_or(Seen {
+            on_battery: false,
+            low_battery: false,
+            replace_battery: false,
+        });
         let mut events = Vec::new();
         if now.on_battery && !before.on_battery {
             events.push(Event::OnBattery);
@@ -449,8 +452,12 @@ mod tests {
     #[test]
     fn what_reaches_nuts_files_holds_no_blank_quote_or_comment_sign() {
         let snmp = |address: &str, community: &str| {
-            with(Source::Snmp { address: address.into(), community: community.into(), version: SnmpVersion::V2c })
-                .checked()
+            with(Source::Snmp {
+                address: address.into(),
+                community: community.into(),
+                version: SnmpVersion::V2c,
+            })
+            .checked()
         };
         assert!(snmp("10.0.0.9", "public").is_ok());
         assert_eq!(snmp("10.0.0.9 x", "public"), Err(Invalid::Host));
@@ -468,19 +475,27 @@ mod tests {
             with(source).checked()
         };
         assert_eq!(
-            server(|s| if let Source::Server { port, .. } = s { *port = 0 }),
+            server(|s| if let Source::Server { port, .. } = s {
+                *port = 0
+            }),
             Err(Invalid::Port)
         );
         assert_eq!(
-            server(|s| if let Source::Server { ups, .. } = s { *ups = "ups@host".into() }),
+            server(|s| if let Source::Server { ups, .. } = s {
+                *ups = "ups@host".into()
+            }),
             Err(Invalid::UpsName)
         );
         assert_eq!(
-            server(|s| if let Source::Server { user, .. } = s { *user = String::new() }),
+            server(|s| if let Source::Server { user, .. } = s {
+                *user = String::new()
+            }),
             Err(Invalid::User)
         );
         assert_eq!(
-            server(|s| if let Source::Server { password, .. } = s { *password = "two words".into() }),
+            server(|s| if let Source::Server { password, .. } = s {
+                *password = "two words".into()
+            }),
             Err(Invalid::Password)
         );
     }

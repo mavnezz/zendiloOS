@@ -141,6 +141,9 @@ impl Host {
             ssh: "/bin/false".into(),
             ssh_keygen: "/bin/false".into(),
             ssh_keyscan: "/bin/false".into(),
+            upsd: "/bin/false".into(),
+            upsmon: "/bin/false".into(),
+            nut_scanner: "/bin/false".into(),
             rclone: "/bin/false".into(),
             dockerd: any,
         };

@@ -97,14 +97,14 @@ pub use services::{
     Workgroup,
 };
 pub use ssh::{InvalidOffAfter, InvalidSshPort, OffAfter, RootLogin, SshConfig, SshPort};
+pub use time::{
+    ClockTime, InvalidClockTime, InvalidTimeServer, InvalidTimeServers, InvalidTimeZone, MAX_TIME_SERVERS,
+    TimeServer, TimeServers, TimeZone,
+};
 pub use ups::{
     FoundUps, InvalidUpsConfig, InvalidUpsHost, InvalidUpsServerPort, InvalidUpsWord, InvalidUsbId,
     SnmpVersion, UPS_LOCAL_USER, UPS_NAME, UPS_PORT, UpsAccount, UpsConfig, UpsHost, UpsServerPort,
     UpsShutdown, UpsSource, UpsWord, UsbDriver, UsbId,
-};
-pub use time::{
-    ClockTime, InvalidClockTime, InvalidTimeServer, InvalidTimeServers, InvalidTimeZone, MAX_TIME_SERVERS,
-    TimeServer, TimeServers, TimeZone,
 };
 pub use vms::{
     HostIommu, HostNeeds, HostPciDevice, HostUsbDevice, InvalidPciAddress, InvalidVmBackupSettings,
