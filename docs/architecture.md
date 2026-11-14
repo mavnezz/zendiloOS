@@ -1399,7 +1399,11 @@ TLS is rustls with ring and the system's certificate authorities
   minutes; the files agent may use 512 MiB (`MemoryMax`).
 - Validated types are the only form in which values reach a command line
   (`DiskName` accepts only `sda`, `nvme0n1` and the like: no paths, no `-`
-  prefix).
+  prefix). The storage context lists as a disk only what bears such a
+  name: the kernel calls more things a disk (a ZFS volume, `zd0`, which is
+  a virtual machine's disk; `zram0`; `nbd0`), and a VM's volume listed
+  among the disks was shown as unused and offered for a new pool, which
+  the agent would then have refused. A test holds the two rules together.
 - Bridges, bonds and VLANs (6) widen nothing of the agent's sandbox:
   their files go to `/etc/systemd/network` as interfaces' files do, named
   only after names the protocol's `InterfaceName` allows (and none of

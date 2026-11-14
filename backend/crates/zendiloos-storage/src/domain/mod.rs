@@ -16,8 +16,8 @@ mod volume;
 pub use array::{Array, ArrayHealth, ArrayMember, MemberState, Slots, SyncOperation, SyncProgress};
 pub use block_device::{BlockDevice, DeviceKind, Filesystem, SpaceUsage};
 pub use disk::{
-    Disk, DiskUsage, DiskVerdicts, Media, Partition, Transport, disks, health_key, is_system_mount,
-    serial_key, shared_serials,
+    Disk, DiskUsage, DiskVerdicts, Media, Partition, Transport, disks, health_key, is_disk_name,
+    is_system_mount, serial_key, shared_serials,
 };
 pub use enclosure::{
     Binding, Chassis, ChassisStyle, DmiMatch, EnclosureChoice, EnclosureModel, FrontPanel, InvalidEnclosure,

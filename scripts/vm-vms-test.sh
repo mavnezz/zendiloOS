@@ -9,7 +9,8 @@
 #      /volume<N>/@vms, libvirt waiting for it
 #   3. a VM with 1 vCPU, 256 MiB, UEFI, a 1 GiB disk and no image is made
 #      in a job: a sparse zvol with volmode=dev, a domain zendiloos-<id>
-#      with passt; it starts (into its firmware) and runs as libvirt-qemu
+#      with passt; its zvol is not listed among the NAS's disks; it starts
+#      (into its firmware) and runs as libvirt-qemu
 #   4. its console's WebSocket answers with QEMU's VNC greeting
 #      (RFB 003.00x); a console from another origin is refused
 #   5. it shuts down (ACPI, or forced off when the firmware does not
@@ -369,6 +370,11 @@ note "$domain on $zvol"
 read -r volsize volmode refreservation < <(vm "sudo zfs get -H -p -o value volsize,volmode,refreservation $zvol" | tr '\n' ' '; echo)
 [[ $volsize == $((1 << 30)) && $volmode == dev && $refreservation == 0 ]] \
     || fail "the zvol: volsize $volsize, volmode $volmode, refreservation $refreservation"
+# The kernel calls the VM's disk a disk too (zd<N>); for the NAS it is none:
+# not listed among its disks, so never offered for a pool.
+[[ -n $(vm "lsblk -dn -o NAME" | grep '^zd') ]] || fail "no zvol among the kernel's block devices"
+call GET /storage/disks | jq -e '[.[] | .name | select(startswith("zd"))] == []' >/dev/null \
+    || fail "the VM's disk is listed among the NAS's: $(call GET /storage/disks | jq -c '[.[].name]')"
 xml=$(vm "sudo virsh -c qemu:///system dumpxml $domain")
 grep -q "<backend type='passt'/>" <<<"$xml" || fail "no passt: $xml"
 grep -q "socket='/run/zendiloos-vms/$id.vnc'" <<<"$xml" || fail "no console socket: $xml"
