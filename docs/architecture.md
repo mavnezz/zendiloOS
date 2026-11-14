@@ -3805,7 +3805,14 @@ once per change and each a kind of its own in the channels' table (group
 System). On battery zendiloosd looks every three seconds, and `upsmon`
 waits ten (`FINALDELAY`) between deciding to shut down and doing it, so
 that the shutdown is told before zendiloosd is stopped; whether a mail
-still gets out then is the network's to say. A NAS that follows another
+still gets out then is the network's to say. A shutdown is what NUT's
+monitor acts on: on battery with the battery low (`OB LB`), or forced
+(`FSD`). A low battery alone is none, as a UPS back on mains after a long
+power cut reports it until it has charged, and a forced shutdown is no low
+battery, as it comes with the battery nearly full when the minutes on
+battery are over; the page says each as what it is (`low_battery`,
+`shutting_down`), and when zendiloosd stops answering after a shutdown was
+under way, that the NAS is shutting down. A NAS that follows another
 device's UPS and shuts down after its minutes on battery does not tell the
 shutdown, as no state of the UPS shows it: the power cut's notification
 said when it would come.

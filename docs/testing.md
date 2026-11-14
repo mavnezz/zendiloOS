@@ -118,10 +118,14 @@ arm64 release first).
 - **Real hardware.** zendiloOS has run only in QEMU machines. Trial
   operation on a real NAS with data one can lose is still to come; on
   arm64 no real board at all (see [arm64](#arm64)).
-- **A real UPS.** The VM test follows NUT's simulated UPS (`dummy-ups`).
-  NUT's drivers for USB and SNMP, the search for UPSs on USB, a UPS that
-  cuts its output after the shutdown and another make of NAS following
-  zendiloOS's UPS have not been tried under zendiloOS yet.
+- **A real UPS, beyond one.** An Eaton Ellipse PRO 1200 on USB has been
+  followed on a small x86-64 board (2026-11-14): found by *Detect*, its
+  reading shown, a power cut and its end told, the timer dropped when the
+  power was back in time, the NAS shut down after its minute on battery.
+  Not tried on a real UPS yet: the shutdown at a low battery or below a
+  charge, a UPS cutting its output after the shutdown, SNMP, and another
+  make of NAS following zendiloOS's UPS. For those the VM test's simulated
+  UPS (`dummy-ups`) is all there is.
 - **Windows and macOS as clients.** SMB has been tested with `smbclient`
   inside the test VM, and discovery (WS-Discovery, Bonjour) is set up, but
   no Windows or macOS machine has used a share yet.

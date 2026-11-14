@@ -328,7 +328,11 @@ const hint = 'text-xs text-muted-foreground'
       <p>{{ t('ups.helpSources') }}</p>
     </PageDescription>
     <div class="grid max-w-3xl gap-6">
-      <Alert v-if="loadError" variant="destructive">{{ problemMessage(loadError) }}</Alert>
+      <!-- No answer after the UPS had the NAS shut down: that is why. -->
+      <Alert v-if="loadError && overview?.reading?.shutting_down" data-testid="ups-gone-down">{{
+        t('ups.status.goneDown')
+      }}</Alert>
+      <Alert v-else-if="loadError" variant="destructive">{{ problemMessage(loadError) }}</Alert>
       <div v-if="!overview" class="h-48 animate-pulse rounded-lg bg-muted" />
 
       <PageCard v-else-if="!overview.installed" :title="t('ups.install.title')">

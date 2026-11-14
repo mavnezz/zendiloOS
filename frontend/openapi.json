@@ -29227,6 +29227,7 @@
         "required": [
           "on_battery",
           "low_battery",
+          "shutting_down",
           "replace_battery",
           "charging",
           "status"
@@ -29253,7 +29254,7 @@
           },
           "low_battery": {
             "type": "boolean",
-            "description": "The battery is low, or a shutdown is forced."
+            "description": "The UPS calls its battery low. It still does for a while after the\npower is back, until the battery has charged."
           },
           "manufacturer": {
             "type": [
@@ -29281,6 +29282,10 @@
             ],
             "format": "int32",
             "minimum": 0
+          },
+          "shutting_down": {
+            "type": "boolean",
+            "description": "The NAS is about to shut down: on battery with the battery low, or\nbecause the time on battery is over."
           },
           "status": {
             "type": "string",

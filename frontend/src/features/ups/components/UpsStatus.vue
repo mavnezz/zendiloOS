@@ -14,20 +14,23 @@ const props = defineProps<{ reading?: UpsReading | null }>()
 
 const { t } = useI18n()
 
-/** The one thing to know: mains, battery, or a battery about to give out. */
+/** The one thing to know: on mains, on battery, or going down. */
 const state = computed<{ label: string; variant: 'destructive' | 'warning' | 'success' } | null>(
   () => {
     const reading = props.reading
     if (!reading) return null
-    if (reading.low_battery) return { label: t('ups.status.lowBattery'), variant: 'destructive' }
+    if (reading.shutting_down)
+      return { label: t('ups.status.shuttingDown'), variant: 'destructive' }
     if (reading.on_battery) return { label: t('ups.status.onBattery'), variant: 'warning' }
     return { label: t('ups.status.onMains'), variant: 'success' }
   },
 )
 
-const tone = computed<StatTone>(() =>
-  props.reading?.low_battery ? 'destructive' : props.reading?.on_battery ? 'warning' : 'muted',
-)
+const tone = computed<StatTone>(() => {
+  const reading = props.reading
+  if (reading?.shutting_down) return 'destructive'
+  return reading?.on_battery || reading?.low_battery ? 'warning' : 'muted'
+})
 const percent = (value?: number | null) =>
   value === null || value === undefined ? '–' : formatPercent(value)
 const model = computed(() =>
@@ -47,6 +50,14 @@ const model = computed(() =>
         <Badge v-if="reading?.replace_battery" variant="warning">{{
           t('ups.status.replaceBattery')
         }}</Badge>
+        <!-- A low battery is said as what it is: a shutdown after a time on
+             battery comes with the battery nearly full, and a UPS back on
+             mains calls its battery low until it has charged. -->
+        <Badge
+          v-if="reading?.low_battery"
+          :variant="reading.shutting_down ? 'destructive' : 'warning'"
+          >{{ t('ups.status.lowBattery') }}</Badge
+        >
         <Badge v-if="reading?.charging" variant="outline">{{ t('ups.status.charging') }}</Badge>
         <Badge :variant="state.variant">{{ state.label }}</Badge>
       </div>

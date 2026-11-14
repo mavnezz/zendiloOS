@@ -281,8 +281,13 @@ impl Found {
 pub struct UpsState {
     /// On battery (`OB`): the power has failed.
     pub on_battery: bool,
-    /// The battery is low (`LB`), or a shutdown is forced (`FSD`).
+    /// The UPS calls its battery low (`LB`). It still does for a while
+    /// after the power is back, until the battery has charged again.
     pub low_battery: bool,
+    /// A shutdown is forced (`FSD`): NUT's monitor on the machine the UPS
+    /// hangs on has told everyone that follows it to go down, as when the
+    /// time on battery is over.
+    pub forced_shutdown: bool,
     /// The UPS asks for a new battery (`RB`).
     pub replace_battery: bool,
     pub charging: bool,
@@ -311,7 +316,8 @@ impl UpsState {
         };
         Some(Self {
             on_battery: has("OB"),
-            low_battery: has("LB") || has("FSD"),
+            low_battery: has("LB"),
+            forced_shutdown: has("FSD"),
             replace_battery: has("RB"),
             charging: has("CHRG"),
             charge_percent: percent("battery.charge"),
@@ -323,11 +329,12 @@ impl UpsState {
         })
     }
 
-    /// Whether the UPS itself calls its battery low (`LB`), rather than a
-    /// shutdown being forced for another reason (`FSD` alone: the time
-    /// on battery is over).
-    pub fn battery_low(&self) -> bool {
-        self.status.split_whitespace().any(|word| word == "LB")
+    /// Whether the machine is about to go down: NUT's monitor shuts it
+    /// down on battery with the battery low, or when a shutdown is forced.
+    /// A low battery alone is none: a UPS back on mains after a long power
+    /// cut reports it until it has charged.
+    pub fn shutting_down(&self) -> bool {
+        self.forced_shutdown || (self.on_battery && self.low_battery)
     }
 }
 
@@ -361,7 +368,7 @@ pub struct Watch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Seen {
     on_battery: bool,
-    low_battery: bool,
+    shutting_down: bool,
     replace_battery: bool,
 }
 
@@ -382,12 +389,12 @@ impl Watch {
         self.unreachable_told = false;
         let now = Seen {
             on_battery: state.on_battery,
-            low_battery: state.low_battery,
+            shutting_down: state.shutting_down(),
             replace_battery: state.replace_battery,
         };
         let before = self.seen.replace(now).unwrap_or(Seen {
             on_battery: false,
-            low_battery: false,
+            shutting_down: false,
             replace_battery: false,
         });
         let mut events = Vec::new();
@@ -397,7 +404,7 @@ impl Watch {
         if !now.on_battery && before.on_battery {
             events.push(Event::OnMains);
         }
-        if now.low_battery && !before.low_battery {
+        if now.shutting_down && !before.shutting_down {
             events.push(Event::ShuttingDown);
         }
         if now.replace_battery && !before.replace_battery {
@@ -568,6 +575,7 @@ mod tests {
             UpsState {
                 on_battery: false,
                 low_battery: false,
+                forced_shutdown: false,
                 replace_battery: false,
                 charging: true,
                 status: "OL CHRG".into(),
@@ -580,9 +588,14 @@ mod tests {
         );
         let low = UpsState::from_variables(&variables(&[("ups.status", "OB DISCHRG LB RB")])).unwrap();
         assert!(low.on_battery && low.low_battery && low.replace_battery && !low.charging);
+        assert!(low.shutting_down() && !low.forced_shutdown);
         assert_eq!((low.charge_percent, low.runtime_seconds, low.model.as_deref()), (None, None, None));
-        // A forced shutdown counts as a low battery: the NAS goes down.
-        assert!(UpsState::from_variables(&variables(&[("ups.status", "OL FSD")])).unwrap().low_battery);
+        // A forced shutdown is none of the battery's: the NAS goes down all the same.
+        let forced = UpsState::from_variables(&variables(&[("ups.status", "OB FSD")])).unwrap();
+        assert!(forced.forced_shutdown && forced.shutting_down() && !forced.low_battery);
+        // Back on mains after a long power cut, the battery is still low: nothing goes down.
+        let charging = UpsState::from_variables(&variables(&[("ups.status", "OL CHRG LB")])).unwrap();
+        assert!(charging.low_battery && !charging.shutting_down());
         // What is no number, or too large, does not become one.
         let odd = UpsState::from_variables(&variables(&[
             ("ups.status", "OL"),
@@ -608,9 +621,7 @@ mod tests {
         assert_eq!(watch.observe(Some(&state("OB DISCHRG"))), [Event::OnBattery]);
         assert_eq!(watch.observe(Some(&state("OB DISCHRG"))), [], "not again");
         assert_eq!(watch.observe(Some(&state("OB DISCHRG LB"))), [Event::ShuttingDown]);
-        assert!(state("OB DISCHRG LB").battery_low());
-        // A shutdown forced after a time on battery: not the battery's doing.
-        assert!(state("OB FSD").low_battery && !state("OB FSD").battery_low());
+        assert_eq!(watch.observe(Some(&state("OB DISCHRG LB FSD"))), [], "told when it began");
         assert_eq!(watch.observe(Some(&state("OL CHRG"))), [Event::OnMains]);
         assert_eq!(watch.observe(Some(&state("OL RB"))), [Event::ReplaceBattery]);
         assert_eq!(watch.observe(Some(&state("OL RB"))), []);
@@ -620,6 +631,27 @@ mod tests {
     fn a_nas_that_starts_on_battery_says_so() {
         let mut watch = Watch::default();
         assert_eq!(watch.observe(Some(&state("OB LB"))), [Event::OnBattery, Event::ShuttingDown]);
+    }
+
+    #[test]
+    fn a_nas_back_after_a_long_power_cut_does_not_say_it_shuts_down() {
+        // The power is back, the NAS has started, the battery is still
+        // low while it charges: nothing goes down.
+        let mut watch = Watch::default();
+        assert_eq!(watch.observe(Some(&state("OL CHRG LB"))), []);
+        assert_eq!(watch.observe(Some(&state("OL CHRG"))), []);
+        // The power fails again before it has charged: now it does.
+        assert_eq!(watch.observe(Some(&state("OL CHRG LB"))), []);
+        assert_eq!(watch.observe(Some(&state("OB LB"))), [Event::OnBattery, Event::ShuttingDown]);
+    }
+
+    #[test]
+    fn a_shutdown_forced_after_a_time_on_battery_is_told_as_one() {
+        let mut watch = Watch::default();
+        watch.observe(Some(&state("OL")));
+        assert_eq!(watch.observe(Some(&state("OB"))), [Event::OnBattery]);
+        assert_eq!(watch.observe(Some(&state("FSD OB"))), [Event::ShuttingDown]);
+        assert_eq!(watch.observe(Some(&state("FSD OB"))), []);
     }
 
     #[test]
