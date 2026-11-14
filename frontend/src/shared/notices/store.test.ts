@@ -195,9 +195,15 @@ describe('the wording of firewall notices', () => {
       'The firewall blocks the Docker project media',
     )
     expect(wording(notice({ service: 'odd' })).title).toBe('The firewall blocks odd')
+    expect(wording(notice({ service: 'ups' })).title).toBe(
+      'The firewall blocks the UPS server (NUT)',
+    )
     i18n.global.locale.value = 'de'
     expect(wording(notice({ service: 'discovery' })).title).toBe(
       'Die Firewall sperrt die Netzwerkerkennung',
+    )
+    expect(wording(notice({ service: 'ups' })).title).toBe(
+      'Die Firewall sperrt den USV-Server (NUT)',
     )
     i18n.global.locale.value = 'en'
   })

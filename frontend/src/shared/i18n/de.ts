@@ -1790,6 +1790,7 @@ const de: Messages = {
       nfs: 'NFS',
       ssh: 'SSH',
       discovery: 'Netzwerkerkennung',
+      ups: 'USV (NUT)',
       ping: 'Ping',
       project: 'Docker-Projekt',
       ports: 'Ports',
@@ -4099,7 +4100,7 @@ const de: Messages = {
       there: 'Am anderen Gerät eintragen',
       address: 'Adresse',
       firewall:
-        'Ist die Firewall an, legen Sie eine Regel an, die diesen Geräten den TCP-Port {port} erlaubt (Systemsteuerung → Sicherheit).',
+        'Ist die Firewall an, erlauben Sie diesen Geräten den Dienst USV (NUT), TCP-Port {port} (Systemsteuerung → Sicherheit → Firewall).',
     },
     problems: {
       address: 'Füllen Sie die Adresse und die Namen aus.',
@@ -4149,6 +4150,7 @@ const de: Messages = {
         nfs: 'NFS',
         ssh: 'SSH',
         discovery: 'die Netzwerkerkennung',
+        ups: 'den USV-Server (NUT)',
       },
     },
     states: {

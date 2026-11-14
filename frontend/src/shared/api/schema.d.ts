@@ -7134,7 +7134,7 @@ export interface components {
          *     project's published ports, or ports by number.
          * @enum {string}
          */
-        FirewallServiceKind: "all" | "web_interface" | "smb" | "nfs" | "ssh" | "discovery" | "ping" | "project" | "ports";
+        FirewallServiceKind: "all" | "web_interface" | "smb" | "nfs" | "ssh" | "discovery" | "ups" | "ping" | "project" | "ports";
         FirewallSettings: {
             enabled: boolean;
             /** @description What happens to a connection no rule matches. */

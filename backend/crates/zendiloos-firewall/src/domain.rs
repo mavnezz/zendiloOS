@@ -190,13 +190,16 @@ pub enum KnownService {
     Ssh,
     /// Being found: WS-Discovery (wsdd2), mDNS (Avahi) and LLMNR.
     Discovery,
+    /// Network UPS Tools' server, which other devices fed by the NAS's UPS
+    /// follow it through: TCP 3493.
+    Ups,
     /// ICMP echo requests, IPv4 and IPv6.
     Ping,
 }
 
 impl KnownService {
-    pub const ALL: [Self; 6] =
-        [Self::WebInterface, Self::Smb, Self::Nfs, Self::Ssh, Self::Discovery, Self::Ping];
+    pub const ALL: [Self; 7] =
+        [Self::WebInterface, Self::Smb, Self::Nfs, Self::Ssh, Self::Discovery, Self::Ups, Self::Ping];
 
     pub fn key(self) -> &'static str {
         match self {
@@ -205,6 +208,7 @@ impl KnownService {
             Self::Nfs => "nfs",
             Self::Ssh => "ssh",
             Self::Discovery => "discovery",
+            Self::Ups => "ups",
             Self::Ping => "ping",
         }
     }
@@ -226,6 +230,8 @@ pub const NFS_PORTS: [u16; 5] = [111, 2049, 20048, 32765, 32767];
 /// (5353) and LLMNR over UDP.
 pub const DISCOVERY_TCP: [u16; 2] = [5355, 5357];
 pub const DISCOVERY_UDP: [u16; 3] = [3702, 5353, 5355];
+/// NUT's port, where its server listens for other devices.
+pub const UPS_TCP: [u16; 1] = [3493];
 
 /// What a rule is about.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,6 +257,7 @@ impl Service {
             Self::Known(KnownService::Nfs) => Reach::ports(&NFS_PORTS, &NFS_PORTS),
             Self::Known(KnownService::Ssh) => Reach::ports(&[facts.ssh_port], &[]),
             Self::Known(KnownService::Discovery) => Reach::ports(&DISCOVERY_TCP, &DISCOVERY_UDP),
+            Self::Known(KnownService::Ups) => Reach::ports(&UPS_TCP, &[]),
             Self::Known(KnownService::Ping) => Reach { ping: true, ..Reach::default() },
             Self::Project(name) => {
                 let ports = facts.projects.iter().filter(|p| p.name == *name).flat_map(|p| p.ports.iter());
@@ -561,6 +568,9 @@ pub struct Facts {
     pub nfs_on: bool,
     /// WS-Discovery or Bonjour is on.
     pub discovery_on: bool,
+    /// Other devices may follow the NAS's UPS: NUT's server listens on the
+    /// network.
+    pub ups_on: bool,
     pub projects: Vec<ProjectPorts>,
     /// Docker has not answered since zendiloosd started: `projects` says
     /// nothing, the ports saved when it last answered stand for them.
@@ -584,6 +594,7 @@ impl Default for Facts {
             smb_on: false,
             nfs_on: false,
             discovery_on: false,
+            ups_on: false,
             projects: Vec::new(),
             projects_unknown: false,
             bridges: Vec::new(),
@@ -743,6 +754,7 @@ pub fn exposed(facts: &Facts) -> Vec<Exposed> {
         (facts.nfs_on, KnownService::Nfs),
         (facts.ssh_on, KnownService::Ssh),
         (facts.discovery_on, KnownService::Discovery),
+        (facts.ups_on, KnownService::Ups),
     ] {
         if running {
             on.push(Exposed::Known(service));

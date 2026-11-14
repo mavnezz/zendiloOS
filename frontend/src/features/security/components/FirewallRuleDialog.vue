@@ -38,6 +38,7 @@ const KINDS: FirewallServiceKind[] = [
   'nfs',
   'ssh',
   'discovery',
+  'ups',
   'ping',
   'project',
   'ports',

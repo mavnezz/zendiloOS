@@ -92,6 +92,8 @@ pub enum FirewallServiceKind {
     Nfs,
     Ssh,
     Discovery,
+    /// NUT's server, for other devices that follow the NAS's UPS.
+    Ups,
     Ping,
     Project,
     Ports,
@@ -104,6 +106,7 @@ fn known(kind: FirewallServiceKind) -> Option<KnownService> {
         FirewallServiceKind::Nfs => "nfs",
         FirewallServiceKind::Ssh => "ssh",
         FirewallServiceKind::Discovery => "discovery",
+        FirewallServiceKind::Ups => "ups",
         FirewallServiceKind::Ping => "ping",
         _ => return None,
     })
@@ -116,6 +119,7 @@ fn kind_of(service: KnownService) -> FirewallServiceKind {
         KnownService::Nfs => FirewallServiceKind::Nfs,
         KnownService::Ssh => FirewallServiceKind::Ssh,
         KnownService::Discovery => FirewallServiceKind::Discovery,
+        KnownService::Ups => FirewallServiceKind::Ups,
         KnownService::Ping => FirewallServiceKind::Ping,
     }
 }
