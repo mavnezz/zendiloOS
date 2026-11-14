@@ -2208,7 +2208,10 @@ record of the latest run is replaced by the next one; an update's goes to
 a plugin installed right after an update leaves how it went for the page
 and for its notification, which zendiloosd sends once and keeps in its
 database too (for a NAS whose last update a runner without that record
-made). Tasks
+made). The page shows an update going on, else the last update: a check
+or a plugin's installation going on is no update, though it runs apt
+too (a check is the phase `checking`, a plugin its job); shown as one, a
+check's first step stood under the steps of an update. Tasks
 are fixed: install Docker (`docker.io`, `docker-compose`), the ACME
 client (`acme.sh`) and libvirt with QEMU for virtual machines (4.13), the
 App Center's plugins; check (lists fetched, then
