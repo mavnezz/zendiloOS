@@ -150,19 +150,19 @@ async fn a_usb_ups_gets_its_files_driver_server_and_monitor() {
         ups.contains(
             "[ups]\n    driver = usbhid-ups\n    port = auto\n    vendorid = 0463\n    productid = ffff\n"
         ),
-        "{ups}"
+        "{ups:?}"
     );
     assert!(host.file("upsd.conf").unwrap().ends_with("LISTEN 0.0.0.0 3493\n"));
     let users = host.file("upsd.users").unwrap();
-    assert!(users.contains("[upsmon_local]\n    password = local-pw\n    upsmon primary\n"), "{users}");
-    assert!(users.contains("[monuser]\n    password = for-others\n    upsmon secondary\n"), "{users}");
+    assert!(users.contains("[upsmon_local]\n    password = local-pw\n    upsmon primary\n"), "{users:?}");
+    assert!(users.contains("[monuser]\n    password = for-others\n    upsmon secondary\n"), "{users:?}");
     let monitor = host.file("upsmon.conf").unwrap();
-    assert!(monitor.contains("MONITOR ups@localhost 1 upsmon_local local-pw primary\n"), "{monitor}");
+    assert!(monitor.contains("MONITOR ups@localhost 1 upsmon_local local-pw primary\n"), "{monitor:?}");
     assert!(monitor.contains("POWERDOWNFLAG /etc/killpower\n"));
     assert!(monitor.contains("NOTIFYCMD /usr/sbin/upssched\n"));
     let timer = host.root.join("nut/zendiloos-timer");
     let sched = host.file("upssched.conf").unwrap();
-    assert!(sched.contains(&format!("CMDSCRIPT {}\n", timer.display())), "{sched}");
+    assert!(sched.contains(&format!("CMDSCRIPT {}\n", timer.display())), "{sched:?}");
     assert!(sched.contains("AT ONBATT * START-TIMER onbatt 300\n"));
     assert!(host.file("zendiloos-timer").unwrap().contains("upsmon -c fsd"));
     // The files hold passwords: for root and NUT's group only; the script runs.
