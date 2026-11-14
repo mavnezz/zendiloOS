@@ -1,7 +1,7 @@
 //! What the firewall's services stand for now, from the other contexts:
-//! the web interface's ports, the SSH server, the file services, the ports
-//! Docker projects publish, Docker's bridges and the machine's own, and the
-//! NAS's interfaces.
+//! the web interface's ports, the SSH server, the file services, whether
+//! other devices follow the UPS, the ports Docker projects publish,
+//! Docker's bridges and the machine's own, and the NAS's interfaces.
 
 use std::sync::Mutex;
 
@@ -15,6 +15,7 @@ use zendiloos_kernel::RequestContext;
 use zendiloos_network::application::NetworkUseCases;
 use zendiloos_sharing::application::SharingUseCases;
 use zendiloos_system::application::SystemUseCases;
+use zendiloos_ups::application::Ups;
 
 /// [`ServiceFacts`] from the other contexts' use cases. What cannot be
 /// found out now is as it was found out last.
@@ -24,6 +25,7 @@ pub struct ServicesForFirewall {
     sharing: SharingUseCases,
     containers: Containers,
     network: NetworkUseCases,
+    ups: Ups,
     last: Mutex<Facts>,
 }
 
@@ -34,10 +36,11 @@ impl ServicesForFirewall {
         sharing: SharingUseCases,
         containers: Containers,
         network: NetworkUseCases,
+        ups: Ups,
     ) -> Self {
         // Until Docker answers, the firewall takes the ports saved.
         let last = Mutex::new(Facts { projects_unknown: true, ..Facts::default() });
-        Self { certificates, system, sharing, containers, network, last }
+        Self { certificates, system, sharing, containers, network, ups, last }
     }
 }
 
@@ -97,6 +100,12 @@ impl ServiceFacts for ServicesForFirewall {
                 }
             }
             Err(error) => tracing::warn!(%error, "firewall: cannot read the file services"),
+        }
+        match self.ups.serving().await {
+            Ok(serving) => facts.ups_on = serving,
+            Err(error) => {
+                tracing::warn!(%error, "firewall: cannot read whether other devices follow the UPS")
+            }
         }
         match self.containers.projects(context).await {
             Ok(projects) => {

@@ -2499,8 +2499,8 @@ which leaves nginx alone while the files say them already).
 
 **One list of rules**, kept by `zendiloos-firewall` (migrations 0035, 0039): each
 rule names a network connection (or any), what it is about (all ports, the
-web interface, SMB, NFS, SSH, network discovery, ping, a Docker project, or
-ports by number with TCP, UDP or both), a source (anyone, an address, a
+web interface, SMB, NFS, SSH, network discovery, the UPS server, ping, a
+Docker project, or ports by number with TCP, UDP or both), a source (anyone, an address, a
 network, a range; IPv4 or IPv6) and allow or deny. For a new connection the
 first rule that matches decides; when none does, the fallback, "allow" by
 default, so turning the firewall on changes nothing until there are rules.
@@ -2510,7 +2510,9 @@ SMB's (TCP 139, 445, UDP 137, 138), NFS's (2049, rpcbind on 111, and mountd,
 statd and lockd on the ports the package fixes in
 `/etc/nfs.conf.d/zendiloos.conf`: 20048, 32765, 32767, all below the range
 Linux hands out for outgoing connections), discovery's
-(WS-Discovery, mDNS, LLMNR), and a project's published host ports while its
+(WS-Discovery, mDNS, LLMNR), the UPS server's (NUT, TCP 3493; on, for the
+notice of a service nobody reaches, while other devices may follow the
+NAS's UPS, 4.16), and a project's published host ports while its
 containers run.
 
 **nftables, a table of its own.** zendiloosd compiles the rules into plain
@@ -3839,9 +3841,10 @@ as `monuser` with the password `secret`). The page says what to enter
 there: the NAS's address, port 3493, the UPS's name `ups`, the account.
 NUT's protocol is not encrypted here: the account's password crosses the
 LAN in the clear, as between any two NAS that follow one UPS, and the
-account may only follow, never set anything. The firewall (4.12) has no
-service of that name yet: where it is on, a rule for TCP port 3493 lets
-those devices in, which the page says.
+account may only follow, never set anything. Where the firewall (4.12) is
+on, a rule for its service *UPS (NUT)*, TCP port 3493, lets those devices
+in, which the page says; while they may follow and no rule lets anyone in,
+the firewall tells so (`firewall_blocked`, as for SMB).
 
 **Its state and what is told.** zendiloosd reads the UPS's variables
 itself (3.4), for the page (looked at again every ten seconds while it is
@@ -3880,9 +3883,8 @@ force first, kept only then; what NUT's side refused is not kept; audited
 as `ups.update`), `POST /api/v1/ups/install` (the job `ups.install`,
 audited) and `POST /api/v1/ups/scan`.
 
-**Not there.** Several UPSs; SNMP v3; NUT's protocol over TLS; a
-firewall service for port 3493; the UPS's own commands (a battery test,
-the beeper). Telling devices that speak no NUT.
+**Not there.** Several UPSs; SNMP v3; NUT's protocol over TLS; the UPS's
+own commands (a battery test, the beeper). Telling devices that speak no NUT.
 
 ---
 

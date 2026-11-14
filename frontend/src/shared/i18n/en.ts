@@ -1749,6 +1749,7 @@ const en = {
       nfs: 'NFS',
       ssh: 'SSH',
       discovery: 'Network discovery',
+      ups: 'UPS (NUT)',
       ping: 'Ping',
       project: 'Docker project',
       ports: 'Ports',
@@ -4020,7 +4021,7 @@ const en = {
       there: 'Enter on the other device',
       address: 'Address',
       firewall:
-        'If the firewall is on, add a rule that allows TCP port {port} for those devices (Control panel → Security).',
+        'If the firewall is on, allow the service UPS (NUT), TCP port {port}, for those devices (Control panel → Security → Firewall).',
     },
     problems: {
       address: 'Fill in the address and the names.',
@@ -4070,6 +4071,7 @@ const en = {
         nfs: 'NFS',
         ssh: 'SSH',
         discovery: 'network discovery',
+        ups: 'the UPS server (NUT)',
       },
     },
     states: {

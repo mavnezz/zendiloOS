@@ -181,6 +181,8 @@ fn services_stand_for_the_ports_in_use() {
     let discovery = reach(Service::Known(KnownService::Discovery));
     assert!(discovery.has(Transport::Udp, 5353) && discovery.has(Transport::Tcp, 5357));
     assert!(!discovery.has(Transport::Tcp, 5353));
+    let ups = reach(Service::Known(KnownService::Ups));
+    assert_eq!((ups.tcp, ups.udp), (ports("3493"), vec![]));
     assert!(reach(Service::Known(KnownService::Ping)).ping);
     let project = reach(Service::Project("nextcloud".into()));
     assert_eq!((project.tcp, project.udp), (ports("8080-8081"), ports("3478")));
@@ -327,8 +329,10 @@ fn blocked_services_are_those_nobody_reaches() {
         on(Action::Deny, vec![Rule { enabled: false, ..rule(Service::All, "any", Action::Allow) }]);
     assert_eq!(keys(&everything).len(), 4, "a rule switched off does nothing");
 
-    let all = Facts { nfs_on: true, discovery_on: true, ..facts.clone() };
-    assert_eq!(exposed(&all).len(), 6);
+    let all = Facts { nfs_on: true, discovery_on: true, ups_on: true, ..facts.clone() };
+    assert_eq!(exposed(&all).len(), 7);
+    assert!(exposed(&all).contains(&Exposed::Known(KnownService::Ups)));
+    assert!(!exposed(&facts).contains(&Exposed::Known(KnownService::Ups)), "only while devices may follow");
     for service in exposed(&all) {
         assert_eq!(Exposed::parse(&service.key()), Some(service));
     }

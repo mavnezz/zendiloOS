@@ -435,6 +435,8 @@ fn blocked_service(key: &str, project: &str, german: bool) -> String {
         ("ssh", _) => "SSH".to_owned(),
         ("discovery", false) => "network discovery".to_owned(),
         ("discovery", true) => "die Netzwerkerkennung".to_owned(),
+        ("ups", false) => "the UPS server (NUT)".to_owned(),
+        ("ups", true) => "den USV-Server (NUT)".to_owned(),
         (_, false) if !project.is_empty() => format!("the Docker project {project}"),
         (_, true) if !project.is_empty() => format!("das Docker-Projekt {project}"),
         (key, _) => key.to_owned(),
@@ -617,6 +619,12 @@ mod tests {
                 vec![("service", "ssh")],
                 "The firewall blocks SSH",
                 "Die Firewall sperrt SSH",
+            ),
+            (
+                "firewall_blocked",
+                vec![("service", "ups")],
+                "The firewall blocks the UPS server (NUT)",
+                "Die Firewall sperrt den USV-Server (NUT)",
             ),
             (
                 "firewall_blocked",

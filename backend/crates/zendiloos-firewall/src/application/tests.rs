@@ -228,6 +228,28 @@ async fn a_project_blocked_is_told_with_its_name() {
 }
 
 #[tokio::test]
+async fn devices_following_the_ups_blocked_are_told_and_a_rule_for_nut_lets_them_in() {
+    let s = setup();
+    s.facts.set(|facts| {
+        facts.smb_on = false;
+        facts.ups_on = true;
+    });
+    let web = allow(Service::Known(KnownService::WebInterface), "any");
+    s.repository.save(&closed(vec![web.clone()])).await.unwrap();
+    s.firewall.refresh(&context()).await.unwrap();
+    assert_eq!(codes(&s.notifications), ["firewall_blocked ups"]);
+
+    let nut = allow(Service::Known(KnownService::Ups), "192.168.1.0/24");
+    s.repository.save(&closed(vec![web.clone(), nut])).await.unwrap();
+    let view = s.firewall.view(&context()).await.unwrap();
+    assert!(view.blocked.is_empty(), "{:?}", view.blocked);
+    // Nobody follows any more: NUT listens on the loopback only.
+    s.facts.set(|facts| facts.ups_on = false);
+    s.repository.save(&closed(vec![web])).await.unwrap();
+    assert!(s.firewall.view(&context()).await.unwrap().blocked.is_empty());
+}
+
+#[tokio::test]
 async fn the_host_failing_is_said_and_tried_again() {
     let s = setup();
     s.host.fail(Some("nft: syntax error"));

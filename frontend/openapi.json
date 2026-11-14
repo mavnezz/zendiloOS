@@ -22129,6 +22129,7 @@
           "nfs",
           "ssh",
           "discovery",
+          "ups",
           "ping",
           "project",
           "ports"

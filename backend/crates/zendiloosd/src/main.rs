@@ -378,6 +378,17 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     });
     let certificate_renewal = spawn_certificate_renewal(certificates.clone());
 
+    // A UPS: NUT watches it and shuts the machine down; zendiloOS keeps
+    // the settings and tells what the UPS's state does.
+    let ups = Ups::new(UpsPorts {
+        store: Arc::new(SqliteUpsSettings::new(database.clone())),
+        host: Arc::new(AgentUps::new(agent.clone())),
+        link: Arc::new(zendiloos_infra::ups::NutLink),
+        jobs: jobs.clone(),
+        notifier: notifier.clone(),
+        audit: audit.clone(),
+        clock: Arc::new(SystemClock),
+    });
     let firewall = Firewall::new(FirewallPorts {
         repository: Arc::new(SqliteFirewall::new(database.clone())),
         facts: Arc::new(ServicesForFirewall::new(
@@ -386,6 +397,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
             sharing.clone(),
             containers.clone(),
             network.clone(),
+            ups.clone(),
         )),
         host: Arc::new(AgentFirewall::new(agent.clone())),
         notifier: notifier.clone(),
@@ -447,18 +459,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     }
     let backup_schedule = spawn_backup_schedule(backup.clone());
 
-    // A UPS: NUT watches it and shuts the machine down; zendiloOS keeps
-    // the settings and tells what the UPS's state does.
-    let ups = Ups::new(UpsPorts {
-        store: Arc::new(SqliteUpsSettings::new(database.clone())),
-        host: Arc::new(AgentUps::new(agent.clone())),
-        link: Arc::new(zendiloos_infra::ups::NutLink),
-        jobs: jobs.clone(),
-        notifier: notifier.clone(),
-        audit: audit.clone(),
-        clock: Arc::new(SystemClock),
-    });
-    // The machine follows the settings kept, as after a restored
+    // The machine follows the UPS's settings kept, as after a restored
     // configuration; where they are in force the agent changes nothing.
     let kept = ups.clone();
     tokio::spawn(async move {
