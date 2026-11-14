@@ -61,7 +61,9 @@ pub struct UpdateOverview {
     pub settings: UpdateSettings,
     /// What the last check found, without what is installed since.
     pub check: Option<CheckResult>,
-    /// The latest run that installs, or any run going on.
+    /// The update going on, else the last one. Never a check or a
+    /// plugin's installation: they run apt too, but the page would show
+    /// their steps as an update's.
     pub run: Option<UpdateRun>,
     pub phase: Phase,
 }
@@ -171,15 +173,17 @@ impl Updates {
         Ok((latest, update))
     }
 
-    /// The run the page shows: one going on, else the last update, as the
-    /// NAS keeps it or, from before it kept its own, as kept here.
+    /// The run the page shows: an update going on, else the last update,
+    /// as the NAS keeps it or, from before it kept its own, as kept here.
+    /// A check going on is the phase's to say (`Phase::Checking`), and a
+    /// plugin being installed is its job's.
     async fn shown(
         &self,
         latest: Option<UpdateRun>,
         update: Option<UpdateRun>,
     ) -> Result<Option<UpdateRun>, UpdatesError> {
         match (latest, update) {
-            (Some(run), _) if run.state == RunState::Running => Ok(Some(run)),
+            (Some(run), _) if run.state == RunState::Running && run.installs => Ok(Some(run)),
             (_, Some(update)) => Ok(Some(update)),
             (Some(run), None) if run.installs => Ok(Some(run)),
             _ => Ok(self.ports.store.last_run().await?),
@@ -991,6 +995,40 @@ mod tests {
         assert_eq!((run.id.as_str(), run.state), ("run9", RunState::Failed));
         s.updates.tick().await.unwrap();
         assert_eq!(s.said.all().iter().filter(|n| n.code == "updates_failed").count(), 1, "and said once");
+    }
+
+    #[tokio::test]
+    async fn a_check_or_a_plugin_going_on_is_not_shown_as_an_update() {
+        let s = setup();
+        let request = RequestContext::default();
+        let run = |id: &str, installs: bool, state: RunState| UpdateRun {
+            id: id.into(),
+            installs,
+            finishes: false,
+            state,
+            step: "lists".into(),
+            started_at: Timestamp::from_unix_seconds(100),
+            finished_at: (state != RunState::Running).then(|| Timestamp::from_unix_seconds(150)),
+            error: None,
+            zendiloos: None,
+            report: None,
+        };
+        s.host.record(run("run9", true, RunState::Succeeded));
+
+        // A check (or Docker, NUT, rsync being installed) runs apt: the
+        // last update stays what the page shows.
+        s.host.record(run("look1", false, RunState::Running));
+        let shown = s.updates.overview(&request).await.unwrap().run.expect("the last update");
+        assert_eq!((shown.id.as_str(), shown.state), ("run9", RunState::Succeeded));
+        // Nothing was ever updated: nothing is shown.
+        let fresh = setup();
+        fresh.host.record(run("look1", false, RunState::Running));
+        assert!(fresh.updates.overview(&request).await.unwrap().run.is_none());
+
+        // An update going on is.
+        s.host.record(run("run10", true, RunState::Running));
+        let shown = s.updates.overview(&request).await.unwrap().run.expect("the update going on");
+        assert_eq!((shown.id.as_str(), shown.state), ("run10", RunState::Running));
     }
 
     #[tokio::test]
