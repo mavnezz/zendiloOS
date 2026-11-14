@@ -64,6 +64,9 @@ const VMS_PACKAGES: [&str; 9] = [
 /// What backup tasks need: rsync, and the SSH client with ssh-keygen and
 /// ssh-keyscan (most systems have it already).
 const BACKUP_PACKAGES: [&str; 3] = ["rsync", "openssh-client", "rclone"];
+/// What following a UPS needs: NUT's drivers and server, its monitor, and
+/// the SNMP driver for a UPS with a network card.
+const UPS_PACKAGES: [&str; 3] = ["nut-server", "nut-client", "nut-snmp"];
 /// Lines of apt's output kept for a failure.
 const TAIL: usize = 15;
 /// The files of a release beside its package.
@@ -362,6 +365,15 @@ impl Debian {
                 step("install")?;
                 let mut args = vec!["install", "--yes", "--no-install-recommends"];
                 args.extend(BACKUP_PACKAGES);
+                self.apt(&args)
+            }
+            PackageTask::InstallUps => {
+                lists(&mut step)?;
+                step("install")?;
+                // Debian installs NUT switched off (MODE=none in nut.conf):
+                // nothing of it does anything until a UPS is set up.
+                let mut args = vec!["install", "--yes", "--no-install-recommends"];
+                args.extend(UPS_PACKAGES);
                 self.apt(&args)
             }
             PackageTask::InstallNetworkd => {

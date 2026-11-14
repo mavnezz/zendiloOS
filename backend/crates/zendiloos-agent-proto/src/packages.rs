@@ -22,6 +22,11 @@ pub enum PackageTask {
     /// rsync, the SSH client and rclone from Debian, for backup tasks;
     /// without recommended packages.
     InstallBackup,
+    /// Network UPS Tools from Debian (`nut-server`, `nut-client`,
+    /// `nut-snmp`), for following a UPS; without recommended packages.
+    /// They are installed switched off (`MODE=none`): nothing runs until
+    /// a UPS is set up.
+    InstallUps,
     /// `systemd-resolved` from Debian, for taking the network over from
     /// ifupdown (systemd-networkd comes with `systemd`). The network stays
     /// as it was: installing it switches `/etc/resolv.conf` to it, which
@@ -39,11 +44,12 @@ pub enum PackageTask {
 }
 
 impl PackageTask {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::InstallDocker,
         Self::InstallAcme,
         Self::InstallVms,
         Self::InstallBackup,
+        Self::InstallUps,
         Self::InstallNetworkd,
         Self::Check,
         Self::Update,
@@ -57,6 +63,7 @@ impl PackageTask {
             Self::InstallAcme => "install-acme",
             Self::InstallVms => "install-vms",
             Self::InstallBackup => "install-backup",
+            Self::InstallUps => "install-ups",
             Self::InstallNetworkd => "install-networkd",
             Self::Check => "check",
             Self::Update => "update",

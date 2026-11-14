@@ -30,6 +30,7 @@ use crate::projects::Projects;
 use crate::removable::Removable;
 use crate::sharing::Sharing;
 use crate::ssh::{Ssh, SshPaths};
+use crate::ups::{Ups, UpsPaths};
 use crate::time::{Time, TimePaths};
 use crate::vms::{VmPaths, VmTools, Vms};
 use crate::volumes::Volumes;
@@ -53,6 +54,7 @@ pub struct Paths {
     pub firewall: FirewallPaths,
     pub vms: VmPaths,
     pub backup: BackupPaths,
+    pub ups: UpsPaths,
 }
 
 const MDSTAT: &str = "/proc/mdstat";
@@ -85,6 +87,7 @@ pub struct Operations {
     host_names: HostNames,
     configuration: Configuration,
     ssh: Ssh,
+    ups: Ups,
     web: Web,
     acme: Acme,
     web_server: std::sync::Arc<WebServer>,
@@ -142,6 +145,7 @@ impl Operations {
             time: Time::new(tools, paths.time)?,
             host_names: HostNames::new(tools, paths.host_name)?,
             ssh: Ssh::new(tools, paths.ssh)?,
+            ups: Ups::new(tools, paths.ups)?,
             web: Web::new(tools, paths.web)?,
             acme: Acme::new(tools, paths.acme)?,
             web_server: std::sync::Arc::new(WebServer::new(tools, paths.web_server)?),
@@ -369,6 +373,9 @@ impl Operations {
             Request::ConfirmNetwork {} => self.network.confirm().await,
             Request::SshState {} => self.ssh.state().await,
             Request::SetSsh { config } => self.ssh.set(config).await,
+            Request::UpsFacts {} => Ok(self.ups.facts()),
+            Request::ScanUps {} => self.ups.scan().await,
+            Request::SetUps { config } => self.ups.set(config.as_ref()).await,
             Request::WebTlsState {} => self.web.state(),
             Request::DockerContainers {} => self.docker.containers().await,
             Request::DockerStats {} => self.docker.stats().await,
