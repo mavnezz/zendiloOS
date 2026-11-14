@@ -21,7 +21,7 @@ Allowed: 0BSD, Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-C
 ## The programs
 
 zendiloosd and zendiloos-agent, built for x86-64 and arm64 Linux, hold 325 crates of
-others (build scripts and what only they use aside), and 26 of zendiloOS's
+others (build scripts and what only they use aside), and 27 of zendiloOS's
 own (Apache-2.0).
 core_detect 1.0.0 is in the build for x86-64 only.
 curve25519-dalek-derive 0.1.1 is in the build for x86-64 only.
@@ -76,4 +76,4 @@ besides, the libraries the programs link (`${shlibs:Depends}`).
 | --- | --- |
 | Depends | acl, ca-certificates, cron | cron-daemon, gdisk, nftables, nginx, openssl, passwd, samba, smartmontools, systemd, util-linux, zfs-dkms, zfsutils-linux |
 | Recommends | avahi-daemon, nfs-kernel-server, wsdd2 |
-| Suggests | docker-compose, docker.io, libvirt-clients [amd64], libvirt-daemon-driver-qemu [amd64], openssh-client, ovmf [amd64], passt [amd64], qemu-system-x86 [amd64], qemu-utils [amd64], rclone, rsync |
+| Suggests | docker-compose, docker.io, libvirt-clients [amd64], libvirt-daemon-driver-qemu [amd64], nut-client, nut-server, nut-snmp, openssh-client, ovmf [amd64], passt [amd64], qemu-system-x86 [amd64], qemu-utils [amd64], rclone, rsync |
