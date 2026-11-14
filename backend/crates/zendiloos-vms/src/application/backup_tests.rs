@@ -384,6 +384,7 @@ async fn a_tpm_and_secure_boot_need_their_packages_which_the_plugin_brings() {
         let mut facts = host.facts.lock().unwrap();
         facts.swtpm = false;
         facts.secure_boot = false;
+        facts.secure_boot_2023 = false;
     }
     let test = TestVms::new(host);
     let windows = VmSettings { cpus: 1, memory_mib: 256, ..VmSettings::preset("win", OsPreset::Windows) };
@@ -397,6 +398,10 @@ async fn a_tpm_and_secure_boot_need_their_packages_which_the_plugin_brings() {
         facts.swtpm = true;
         facts.secure_boot = true;
     }
+    // Still without virt-firmware: installing again brings it.
+    let job = test.vms.install(&alice(), &context()).await.unwrap();
+    assert_eq!(finished(&test, &job).await.state, JobState::Succeeded);
+    test.host.facts.lock().unwrap().secure_boot_2023 = true;
     assert!(matches!(test.vms.install(&alice(), &context()).await, Err(VmsError::Installed)));
     let id = made(&test, windows).await;
     let vm = test.vms.get(&id, &context()).await.unwrap().vm;

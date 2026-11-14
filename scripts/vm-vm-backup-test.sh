@@ -11,10 +11,12 @@
 #      none, so PCI passthrough itself is skipped with a note)
 #   3. a VM with a TPM and Secure Boot: its domain has the TPM (swtpm) and
 #      Secure Boot with SMM; started, swtpm runs for it, libvirt took
-#      OVMF_CODE_4M.ms.fd and OVMF_VARS_4M.ms.fd, and its UEFI variables
-#      hold Microsoft's keys (virt-fw-vars says Secure Boot is on, where it
-#      is installed); Secure Boot switched off, its variables start afresh
-#      without them
+#      OVMF_CODE_4M.ms.fd and zendiloOS's template, and its UEFI variables
+#      hold Microsoft's keys of 2011 and 2023 with Secure Boot on; a boot
+#      loader signed only with Microsoft's UEFI CA 2023 (Debian 13's shim
+#      with its signature of 2011 removed) starts from its disk, and is
+#      refused with Debian's template's variables; Secure Boot switched
+#      off, its variables start afresh without Microsoft's keys
 #   4. a VM with two disks, data written into its zvols from the host (no
 #      guest needed): a snapshot of both at once with a name, more data, a
 #      second snapshot; a rollback to the first is refused while newer ones
@@ -164,17 +166,18 @@ clean
 say "1. The plugin with swtpm, its storage set up"
 plugin=$(call GET /vms/plugin)
 jq -e '.hardware.kvm == true' <<<"$plugin" >/dev/null || fail "no KVM in the VM (nested KVM off?): $plugin"
-if jq -e '.installed == false or .hardware.swtpm == false' <<<"$plugin" >/dev/null; then
+if jq -e '.installed == false or .hardware.swtpm == false or .hardware.secure_boot_2023 == false' <<<"$plugin" >/dev/null; then
     [[ $(status POST /vms/plugin/install) == 202 ]] || fail "install: $(cat "$work/last")"
     job_succeeded "$(jq -r .id "$work/last")" 1800
 fi
-for package in swtpm swtpm-tools ovmf; do
+for package in swtpm swtpm-tools ovmf python3-virt-firmware; do
     vm "dpkg-query -W -f='\${Status}' $package 2>/dev/null | grep -q 'install ok installed'" || fail "$package is not installed"
 done
 vm 'test -f /usr/share/OVMF/OVMF_CODE_4M.ms.fd && test -f /usr/share/OVMF/OVMF_VARS_4M.ms.fd' \
     || fail "Debian's OVMF with Microsoft's keys is not there"
 plugin=$(call GET /vms/plugin)
-jq -e '.hardware.swtpm and .hardware.secure_boot' <<<"$plugin" >/dev/null || fail "swtpm or Secure Boot not seen: $plugin"
+jq -e '.hardware.swtpm and .hardware.secure_boot and .hardware.secure_boot_2023' <<<"$plugin" >/dev/null \
+    || fail "swtpm or Secure Boot with Microsoft's keys of 2023 not seen: $plugin"
 pool=$(jq -r '.storage.pool // empty' <<<"$plugin")
 if [[ -z $pool ]]; then
     pool=${ZENDILOOS_VMS_POOL:-$(jq -r '.pools[0].pool // empty' <<<"$plugin")}
@@ -219,20 +222,60 @@ grep -q "name='secure-boot'" <<<"$xml" && grep -q "<smm state='on'/>" <<<"$xml" 
 grep -q "name='org.qemu.guest_agent.0'" <<<"$xml" || fail "no guest agent's channel: $xml"
 [[ $(status POST "/vms/$sid/start") == 200 ]] || fail "start: $(cat "$work/last") $(vm "sudo tail -n 5 /var/log/libvirt/qemu/$domain.log" 2>&1)"
 xml=$(vm "sudo virsh -c qemu:///system dumpxml $domain")
-grep -q 'OVMF_CODE_4M.ms.fd' <<<"$xml" && grep -q "template='/usr/share/OVMF/OVMF_VARS_4M.ms.fd'" <<<"$xml" \
-    || fail "not OVMF with Microsoft's keys: $(grep -E 'loader|nvram' <<<"$xml")"
+template=/var/lib/zendiloos-agent/firmware/OVMF_VARS_4M.ms.fd
+grep -q 'OVMF_CODE_4M.ms.fd' <<<"$xml" && grep -q "template='$template'" <<<"$xml" \
+    || fail "not OVMF with zendiloOS's template: $(grep -E 'loader|nvram' <<<"$xml")"
+vm 'test -f /etc/qemu/firmware/30-zendiloos-x86_64-secure-enrolled.json' || fail "zendiloOS's firmware is not described"
 uuid=$(vm "sudo virsh -c qemu:///system domuuid $domain" | tr -d '[:space:]')
 vm "pgrep -f 'swtpm socket.*$uuid' >/dev/null" || fail "swtpm does not run for the VM"
 vm "sudo test -d /var/lib/libvirt/swtpm/$uuid/tpm2" || fail "no TPM state in /var/lib/libvirt/swtpm/$uuid"
 nvram="/var/lib/libvirt/qemu/nvram/${domain}_VARS.fd"
-vm "sudo grep -a -q 'Microsoft Corporation KEK CA' $nvram" || fail "Microsoft's keys are not in the UEFI variables"
-if vm 'command -v virt-fw-vars >/dev/null'; then
-    vm "sudo virt-fw-vars --input $nvram --print 2>/dev/null | grep -i -q 'SecureBootEnable.*\\(on\\|01\\)'" \
-        || note "virt-fw-vars does not say Secure Boot is on: $(vm "sudo virt-fw-vars --input $nvram --print 2>/dev/null | grep -i secureboot" || true)"
-else
-    note "virt-fw-vars (python3-virt-firmware) is not installed: the variables were checked for Microsoft's keys only"
-fi
+for key in 'Microsoft Corporation KEK CA 2011' 'Microsoft Windows Production PCA 2011' \
+    'Microsoft Corporation UEFI CA 2011' 'Microsoft Corporation KEK 2K CA 2023' 'Windows UEFI CA 2023' \
+    'Microsoft UEFI CA 2023'; do
+    vm "sudo grep -a -q '$key' $nvram" || fail "$key is not in the UEFI variables"
+done
+vm "sudo virt-fw-vars --input $nvram --print 2>/dev/null | grep -i -q 'SecureBootEnable.*on'" \
+    || fail "Secure Boot is not on: $(vm "sudo virt-fw-vars --input $nvram --print 2>/dev/null | grep -i secureboot" || true)"
 force_off "$sid"
+
+# A boot loader signed only with Microsoft's UEFI CA 2023: Debian 13's
+# shim carries that signature and one of 2011, which goes. Alone on a FAT
+# file system that is the VM's disk, as \EFI\BOOT\BOOTX64.EFI; started,
+# it finds no GRUB beside it, but writes SbatLevel into the variables
+# first, which no firmware does: the firmware let it run.
+vm 'command -v sbattach >/dev/null && command -v mcopy >/dev/null && test -x /usr/sbin/mkfs.vfat \
+    || sudo DEBIAN_FRONTEND=noninteractive apt-get -q -y install --no-install-recommends sbsigntool mtools dosfstools >/dev/null'
+vm 'set -e; rm -rf /tmp/zdl-shim && mkdir /tmp/zdl-shim && cd /tmp/zdl-shim
+    apt-get download -q shim-signed >/dev/null && dpkg -x shim-signed_*.deb x
+    cp x/usr/lib/shim/shimx64.efi.signed shim.efi
+    sbattach --detach 2023.p7 --signum 2 shim.efi 2>/dev/null
+    sbattach --remove shim.efi 2>/dev/null && sbattach --remove shim.efi 2>/dev/null
+    sbattach --attach 2023.p7 shim.efi 2>/dev/null
+    /usr/sbin/mkfs.vfat -C esp.img 16384 >/dev/null && mmd -i esp.img ::/EFI ::/EFI/BOOT
+    mcopy -i esp.img shim.efi ::/EFI/BOOT/BOOTX64.EFI' || fail "no shim signed with the certificate of 2023 alone"
+certs=/usr/lib/python3/dist-packages/virt/firmware/certs
+vm "sbverify --cert $certs/MicrosoftUEFICA2023.pem /tmp/zdl-shim/shim.efi >/dev/null 2>&1" \
+    || fail "the shim is not signed with Microsoft's UEFI CA 2023"
+if vm "sbverify --cert $certs/MicrosoftCorporationUEFICA2011.pem /tmp/zdl-shim/shim.efi >/dev/null 2>&1"; then
+    fail "the shim is still signed with Microsoft's UEFI CA 2011"
+fi
+vm "sudo dd if=/tmp/zdl-shim/esp.img of=/dev/zvol/$pool/zendiloos.vms/$sid-disk0 bs=1M conv=notrunc,fsync status=none" \
+    || fail "the boot loader cannot be written onto the VM's disk"
+ran() { vm "sudo virt-fw-vars --input $nvram --print 2>/dev/null | grep -q SbatLevel"; }
+if ran; then fail "SbatLevel is in the variables before the boot loader ran"; fi
+[[ $(status POST "/vms/$sid/start") == 200 ]] || fail "start with the boot loader: $(cat "$work/last")"
+wait_for "the boot loader signed with Microsoft's UEFI CA 2023 to start" ran 90
+force_off "$sid"
+note "a boot loader signed only with Microsoft's UEFI CA 2023 started"
+# The same with the variables Debian's template gives: refused.
+vm "sudo cp /usr/share/OVMF/OVMF_VARS_4M.ms.fd $nvram"
+[[ $(status POST "/vms/$sid/start") == 200 ]] || fail "start with Debian's variables: $(cat "$work/last")"
+sleep 30
+force_off "$sid"
+if ran; then fail "with Debian's variables, the boot loader signed with Microsoft's UEFI CA 2023 started"; fi
+vm 'rm -rf /tmp/zdl-shim'
+note "with Debian's variables, which have Microsoft's keys of 2011 only, it is refused"
 vm_json=$(call GET "/vms/$sid")
 change=$(jq '{name, cpus, memory_mib, firmware, disks, nics: [.nics[] | {slot, model, network}], drives, boot,
     autostart, usb, pci, tpm, secure_boot: false}' <<<"$vm_json")

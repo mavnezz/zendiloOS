@@ -107,6 +107,10 @@ pub struct Tools {
     pub qemu: PathBuf,
     /// Only looked for: the TPM emulator libvirt starts for a VM with a TPM.
     pub swtpm: PathBuf,
+    /// Adds Microsoft's certificates of 2023 to the template of the VMs'
+    /// UEFI variables (python3-virt-firmware, part of the plugin's
+    /// packages); may be missing.
+    pub virt_fw_vars: PathBuf,
     /// Run in a transient unit: makes the folder of the VMs' consoles.
     pub systemd_tmpfiles: PathBuf,
     /// The backup plugin's: rsync, rclone and the SSH client run in a
@@ -165,6 +169,7 @@ impl Default for Tools {
             libvirtd: PathBuf::from("/usr/sbin/libvirtd"),
             qemu: PathBuf::from("/usr/bin/qemu-system-x86_64"),
             swtpm: PathBuf::from("/usr/bin/swtpm"),
+            virt_fw_vars: PathBuf::from("/usr/bin/virt-fw-vars"),
             systemd_tmpfiles: PathBuf::from("/usr/bin/systemd-tmpfiles"),
             rsync: PathBuf::from("/usr/bin/rsync"),
             rclone: PathBuf::from("/usr/bin/rclone"),

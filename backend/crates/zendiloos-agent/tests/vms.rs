@@ -212,6 +212,7 @@ fn host(installed: bool) -> Host {
         libvirtd: root.join("libvirtd"),
         qemu: root.join("qemu-system-x86_64"),
         swtpm: root.join("swtpm"),
+        virt_fw_vars: root.join("no-virt-fw-vars"),
         systemd_tmpfiles: PathBuf::from("/usr/bin/systemd-tmpfiles"),
         rm: PathBuf::from("/bin/rm"),
         ..Tools::default()
@@ -243,6 +244,9 @@ fn host(installed: bool) -> Host {
                 pci_ids: root.join("pci.ids"),
             },
             firmware: root.join("firmware"),
+            own_firmware: root.join("etc-firmware"),
+            variables: root.join("variables"),
+            certificates: root.join("certs"),
             nvram: root.join("nvram"),
             swtpm: root.join("swtpm-state"),
             transient: root.join("transient"),
@@ -387,13 +391,14 @@ async fn the_machine_says_what_it_offers() {
         locations,
         swtpm,
         secure_boot,
+        secure_boot_2023,
     } = host.run(Request::VmHost {}).await
     else {
         panic!("no facts")
     };
     assert_eq!(architecture, zendiloos_agent_proto::ARCHITECTURE);
     assert!(kvm && installed && !iommu);
-    assert!(swtpm && !secure_boot, "swtpm there, no OVMF with Microsoft's keys");
+    assert!(swtpm && !secure_boot && !secure_boot_2023, "swtpm there, no OVMF with Microsoft's keys");
     assert_eq!(cpu_virtualization.as_deref(), Some("vmx"));
     assert_eq!((cores, memory_bytes), (2, 2_027_168 * 1024));
     assert!(locations.is_empty());

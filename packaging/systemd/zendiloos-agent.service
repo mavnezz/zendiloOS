@@ -130,7 +130,10 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 #   restore-vm and remove-vm-backup) that may open the zvols' devices
 #   alone (DeviceAllow=block-zvol), read only for a backup, and write only
 #   the share or drive, or libvirt's folders of the UEFI variables and TPM
-#   states;
+#   states. The template of the UEFI variables with Microsoft's
+#   certificates of 2023 is made by virt-fw-vars in the state directory
+#   (/var/lib/zendiloos-agent), and described to QEMU's firmware selection
+#   in /etc/qemu/firmware;
 # - a UPS: Network UPS Tools' files go to /etc/nut, with the group of that
 #   folder (CAP_CHOWN), which NUT's programs run in; its driver, server and
 #   monitor are enabled, started and stopped by systemd, outside this
@@ -143,6 +146,7 @@ CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_CHOWN CAP_DAC_READ_SEARCH
 PrivateNetwork=yes
 ProtectSystem=strict
 ReadWritePaths=/etc -/var/lib/samba -/var/cache/samba -/run/samba -/var/lib/nfs -/run/issue.d -/run/zendiloos-acme
+StateDirectory=zendiloos-agent
 ProtectHome=yes
 PrivateTmp=yes
 # Disks (SATA/SAS/USB, NVMe namespaces, virtio) and ZFS; nothing else.

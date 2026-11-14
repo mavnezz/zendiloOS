@@ -173,6 +173,8 @@ fn host() -> Host {
         libvirtd: root.join("libvirtd"),
         qemu: root.join("qemu"),
         swtpm: root.join("swtpm-binary"),
+        // Missing until a test makes it.
+        virt_fw_vars: root.join("virt-fw-vars"),
         ..Tools::default()
     };
     fs::write(&tools.libvirtd, "").unwrap();
@@ -197,6 +199,9 @@ fn host() -> Host {
                 pci_ids: root.join("pci.ids"),
             },
             firmware: root.join("firmware"),
+            own_firmware: root.join("etc-firmware"),
+            variables: root.join("variables"),
+            certificates: root.join("certs"),
             nvram: root.join("nvram"),
             swtpm: root.join("swtpm"),
             transient: root.join("transient"),
@@ -617,6 +622,61 @@ async fn a_tpm_and_secure_boot_need_their_packages_and_switching_firmware_starts
         host.calls().contains(&format!("virsh --connect qemu:///system start --reset-nvram zendiloos-{ID}"))
     );
     assert!(!host.path(&format!("domains/zendiloos-{ID}.reset-nvram")).exists(), "once");
+}
+
+#[tokio::test]
+async fn with_virt_firmware_a_vm_with_secure_boot_is_defined_with_microsofts_certificates_of_2023() {
+    let host = host();
+    fs::write(host.path("swtpm-binary"), "").unwrap();
+    let template = host.path("OVMF_VARS_4M.ms.fd");
+    fs::write(&template, "Microsoft Corporation KEK CA 2011").unwrap();
+    let description = serde_json::json!({
+        "description": "UEFI firmware for x86_64, with Secure Boot, required SMM, SB enabled, MS certs enrolled",
+        "mapping": {
+            "device": "flash",
+            "executable": {"filename": "/usr/share/OVMF/OVMF_CODE_4M.ms.fd", "format": "raw"},
+            "nvram-template": {"filename": template, "format": "raw"},
+        },
+        "targets": [{"architecture": "x86_64", "machines": ["pc-q35-*"]}],
+        "features": ["acpi-s3", "enrolled-keys", "requires-smm", "secure-boot"],
+    });
+    fs::write(host.path("firmware/40-edk2-x86_64-secure-enrolled.json"), description.to_string()).unwrap();
+    let Response::VmHost { secure_boot, secure_boot_2023, .. } = host.run(Request::VmHost {}).await else {
+        panic!("no facts")
+    };
+    assert!(secure_boot && !secure_boot_2023, "without virt-firmware, 2011's only");
+
+    fs::create_dir_all(host.path("certs")).unwrap();
+    for name in ["MicrosoftCorporationKEK2KCA2023.pem", "WindowsUEFICA2023.pem", "MicrosoftUEFICA2023.pem"] {
+        fs::write(host.path(&format!("certs/{name}")), name).unwrap();
+    }
+    // --input <from> --output <to>, then what it adds.
+    script(
+        &host.path(""),
+        "virt-fw-vars",
+        "cp \"$2\" \"$4\"\nprintf 'Microsoft Corporation KEK 2K CA 2023 Windows UEFI CA 2023 Microsoft UEFI CA 2023' >> \"$4\"",
+    );
+    let Response::VmHost { secure_boot_2023, .. } = host.run(Request::VmHost {}).await else {
+        panic!("no facts")
+    };
+    assert!(secure_boot_2023);
+
+    let secure = VmDevices { tpm: true, secure_boot: true, ..devices() };
+    assert_eq!(
+        host.run(Request::DefineVm { spec: spec_of(ID, VmFirmware::Uefi, secure) }).await,
+        Response::Done
+    );
+    let calls = host.calls();
+    let made = calls.iter().position(|call| call.starts_with("virt-fw-vars --input")).expect("made");
+    let defined = calls.iter().position(|call| call.contains(" define ")).expect("defined");
+    assert!(made < defined, "libvirt picks the firmware as it defines the domain");
+    let ours: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(host.path("etc-firmware/30-zendiloos-x86_64-secure-enrolled.json")).unwrap(),
+    )
+    .unwrap();
+    let made = host.path("variables/OVMF_VARS_4M.ms.fd");
+    assert_eq!(ours["mapping"]["nvram-template"]["filename"], made.to_str().unwrap());
+    assert!(fs::read_to_string(&made).unwrap().contains("Windows UEFI CA 2023"));
 }
 
 #[tokio::test]

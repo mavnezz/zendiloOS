@@ -24,6 +24,7 @@ const PLUGIN: VmPlugin = {
     iommu: false,
     swtpm: true,
     secure_boot: true,
+    secure_boot_2023: true,
   },
   installed: true,
   storage: { pool: 'tank', volume: 1 },

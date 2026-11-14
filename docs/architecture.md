@@ -2705,8 +2705,10 @@ A VM's name is zendiloOS's alone and never reaches libvirt.
 **The packages, and no network of libvirt's.** The task `install-vms` runs
 `apt-get install --no-install-recommends libvirt-daemon
 libvirt-daemon-driver-qemu libvirt-clients qemu-system-x86 qemu-utils ovmf
-passt swtpm swtpm-tools`. A plugin installed before VMs had a TPM lacks
-swtpm: its page offers to install again, which brings it. Not `libvirt-daemon-system`, as one would expect: in Debian 13
+passt swtpm swtpm-tools python3-virt-firmware`. A plugin installed before
+VMs had a TPM lacks swtpm, and one installed before virt-firmware came
+along new VMs' keys of 2023: its page offers to install again, which
+brings them. Not `libvirt-daemon-system`, as one would expect: in Debian 13
 (libvirt 11.3) it *depends* on `libvirt-daemon-config-network`, which
 defines libvirt's default network (the bridge `virbr0` with
 192.168.122.0/24, its own dnsmasq and NAT rules it writes into the
@@ -3051,6 +3053,43 @@ variables of the old firmware behind: the agent notes it beside the
 domain's XML (`zendiloos-<id>.reset-nvram`) and starts the VM next with
 `virsh start --reset-nvram`, so they start afresh from the new template
 (boot entries go; Windows boots from its fallback path).
+
+**Microsoft's certificates of 2023.** Debian 13's template (ovmf
+2025.02-8+deb13u1) enrols Microsoft's certificates of 2011 only: Windows
+Production PCA 2011 and UEFI CA 2011 in db, KEK CA 2011 in KEK. A boot
+loader signed only with one of 2023, as newer Windows media and shims are,
+is refused by the firmware (`Access Denied` on the console, and then `No
+bootable option or device was found`), and so is one without a valid
+signature (a repacked ISO). The agent therefore makes a template of its own
+from Debian's, with Microsoft's KEK 2K CA 2023 added to KEK and Windows
+UEFI CA 2023 and Microsoft UEFI CA 2023 added to db, by `virt-fw-vars`
+from python3-virt-firmware (part of the plugin's packages), which ships
+the three certificates; Debian's PK and what Debian enrolled stay. Nothing
+of Microsoft's is shipped with zendiloOS. The template lies in the agent's
+state directory (`/var/lib/zendiloos-agent/firmware/OVMF_VARS_4M.ms.fd`,
+made only once it holds all three), and a description of it for QEMU's
+firmware selection in `/etc/qemu/firmware/30-zendiloos-x86_64-secure-enrolled.json`:
+Debian's description with the template in place of Debian's, which libvirt
+takes first, as it orders descriptions by name. libvirt picks the firmware
+as a domain is defined and records the template then, so the agent makes
+them (anew when Debian's template or the certificates changed, which a
+digest beside the template tells) before it defines a VM with Secure Boot.
+A VM's variables are made from it at its first start, or when they start
+afresh; a VM's variables that exist stay as they are, keys and boot
+entries, since a change of db and KEK behind the guest's back is also a
+change of what the TPM measures (BitLocker asks for its recovery key). A VM
+made before gets the new keys when Secure Boot is switched off and on
+again, which starts its variables afresh, or by Windows Update, which
+brings Windows UEFI CA 2023 into db itself (a KEK of 2023 it cannot bring:
+that needs the platform owner's signature, Debian's here). Without
+virt-firmware nothing is made and libvirt takes Debian's template, as
+before; the plugin's page and a VM's dialog say so (`secure_boot_2023` in
+the plugin's facts), and installing the plugin again brings it. The
+package's removal takes the description away; the template stays until a
+purge, for the variables of VMs that were made from it to start afresh.
+Tried in a test VM: a shim of Debian 13 with Microsoft's signature of 2011
+removed, leaving that of 2023, is refused with Debian's variables and
+started with these (`vm-vm-backup-test`, step 3).
 
 **The host's devices.** A VM may be given up to 8 USB and 8 PCI devices
 of the host's (`GET /vms/devices`: USB from `/sys/bus/usb/devices`, hubs

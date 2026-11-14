@@ -49,8 +49,9 @@ const UPDATE_FILE: &str = "update.json";
 const LIMITS: Limits = Limits { timeout: Duration::from_secs(30), max_stdout: 64 * 1024 };
 /// What virtual machines need, and nothing more (see the task): swtpm
 /// and its tools for a VM's TPM (Windows 11), whose state libvirt sets up
-/// with swtpm_setup.
-const VMS_PACKAGES: [&str; 9] = [
+/// with swtpm_setup, and virt-firmware, which adds Microsoft's
+/// certificates of 2023 to the UEFI variables for Secure Boot.
+const VMS_PACKAGES: [&str; 10] = [
     "libvirt-daemon",
     "libvirt-daemon-driver-qemu",
     "libvirt-clients",
@@ -60,6 +61,7 @@ const VMS_PACKAGES: [&str; 9] = [
     "passt",
     "swtpm",
     "swtpm-tools",
+    "python3-virt-firmware",
 ];
 /// What backup tasks need: rsync, and the SSH client with ssh-keygen and
 /// ssh-keyscan (most systems have it already).
@@ -1300,7 +1302,7 @@ mod tests {
         assert!(
             installs[2].ends_with(
                 "install --yes --no-install-recommends libvirt-daemon libvirt-daemon-driver-qemu \
-                 libvirt-clients qemu-system-x86 qemu-utils ovmf passt swtpm swtpm-tools"
+                 libvirt-clients qemu-system-x86 qemu-utils ovmf passt swtpm swtpm-tools python3-virt-firmware"
             ),
             "{installs:?}"
         );

@@ -100,7 +100,8 @@ async fn the_plugin_says_what_the_machine_offers_and_needs_kvm() {
         plugin.body["hardware"],
         json!({
             "architecture": "amd64", "architecture_supported": true,
-            "kvm": true, "cpu_virtualization": "vmx", "iommu": false, "swtpm": true, "secure_boot": true
+            "kvm": true, "cpu_virtualization": "vmx", "iommu": false, "swtpm": true, "secure_boot": true,
+            "secure_boot_2023": true
         })
     );
     assert_eq!((plugin.body["installed"].as_bool(), plugin.body["cores"].as_u64()), (Some(false), Some(2)));

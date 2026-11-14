@@ -550,6 +550,7 @@ impl VmHost for AgentVms {
                 installed,
                 swtpm,
                 secure_boot,
+                secure_boot_2023,
                 cores,
                 memory_bytes,
                 locations,
@@ -561,6 +562,7 @@ impl VmHost for AgentVms {
                 installed,
                 swtpm,
                 secure_boot,
+                secure_boot_2023,
                 limits: {
                     let VmNetworks { bridges, internal, cards } = self.networks(context).await;
                     HostLimits {
