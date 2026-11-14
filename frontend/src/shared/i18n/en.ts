@@ -573,6 +573,7 @@ const en = {
     locale: 'Time & language',
     update: 'Updates',
     configurationBackup: 'Configuration backup',
+    ups: 'UPS',
     accounts: 'Users',
     groups: 'Groups',
     fileServices: 'File services',
@@ -590,6 +591,7 @@ const en = {
       locale: 'clock date time zone NTP time servers language',
       update: 'upgrade version channel release notes Debian packages apt kernel restart automatic',
       'configuration-backup': 'settings export restore passphrase schedule USB',
+      ups: 'UPS uninterruptible power supply battery power cut outage failure shutdown NUT SNMP USB APC Eaton CyberPower',
       'storage-pools':
         'ZFS pool RAID RAIDZ mirror scrub data check rebuild resilver replace disk import volume',
       'storage-disks':
@@ -1682,6 +1684,11 @@ const en = {
         network_drift: 'Network files changed outside zendiloOS',
         pools_not_imported: 'Pools not imported',
         configuration_backup_failed: 'Configuration backup failed',
+        ups_on_battery: 'Power cut: the UPS runs on battery',
+        ups_battery_low: 'UPS battery low, the NAS shuts down',
+        ups_on_mains: 'Power is back',
+        ups_unreachable: 'UPS does not answer',
+        ups_replace_battery: 'UPS asks for a new battery',
         certificate_renewed: 'Certificate renewed',
         certificate_renewal_failed: 'Certificate not renewed',
         certificate_not_taken: 'New certificate not taken',
@@ -2839,6 +2846,7 @@ const en = {
       vms_backup: 'Back up virtual machine',
       vms_restore: 'Restore virtual machine',
       network_take_over: 'Let zendiloOS manage the network',
+      ups_install: 'Install the Network UPS Tools',
     },
     errors: {
       canceled: 'Canceled.',
@@ -3900,6 +3908,118 @@ const en = {
     checkDaily: 'Look for updates daily',
     checkDailyHint: 'The NAS tells you about new updates; they are installed only when you click.',
   },
+  ups: {
+    description: 'Shuts the NAS down in good time when the power fails',
+    help: 'An uninterruptible power supply (UPS) feeds the NAS from its battery when the power fails. zendiloOS follows it: it tells you when the power fails and when it is back, and shuts the NAS down before the battery is empty, so that nothing is cut off in the middle of being written.',
+    helpSources:
+      'The UPS is plugged into the NAS over USB, answers on the network over SNMP, or is connected to another device that passes its state on. This NAS can pass on the state of its own UPS the same way, to other devices that hang on it.',
+    passwordKept: 'Unchanged',
+    install: {
+      title: 'Network UPS Tools are not installed',
+      text: 'zendiloOS follows a UPS with the Network UPS Tools (NUT) from Debian. They are small and installed within a minute.',
+      waiting: 'A UPS is set up already; it is followed as soon as they are installed.',
+      action: 'Install',
+      running: 'Installing …',
+      failed: 'The installation failed.',
+    },
+    status: {
+      title: 'State',
+      onMains: 'On mains',
+      onBattery: 'On battery',
+      lowBattery: 'Battery low',
+      charging: 'Charging',
+      replaceBattery: 'Replace battery',
+      silent: 'The UPS does not answer.',
+      silentHint:
+        'After a change it takes a few seconds until it does. If it stays silent, check the cable or the address, and the driver.',
+      charge: 'Charge',
+      runtime: 'Runtime',
+      runtimeHint: 'at the present load',
+      load: 'Load',
+      says: 'The UPS says:',
+    },
+    source: {
+      label: 'UPS',
+      none: 'None',
+      usb: 'On this NAS, over USB',
+      snmp: 'On the network, over SNMP',
+      server: 'On another device (NUT server)',
+      simulated: 'Simulated, for tests',
+      hints: {
+        none: 'Without a UPS, a power cut switches the NAS off as it is.',
+        usb: "The UPS's USB cable is plugged into this NAS.",
+        snmp: 'The UPS has a network card that answers over SNMP (v1 or v2c).',
+        server:
+          'The UPS is connected to another device that runs Network UPS Tools, such as another NAS. This NAS follows it over the network.',
+        simulated: 'A UPS that exists only in NUT, to try out what happens.',
+      },
+    },
+    usb: {
+      device: 'Device',
+      any: 'Any UPS the driver finds',
+      detect: 'Detect',
+      forget: 'Any UPS',
+      none: 'No UPS found on USB. Is its USB cable plugged into the NAS? Some older ones are not found and need their driver chosen by hand.',
+      unnamed: 'UPS without a name',
+      unsupported: '{driver}: cannot be set here',
+      deviceHint:
+        'A UPS named by its USB ids is still the right one when a second one is plugged in.',
+      driver: 'Driver',
+      driverHint:
+        "usbhid-ups fits most of today's UPSs, such as those of APC, Eaton and CyberPower; older ones need another.",
+    },
+    snmp: {
+      address: 'Address',
+      addressHint: "The host name or IPv4 address of the UPS's network card.",
+      community: 'Community',
+      version: 'Version',
+    },
+    server: {
+      host: 'Address',
+      port: 'Port',
+      name: 'UPS name',
+      nameHint:
+        "What the other device calls its UPS: 'ups' on zendiloOS and on a Synology NAS, 'qnapups' on a QNAP.",
+      user: 'Account',
+      password: 'Password',
+      accountHint: 'The account the other device has for those that follow its UPS.',
+    },
+    shutdown: {
+      label: 'Shut down',
+      lowBattery: 'when the UPS reports its battery as low',
+      chargeBelow: 'when the charge falls below {percent} %',
+      afterMinutes: 'after {minutes} minutes on battery',
+      percent: 'Charge in percent',
+      minutes: 'Minutes on battery',
+      hint: 'The UPS decides itself what a low battery is, mostly at 10 to 20 percent. A charge of your own takes the place of that; a time on battery comes on top of it. If the power is back in time, the NAS keeps running.',
+      hintServer:
+        'The other device decides what a low battery is. A time on battery comes on top of it; a charge of your own needs the UPS on this NAS.',
+    },
+    cut: {
+      label: 'After the shutdown',
+      text: 'Have the UPS switch its output off',
+      hint: "The UPS cuts its output shortly after the NAS has shut down and switches it on again when the power is back. If the NAS's firmware is set to start when power returns, the NAS then starts by itself. Everything else on the UPS loses power too.",
+    },
+    serve: {
+      label: 'Other devices',
+      text: "Pass the UPS's state on",
+      hint: 'Other devices fed by this UPS, such as a second NAS, follow it through this one and shut down no later than it does.',
+      accountHint:
+        "The account those devices sign in with. A Synology NAS cannot be given one: it signs in as 'monuser' with the password 'secret'.",
+      there: 'Enter on the other device',
+      address: 'Address',
+      firewall:
+        'If the firewall is on, add a rule that allows TCP port {port} for those devices (Control panel → Security).',
+    },
+    problems: {
+      address: 'Fill in the address and the names.',
+      port: 'A port is a number from 1 to 65535.',
+      password: 'Enter the password.',
+      account: 'Name the account.',
+      percent: 'The charge to shut down at is from 5 to 95 percent.',
+      minutes: 'The time on battery is from 1 to 720 minutes.',
+    },
+  },
   notices: {
     certificate_renewed: {
       title: 'Certificate for {name} renewed',
@@ -3977,6 +4097,26 @@ const en = {
     configuration_backup_failed: {
       title: 'No backup of the configuration',
       body: '{reason} Control panel → Configuration backup shows the plan and the last run.',
+    },
+    ups_on_battery: {
+      title: 'Power cut: the UPS runs on battery',
+      body: 'zendiloOS shuts down as Control panel → UPS says, unless the power returns in time.',
+    },
+    ups_battery_low: {
+      title: "The UPS's battery is low: the NAS shuts down",
+      body: 'The battery will not last much longer.',
+    },
+    ups_on_mains: {
+      title: 'The power is back',
+      body: 'The UPS runs on mains again and charges its battery.',
+    },
+    ups_unreachable: {
+      title: 'The UPS does not answer',
+      body: 'A power cut would go unnoticed. Control panel → UPS says where it is connected; check the cable or the network.',
+    },
+    ups_replace_battery: {
+      title: 'The UPS asks for a new battery',
+      body: 'Until it is replaced, the UPS may not carry the NAS through a power cut.',
     },
     snapshot_failed: {
       title: 'No snapshot of {share}',
@@ -4515,6 +4655,10 @@ const en = {
     iso_denied: 'Your account cannot read this ISO.',
     backup_not_installed: 'Install the Backup plugin first.',
     backup_installed: 'rsync is installed already.',
+    ups_not_installed: 'Install the Network UPS Tools first.',
+    ups_installed: 'The Network UPS Tools are installed already.',
+    ups_snmp_missing: "NUT's SNMP driver is not installed (the package nut-snmp).",
+    ups_password_needed: 'Enter the password.',
     folder_taken: 'Another task backs up into that folder',
     task_running: 'The task is running; wait until it has ended, or stop it.',
     task_not_running: 'The task is not running.',

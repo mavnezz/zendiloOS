@@ -18,6 +18,7 @@ import DeviceInfoPage from '@/features/system/components/DeviceInfoPage.vue'
 import ResourceMonitor from '@/features/system/components/ResourceMonitor.vue'
 import TerminalPage from '@/features/system/components/TerminalPage.vue'
 import WebInterfacePage from '@/features/system/components/WebInterfacePage.vue'
+import UpsPage from '@/features/ups/components/UpsPage.vue'
 import { api, unwrap } from '@/shared/api/client'
 import { useWindowSection } from '@/shared/lib/window-section'
 import { AppFrame, type NavGroup } from '@/shared/ui/frame'
@@ -122,6 +123,11 @@ const { data: pools } = useQuery({
     </div>
     <UpdatePage v-else-if="section === 'update'" />
     <ConfigurationBackupPage v-else-if="section === 'configuration-backup'" />
+    <UpsPage
+      v-else-if="section === 'ups'"
+      :can-manage="session.can('system.manage')"
+      :address="address"
+    />
     <LocalePage v-else-if="section === 'locale'" />
     <UsersPage v-else-if="section === 'accounts'" :own-account-id="session.info?.account.id" />
     <FileServicesPage

@@ -14467,6 +14467,204 @@
         ]
       }
     },
+    "/api/v1/ups": {
+      "get": {
+        "tags": [
+          "ups"
+        ],
+        "summary": "The UPS: what is installed, its settings and what it says. Needs\n`system.view`.",
+        "operationId": "ups",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpsOverview"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "ups"
+        ],
+        "summary": "Sets where the UPS is and what the NAS does on battery, and puts it in\nforce: NUT's files are written and its services started, or stopped\nwithout a UPS. What NUT's host refuses is not kept. Needs\n`system.manage`.",
+        "operationId": "set_ups",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpsOverview"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`ups_not_installed`, `ups_snmp_missing`, `refused`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_input`; `ups_password_needed`: no password is kept for that account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`agent_failed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/ups/install": {
+      "post": {
+        "tags": [
+          "ups"
+        ],
+        "summary": "Installs Network UPS Tools from Debian, as a job; settings that are\nthere already are put in force when it is done. Needs `system.manage`.",
+        "operationId": "install_ups",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`ups_installed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/ups/scan": {
+      "post": {
+        "tags": [
+          "ups"
+        ],
+        "summary": "Looks for UPSes on USB (`nut-scanner`). Needs `system.manage`.",
+        "operationId": "scan_ups",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpsDevices"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_rejected`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`ups_not_installed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/vms": {
       "get": {
         "tags": [
@@ -28868,6 +29066,622 @@
           }
         }
       },
+      "UpsAccount": {
+        "type": "object",
+        "description": "The account other devices follow the UPS with.",
+        "required": [
+          "user",
+          "password_set"
+        ],
+        "properties": {
+          "password_set": {
+            "type": "boolean"
+          },
+          "user": {
+            "type": "string"
+          }
+        }
+      },
+      "UpsAccountInput": {
+        "type": "object",
+        "required": [
+          "user"
+        ],
+        "properties": {
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "password",
+            "description": "Left out or empty: the one kept stays, for the same account."
+          },
+          "user": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "UpsDevice": {
+        "type": "object",
+        "description": "A UPS found on USB.",
+        "required": [
+          "driver",
+          "supported"
+        ],
+        "properties": {
+          "driver": {
+            "type": "string",
+            "description": "NUT's driver for it."
+          },
+          "product": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "product_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "serial": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "supported": {
+            "type": "boolean",
+            "description": "Whether that driver is one of `drivers`, which can be set."
+          },
+          "vendor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "vendor_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "UpsDevices": {
+        "type": "object",
+        "required": [
+          "devices"
+        ],
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UpsDevice"
+            }
+          }
+        }
+      },
+      "UpsOverview": {
+        "type": "object",
+        "required": [
+          "installed",
+          "snmp",
+          "settings",
+          "drivers",
+          "name",
+          "port",
+          "default_account"
+        ],
+        "properties": {
+          "default_account": {
+            "type": "string",
+            "description": "The account's name other devices sign in with unless another is set."
+          },
+          "drivers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "NUT's drivers for a UPS on USB."
+          },
+          "installed": {
+            "type": "boolean",
+            "description": "Network UPS Tools are installed."
+          },
+          "name": {
+            "type": "string",
+            "description": "The UPS's name in NUT on this NAS, which devices that follow ask for."
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The port NUT's server listens on.",
+            "minimum": 0
+          },
+          "reading": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/UpsReading",
+                "description": "None without a UPS, and while it does not answer."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "settings": {
+            "$ref": "#/components/schemas/UpsSettings"
+          },
+          "snmp": {
+            "type": "boolean",
+            "description": "Their SNMP driver too."
+          }
+        }
+      },
+      "UpsReading": {
+        "type": "object",
+        "description": "What the UPS says of itself.",
+        "required": [
+          "on_battery",
+          "low_battery",
+          "replace_battery",
+          "charging",
+          "status"
+        ],
+        "properties": {
+          "charge_percent": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "charging": {
+            "type": "boolean"
+          },
+          "load_percent": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "low_battery": {
+            "type": "boolean",
+            "description": "The battery is low, or a shutdown is forced."
+          },
+          "manufacturer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "on_battery": {
+            "type": "boolean",
+            "description": "The power has failed: the UPS runs on battery."
+          },
+          "replace_battery": {
+            "type": "boolean"
+          },
+          "runtime_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "status": {
+            "type": "string",
+            "description": "NUT's `ups.status`, e.g. `OL CHRG`."
+          }
+        }
+      },
+      "UpsRequest": {
+        "type": "object",
+        "required": [
+          "shutdown"
+        ],
+        "properties": {
+          "cut_power": {
+            "type": "boolean"
+          },
+          "serve": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/UpsAccountInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "shutdown": {
+            "$ref": "#/components/schemas/UpsShutdown"
+          },
+          "source": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/UpsSourceInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "UpsSettings": {
+        "type": "object",
+        "required": [
+          "shutdown",
+          "cut_power"
+        ],
+        "properties": {
+          "cut_power": {
+            "type": "boolean",
+            "description": "After the shutdown the UPS cuts its output, so that the NAS starts\nagain by itself when the power is back."
+          },
+          "serve": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/UpsAccount",
+                "description": "Other devices may follow the UPS through the NAS: NUT's server\nlistens on the network (TCP port 3493)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "shutdown": {
+            "$ref": "#/components/schemas/UpsShutdown"
+          },
+          "source": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/UpsSource",
+                "description": "None: no UPS."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "UpsShutdown": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "When the UPS says its battery is low; following another device,\nwhen that one says to shut down.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "low_battery"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "When the charge has fallen to `percent` (5 to 95); with a UPS on\nthe NAS itself only.",
+            "required": [
+              "percent",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "charge_below"
+                ]
+              },
+              "percent": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "After `minutes` on battery (1 to 720), or earlier when the battery\nis low.",
+            "required": [
+              "minutes",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "after_minutes"
+                ]
+              },
+              "minutes": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            }
+          }
+        ],
+        "description": "When the NAS shuts down while the UPS runs on battery."
+      },
+      "UpsSnmpVersion": {
+        "type": "string",
+        "enum": [
+          "v1",
+          "v2c"
+        ]
+      },
+      "UpsSource": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Plugged into the NAS.",
+            "required": [
+              "driver",
+              "kind"
+            ],
+            "properties": {
+              "driver": {
+                "type": "string",
+                "description": "One of `drivers`."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "usb"
+                ]
+              },
+              "product_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "serial": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "vendor_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Four hexadecimal digits; with the product id and the serial\nnumber they name one UPS among several."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A UPS with a network card, asked over SNMP.",
+            "required": [
+              "address",
+              "community",
+              "version",
+              "kind"
+            ],
+            "properties": {
+              "address": {
+                "type": "string"
+              },
+              "community": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "snmp"
+                ]
+              },
+              "version": {
+                "$ref": "#/components/schemas/UpsSnmpVersion"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The UPS of another device that runs NUT's server.",
+            "required": [
+              "host",
+              "port",
+              "ups",
+              "user",
+              "password_set",
+              "kind"
+            ],
+            "properties": {
+              "host": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "server"
+                ]
+              },
+              "password_set": {
+                "type": "boolean",
+                "description": "A password is kept; it is never shown."
+              },
+              "port": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "ups": {
+                "type": "string",
+                "description": "The UPS's name there."
+              },
+              "user": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A UPS that NUT plays from a file, for tests.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "simulated"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Where the UPS is."
+      },
+      "UpsSourceInput": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "driver",
+              "kind"
+            ],
+            "properties": {
+              "driver": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "usb"
+                ]
+              },
+              "product_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "serial": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "vendor_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "address",
+              "community",
+              "version",
+              "kind"
+            ],
+            "properties": {
+              "address": {
+                "type": "string"
+              },
+              "community": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "snmp"
+                ]
+              },
+              "version": {
+                "$ref": "#/components/schemas/UpsSnmpVersion"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "host",
+              "user",
+              "kind"
+            ],
+            "properties": {
+              "host": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "server"
+                ]
+              },
+              "password": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "password",
+                "description": "Left out or empty: the one kept stays, for the same host and\naccount."
+              },
+              "port": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "description": "3493 unless given.",
+                "minimum": 0
+              },
+              "ups": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "`ups` unless given."
+              },
+              "user": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "simulated"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "As [`UpsSource`], to be set."
+      },
       "UsageMoment": {
         "type": "object",
         "required": [
@@ -30890,6 +31704,10 @@
     {
       "name": "backup",
       "description": "Backup tasks: the plugin, tasks to places on the NAS and rsync servers, their log, restores"
+    },
+    {
+      "name": "ups",
+      "description": "A UPS through Network UPS Tools: where it is, when the NAS shuts down on battery, the devices that follow it"
     }
   ]
 }

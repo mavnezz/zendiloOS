@@ -1,5 +1,6 @@
 import {
   Activity,
+  BatteryCharging,
   ArchiveRestore,
   Bell,
   Blocks,
@@ -119,6 +120,13 @@ const SETTINGS_PAGES: AppSection[] = [
     icon: DatabaseBackup,
     group: 'controlPanel.groupGeneral',
     permission: 'system.manage',
+  },
+  {
+    id: 'ups',
+    label: 'controlPanel.ups',
+    icon: BatteryCharging,
+    group: 'controlPanel.groupGeneral',
+    permission: 'system.view',
   },
   {
     id: 'storage-pools',
