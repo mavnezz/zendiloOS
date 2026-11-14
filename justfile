@@ -307,6 +307,10 @@ vm-pool-delete-test:
 vm-notify-test:
     scripts/vm-notify-test.sh
 
+# A UPS in the second VM: NUT installed from the page, a simulated UPS, a power cut told, other devices following, the VM powered off below a charge and after minutes on battery
+vm-ups-test:
+    scripts/vm-ups-test.sh
+
 # The firewall in the second VM: rules for SMB and a project, open connections while a change waits, new Docker bridges, the lock-out check, going back, a reboot
 vm-firewall-test:
     scripts/vm-firewall-test.sh

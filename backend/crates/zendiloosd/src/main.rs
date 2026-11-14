@@ -458,6 +458,14 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         audit: audit.clone(),
         clock: Arc::new(SystemClock),
     });
+    // The machine follows the settings kept, as after a restored
+    // configuration; where they are in force the agent changes nothing.
+    let kept = ups.clone();
+    tokio::spawn(async move {
+        if let Err(error) = kept.apply_kept(&RequestContext::default()).await {
+            tracing::warn!(error = %error_chain(&error), "ups: cannot put the settings in force");
+        }
+    });
     let ups_watch = spawn_ups_watch(ups.clone());
     let restart = ProcessRestart::new();
     let recovery = Recovery::new(RecoveryPorts {
@@ -584,14 +592,14 @@ async fn stop(restart: ProcessRestart) {
 }
 
 /// Every ten seconds: a look at the UPS, and a notification when its state
-/// changed (a power cut, its end, a battery running low, no answer).
+/// changed (a power cut, its end, the shutdown, no answer). On battery
+/// every three: NUT waits ten seconds between deciding to shut down and
+/// doing it, and that is to be told before zendiloosd is stopped.
 fn spawn_ups_watch(ups: Ups) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut every = tokio::time::interval(Duration::from_secs(10));
-        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            every.tick().await;
-            ups.watch().await;
+            let pause = if ups.watch().await { 3 } else { 10 };
+            tokio::time::sleep(Duration::from_secs(pause)).await;
         }
     })
 }

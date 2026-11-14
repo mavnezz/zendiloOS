@@ -18,9 +18,17 @@
 //!
 //! The files are NUT's own, replaced whole, readable by root and the group
 //! of `/etc/nut` (Debian's `nut`) as the package has them: they hold the
-//! accounts' passwords. A driver that does not start (the UPS unplugged)
-//! does not make the settings fail: the status then says that the UPS does
-//! not answer.
+//! accounts' passwords. What stood in one before zendiloOS wrote it the
+//! first time (Debian's sample, or a configuration made by hand) is kept
+//! beside it, as `<name>.before-zendiloos`. A driver that does not start
+//! (the UPS unplugged) does not make the settings fail: the status then
+//! says that the UPS does not answer.
+//!
+//! Settings that are in force already change nothing and interrupt
+//! nothing: zendiloosd asks for them again at every start, so that the
+//! machine follows a restored configuration. Without a UPS, NUT is
+//! switched off only where zendiloOS set it up: one configured by hand and
+//! never through zendiloOS is left as it is.
 
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -48,6 +56,8 @@ const SIMULATED: &str = "zendiloos-simulated.dev";
 const TIMER: &str = "zendiloos-timer";
 /// The timer's name in `upssched.conf`.
 const ON_BATTERY: &str = "onbatt";
+/// What a file's copy from before zendiloOS wrote it is called, after its name.
+const BEFORE: &str = ".before-zendiloos";
 
 /// Where NUT's files are; other than the real places in tests.
 #[derive(Debug, Clone)]
@@ -187,7 +197,7 @@ pub fn upsmon_conf(config: Option<&UpsConfig>) -> String {
          POLLFREQALERT 5\n\
          HOSTSYNC 15\n\
          DEADTIME 15\n\
-         FINALDELAY 5\n",
+         FINALDELAY 10\n",
     );
     if config.cut_power {
         text.push_str("POWERDOWNFLAG /etc/killpower\n");
@@ -318,16 +328,26 @@ impl Ups {
         if matches!(config.source, UpsSource::Snmp { .. }) && !self.paths.snmp_driver.exists() {
             return Err(OperationError::Setup("NUT's SNMP driver is not installed (nut-snmp)".into()));
         }
-        self.write_all(Some(config))?;
+        let local = config.source.is_local();
+        let changed = self.write_all(Some(config))?;
+        // In force already, as when zendiloosd asks again at its start:
+        // NUT is not interrupted for it.
+        if !changed && self.all_active(if local { &[SERVER, MONITOR] } else { &[MONITOR] }).await {
+            return Ok(Response::Done);
+        }
         // The driver's unit follows `ups.conf`: made for a UPS on this
-        // machine, removed for another device's.
-        self.run(&["restart", ENUMERATOR]).await?;
-        if config.source.is_local() {
+        // machine, removed for another device's. Neither Debian's
+        // enumerator, which restarts a driver whose section changed and
+        // waits a minute and a half for it, nor the driver is waited for:
+        // a UPS that is not plugged in, or does not answer on the network,
+        // keeps its driver from starting for as long as it tries, and
+        // systemd goes on trying. The settings hold all the same, and the
+        // server takes the driver once it is there.
+        self.run(&["restart", "--no-block", ENUMERATOR]).await?;
+        if local {
             link_units(&self.systemctl, &["enable", "--no-reload", SERVER, MONITOR]).await?;
             reload_if_behind(&self.systemctl, SERVER).await?;
-            // A UPS that is not plugged in keeps its driver from starting;
-            // the settings hold all the same.
-            let _ = self.run(&["restart", DRIVER]).await;
+            let _ = self.run(&["restart", "--no-block", DRIVER]).await;
             self.run(&["restart", SERVER]).await?;
         } else {
             link_units(&self.systemctl, &["disable", "--no-reload", "--now", SERVER]).await?;
@@ -338,49 +358,92 @@ impl Ups {
         Ok(Response::Done)
     }
 
-    /// No UPS: nothing of NUT runs, and its files say so.
+    /// No UPS: nothing of NUT runs, and its files say so. A NUT that is
+    /// not installed, or was set up by hand and never through zendiloOS, is
+    /// not zendiloOS's to switch off.
     async fn off(&self) -> Result<Response, OperationError> {
-        if !self.installed() {
+        if !self.installed() || !self.ours() {
             return Ok(Response::Done);
         }
-        self.write_all(None)?;
+        let changed = self.write_all(None)?;
+        if !changed && !self.any_active(&[MONITOR, SERVER]).await {
+            return Ok(Response::Done);
+        }
         link_units(&self.systemctl, &["disable", "--no-reload", "--now", MONITOR, SERVER]).await?;
         reload_if_behind(&self.systemctl, SERVER).await?;
         // Without a section in `ups.conf` the driver's unit goes.
-        let _ = self.run(&["restart", ENUMERATOR]).await;
-        let _ = self.run(&["stop", DRIVER]).await;
+        let _ = self.run(&["restart", "--no-block", ENUMERATOR]).await;
+        let _ = self.run(&["stop", "--no-block", DRIVER]).await;
         Ok(Response::Done)
     }
 
-    fn write_all(&self, config: Option<&UpsConfig>) -> Result<(), OperationError> {
+    /// Whether zendiloOS wrote NUT's configuration: `nut.conf` says so.
+    fn ours(&self) -> bool {
+        fs::read_to_string(self.paths.dir.join("nut.conf")).is_ok_and(|text| text.contains(HEADER))
+    }
+
+    /// NUT's files for `config`; whether any of them changed.
+    fn write_all(&self, config: Option<&UpsConfig>) -> Result<bool, OperationError> {
         let dir = &self.paths.dir;
-        self.write("nut.conf", &nut_conf(config), 0o640)?;
-        self.write("ups.conf", &ups_conf(config), 0o640)?;
-        self.write("upsd.conf", &upsd_conf(config), 0o640)?;
-        self.write("upsd.users", &upsd_users(config), 0o640)?;
-        self.write("upsmon.conf", &upsmon_conf(config), 0o640)?;
-        self.write("upssched.conf", &upssched_conf(config, dir), 0o640)?;
-        self.write(TIMER, &timer_script(), 0o750)?;
+        let mut changed = self.write("nut.conf", &nut_conf(config), 0o640)?;
+        changed |= self.write("ups.conf", &ups_conf(config), 0o640)?;
+        changed |= self.write("upsd.conf", &upsd_conf(config), 0o640)?;
+        changed |= self.write("upsd.users", &upsd_users(config), 0o640)?;
+        changed |= self.write("upsmon.conf", &upsmon_conf(config), 0o640)?;
+        changed |= self.write("upssched.conf", &upssched_conf(config, dir), 0o640)?;
+        changed |= self.write(TIMER, &timer_script(), 0o750)?;
         let simulated = dir.join(SIMULATED);
         if config.is_some_and(|config| config.source == UpsSource::Simulated) {
             // Kept as it is once there: a test may have written its own.
             if !simulated.exists() {
-                self.write(SIMULATED, SIMULATED_UPS, 0o640)?;
+                changed |= self.write(SIMULATED, SIMULATED_UPS, 0o640)?;
             }
         } else {
-            let _ = fs::remove_file(&simulated);
+            changed |= fs::remove_file(&simulated).is_ok();
         }
-        Ok(())
+        Ok(changed)
     }
 
     /// A file in NUT's folder, with the folder's group, which NUT's
-    /// programs run in.
-    fn write(&self, name: &str, content: &str, mode: u32) -> Result<(), OperationError> {
+    /// programs run in; whether it changed. What stood there before
+    /// zendiloOS wrote it the first time is kept beside it.
+    fn write(&self, name: &str, content: &str, mode: u32) -> Result<bool, OperationError> {
         let dir = &self.paths.dir;
         let path = dir.join(name);
+        let before = fs::read_to_string(&path).ok();
+        if before.as_deref() == Some(content) {
+            return Ok(false);
+        }
         let group = fs::metadata(dir).map_err(|e| OperationError::Read(dir.clone(), e))?.gid();
-        crate::durable::replace_mode(&path, content.as_bytes(), mode)?;
-        std::os::unix::fs::chown(&path, None, Some(group)).map_err(|e| OperationError::Write(path, e))
+        let place = |path: PathBuf, content: &str, mode: u32| {
+            crate::durable::replace_mode(&path, content.as_bytes(), mode)?;
+            std::os::unix::fs::chown(&path, None, Some(group)).map_err(|e| OperationError::Write(path, e))
+        };
+        if let Some(before) = before.filter(|text| !text.contains(HEADER)) {
+            let kept = dir.join(format!("{name}{BEFORE}"));
+            if !kept.exists() {
+                place(kept, &before, 0o640)?;
+            }
+        }
+        place(path, content, mode)?;
+        Ok(true)
+    }
+
+    /// Whether every one of `units` runs.
+    async fn all_active(&self, units: &[&str]) -> bool {
+        for unit in units {
+            if !self.any_active(&[unit]).await {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Whether one of `units` runs, as `systemctl is-active` tells several.
+    async fn any_active(&self, units: &[&str]) -> bool {
+        let mut args = vec!["is-active", "--quiet"];
+        args.extend_from_slice(units);
+        zendiloos_exec::run(&self.systemctl, &args, LIMITS).await.is_ok_and(|output| output.status.success())
     }
 
     async fn run(&self, args: &[&str]) -> Result<(), OperationError> {

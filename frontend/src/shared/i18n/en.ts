@@ -1685,7 +1685,7 @@ const en = {
         pools_not_imported: 'Pools not imported',
         configuration_backup_failed: 'Configuration backup failed',
         ups_on_battery: 'Power cut: the UPS runs on battery',
-        ups_battery_low: 'UPS battery low, the NAS shuts down',
+        ups_shutdown: 'Power cut: the NAS shuts down',
         ups_on_mains: 'Power is back',
         ups_unreachable: 'UPS does not answer',
         ups_replace_battery: 'UPS asks for a new battery',
@@ -4100,11 +4100,18 @@ const en = {
     },
     ups_on_battery: {
       title: 'Power cut: the UPS runs on battery',
-      body: 'zendiloOS shuts down as Control panel → UPS says, unless the power returns in time.',
+      body: 'Unless the power returns in time, zendiloOS shuts down when the UPS reports its battery as low.',
+      bodyCharge:
+        'Unless the power returns in time, zendiloOS shuts down when the charge falls below {percent} %.',
+      bodyMinutes:
+        'Unless the power returns in time, zendiloOS shuts down after {minutes} min on battery.',
+      battery: 'The battery is at {charge} %.',
+      batteryRuntime: 'The battery is at {charge} % and lasts about {runtime} min.',
     },
-    ups_battery_low: {
-      title: "The UPS's battery is low: the NAS shuts down",
-      body: 'The battery will not last much longer.',
+    ups_shutdown: {
+      title: 'Power cut: the NAS shuts down',
+      body: "The UPS's battery is almost empty.",
+      bodyTime: 'The NAS has run on battery for as long as Control panel → UPS allows.',
     },
     ups_on_mains: {
       title: 'The power is back',

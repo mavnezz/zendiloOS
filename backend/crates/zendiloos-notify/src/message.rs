@@ -268,26 +268,61 @@ pub fn message(notification: &Notification, host: &str, language: Language) -> M
                 param("names")
             ),
         ),
-        "ups_on_battery" if german => (
-            "Stromausfall: die USV läuft auf Akku".to_owned(),
-            "Die USV versorgt das NAS aus ihrem Akku. zendiloOS fährt herunter, wie es unter Systemsteuerung → USV \
-             eingestellt ist, wenn der Strom nicht rechtzeitig zurückkommt."
-                .to_owned(),
-        ),
-        "ups_on_battery" => (
-            "Power cut: the UPS runs on battery".to_owned(),
-            "The UPS feeds the NAS from its battery. zendiloOS shuts down as Control panel → UPS says, unless the \
-             power returns in time."
-                .to_owned(),
-        ),
-        "ups_battery_low" if german => (
-            "Akku der USV fast leer: das NAS fährt herunter".to_owned(),
-            "Der Akku der USV reicht nicht mehr lange. zendiloOS fährt jetzt herunter.".to_owned(),
-        ),
-        "ups_battery_low" => (
-            "The UPS's battery is low: the NAS shuts down".to_owned(),
-            "The UPS's battery will not last much longer. zendiloOS is shutting down now.".to_owned(),
-        ),
+        "ups_on_battery" => {
+            // What happens next, by the rule set, and what the battery holds.
+            let rule = match (param("when"), german) {
+                ("charge_below", true) => format!(
+                    "Kommt der Strom nicht rechtzeitig zurück, fährt zendiloOS herunter, sobald der Ladestand unter \
+                     {} % fällt.",
+                    param("percent")
+                ),
+                ("charge_below", false) => format!(
+                    "Unless the power returns in time, zendiloOS shuts down when the charge falls below {} %.",
+                    param("percent")
+                ),
+                ("after_minutes", true) => format!(
+                    "Kommt der Strom nicht rechtzeitig zurück, fährt zendiloOS nach {} min auf Akku herunter.",
+                    param("minutes")
+                ),
+                ("after_minutes", false) => format!(
+                    "Unless the power returns in time, zendiloOS shuts down after {} min on battery.",
+                    param("minutes")
+                ),
+                (_, true) => "Kommt der Strom nicht rechtzeitig zurück, fährt zendiloOS herunter, sobald die USV \
+                              ihren Akku als fast leer meldet."
+                    .to_owned(),
+                (_, false) => "Unless the power returns in time, zendiloOS shuts down when the UPS reports its \
+                               battery as low."
+                    .to_owned(),
+            };
+            let battery = match (param("charge"), param("runtime"), german) {
+                ("", _, _) => String::new(),
+                (charge, "", true) => format!(" Der Akku ist zu {charge} % geladen."),
+                (charge, "", false) => format!(" The battery is at {charge} %."),
+                (charge, runtime, true) => {
+                    format!(" Der Akku ist zu {charge} % geladen und reicht für etwa {runtime} min.")
+                }
+                (charge, runtime, false) => {
+                    format!(" The battery is at {charge} % and lasts about {runtime} min.")
+                }
+            };
+            let title =
+                if german { "Stromausfall: die USV läuft auf Akku" } else { "Power cut: the UPS runs on battery" };
+            (title.to_owned(), format!("{rule}{battery}"))
+        }
+        "ups_shutdown" => {
+            let body = match (param("why") == "time", german) {
+                (true, true) => {
+                    "Das NAS lief so lange auf Akku, wie es unter Systemsteuerung → USV eingestellt ist."
+                }
+                (true, false) => "The NAS has run on battery for as long as Control panel → UPS allows.",
+                (false, true) => "Der Akku der USV ist fast leer.",
+                (false, false) => "The UPS's battery is almost empty.",
+            };
+            let title =
+                if german { "Stromausfall: das NAS fährt herunter" } else { "Power cut: the NAS shuts down" };
+            (title.to_owned(), body.to_owned())
+        }
         "ups_on_mains" if german => (
             "Strom ist zurück".to_owned(),
             "Die USV läuft wieder am Netz und lädt ihren Akku.".to_owned(),
@@ -627,15 +662,15 @@ mod tests {
             ),
             (
                 "ups_on_battery",
-                vec![],
+                vec![("when", "low_battery")],
                 "Power cut: the UPS runs on battery",
                 "Stromausfall: die USV läuft auf Akku",
             ),
             (
-                "ups_battery_low",
-                vec![],
-                "The UPS's battery is low: the NAS shuts down",
-                "Akku der USV fast leer: das NAS fährt herunter",
+                "ups_shutdown",
+                vec![("why", "battery")],
+                "Power cut: the NAS shuts down",
+                "Stromausfall: das NAS fährt herunter",
             ),
             ("ups_on_mains", vec![], "The power is back", "Strom ist zurück"),
             ("ups_unreachable", vec![], "The UPS does not answer", "Die USV antwortet nicht"),
@@ -711,6 +746,48 @@ mod tests {
             message(&notification("updates_available", &debian), "nas", Language::English).title,
             "[nas] Updates available"
         );
+    }
+
+    #[test]
+    fn a_power_cut_says_what_happens_next_and_a_shutdown_why() {
+        let body = |code, params: &[(&str, &str)], language| {
+            message(&notification(code, params), "nas", language).body
+        };
+        let cut = |params: &[(&str, &str)], language| body("ups_on_battery", params, language);
+        assert_eq!(
+            cut(&[("when", "low_battery")], Language::English),
+            "Unless the power returns in time, zendiloOS shuts down when the UPS reports its battery as low."
+        );
+        assert!(cut(&[("when", "low_battery")], Language::German).ends_with("als fast leer meldet."));
+        let charge = [("when", "charge_below"), ("percent", "40"), ("charge", "87"), ("runtime", "25")];
+        assert_eq!(
+            cut(&charge, Language::English),
+            "Unless the power returns in time, zendiloOS shuts down when the charge falls below 40 %. The battery \
+             is at 87 % and lasts about 25 min."
+        );
+        assert!(
+            cut(&charge, Language::German)
+                .ends_with("unter 40 % fällt. Der Akku ist zu 87 % geladen und reicht für etwa 25 min.")
+        );
+        let minutes = [("when", "after_minutes"), ("minutes", "10"), ("charge", "87")];
+        assert!(
+            cut(&minutes, Language::English).ends_with("after 10 min on battery. The battery is at 87 %.")
+        );
+        assert!(
+            cut(&minutes, Language::German)
+                .ends_with("nach 10 min auf Akku herunter. Der Akku ist zu 87 % geladen.")
+        );
+
+        assert_eq!(
+            body("ups_shutdown", &[("why", "battery")], Language::English),
+            "The UPS's battery is almost empty."
+        );
+        assert_eq!(
+            body("ups_shutdown", &[("why", "battery")], Language::German),
+            "Der Akku der USV ist fast leer."
+        );
+        assert!(body("ups_shutdown", &[("why", "time")], Language::English).contains("Control panel → UPS"));
+        assert!(body("ups_shutdown", &[("why", "time")], Language::German).contains("Systemsteuerung → USV"));
     }
 
     #[test]

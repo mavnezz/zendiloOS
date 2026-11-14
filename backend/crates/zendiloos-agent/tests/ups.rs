@@ -44,7 +44,11 @@ impl Host {
             // The driver's unit does not start: no UPS is plugged in.
             systemctl: script(
                 "systemctl",
-                "case \"$*\" in\n  'show --property=NeedDaemonReload'*) echo no;;\n  'restart nut-driver@ups.service') exit 1;;\nesac",
+                &format!(
+                    "case \"$*\" in\n  'show --property=NeedDaemonReload'*) echo no;;\n  'restart --no-block nut-driver@ups.service') exit 1;;\n  \
+                     is-active*) [ ! -e {} ] || exit 3;;\nesac",
+                    root.join("stopped").display()
+                ),
             ),
             systemd_run: script("systemd-run", &format!("printf '%s' '{LISTING}'")),
             upsd: if installed { script("upsd", "") } else { missing.clone() },
@@ -172,10 +176,10 @@ async fn a_usb_ups_gets_its_files_driver_server_and_monitor() {
     assert_eq!(
         host.calls(),
         [
-            "systemctl restart nut-driver-enumerator.service",
+            "systemctl restart --no-block nut-driver-enumerator.service",
             "systemctl enable --no-reload nut-server.service nut-monitor.service",
             "systemctl show --property=NeedDaemonReload --value nut-server.service",
-            "systemctl restart nut-driver@ups.service",
+            "systemctl restart --no-block nut-driver@ups.service",
             "systemctl restart nut-server.service",
             "systemctl restart nut-monitor.service",
         ]
@@ -197,7 +201,7 @@ async fn another_devices_ups_needs_no_driver_and_no_server() {
     assert_eq!(
         host.calls(),
         [
-            "systemctl restart nut-driver-enumerator.service",
+            "systemctl restart --no-block nut-driver-enumerator.service",
             "systemctl disable --no-reload --now nut-server.service",
             "systemctl enable --no-reload nut-monitor.service",
             "systemctl show --property=NeedDaemonReload --value nut-monitor.service",
@@ -224,8 +228,8 @@ async fn without_a_ups_nut_is_switched_off() {
         [
             "systemctl disable --no-reload --now nut-monitor.service nut-server.service",
             "systemctl show --property=NeedDaemonReload --value nut-server.service",
-            "systemctl restart nut-driver-enumerator.service",
-            "systemctl stop nut-driver@ups.service",
+            "systemctl restart --no-block nut-driver-enumerator.service",
+            "systemctl stop --no-block nut-driver@ups.service",
         ]
     );
 
@@ -234,6 +238,57 @@ async fn without_a_ups_nut_is_switched_off() {
     assert!(matches!(bare.set(None).await, Response::Done));
     assert!(bare.calls().is_empty());
     assert_eq!(bare.file("nut.conf"), None);
+}
+
+#[tokio::test]
+async fn settings_in_force_already_interrupt_nothing() {
+    let host = Host::new(true, false);
+    assert!(matches!(host.set(Some(config(usb()))).await, Response::Done));
+    fs::write(host.root.join("calls.log"), "").unwrap();
+
+    // The same again, as at every start of zendiloosd: only looked at.
+    assert!(matches!(host.set(Some(config(usb()))).await, Response::Done));
+    assert_eq!(
+        host.calls(),
+        ["systemctl is-active --quiet nut-server.service", "systemctl is-active --quiet nut-monitor.service",]
+    );
+    // Unless NUT does not run, as after someone stopped it.
+    fs::write(host.root.join("stopped"), "").unwrap();
+    assert!(matches!(host.set(Some(config(usb()))).await, Response::Done));
+    assert!(host.calls().contains(&"systemctl restart nut-monitor.service".to_owned()), "{:?}", host.calls());
+
+    // No UPS, asked for twice: switched off once.
+    assert!(matches!(host.set(None).await, Response::Done));
+    fs::write(host.root.join("calls.log"), "").unwrap();
+    assert!(matches!(host.set(None).await, Response::Done));
+    assert_eq!(host.calls(), ["systemctl is-active --quiet nut-monitor.service nut-server.service"]);
+}
+
+#[tokio::test]
+async fn a_nut_set_up_by_hand_is_left_alone_until_a_ups_is_set_and_then_kept_beside() {
+    let host = Host::new(true, false);
+    let by_hand = "MODE=standalone\n";
+    fs::write(host.root.join("nut/nut.conf"), by_hand).unwrap();
+    fs::write(host.root.join("nut/ups.conf"), "[apc]\n  driver = apcsmart\n  port = /dev/ttyS0\n").unwrap();
+
+    // No UPS in zendiloOS: not its NUT to switch off.
+    assert!(matches!(host.set(None).await, Response::Done));
+    assert_eq!(host.file("nut.conf").as_deref(), Some(by_hand));
+    assert!(host.calls().is_empty());
+
+    // A UPS set in zendiloOS takes the files; what they said stays beside them.
+    assert!(matches!(host.set(Some(config(usb()))).await, Response::Done));
+    assert!(host.file("ups.conf").unwrap().contains("driver = usbhid-ups"));
+    assert_eq!(host.file("nut.conf.before-zendiloos").as_deref(), Some(by_hand));
+    assert!(host.file("ups.conf.before-zendiloos").unwrap().contains("apcsmart"));
+    assert_eq!(host.mode("ups.conf.before-zendiloos"), 0o640);
+    assert_eq!(host.file("upsd.users.before-zendiloos"), None, "there was none");
+    // Once only: zendiloOS's own files are not kept as what was before.
+    assert!(matches!(host.set(Some(config(UpsSource::Simulated))).await, Response::Done));
+    assert!(host.file("ups.conf.before-zendiloos").unwrap().contains("apcsmart"));
+    // Now it is zendiloOS's to switch off.
+    assert!(matches!(host.set(None).await, Response::Done));
+    assert_eq!(host.file("nut.conf").unwrap().lines().last(), Some("MODE=none"));
 }
 
 #[tokio::test]

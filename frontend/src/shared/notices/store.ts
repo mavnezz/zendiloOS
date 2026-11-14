@@ -37,6 +37,17 @@ export function wording(notification: ServerNotification): { title: string; body
     if (params.zfs_ready === 'false') body = `${key}.bodyZfs`
     else if (params.restart === 'true') body = `${key}.bodyRestart`
   }
+  // A power cut: what happens next by the rule set, then what the battery holds.
+  if (notification.code === 'ups_on_battery') {
+    if (params.when === 'charge_below') body = `${key}.bodyCharge`
+    else if (params.when === 'after_minutes') body = `${key}.bodyMinutes`
+    const battery = params.runtime ? `${key}.batteryRuntime` : `${key}.battery`
+    return {
+      title: t(`${key}.title`),
+      body: params.charge ? `${t(body, params)} ${t(battery, params)}` : t(body, params),
+    }
+  }
+  if (notification.code === 'ups_shutdown' && params.why === 'time') body = `${key}.bodyTime`
   return {
     title: t(`${key}.title`, params),
     body: te(body) ? t(body, params, count) : undefined,

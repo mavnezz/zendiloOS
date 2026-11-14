@@ -92,7 +92,7 @@ pub const KINDS: [Kind; 28] = [
     kind("configuration_backup_failed", Group::System, Level::Error),
     // A UPS: the power cut a warning, its battery running low an error.
     kind("ups_on_battery", Group::System, Level::Warning),
-    kind("ups_battery_low", Group::System, Level::Error),
+    kind("ups_shutdown", Group::System, Level::Error),
     kind("ups_on_mains", Group::System, Level::Success),
     kind("ups_unreachable", Group::System, Level::Warning),
     kind("ups_replace_battery", Group::System, Level::Warning),

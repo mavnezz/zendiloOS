@@ -308,6 +308,13 @@ impl UpsState {
             status,
         })
     }
+
+    /// Whether the UPS itself calls its battery low (`LB`), rather than a
+    /// shutdown being forced for another reason (`FSD` alone: the time
+    /// on battery is over).
+    pub fn battery_low(&self) -> bool {
+        self.status.split_whitespace().any(|word| word == "LB")
+    }
 }
 
 /// What a change of the UPS's state is worth telling.
@@ -317,8 +324,8 @@ pub enum Event {
     OnBattery,
     /// The power is back.
     OnMains,
-    /// The battery is low: the shutdown begins.
-    BatteryLow,
+    /// The battery is low, or a shutdown is forced: the NAS shuts down.
+    ShuttingDown,
     /// The UPS has not answered for a while.
     Unreachable,
     /// The UPS asks for a new battery.
@@ -377,7 +384,7 @@ impl Watch {
             events.push(Event::OnMains);
         }
         if now.low_battery && !before.low_battery {
-            events.push(Event::BatteryLow);
+            events.push(Event::ShuttingDown);
         }
         if now.replace_battery && !before.replace_battery {
             events.push(Event::ReplaceBattery);
@@ -586,7 +593,10 @@ mod tests {
         assert_eq!(watch.observe(Some(&state("OL CHRG"))), []);
         assert_eq!(watch.observe(Some(&state("OB DISCHRG"))), [Event::OnBattery]);
         assert_eq!(watch.observe(Some(&state("OB DISCHRG"))), [], "not again");
-        assert_eq!(watch.observe(Some(&state("OB DISCHRG LB"))), [Event::BatteryLow]);
+        assert_eq!(watch.observe(Some(&state("OB DISCHRG LB"))), [Event::ShuttingDown]);
+        assert!(state("OB DISCHRG LB").battery_low());
+        // A shutdown forced after a time on battery: not the battery's doing.
+        assert!(state("OB FSD").low_battery && !state("OB FSD").battery_low());
         assert_eq!(watch.observe(Some(&state("OL CHRG"))), [Event::OnMains]);
         assert_eq!(watch.observe(Some(&state("OL RB"))), [Event::ReplaceBattery]);
         assert_eq!(watch.observe(Some(&state("OL RB"))), []);
@@ -595,7 +605,7 @@ mod tests {
     #[test]
     fn a_nas_that_starts_on_battery_says_so() {
         let mut watch = Watch::default();
-        assert_eq!(watch.observe(Some(&state("OB LB"))), [Event::OnBattery, Event::BatteryLow]);
+        assert_eq!(watch.observe(Some(&state("OB LB"))), [Event::OnBattery, Event::ShuttingDown]);
     }
 
     #[test]

@@ -92,6 +92,7 @@ impl FakeLink {
         let mut variables = BTreeMap::new();
         variables.insert("ups.status".to_owned(), status.to_owned());
         variables.insert("battery.charge".to_owned(), "80".to_owned());
+        variables.insert("battery.runtime".to_owned(), "1200".to_owned());
         *self.variables.lock().unwrap() = Some(variables);
     }
 

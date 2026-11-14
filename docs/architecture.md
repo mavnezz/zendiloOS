@@ -87,6 +87,7 @@ The Debian package `zendiloos` (built with `just deb`) installs:
 | `/etc/zendiloos/apps/`, `/etc/zendiloos/projects/` | what the agent checked and runs, root's alone: apps installed the earlier way and administrators' Compose projects (4.9) |
 | `/etc/zendiloos/vms/`, `/etc/tmpfiles.d/zendiloos-vms.conf`, `/run/zendiloos-vms/` | virtual machines (4.13): each domain's XML as the agent defined it; the consoles' folder, made at every boot, with QEMU's VNC sockets; their disks and the image library on a pool (`/volume<N>/@vms`) |
 | `/etc/zendiloos/id-high-water` | the highest UID and GID the agent ever handed out (4.2) |
+| `/etc/nut/` | Network UPS Tools' own files, written whole by the agent once a UPS is set (4.16); what stood in one before is kept beside it as `<name>.before-zendiloos` |
 | `/var/lib/zendiloos-backup/` | the backup plugin's SSH key pair (`id_ed25519`), root's alone (0700), made by a unit of its own; reaches a run's unit only as its credential (4.14) |
 | `/var/lib/zendiloos-acme/` | acme.sh's accounts, certificates and files for HTTP challenges, owned by the system user `zendiloos-acme`; a DNS provider's credentials only while it runs, in `/run/zendiloos-acme/` (4.11) |
 | `/run/zendiloos-removable/` | the places removable drives are mounted at, a folder each, named by the UUID of their file system |
@@ -164,6 +165,7 @@ tests in `zendiloos-architecture` catch, as part of `cargo test`.
 | `zendiloos-vms` | virtual machines: the plugin (libvirt, QEMU and swtpm installed, their storage in locations on one or more pools, the hardware check), VMs from an OS preset with their disks (each on its location), network cards (through the NAS, on a host bridge, directly on a card, on an internal network), CD drives, a TPM, Secure Boot and the host's USB and PCI devices, made in a job and changed (hardware only while off), snapshots of their disks by hand and on schedules, backups into a share or onto a removable drive and restores, as jobs, the image library (ISOs copied from a share or uploaded), what running VMs use, their state from libvirt and their consoles (4.13) | kernel, jobs |
 | `zendiloos-backup` | backup tasks: the plugin (rsync, the SSH client and rclone installed, the NAS's SSH key), tasks from a share to another share or a removable drive, to an rsync server (daemon or SSH with the host key pinned) or from one, to Google Drive or OneDrive (accounts signed in to with OAuth), encrypted with rclone's crypt if wished, mirrors and dated versions with retention, schedules and "when its drive is plugged in", runs as jobs with their log and transfer lists, restores (4.14) | kernel, jobs, notify |
 | `zendiloos-recovery` | the configuration backup: the archive made of the database, the host's files and settings and the accounts' Linux users, encrypted with a passphrase; downloaded, or written on a schedule into a folder of a share or a removable drive with the newest kept; restored on this or a fresh installation, also instead of the first setup (4.15) | kernel, jobs, notify |
+| `zendiloos-ups` | the uninterruptible power supply: where it is (USB, SNMP, another device's NUT server), when the NAS shuts down on battery, whether the UPS cuts its output afterwards and whether other devices may follow it through the NAS; Network UPS Tools installed from Debian; its state read and a power cut, its end, a low battery, a battery to replace and a UPS gone silent told (4.16) | kernel, jobs, notify |
 | `zendiloos-infra` | all secondary adapters, SQLite migrations | kernel, jobs, notify, contexts, agent-proto, exec; in tests also sim |
 | `zendiloos-api` | primary adapter: axum routes, DTOs, OpenAPI, auth middleware, WebSocket | kernel, jobs, notify, contexts |
 | `zendiloosd` | composition root (binary) | everything except agent |
@@ -435,7 +437,7 @@ simple to audit.
   `useradd`, `userdel`, `groupadd`, `groupdel`, `gpasswd`, `smbpasswd`,
   `testparm`, `exportfs`, `smbcontrol`, `sshd`, `docker`, `dockerd`,
   `setsid`, `openssl`, `nginx`, `nft`, `virsh`, `ssh-keygen`, `ssh-keyscan` (and, in transient units,
-  `systemd-tmpfiles`, this binary as `copy-vm-iso`, `receive-vm-image`,
+  `nut-scanner`, 4.16, `systemd-tmpfiles`, this binary as `copy-vm-iso`, `receive-vm-image`,
   `back-up-vm`, `restore-vm` and `remove-vm-backup`, 4.13, as `backup-unit`, which runs `rsync` and through it `ssh`, and `rclone`, 4.14, and `ip link
   delete` for a network device zendiloOS made that goes, 6).
   `zendiloos-docker-bridges.service`, a unit of the package, runs
@@ -475,7 +477,9 @@ simple to audit.
   zendiloOS manages (`smbd`, `nfs-server`, `wsdd2`, `avahi-daemon`, `ssh`,
   `docker`, `nginx`, `systemd-timesyncd`, `zendiloos-firewall`; for a
   network taken over from ifupdown `networking.service`,
-  `systemd-networkd` and `systemd-resolved`). systemd is reloaded only
+  `systemd-networkd` and `systemd-resolved`; for a UPS Network UPS Tools'
+  `nut-driver-enumerator`, `nut-driver@ups`, `nut-server` and
+  `nut-monitor`, 4.16). systemd is reloaded only
   when something it reads changed, and then once: a unit file or drop-in
   the agent writes (written only then), or a unit's link. Every reload
   runs all generators again and is logged. Enabling and disabling the file
@@ -529,6 +533,11 @@ systemd-resolved's own list when that file only names its stub. Reading
 needs netlink but no capability, so `zendiloosd` may open `AF_NETLINK`
 sockets. The agent cannot do this: it has a network namespace of its own.
 Loopback, `veth`, `tun`/`tap` and Docker's bridges are left out.
+
+A UPS's state is read over Network UPS Tools' own protocol (TCP, `LIST
+VAR`), from NUT's server on this machine (127.0.0.1:3493) or from the
+other device the UPS is connected to (4.16): nothing is run for it, and
+the agent, without a network, could not ask.
 
 ---
 
@@ -3662,6 +3671,151 @@ their pools. What is to follow, in this order:
    VM's domain is missing, and the Backup plugin's SSH key, acme.sh's
    accounts and the projects' files in the archive.
 
+### 4.16 UPS
+
+**What it is.** A page of the control panel, *UPS* (under General), for
+an uninterruptible power supply: where it is, what it says, when the NAS
+shuts down on battery, and whether other devices may follow it through
+the NAS. Seen with `system.view`, changed with `system.manage`. Its
+context is `zendiloos-ups` (migration 0061: one row of settings as JSON,
+and the password NUT's monitor on this machine signs in with, random,
+made with the row and never shown).
+
+**Network UPS Tools do the work.** zendiloOS writes NUT's configuration
+and tells what the UPS's state does; watching the UPS and shutting the
+machine down is NUT's own (`upsmon`), so a power cut shuts the NAS down
+also while zendiloosd is stopped, being updated or busy. NUT comes from
+Debian, installed on request by the package runner (4.10; task
+`install-ups`: `nut-server nut-client nut-snmp` without recommended
+packages), from the page itself, since a UPS is a setting and no app.
+After apt, the runner asks udev to look at the USB devices again (`udevadm
+trigger --subsystem-match=usb --action=change`): NUT's udev rules hand a
+UPS on USB to the group `nut`, but count only for what is plugged in from
+then on, and Debian's package triggers udev only where udev has an init
+script, which Debian 13 no longer has. Without it a UPS that was plugged
+in before NUT was installed would stay root's until pulled out and put
+back, and the driver, which is not root, could not open it.
+
+**Where the UPS is.** One UPS, in one of three places:
+
+- *On this NAS, over USB*: one of NUT's USB drivers (`usbhid-ups`, which
+  fits most UPSs of today, or `nutdrv_qx`, `blazer_usb`, `bcmxcp_usb`,
+  `tripplite_usb`, `richcomm_usb`, `riello_usb`, `nutdrv_atcl_usb`), and
+  optionally the vendor id, product id and serial number that name one
+  UPS among several. *Detect* runs `nut-scanner -U` (in a transient unit:
+  the agent's own sandbox has no USB devices) and offers what it found; a
+  single UPS found is taken.
+- *On the network, over SNMP* (`snmp-ups`): the address of the UPS's
+  network card, a community, v1 or v2c.
+- *On another device* that runs NUT's server (another NAS, a server): its
+  address and port, the UPS's name there, an account and its password.
+  This NAS then runs no driver and no server, only the monitor, as a
+  secondary.
+
+A fourth, *simulated* (NUT's `dummy-ups`, played from
+`/etc/nut/zendiloos-simulated.dev`), can be set through the API only and
+is what the VM test follows; its account may set the UPS's variables
+(`upsrw`), which is how a test plays a power cut.
+
+**The files.** The agent (`SetUps`, with the settings checked again as it
+parses them: every word that goes into a file is one of a narrow set of
+characters, so nothing can add a line or a section) writes NUT's own
+files in `/etc/nut` whole, readable by root and the folder's group (`nut`)
+as the package has them, since they hold passwords: `nut.conf` (the
+mode: `standalone`, `netserver` when other devices follow, `netclient`
+for another device's UPS, `none` without a UPS), `ups.conf` (the driver,
+always in a section called `ups`), `upsd.conf` (`LISTEN 127.0.0.1 3493`,
+or `0.0.0.0` when other devices follow), `upsd.users` (the monitor's own
+account `upsmon_local` as primary; the account for other devices as
+secondary), `upsmon.conf` (the `MONITOR` line, `SHUTDOWNCMD
+"/sbin/shutdown -h +0"`) and `upssched.conf` with its script
+`zendiloos-timer`. What stood in a file before zendiloOS wrote it the
+first time (Debian's sample, or a configuration made by hand) is kept
+beside it as `<name>.before-zendiloos`. Debian's
+`nut-driver-enumerator` then makes the unit `nut-driver@ups` from
+`ups.conf`, and the agent enables and restarts `nut-server` and
+`nut-monitor` (for another device's UPS: disables the server). A driver
+that does not start, because the UPS is not plugged in, does not make
+the settings fail; the page then says that the UPS does not answer.
+
+Settings that are in force already change nothing and interrupt nothing:
+no file is written and no unit restarted when the files say what they
+would say and NUT runs. zendiloosd asks for the settings it keeps at
+every start (1.2), so that the machine follows a configuration that was
+restored (4.15, the settings are in the database); restored on a fresh
+installation, they wait until NUT is installed, which the page offers and
+whose job puts them in force. Without a UPS in the settings, NUT is
+switched off (`MODE=none`, server and monitor disabled and stopped) only
+where zendiloOS set it up, which `nut.conf` says in its first line: a NUT
+an administrator configured by hand on the Debian below, and never
+through zendiloOS, is left as it is.
+
+**When the NAS shuts down.** On battery, one of three:
+
+- *when the UPS reports its battery as low*: `upsmon`'s own rule (`OB LB`);
+- *when the charge falls below a percentage* (5 to 95): the driver's doing
+  (`ignorelb` and `override.battery.charge.low`), which then calls the
+  battery low at that charge whatever the UPS itself thinks low; only for
+  a UPS whose driver runs here;
+- *after a number of minutes on battery* (1 to 720): `upsmon` runs
+  `upssched` when the power fails and returns, whose timer, dropped when
+  the power is back in time, ends in `upsmon -c fsd`, a forced shutdown.
+  The low battery still shuts the NAS down earlier.
+
+`upsmon` tells the devices that follow before this machine goes down
+(`FSD`, and it waits `HOSTSYNC` 15 seconds for them). *Cut the output
+afterwards* (`POWERDOWNFLAG /etc/killpower`) has Debian's shutdown hook
+(`nutshutdown`) tell the UPS at the very end to switch its output off; it
+switches on again when the power returns, and a machine whose firmware
+starts it when power is applied then starts by itself. Only a UPS whose
+driver runs here can be told. There is no standby mode: a NAS on battery
+either keeps running or shuts down.
+
+**Other devices.** With *pass the state on*, NUT's server listens on the
+network and has an account for the devices that follow (`monuser` unless
+another is named; a Synology NAS cannot be given an account and signs in
+as `monuser` with the password `secret`). The page says what to enter
+there: the NAS's address, port 3493, the UPS's name `ups`, the account.
+NUT's protocol is not encrypted here: the account's password crosses the
+LAN in the clear, as between any two NAS that follow one UPS, and the
+account may only follow, never set anything. The firewall (4.12) has no
+service of that name yet: where it is on, a rule for TCP port 3493 lets
+those devices in, which the page says.
+
+**Its state and what is told.** zendiloosd reads the UPS's variables
+itself (3.4), for the page (looked at again every ten seconds while it is
+open) and, every ten seconds, for the notifications: a power cut
+(`ups_on_battery`, with the rule the NAS shuts down by and what the
+battery holds), its end (`ups_on_mains`), the shutdown (`ups_shutdown`:
+the battery is low, or the time on battery is over), a battery that needs
+replacing (`ups_replace_battery`) and a UPS that has not answered three
+times in a row (`ups_unreachable`: a power cut would go unnoticed), each
+once per change and each a kind of its own in the channels' table (group
+System). On battery zendiloosd looks every three seconds, and `upsmon`
+waits ten (`FINALDELAY`) between deciding to shut down and doing it, so
+that the shutdown is told before zendiloosd is stopped; whether a mail
+still gets out then is the network's to say. A NAS that follows another
+device's UPS and shuts down after its minutes on battery does not tell the
+shutdown, as no state of the UPS shows it: the power cut's notification
+said when it would come.
+The first look after a start, or after the settings changed, tells
+nothing but trouble that is there already (a NAS that starts on battery
+says so); a power cut that ended while the NAS was down is not told as
+over. Passwords are
+kept in the database as they are, since NUT needs them in its files, and
+never leave it through the API (`password_set`); one left out on a change
+stays the one kept, for the same account (and host).
+
+**The API.** `GET /api/v1/ups` (installed or not, the SNMP driver, the
+settings, the reading, the drivers offered), `PUT /api/v1/ups` (put in
+force first, kept only then; what NUT's side refused is not kept; audited
+as `ups.update`), `POST /api/v1/ups/install` (the job `ups.install`,
+audited) and `POST /api/v1/ups/scan`.
+
+**Not there.** Several UPSs; SNMP v3; NUT's protocol over TLS; a
+firewall service for port 3493; the UPS's own commands (a battery test,
+the beeper). Telling devices that speak no NUT.
+
 ---
 
 ## 5. Storage Concept
@@ -3713,6 +3867,7 @@ the interface and the agent deal with a single tool chain (`zpool`, `zfs`).
 | File services | SMB (Samba, with `wsdd2`) and NFS (`nfs-kernel-server`) are switched on and off in the control panel; off means stopped and disabled, so it stays off after a restart, while shares, exports and permissions stay. The workgroup and the oldest SMB version answered (2.0, 2.1 or 3; SMB1 never) are written as global settings at the top of `/etc/samba/zendiloos.conf`, which `smb.conf` includes at the end of `[global]`; both are applied with the shares in one agent request, and if the host refuses, the previous settings return | per-share protocols would multiply what can go wrong for little gain; FTP, rsync and WebDAV are not offered until there is a reason |
 | SSH | the SSH server as a service in the control panel (Terminal): on or off (off means stopped and disabled; open sessions stay, as `KillMode=process`), its port (22, or a free one from 1024; zendiloosd refuses a port another program listens on, read from `/proc/net/tcp`), and whether root and passwords may log in, each either set or left as the system has it. The settings go to `/etc/ssh/sshd_config.d/00-zendiloos.conf`, read before the other drop-ins, so they win; `sshd -t` checks them first and the previous file returns if it fails. On request a transient systemd timer turns SSH off again after up to a day; SSH is then enabled only until the next boot (`enable --runtime`), as the timer itself is gone after a restart, so a restart turns it off too. Who may log in is Debian's: the accounts of the interface have no shell | keys, users allowed to log in and a web terminal belong to Debian's configuration or later |
 | Time | time zone, network time on or off, up to four time servers (a drop-in of systemd-timesyncd; none: Debian's pool) or the clock set by hand, all through systemd-timedated (`timedatectl`); shown and set in the NAS's zone, not the browser's. Schedules follow a new zone within five minutes (`jiff` keeps the system zone that long), apps when they next start (they get `/etc/localtime`) | the agent may not set the clock itself (`ProtectClock`); timedated is what `timedatectl` and every desktop use |
+| UPS | Network UPS Tools from Debian (`nut-server`, `nut-client`, `nut-snmp`), installed from the control panel's UPS page; zendiloOS writes their files and reads the state, NUT watches and shuts down (4.16) | apcupsd knows APC's UPSs only; a watcher of zendiloosd's own would not shut the NAS down while zendiloosd is stopped or being updated, and other NAS speak NUT, so one UPS serves several |
 | Docker | Debian packages `docker.io` and `docker-compose`, installed as the App Center's Docker plugin (the package only suggests them) by apt in a unit of its own (4.10); apps are administrators' Compose projects (4.9) | security updates through Debian; Docker CE optional |
 | Packaging | `debian/` with debhelper (compat 13 plus `dh-sequence-installsysusers`), built in a `debian:trixie` container with Rust from `rustup` and Node.js 24 pinned by checksum; for amd64 and arm64, the other architecture than the container's cross-compiled (`dpkg-buildpackage --host-arch`, Debian's cross compiler, the C library of that architecture through multiarch for linking and `dpkg-shlibdeps`) | native maintainer scripts, `sysusers.d`, `tmpfiles.d`, `dh_installsystemd`; works on any host with Docker; cross-compiling rather than building on an arm64 machine keeps one build environment, which a workstation runs in minutes and CI's x86 runners too, while the tests run natively on an arm64 runner (`docs/testing.md`) |
 | Test VM | `scripts/vm.sh` (`just vm …`): Debian 13 cloud image verified by SHA512, cloud-init, 4 SATA disks with emulated SMART and 1 NVMe disk, ports on 127.0.0.1 unless `ZENDILOOS_VM_LISTEN` or `ZENDILOOS_VM_BRIDGE` (the LAN) say otherwise; several VMs side by side (`ZENDILOOS_VM`); spare network cards on a network of their own for bonds and VLANs (`ZENDILOOS_VM_EXTRA_NICS`); a VM installed afresh on its spare disks, pools and all (`reinstall`: a new system disk from the image, so a new machine id, host id and host key), for what a NAS's disks meet when it is installed anew | the cloud kernel suffices for ZFS (DKMS with its headers); it has no USB, so removable drives come over SCSI with the removable bit |

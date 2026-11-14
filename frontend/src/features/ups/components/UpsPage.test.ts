@@ -219,9 +219,18 @@ describe('the UPS page', () => {
 
   it('follows a UPS on the network over SNMP', async () => {
     on('GET', '/api/v1/ups', overview(NONE, { snmp: false }))
+    on('POST', '/api/v1/ups/install', JOB)
     await mountApp(UpsPage, { props: { canManage: true } })
     await type('#ups-source', 'snmp')
+    // NUT was installed by hand, without its SNMP driver: installed from here.
     expect(page()).toContain(t('errors.ups_snmp_missing'))
+    expect(button(t('common.apply')).disabled).toBe(true)
+    await click(t('ups.install.action'))
+    expect(page()).toContain(t('ups.install.running'))
+    on('GET', '/api/v1/ups', overview(NONE, { snmp: true }))
+    useJobsStore().update({ ...JOB, state: 'succeeded' } as never)
+    await settle()
+    expect(page()).not.toContain(t('errors.ups_snmp_missing'))
     // Not without an address.
     expect(button(t('common.apply')).disabled).toBe(true)
     expect(page()).toContain(t('ups.problems.address'))

@@ -131,6 +131,12 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 #   alone (DeviceAllow=block-zvol), read only for a backup, and write only
 #   the share or drive, or libvirt's folders of the UEFI variables and TPM
 #   states;
+# - a UPS: Network UPS Tools' files go to /etc/nut, with the group of that
+#   folder (CAP_CHOWN), which NUT's programs run in; its driver, server and
+#   monitor are enabled, started and stopped by systemd, outside this
+#   sandbox, and it is NUT's monitor there, not the agent, that shuts the
+#   machine down. UPSs on USB are looked for (nut-scanner) in a transient
+#   unit: this sandbox has no USB devices;
 # The contents of volumes are the files agent's (zendiloos-files.service).
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_CHOWN CAP_DAC_READ_SEARCH

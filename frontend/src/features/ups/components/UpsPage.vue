@@ -209,8 +209,10 @@ const whole = (text: string, min: number, max: number) =>
 const problem = computed(() => {
   const value = draft.value
   if (!value || value.kind === 'none') return null
-  if (value.kind === 'snmp' && !(value.address.trim() && value.community.trim()))
-    return t('ups.problems.address')
+  if (value.kind === 'snmp') {
+    if (!overview.value?.snmp) return t('errors.ups_snmp_missing')
+    if (!(value.address.trim() && value.community.trim())) return t('ups.problems.address')
+  }
   if (value.kind === 'server') {
     if (!(value.host.trim() && value.ups.trim() && value.user.trim()))
       return t('ups.problems.address')
@@ -444,9 +446,22 @@ const hint = 'text-xs text-muted-foreground'
         </template>
 
         <template v-else-if="draft.kind === 'snmp'">
-          <Alert v-if="!overview.snmp" variant="destructive">{{
-            t('errors.ups_snmp_missing')
-          }}</Alert>
+          <div
+            v-if="!overview.snmp"
+            class="flex flex-wrap items-center gap-3 rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm"
+            role="status"
+          >
+            <p class="min-w-0 flex-1">
+              {{ t(failed ? 'ups.install.failed' : 'errors.ups_snmp_missing') }}
+            </p>
+            <span v-if="installing" class="flex items-center gap-2 text-muted-foreground">
+              <LoaderCircle class="size-4 animate-spin" />
+              {{ t('ups.install.running') }}
+            </span>
+            <Button v-else-if="canManage" size="sm" variant="outline" @click="install">{{
+              t('ups.install.action')
+            }}</Button>
+          </div>
           <SettingRow :label="t('ups.snmp.address')" for="ups-address">
             <Input
               id="ups-address"

@@ -214,11 +214,35 @@ fn merged(input: SettingsInput, kept: &Settings) -> Result<Settings, UpsError> {
     Ok(Settings { source, shutdown: input.shutdown, cut_power: input.cut_power, serve })
 }
 
-fn notification(event: Event) -> NewNotification {
+/// What `event` tells: a power cut with what happens next and how much
+/// the battery holds, a shutdown with its reason.
+fn notification(event: Event, settings: &Settings, state: Option<&UpsState>) -> NewNotification {
     match event {
-        Event::OnBattery => NewNotification::new(Level::Warning, "ups_on_battery"),
+        Event::OnBattery => {
+            let told = NewNotification::new(Level::Warning, "ups_on_battery");
+            let mut told = match settings.shutdown {
+                ShutdownWhen::LowBattery => told.with("when", "low_battery"),
+                ShutdownWhen::ChargeBelow(percent) => {
+                    told.with("when", "charge_below").with("percent", percent.to_string())
+                }
+                ShutdownWhen::AfterMinutes(minutes) => {
+                    told.with("when", "after_minutes").with("minutes", minutes.to_string())
+                }
+            };
+            if let Some(charge) = state.and_then(|state| state.charge_percent) {
+                told = told.with("charge", charge.to_string());
+            }
+            if let Some(seconds) = state.and_then(|state| state.runtime_seconds) {
+                told = told.with("runtime", (seconds / 60).to_string());
+            }
+            told
+        }
         Event::OnMains => NewNotification::new(Level::Success, "ups_on_mains"),
-        Event::BatteryLow => NewNotification::new(Level::Error, "ups_battery_low"),
+        Event::ShuttingDown => {
+            let battery = state.is_some_and(UpsState::battery_low);
+            NewNotification::new(Level::Error, "ups_shutdown")
+                .with("why", if battery { "battery" } else { "time" })
+        }
         Event::Unreachable => NewNotification::new(Level::Warning, "ups_unreachable"),
         Event::ReplaceBattery => NewNotification::new(Level::Warning, "ups_replace_battery"),
     }
@@ -305,6 +329,19 @@ impl Ups {
         Ok(settings)
     }
 
+    /// At zendiloosd's start: the machine follows the settings kept, as
+    /// after a configuration was restored on it. Where they are in force
+    /// already the host changes nothing. Without NUT there is nothing to
+    /// do: settings that wait are put in force once it is installed.
+    pub async fn apply_kept(&self, context: &RequestContext) -> Result<(), UpsError> {
+        if !self.ports.host.facts(context).await?.installed {
+            return Ok(());
+        }
+        let stored = self.ports.store.load().await?;
+        self.ports.host.apply(&stored, context).await?;
+        Ok(())
+    }
+
     /// Installs NUT from Debian, in a job; settings that are there already
     /// (from a configuration that was restored) are put in force after it.
     pub async fn install(&self, actor: &Actor, context: &RequestContext) -> Result<Job, UpsError> {
@@ -345,26 +382,28 @@ impl Ups {
     }
 
     /// One look at the UPS, and a notification for what changed since the
-    /// last. Called every few seconds.
-    pub async fn watch(&self) {
+    /// last. Called every few seconds; says whether the UPS runs on
+    /// battery, when the next look is worth taking sooner.
+    pub async fn watch(&self) -> bool {
         let settings = match self.ports.store.load().await {
             Ok(stored) => stored.settings,
             Err(error) => {
                 tracing::warn!(%error, "ups: cannot read the settings");
-                return;
+                return false;
             }
         };
         let mut watch = self.watch.lock().await;
         if settings.source.is_none() {
             watch.forget();
-            return;
+            return false;
         }
         let state = self.state(&settings).await;
         let events = watch.observe(state.as_ref());
         drop(watch);
         for event in events {
-            self.ports.notifier.notify(notification(event)).await;
+            self.ports.notifier.notify(notification(event, &settings, state.as_ref())).await;
         }
+        state.is_some_and(|state| state.on_battery)
     }
 
     async fn audit(

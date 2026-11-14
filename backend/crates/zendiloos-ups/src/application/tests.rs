@@ -213,6 +213,30 @@ async fn nut_is_installed_in_a_job_and_settings_that_wait_are_put_in_force() {
 }
 
 #[tokio::test]
+async fn at_the_start_the_host_is_given_the_settings_kept() {
+    let fakes = Fakes::default();
+    let ups = ups(&fakes);
+    ups.set(input(Some(usb())), &alice(), &context()).await.unwrap();
+    fakes.host.applied.lock().unwrap().clear();
+
+    ups.apply_kept(&context()).await.unwrap();
+    let applied = fakes.host.applied.lock().unwrap().clone();
+    assert_eq!(applied.len(), 1);
+    assert!(matches!(applied[0].settings.source, Some(Source::Usb { .. })));
+    assert_eq!(applied[0].local_password, LOCAL_PASSWORD);
+    assert!(fakes.audit.actions().iter().all(|action| *action == "ups.update"), "nobody did it");
+
+    // Without NUT nothing can follow them; what the host refuses is told.
+    fakes.host.applied.lock().unwrap().clear();
+    *fakes.host.facts.lock().unwrap() = HostFacts { installed: false, snmp: false };
+    ups.apply_kept(&context()).await.unwrap();
+    assert!(fakes.host.applied.lock().unwrap().is_empty());
+    *fakes.host.facts.lock().unwrap() = HostFacts { installed: true, snmp: true };
+    *fakes.host.refuses.lock().unwrap() = Some("no".into());
+    assert!(matches!(ups.apply_kept(&context()).await, Err(UpsError::Refused(_))));
+}
+
+#[tokio::test]
 async fn the_watch_tells_a_power_cut_its_end_and_a_ups_gone_silent() {
     let fakes = Fakes::default();
     let ups = ups(&fakes);
@@ -223,18 +247,25 @@ async fn the_watch_tells_a_power_cut_its_end_and_a_ups_gone_silent() {
 
     fakes.link.says("OL");
     ups.set(input(Some(usb())), &alice(), &context()).await.unwrap();
-    ups.watch().await;
+    assert!(!ups.watch().await);
     assert_eq!(codes(&fakes), [] as [&str; 0]);
 
     fakes.link.says("OB DISCHRG");
-    ups.watch().await;
+    assert!(ups.watch().await, "on battery: looked at again sooner");
     ups.watch().await;
     assert_eq!(codes(&fakes), ["ups_on_battery"]);
+    // Told with what happens next and what the battery holds.
+    let told = fakes.notifications.all().remove(0).params;
+    assert_eq!(
+        told.iter().map(|(key, value)| (key.as_str(), value.as_str())).collect::<Vec<_>>(),
+        [("charge", "80"), ("runtime", "20"), ("when", "low_battery")]
+    );
     fakes.link.says("OB DISCHRG LB");
     ups.watch().await;
     fakes.link.says("OL CHRG");
-    ups.watch().await;
-    assert_eq!(codes(&fakes), ["ups_on_battery", "ups_battery_low", "ups_on_mains"]);
+    assert!(!ups.watch().await);
+    assert_eq!(codes(&fakes), ["ups_on_battery", "ups_shutdown", "ups_on_mains"]);
+    assert_eq!(fakes.notifications.all()[1].params.get("why").map(String::as_str), Some("battery"));
 
     fakes.link.silent();
     for _ in 0..MISSES_BEFORE_UNREACHABLE {
@@ -250,8 +281,39 @@ async fn the_watch_tells_a_power_cut_its_end_and_a_ups_gone_silent() {
     ups.watch().await;
     assert_eq!(codes(&fakes).last().map(String::as_str), Some("ups_replace_battery"));
     let levels: Vec<_> = fakes.notifications.all().into_iter().map(|n| (n.code, n.level)).collect();
-    assert!(levels.contains(&("ups_battery_low".into(), Level::Error)));
+    assert!(levels.contains(&("ups_shutdown".into(), Level::Error)));
     assert!(levels.contains(&("ups_on_mains".into(), Level::Success)));
+}
+
+#[tokio::test]
+async fn a_power_cut_is_told_with_the_rule_the_nas_shuts_down_by() {
+    let fakes = Fakes::default();
+    let ups = ups(&fakes);
+    let params = |fakes: &Fakes, code: &str| {
+        let all = fakes.notifications.all();
+        let told = all.iter().rev().find(|notification| notification.code == code).unwrap();
+        told.params.iter().map(|(key, value)| format!("{key}={value}")).collect::<Vec<_>>().join(" ")
+    };
+
+    fakes.link.says("OL");
+    let minutes = SettingsInput { shutdown: ShutdownWhen::AfterMinutes(10), ..input(Some(usb())) };
+    ups.set(minutes, &alice(), &context()).await.unwrap();
+    ups.watch().await;
+    fakes.link.says("OB");
+    ups.watch().await;
+    assert_eq!(params(&fakes, "ups_on_battery"), "charge=80 minutes=10 runtime=20 when=after_minutes");
+    // The time is over: a shutdown is forced while the battery still holds.
+    fakes.link.says("OB FSD");
+    ups.watch().await;
+    assert_eq!(params(&fakes, "ups_shutdown"), "why=time");
+
+    fakes.link.says("OL");
+    let charge = SettingsInput { shutdown: ShutdownWhen::ChargeBelow(40), ..input(Some(usb())) };
+    ups.set(charge, &alice(), &context()).await.unwrap();
+    ups.watch().await;
+    fakes.link.says("OB");
+    ups.watch().await;
+    assert_eq!(params(&fakes, "ups_on_battery"), "charge=80 percent=40 runtime=20 when=charge_below");
 }
 
 #[tokio::test]

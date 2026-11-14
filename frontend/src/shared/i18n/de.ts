@@ -1725,7 +1725,7 @@ const de: Messages = {
         pools_not_imported: 'Pools nicht importiert',
         configuration_backup_failed: 'Sicherung der Konfiguration fehlgeschlagen',
         ups_on_battery: 'Stromausfall: die USV läuft auf Akku',
-        ups_battery_low: 'Akku der USV fast leer, das NAS fährt herunter',
+        ups_shutdown: 'Stromausfall: das NAS fährt herunter',
         ups_on_mains: 'Strom ist zurück',
         ups_unreachable: 'USV antwortet nicht',
         ups_replace_battery: 'USV verlangt einen neuen Akku',
@@ -4178,11 +4178,19 @@ const de: Messages = {
     },
     ups_on_battery: {
       title: 'Stromausfall: die USV läuft auf Akku',
-      body: 'zendiloOS fährt herunter, wie es unter Systemsteuerung → USV eingestellt ist, wenn der Strom nicht rechtzeitig zurückkommt.',
+      body: 'Kommt der Strom nicht rechtzeitig zurück, fährt zendiloOS herunter, sobald die USV ihren Akku als fast leer meldet.',
+      bodyCharge:
+        'Kommt der Strom nicht rechtzeitig zurück, fährt zendiloOS herunter, sobald der Ladestand unter {percent} % fällt.',
+      bodyMinutes:
+        'Kommt der Strom nicht rechtzeitig zurück, fährt zendiloOS nach {minutes} min auf Akku herunter.',
+      battery: 'Der Akku ist zu {charge} % geladen.',
+      batteryRuntime: 'Der Akku ist zu {charge} % geladen und reicht für etwa {runtime} min.',
     },
-    ups_battery_low: {
-      title: 'Akku der USV fast leer: das NAS fährt herunter',
-      body: 'Der Akku reicht nicht mehr lange.',
+    ups_shutdown: {
+      title: 'Stromausfall: das NAS fährt herunter',
+      body: 'Der Akku der USV ist fast leer.',
+      bodyTime:
+        'Das NAS lief so lange auf Akku, wie es unter Systemsteuerung → USV eingestellt ist.',
     },
     ups_on_mains: {
       title: 'Strom ist zurück',
