@@ -239,7 +239,7 @@ fn notification(event: Event, settings: &Settings, state: Option<&UpsState>) -> 
         }
         Event::OnMains => NewNotification::new(Level::Success, "ups_on_mains"),
         Event::ShuttingDown => {
-            let battery = state.is_some_and(UpsState::battery_low);
+            let battery = state.is_some_and(|state| state.low_battery);
             NewNotification::new(Level::Error, "ups_shutdown")
                 .with("why", if battery { "battery" } else { "time" })
         }

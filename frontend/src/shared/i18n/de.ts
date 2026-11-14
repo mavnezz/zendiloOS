@@ -4005,6 +4005,9 @@ const de: Messages = {
       onMains: 'Am Netz',
       onBattery: 'Auf Akku',
       lowBattery: 'Akku fast leer',
+      shuttingDown: 'Fährt herunter',
+      goneDown:
+        'Das NAS fährt herunter. Diese Seite antwortet wieder, sobald es neu gestartet ist.',
       charging: 'Lädt',
       replaceBattery: 'Akku ersetzen',
       silent: 'Die USV antwortet nicht.',

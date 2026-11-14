@@ -9605,7 +9605,10 @@ export interface components {
             charging: boolean;
             /** Format: int32 */
             load_percent?: number | null;
-            /** @description The battery is low, or a shutdown is forced. */
+            /**
+             * @description The UPS calls its battery low. It still does for a while after the
+             *     power is back, until the battery has charged.
+             */
             low_battery: boolean;
             manufacturer?: string | null;
             model?: string | null;
@@ -9614,6 +9617,11 @@ export interface components {
             replace_battery: boolean;
             /** Format: int32 */
             runtime_seconds?: number | null;
+            /**
+             * @description The NAS is about to shut down: on battery with the battery low, or
+             *     because the time on battery is over.
+             */
+            shutting_down: boolean;
             /** @description NUT's `ups.status`, e.g. `OL CHRG`. */
             status: string;
         };
