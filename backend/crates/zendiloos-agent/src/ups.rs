@@ -74,6 +74,15 @@ impl Default for UpsPaths {
     }
 }
 
+/// What writing NUT's files changed.
+#[derive(Debug, Clone, Copy)]
+struct Written {
+    /// One of the files.
+    any: bool,
+    /// `ups.conf`, which the driver reads when it starts.
+    driver: bool,
+}
+
 #[derive(Debug)]
 pub(crate) struct Ups {
     systemctl: Program,
@@ -329,27 +338,32 @@ impl Ups {
             return Err(OperationError::Setup("NUT's SNMP driver is not installed (nut-snmp)".into()));
         }
         let local = config.source.is_local();
-        let changed = self.write_all(Some(config))?;
+        let written = self.write_all(Some(config))?;
         // In force already, as when zendiloosd asks again at its start:
         // NUT is not interrupted for it.
-        if !changed && self.all_active(if local { &[SERVER, MONITOR] } else { &[MONITOR] }).await {
+        if !written.any && self.all_active(if local { &[SERVER, MONITOR] } else { &[MONITOR] }).await {
             return Ok(Response::Done);
         }
         // The driver's unit follows `ups.conf`: Debian's enumerator makes
-        // it for a UPS on this machine, starts it anew when its section
-        // changed and removes it for another device's. It is not waited
-        // for, as it waits a minute and a half for the driver, and a UPS
-        // that is not plugged in, or does not answer on the network, keeps
-        // its driver from starting for as long as it tries; systemd goes
+        // it for a UPS on this machine and removes it for another
+        // device's. Neither the enumerator, which can wait a minute and a
+        // half for a driver, nor the driver is waited for: a UPS that is
+        // not plugged in, or does not answer on the network, keeps its
+        // driver from starting for as long as it tries, and systemd goes
         // on trying. The settings hold all the same, and the server takes
         // the driver once it is there.
         self.run(&["restart", "--no-block", ENUMERATOR]).await?;
         if local {
             link_units(&self.systemctl, &["enable", "--no-reload", SERVER, MONITOR]).await?;
             reload_if_behind(&self.systemctl, SERVER).await?;
-            // A driver someone stopped runs again; one that runs is left
-            // to the enumerator.
-            let _ = self.run(&["start", "--no-block", DRIVER]).await;
+            // A driver whose section changed is started anew here: the
+            // enumerator of NUT 2.8.1 settles for the driver's "live
+            // reload", which says it sufficed and leaves `ignorelb` as it
+            // was, so that a charge to shut down at would not be in force.
+            // One whose section stayed is only started, should someone
+            // have stopped it.
+            let how = if written.driver { "restart" } else { "start" };
+            let _ = self.run(&[how, "--no-block", DRIVER]).await;
             self.run(&["restart", SERVER]).await?;
         } else {
             link_units(&self.systemctl, &["disable", "--no-reload", "--now", SERVER]).await?;
@@ -367,8 +381,8 @@ impl Ups {
         if !self.installed() || !self.ours() {
             return Ok(Response::Done);
         }
-        let changed = self.write_all(None)?;
-        if !changed && !self.any_active(&[MONITOR, SERVER]).await {
+        let written = self.write_all(None)?;
+        if !written.any && !self.any_active(&[MONITOR, SERVER]).await {
             return Ok(Response::Done);
         }
         link_units(&self.systemctl, &["disable", "--no-reload", "--now", MONITOR, SERVER]).await?;
@@ -384,11 +398,11 @@ impl Ups {
         fs::read_to_string(self.paths.dir.join("nut.conf")).is_ok_and(|text| text.contains(HEADER))
     }
 
-    /// NUT's files for `config`; whether any of them changed.
-    fn write_all(&self, config: Option<&UpsConfig>) -> Result<bool, OperationError> {
+    /// NUT's files for `config`, and what of them changed.
+    fn write_all(&self, config: Option<&UpsConfig>) -> Result<Written, OperationError> {
         let dir = &self.paths.dir;
-        let mut changed = self.write("nut.conf", &nut_conf(config), 0o640)?;
-        changed |= self.write("ups.conf", &ups_conf(config), 0o640)?;
+        let driver = self.write("ups.conf", &ups_conf(config), 0o640)?;
+        let mut changed = driver | self.write("nut.conf", &nut_conf(config), 0o640)?;
         changed |= self.write("upsd.conf", &upsd_conf(config), 0o640)?;
         changed |= self.write("upsd.users", &upsd_users(config), 0o640)?;
         changed |= self.write("upsmon.conf", &upsmon_conf(config), 0o640)?;
@@ -403,7 +417,7 @@ impl Ups {
         } else {
             changed |= fs::remove_file(&simulated).is_ok();
         }
-        Ok(changed)
+        Ok(Written { any: changed, driver })
     }
 
     /// A file in NUT's folder, with the folder's group, which NUT's

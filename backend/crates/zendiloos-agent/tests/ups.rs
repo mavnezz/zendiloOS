@@ -45,7 +45,7 @@ impl Host {
             systemctl: script(
                 "systemctl",
                 &format!(
-                    "case \"$*\" in\n  'show --property=NeedDaemonReload'*) echo no;;\n  'start --no-block nut-driver@ups.service') exit 1;;\n  \
+                    "case \"$*\" in\n  'show --property=NeedDaemonReload'*) echo no;;\n  *' --no-block nut-driver@ups.service') exit 1;;\n  \
                      is-active*) [ ! -e {} ] || exit 3;;\nesac",
                     root.join("stopped").display()
                 ),
@@ -179,7 +179,7 @@ async fn a_usb_ups_gets_its_files_driver_server_and_monitor() {
             "systemctl restart --no-block nut-driver-enumerator.service",
             "systemctl enable --no-reload nut-server.service nut-monitor.service",
             "systemctl show --property=NeedDaemonReload --value nut-server.service",
-            "systemctl start --no-block nut-driver@ups.service",
+            "systemctl restart --no-block nut-driver@ups.service",
             "systemctl restart nut-server.service",
             "systemctl restart nut-monitor.service",
         ]
@@ -252,13 +252,34 @@ async fn settings_in_force_already_interrupt_nothing() {
         host.calls(),
         ["systemctl is-active --quiet nut-server.service", "systemctl is-active --quiet nut-monitor.service",]
     );
-    // Unless NUT does not run, as after someone stopped it.
+    // Unless NUT does not run, as after someone stopped it: started again,
+    // the driver too, which is not started anew for a section that stayed.
     fs::write(host.root.join("stopped"), "").unwrap();
     assert!(matches!(host.set(Some(config(usb()))).await, Response::Done));
-    assert!(host.calls().contains(&"systemctl restart nut-monitor.service".to_owned()), "{:?}", host.calls());
+    let calls = host.calls();
+    assert!(calls.contains(&"systemctl restart nut-monitor.service".to_owned()), "{calls:?}");
+    assert!(calls.contains(&"systemctl start --no-block nut-driver@ups.service".to_owned()), "{calls:?}");
+    fs::remove_file(host.root.join("stopped")).unwrap();
+
+    // Another rule for the shutdown that the driver has to know: started
+    // anew, as its live reload would leave the old rule in force.
+    fs::write(host.root.join("calls.log"), "").unwrap();
+    let charge = UpsConfig { shutdown: UpsShutdown::ChargeBelow { percent: 40 }, ..config(usb()) };
+    assert!(matches!(host.set(Some(charge.clone())).await, Response::Done));
+    assert!(host.file("ups.conf").unwrap().contains("    ignorelb\n    override.battery.charge.low = 40\n"));
+    let calls = host.calls();
+    assert!(calls.contains(&"systemctl restart --no-block nut-driver@ups.service".to_owned()), "{calls:?}");
+    // One the driver has nothing to do with: the monitor's alone.
+    fs::write(host.root.join("calls.log"), "").unwrap();
+    let cut = UpsConfig { cut_power: true, ..charge };
+    assert!(matches!(host.set(Some(cut)).await, Response::Done));
+    let calls = host.calls();
+    assert!(calls.contains(&"systemctl start --no-block nut-driver@ups.service".to_owned()), "{calls:?}");
+    assert!(calls.contains(&"systemctl restart nut-monitor.service".to_owned()), "{calls:?}");
 
     // No UPS, asked for twice: switched off once.
     assert!(matches!(host.set(None).await, Response::Done));
+    fs::write(host.root.join("stopped"), "").unwrap();
     fs::write(host.root.join("calls.log"), "").unwrap();
     assert!(matches!(host.set(None).await, Response::Done));
     assert_eq!(host.calls(), ["systemctl is-active --quiet nut-monitor.service nut-server.service"]);
