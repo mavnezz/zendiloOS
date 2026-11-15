@@ -37,6 +37,17 @@ load_zfs() {
     fi
 }
 
+# libvirt starts swtpm_setup as tss. Repair the default local CA's
+# ownership on upgrades too: an earlier root-owned lock or key prevents
+# a new TPM from being manufactured. Without the VM plugin, do nothing.
+prepare_swtpm_localca() {
+    if command -v swtpm_localca >/dev/null 2>&1 \
+        && getent passwd tss >/dev/null 2>&1 \
+        && getent group tss >/dev/null 2>&1; then
+        systemd-tmpfiles --create /usr/share/zendiloos/swtpm-localca.conf
+    fi
+}
+
 # GRUB starts the newest kernel that has its ZFS module, so a kernel DKMS
 # could not build ZFS for is not started (docs/architecture.md, 4.10): its
 # default is the entry saved in its environment block
@@ -135,6 +146,7 @@ case "$1" in
         mask_gpt_auto
         load_zfs
         boot_kernel_with_zfs
+        prepare_swtpm_localca
         # Earlier packages linked the console text to a file zendiloosd wrote.
         if [ -L /run/issue.d/zendiloos.issue ]; then rm -f /run/issue.d/zendiloos.issue; fi
         rm -f /var/lib/zendiloos/console.issue /var/lib/zendiloos/console.tmp

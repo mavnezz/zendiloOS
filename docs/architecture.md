@@ -3042,7 +3042,17 @@ redefinition keeps (4.13, a VM), in `/var/lib`, which no package upgrade
 touches, set up and handed to swtpm's account (`tss`) by libvirt with
 swtpm_setup and its AppArmor profile; on a VM's location it would need
 both done by hand. It goes with the domain (`undefine --tpm`) and comes
-with a backup. UEFI may boot with Secure Boot and Microsoft's keys
+with a backup. After installing the plugin, and on each zendiloOS package
+upgrade when swtpm is installed, `systemd-tmpfiles` applies
+`/usr/share/zendiloos/swtpm-localca.conf`: the default local certificate
+authority's directory at `/var/lib/swtpm-localca` becomes `tss:tss`, mode
+0750, and its existing lock and CA files become `tss:tss` too. The files'
+modes, contents and keys stay as they are; the VMs' TPM states are not
+changed. This repairs a CA file made by root that would otherwise stop
+`swtpm_setup` with "Need
+read/write rights ... for user tss". The rule is outside `tmpfiles.d`,
+as the account exists only once the plugin is installed. UEFI may boot
+with Secure Boot and Microsoft's keys
 enrolled: libvirt picks the firmware QEMU describes with `secure-boot` and
 `enrolled-keys` (Debian 13's `40-edk2-x86_64-secure-enrolled.json`, that
 is `OVMF_CODE_4M.ms.fd` with `OVMF_VARS_4M.ms.fd`), on q35 with SMM on

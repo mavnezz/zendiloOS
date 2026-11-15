@@ -2,6 +2,7 @@ packaging/etc/zendiloosd.toml etc/zendiloos/
 packaging/etc/agent.toml etc/zendiloos/
 packaging/nginx/zendiloos.conf etc/nginx/conf.d/
 packaging/libexec/make-certificate usr/libexec/zendiloos/
+packaging/tmpfiles/swtpm-localca.conf usr/share/zendiloos/
 packaging/systemd/zendiloosd.service usr/lib/systemd/system/
 packaging/systemd/zendiloosd.socket usr/lib/systemd/system/
 packaging/systemd/zendiloos-agent.service usr/lib/systemd/system/
