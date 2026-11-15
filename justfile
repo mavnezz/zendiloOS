@@ -20,7 +20,11 @@ test:
     cargo test --workspace --locked
 
 # Everything CI checks; the tests run measured, against the coverage thresholds
-check: version-check release-notes-test iso-network-test lint deny coverage-backend sqlx-check api-check web-check licences-check
+check: version-check release-notes-test iso-network-test swtpm-localca-test lint deny coverage-backend sqlx-check api-check web-check licences-check
+
+# The TPM CA's permissions on a new installation and after an update.
+swtpm-localca-test:
+    scripts/swtpm-localca-test.sh
 
 # The crates carry the version of the newest entry in debian/changelog
 # (Debian's ~ for a test release is Cargo's -)

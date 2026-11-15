@@ -1,3 +1,20 @@
+zendiloos (0.5.1) unstable; urgency=medium
+
+  * Fix starting Windows VMs with a TPM when the local certificate
+    authority's lock or keys belong to root. The VM plugin sets their
+    ownership to tss after installation; package upgrades repair existing
+    installations too, preserving their keys and TPM states.
+  * Secure Boot: VMs can boot installers signed with Microsoft's UEFI
+    certificates of 2023 as well as those of 2011.
+  * UPS: follow another device's UPS, shut down on battery and share its
+    state; distinguish a requested shutdown from a low battery, tell a
+    needed battery replacement once, and name the server in the firewall.
+  * Updates: show the kernel that is running and keep checks and plugin
+    installations separate from the last system update.
+  * Storage: do not list a VM's ZFS volumes as physical disks.
+
+ -- zendiloOS <github.com@stuch.me>  Sun, 15 Nov 2026 17:50:00 +0000
+
 zendiloos (0.5.0) unstable; urgency=medium
 
   * A new look. Windows, panels and menus are solid instead of glass, and

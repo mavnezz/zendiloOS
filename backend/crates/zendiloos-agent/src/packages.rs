@@ -44,6 +44,8 @@ use crate::pools::HostPaths;
 /// The unit a run of apt goes in.
 const UNIT: &str = "zendiloos-packages.service";
 const STATE_FILE: &str = "run.json";
+/// Kept outside tmpfiles.d: tss exists only once the VM plugin is installed.
+const SWTPM_LOCALCA_CONFIG: &str = "/usr/share/zendiloos/swtpm-localca.conf";
 /// The last update's record, also once other runs came after it.
 const UPDATE_FILE: &str = "update.json";
 const LIMITS: Limits = Limits { timeout: Duration::from_secs(30), max_stdout: 64 * 1024 };
@@ -224,6 +226,7 @@ struct Debian {
     dpkg_query: PathBuf,
     systemctl: PathBuf,
     udevadm: PathBuf,
+    systemd_tmpfiles: PathBuf,
     modules: PathBuf,
     etc: PathBuf,
     boot: Boot,
@@ -238,6 +241,7 @@ impl Default for Debian {
             dpkg_query: "/usr/bin/dpkg-query".into(),
             systemctl: "/usr/bin/systemctl".into(),
             udevadm: "/usr/bin/udevadm".into(),
+            systemd_tmpfiles: "/usr/bin/systemd-tmpfiles".into(),
             modules: "/lib/modules".into(),
             etc: "/etc".into(),
             boot: Boot::default(),
@@ -363,7 +367,11 @@ impl Debian {
                 // reason: the daemon recommends every driver.
                 let mut args = vec!["install", "--yes", "--no-install-recommends"];
                 args.extend(VMS_PACKAGES);
-                self.apt(&args)
+                self.apt(&args)?;
+                // swtpm_setup runs as tss; its local CA must let tss
+                // write its lock, keys and serial number on a fresh NAS
+                // and where one of those was made by root before.
+                debian(&self.systemd_tmpfiles, &["--create", SWTPM_LOCALCA_CONFIG])
             }
             PackageTask::InstallBackup => {
                 lists(&mut step)?;
@@ -1041,12 +1049,27 @@ mod tests {
         let dpkg_query = script("dpkg-query", "[ -e $R/resolved-installed ] && echo 'install ok installed'");
         let systemctl = script("systemctl", "exit 0");
         let udevadm = script("udevadm", "[ -e $R/udev-fails ] && exit 1; exit 0");
+        let systemd_tmpfiles = script(
+            "systemd-tmpfiles",
+            "[ -e $R/swtpm-permissions-fail ] && { echo 'cannot prepare the TPM CA' >&2; exit 1; }; exit 0",
+        );
         let kernel = "6.12.57+deb13-amd64";
         let boot = crate::boot::tests::machine(root, &[kernel], &[kernel]);
         let modules = boot.modules.clone();
         let etc = root.join("etc");
         fs::create_dir_all(&etc).unwrap();
-        Debian { apt_get, dpkg, dpkg_deb, dpkg_query, systemctl, udevadm, modules, etc, boot }
+        Debian {
+            apt_get,
+            dpkg,
+            dpkg_deb,
+            dpkg_query,
+            systemctl,
+            udevadm,
+            systemd_tmpfiles,
+            modules,
+            etc,
+            boot,
+        }
     }
 
     /// A NAS of fake tools in `root`, with the release 9.9.9 downloaded.
@@ -1284,6 +1307,29 @@ mod tests {
         let before = called(root.path()).iter().filter(|call| call.starts_with("udevadm")).count();
         run_with(&paths, &debian, "ab03", "install-ups", None, None).unwrap_err();
         let after = called(root.path()).iter().filter(|call| call.starts_with("udevadm")).count();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn vm_installation_prepares_the_tpm_ca_and_reports_a_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, debian) = host(root.path());
+        run_with(&paths, &debian, "ab01", "install-vms", None, None).unwrap();
+        let calls = called(root.path());
+        let install = calls.iter().position(|call| call.contains(" install --yes ")).unwrap();
+        let prepare = format!("systemd-tmpfiles --create {SWTPM_LOCALCA_CONFIG}");
+        assert_eq!(calls[install + 1], prepare, "{calls:?}");
+
+        fs::write(root.path().join("swtpm-permissions-fail"), "").unwrap();
+        let error = run_with(&paths, &debian, "ab02", "install-vms", None, None).unwrap_err();
+        assert!(error.contains("cannot prepare the TPM CA"), "{error}");
+        assert_eq!(recorded(&paths, STATE_FILE).state, PackageRunState::Failed);
+
+        // A failed package installation never runs the permission repair.
+        fs::write(root.path().join("apt-fails"), "").unwrap();
+        let before = called(root.path()).iter().filter(|call| **call == prepare).count();
+        run_with(&paths, &debian, "ab03", "install-vms", None, None).unwrap_err();
+        let after = called(root.path()).iter().filter(|call| **call == prepare).count();
         assert_eq!(before, after);
     }
 
