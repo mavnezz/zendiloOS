@@ -286,6 +286,43 @@ async fn the_watch_tells_a_power_cut_its_end_and_a_ups_gone_silent() {
 }
 
 #[tokio::test]
+async fn a_new_battery_asked_for_is_told_once_also_when_zendiloosd_starts_again() {
+    let fakes = Fakes::default();
+    let first = ups(&fakes);
+    fakes.link.says("OL RB");
+    first.set(input(Some(usb())), &alice(), &context()).await.unwrap();
+    first.watch().await;
+    first.watch().await;
+    assert_eq!(codes(&fakes), ["ups_replace_battery"]);
+    assert!(*fakes.store.1.lock().unwrap(), "kept");
+
+    // zendiloosd started again, as after an update: the same UPS, the
+    // same battery, nothing told.
+    let again = ups(&fakes);
+    again.watch().await;
+    assert_eq!(codes(&fakes).len(), 1);
+    // The new battery in, and worn again later: told again.
+    fakes.link.says("OL");
+    again.watch().await;
+    assert!(!*fakes.store.1.lock().unwrap());
+    fakes.link.says("OL RB");
+    again.watch().await;
+    assert_eq!(codes(&fakes), ["ups_replace_battery", "ups_replace_battery"]);
+
+    // Another UPS: what the old one asked for goes with it.
+    let snmp = SettingsInput {
+        source: Some(SourceInput::Snmp {
+            address: "192.168.1.30".into(),
+            community: "public".into(),
+            version: crate::domain::SnmpVersion::V2c,
+        }),
+        ..input(None)
+    };
+    again.set(snmp, &alice(), &context()).await.unwrap();
+    assert!(!*fakes.store.1.lock().unwrap());
+}
+
+#[tokio::test]
 async fn a_power_cut_is_told_with_the_rule_the_nas_shuts_down_by() {
     let fakes = Fakes::default();
     let ups = ups(&fakes);

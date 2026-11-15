@@ -19,8 +19,9 @@ use crate::domain::{Found, Settings};
 /// The password the store makes for the NAS's own account.
 pub const LOCAL_PASSWORD: &str = "local-password";
 
+/// The settings, and whether a call for a new battery was told.
 #[derive(Default)]
-pub struct MemoryStore(pub Mutex<Settings>);
+pub struct MemoryStore(pub Mutex<Settings>, pub Mutex<bool>);
 
 #[async_trait]
 impl SettingsStore for MemoryStore {
@@ -30,6 +31,15 @@ impl SettingsStore for MemoryStore {
 
     async fn save(&self, settings: &Settings, _: Timestamp) -> Result<(), PortError> {
         *self.0.lock().unwrap() = settings.clone();
+        Ok(())
+    }
+
+    async fn replace_battery_told(&self) -> Result<bool, PortError> {
+        Ok(*self.1.lock().unwrap())
+    }
+
+    async fn set_replace_battery_told(&self, told: bool) -> Result<(), PortError> {
+        *self.1.lock().unwrap() = told;
         Ok(())
     }
 }

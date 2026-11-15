@@ -164,6 +164,23 @@ impl SettingsStore for SqliteUpsSettings {
         Ok(Stored { settings: settings(document), local_password: row.local_password })
     }
 
+    async fn replace_battery_told(&self) -> Result<bool, PortError> {
+        let told = sqlx::query_scalar!("SELECT replace_battery_told FROM ups_settings WHERE id = 1")
+            .fetch_optional(self.db.pool())
+            .await
+            .map_err(db_error)?;
+        Ok(told.is_some_and(|told| told != 0))
+    }
+
+    /// The row is there: the watch looks only at a UPS that was set.
+    async fn set_replace_battery_told(&self, told: bool) -> Result<(), PortError> {
+        sqlx::query!("UPDATE ups_settings SET replace_battery_told = ? WHERE id = 1", told)
+            .execute(self.db.pool())
+            .await
+            .map_err(db_error)?;
+        Ok(())
+    }
+
     async fn save(&self, settings: &Settings, at: Timestamp) -> Result<(), PortError> {
         let (document, password, at) = (encoded(settings)?, new_password(), at.unix_seconds());
         // The password is for a row that is not there yet; one that is keeps its own.
@@ -215,6 +232,14 @@ mod tests {
         let kept = store.load().await.unwrap();
         assert_eq!(kept.settings, server);
         assert_eq!(kept.local_password, first.local_password, "saving keeps it");
+
+        assert!(!store.replace_battery_told().await.unwrap());
+        store.set_replace_battery_told(true).await.unwrap();
+        assert!(store.replace_battery_told().await.unwrap());
+        store.save(&server, at(200)).await.unwrap();
+        assert!(store.replace_battery_told().await.unwrap(), "saving the settings keeps it");
+        store.set_replace_battery_told(false).await.unwrap();
+        assert!(!store.replace_battery_told().await.unwrap());
     }
 
     #[tokio::test]
