@@ -28,6 +28,10 @@ pub trait SettingsStore: Send + Sync {
     /// The settings; before any were saved, none with a new password.
     async fn load(&self) -> Result<Stored, PortError>;
     async fn save(&self, settings: &Settings, at: Timestamp) -> Result<(), PortError>;
+    /// Whether the UPS's call for a new battery was told and is still
+    /// there, kept across starts so that it is told once.
+    async fn replace_battery_told(&self) -> Result<bool, PortError>;
+    async fn set_replace_battery_told(&self, told: bool) -> Result<(), PortError>;
 }
 
 /// What of NUT is on the NAS.
@@ -325,6 +329,10 @@ impl Ups {
             self.ports.host.apply(&stored, context).await?;
         }
         self.ports.store.save(&settings, self.ports.clock.now()).await?;
+        if settings.source != kept.settings.source {
+            // Another UPS, or none: what the old one asked for is gone.
+            self.ports.store.set_replace_battery_told(false).await?;
+        }
         self.watch.lock().await.forget();
         Ok(settings)
     }
@@ -397,9 +405,22 @@ impl Ups {
             watch.forget();
             return false;
         }
+        if watch.replace_told().is_none() {
+            match self.ports.store.replace_battery_told().await {
+                Ok(told) => watch.recall(told),
+                Err(error) => tracing::warn!(%error, "ups: cannot read whether a new battery was asked for"),
+            }
+        }
+        let told = watch.replace_told();
         let state = self.state(&settings).await;
         let events = watch.observe(state.as_ref());
+        let now = watch.replace_told();
         drop(watch);
+        if let Some(now) = now.filter(|now| Some(*now) != told)
+            && let Err(error) = self.ports.store.set_replace_battery_told(now).await
+        {
+            tracing::warn!(%error, "ups: cannot keep whether a new battery was asked for");
+        }
         for event in events {
             self.ports.notifier.notify(notification(event, &settings, state.as_ref())).await;
         }

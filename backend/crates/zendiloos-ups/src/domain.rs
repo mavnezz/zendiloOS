@@ -363,19 +363,35 @@ pub struct Watch {
     seen: Option<Seen>,
     misses: u8,
     unreachable_told: bool,
+    /// Whether the UPS's call for a new battery was told: it is told once,
+    /// and again only after it was gone, also across zendiloosd's starts
+    /// ([`Watch::recall`]). None until it is known.
+    replace_told: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Seen {
     on_battery: bool,
     shutting_down: bool,
-    replace_battery: bool,
 }
 
 impl Watch {
+    /// Whether the UPS's call for a new battery was told, to be kept
+    /// across starts; none until a reading or [`Watch::recall`] said.
+    pub fn replace_told(&self) -> Option<bool> {
+        self.replace_told
+    }
+
+    /// Takes over what was kept: a call for a new battery told before
+    /// zendiloosd started is not told again at the first reading.
+    pub fn recall(&mut self, replace_told: bool) {
+        self.replace_told = Some(replace_told);
+    }
+
     /// Takes a reading (none: the UPS did not answer) and says what to
     /// tell. The first reading tells nothing but trouble that is there
-    /// already: a NAS that starts on battery says so.
+    /// already: a NAS that starts on battery says so, and a UPS that asks
+    /// for a new battery, unless that was told before ([`Watch::recall`]).
     pub fn observe(&mut self, state: Option<&UpsState>) -> Vec<Event> {
         let Some(state) = state else {
             self.misses = self.misses.saturating_add(1);
@@ -387,16 +403,8 @@ impl Watch {
         };
         self.misses = 0;
         self.unreachable_told = false;
-        let now = Seen {
-            on_battery: state.on_battery,
-            shutting_down: state.shutting_down(),
-            replace_battery: state.replace_battery,
-        };
-        let before = self.seen.replace(now).unwrap_or(Seen {
-            on_battery: false,
-            shutting_down: false,
-            replace_battery: false,
-        });
+        let now = Seen { on_battery: state.on_battery, shutting_down: state.shutting_down() };
+        let before = self.seen.replace(now).unwrap_or(Seen { on_battery: false, shutting_down: false });
         let mut events = Vec::new();
         if now.on_battery && !before.on_battery {
             events.push(Event::OnBattery);
@@ -407,9 +415,10 @@ impl Watch {
         if now.shutting_down && !before.shutting_down {
             events.push(Event::ShuttingDown);
         }
-        if now.replace_battery && !before.replace_battery {
+        if state.replace_battery && self.replace_told != Some(true) {
             events.push(Event::ReplaceBattery);
         }
+        self.replace_told = Some(state.replace_battery);
         events
     }
 
@@ -625,6 +634,24 @@ mod tests {
         assert_eq!(watch.observe(Some(&state("OL CHRG"))), [Event::OnMains]);
         assert_eq!(watch.observe(Some(&state("OL RB"))), [Event::ReplaceBattery]);
         assert_eq!(watch.observe(Some(&state("OL RB"))), []);
+    }
+
+    #[test]
+    fn a_new_battery_asked_for_is_told_once_also_across_starts_and_again_once_it_was_gone() {
+        let mut watch = Watch::default();
+        assert_eq!(watch.replace_told(), None);
+        assert_eq!(watch.observe(Some(&state("OL RB"))), [Event::ReplaceBattery]);
+        assert_eq!(watch.replace_told(), Some(true));
+
+        // zendiloosd started again: what was kept says it was told.
+        let mut watch = Watch::default();
+        watch.recall(true);
+        assert_eq!(watch.observe(Some(&state("OL RB"))), [], "not at every start");
+        assert_eq!(watch.observe(None), [], "a missed reading changes nothing");
+        assert_eq!(watch.replace_told(), Some(true));
+        assert_eq!(watch.observe(Some(&state("OL"))), [], "the new battery is in");
+        assert_eq!(watch.replace_told(), Some(false));
+        assert_eq!(watch.observe(Some(&state("OL RB"))), [Event::ReplaceBattery], "worn again");
     }
 
     #[test]

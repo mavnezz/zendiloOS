@@ -2668,7 +2668,7 @@ given against the NAS's, and a card per VM with its own load) and one for
 the image library. Every value is checked as in the other contexts,
 nothing a client sends reaches a command line or a domain's XML as text,
 and zendiloosd gains no privilege. Its context is `zendiloos-vms`
-(migrations 0049, 0050, 0051, 0060, 0061 and 0062). Besides Machines and
+(migrations 0049, 0050, 0051, 0056, 0057 and 0058). Besides Machines and
 Images the app has pages for the VMs' storage, their networks, their
 backups and their log; a VM's card opens its snapshots.
 
@@ -3731,7 +3731,8 @@ shuts down on battery, and whether other devices may follow it through
 the NAS. Seen with `system.view`, changed with `system.manage`. Its
 context is `zendiloos-ups` (migration 0061: one row of settings as JSON,
 and the password NUT's monitor on this machine signs in with, random,
-made with the row and never shown).
+made with the row and never shown; 0062: whether a call for a new battery
+was told).
 
 **Network UPS Tools do the work.** zendiloOS writes NUT's configuration
 and tells what the UPS's state does; watching the UPS and shutting the
@@ -3855,7 +3856,12 @@ the battery is low, or the time on battery is over), a battery that needs
 replacing (`ups_replace_battery`) and a UPS that has not answered three
 times in a row (`ups_unreachable`: a power cut would go unnoticed), each
 once per change and each a kind of its own in the channels' table (group
-System). On battery zendiloosd looks every three seconds, and `upsmon`
+System). The first look after zendiloosd starts tells what is there
+already (a NAS that starts on battery says so), but a battery to replace
+only if it was not told before: whether it was is kept with the settings,
+so a UPS that asks for a new battery is told once, again only once it was
+gone (a new battery in, the next one worn), and not at every start;
+another UPS starts afresh. On battery zendiloosd looks every three seconds, and `upsmon`
 waits ten (`FINALDELAY`) between deciding to shut down and doing it, so
 that the shutdown is told before zendiloosd is stopped; whether a mail
 still gets out then is the network's to say. A shutdown is what NUT's
