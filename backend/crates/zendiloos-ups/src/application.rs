@@ -412,8 +412,14 @@ impl Ups {
             }
         }
         let told = watch.replace_told();
+        // Following another device's UPS, a time on battery shows in no
+        // state of the UPS: the clock tells it.
+        watch.shut_down_after(match (&settings.source, settings.shutdown) {
+            (Some(Source::Server { .. }), ShutdownWhen::AfterMinutes(minutes)) => Some(minutes),
+            _ => None,
+        });
         let state = self.state(&settings).await;
-        let events = watch.observe(state.as_ref());
+        let events = watch.observe(state.as_ref(), self.ports.clock.now().unix_seconds());
         let now = watch.replace_told();
         drop(watch);
         if let Some(now) = now.filter(|now| Some(*now) != told)

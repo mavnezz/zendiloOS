@@ -367,6 +367,12 @@ pub struct Watch {
     /// and again only after it was gone, also across zendiloosd's starts
     /// ([`Watch::recall`]). None until it is known.
     replace_told: Option<bool>,
+    /// When the UPS was first seen on battery in this power cut, Unix
+    /// seconds.
+    battery_since: Option<i64>,
+    /// The minutes on battery after which the shutdown is told by the
+    /// clock ([`Watch::shut_down_after`]).
+    timed: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -388,11 +394,22 @@ impl Watch {
         self.replace_told = Some(replace_told);
     }
 
+    /// For a NAS that follows another device's UPS and shuts down after
+    /// `minutes` on battery: the shutdown is told once that time is up, by
+    /// the clock. No state of the UPS shows it there, as the forced
+    /// shutdown is this NAS's own (NUT's timer asks its `upsmon`, which
+    /// sets no flag at the other device's server). None for a UPS whose
+    /// shutdown its state shows.
+    pub fn shut_down_after(&mut self, minutes: Option<u16>) {
+        self.timed = minutes;
+    }
+
     /// Takes a reading (none: the UPS did not answer) and says what to
     /// tell. The first reading tells nothing but trouble that is there
     /// already: a NAS that starts on battery says so, and a UPS that asks
     /// for a new battery, unless that was told before ([`Watch::recall`]).
-    pub fn observe(&mut self, state: Option<&UpsState>) -> Vec<Event> {
+    /// `at`: Unix seconds, for a time on battery ([`Watch::shut_down_after`]).
+    pub fn observe(&mut self, state: Option<&UpsState>, at: i64) -> Vec<Event> {
         let Some(state) = state else {
             self.misses = self.misses.saturating_add(1);
             if self.misses >= MISSES_BEFORE_UNREACHABLE && !self.unreachable_told {
@@ -403,7 +420,12 @@ impl Watch {
         };
         self.misses = 0;
         self.unreachable_told = false;
-        let now = Seen { on_battery: state.on_battery, shutting_down: state.shutting_down() };
+        self.battery_since = if state.on_battery { self.battery_since.or(Some(at)) } else { None };
+        let time_up = self
+            .timed
+            .zip(self.battery_since)
+            .is_some_and(|(minutes, since)| at.saturating_sub(since) >= i64::from(minutes) * 60);
+        let now = Seen { on_battery: state.on_battery, shutting_down: state.shutting_down() || time_up };
         let before = self.seen.replace(now).unwrap_or(Seen { on_battery: false, shutting_down: false });
         let mut events = Vec::new();
         if now.on_battery && !before.on_battery {
@@ -625,39 +647,66 @@ mod tests {
     #[test]
     fn a_power_cut_is_told_once_and_so_is_its_end() {
         let mut watch = Watch::default();
-        assert_eq!(watch.observe(Some(&state("OL"))), [], "all is well at the start");
-        assert_eq!(watch.observe(Some(&state("OL CHRG"))), []);
-        assert_eq!(watch.observe(Some(&state("OB DISCHRG"))), [Event::OnBattery]);
-        assert_eq!(watch.observe(Some(&state("OB DISCHRG"))), [], "not again");
-        assert_eq!(watch.observe(Some(&state("OB DISCHRG LB"))), [Event::ShuttingDown]);
-        assert_eq!(watch.observe(Some(&state("OB DISCHRG LB FSD"))), [], "told when it began");
-        assert_eq!(watch.observe(Some(&state("OL CHRG"))), [Event::OnMains]);
-        assert_eq!(watch.observe(Some(&state("OL RB"))), [Event::ReplaceBattery]);
-        assert_eq!(watch.observe(Some(&state("OL RB"))), []);
+        assert_eq!(watch.observe(Some(&state("OL")), 0), [], "all is well at the start");
+        assert_eq!(watch.observe(Some(&state("OL CHRG")), 0), []);
+        assert_eq!(watch.observe(Some(&state("OB DISCHRG")), 0), [Event::OnBattery]);
+        assert_eq!(watch.observe(Some(&state("OB DISCHRG")), 0), [], "not again");
+        assert_eq!(watch.observe(Some(&state("OB DISCHRG LB")), 0), [Event::ShuttingDown]);
+        assert_eq!(watch.observe(Some(&state("OB DISCHRG LB FSD")), 0), [], "told when it began");
+        assert_eq!(watch.observe(Some(&state("OL CHRG")), 0), [Event::OnMains]);
+        assert_eq!(watch.observe(Some(&state("OL RB")), 0), [Event::ReplaceBattery]);
+        assert_eq!(watch.observe(Some(&state("OL RB")), 0), []);
     }
 
     #[test]
     fn a_new_battery_asked_for_is_told_once_also_across_starts_and_again_once_it_was_gone() {
         let mut watch = Watch::default();
         assert_eq!(watch.replace_told(), None);
-        assert_eq!(watch.observe(Some(&state("OL RB"))), [Event::ReplaceBattery]);
+        assert_eq!(watch.observe(Some(&state("OL RB")), 0), [Event::ReplaceBattery]);
         assert_eq!(watch.replace_told(), Some(true));
 
         // zendiloosd started again: what was kept says it was told.
         let mut watch = Watch::default();
         watch.recall(true);
-        assert_eq!(watch.observe(Some(&state("OL RB"))), [], "not at every start");
-        assert_eq!(watch.observe(None), [], "a missed reading changes nothing");
+        assert_eq!(watch.observe(Some(&state("OL RB")), 0), [], "not at every start");
+        assert_eq!(watch.observe(None, 0), [], "a missed reading changes nothing");
         assert_eq!(watch.replace_told(), Some(true));
-        assert_eq!(watch.observe(Some(&state("OL"))), [], "the new battery is in");
+        assert_eq!(watch.observe(Some(&state("OL")), 0), [], "the new battery is in");
         assert_eq!(watch.replace_told(), Some(false));
-        assert_eq!(watch.observe(Some(&state("OL RB"))), [Event::ReplaceBattery], "worn again");
+        assert_eq!(watch.observe(Some(&state("OL RB")), 0), [Event::ReplaceBattery], "worn again");
+    }
+
+    #[test]
+    fn a_nas_that_follows_another_devices_ups_tells_its_shutdown_when_its_time_on_battery_is_up() {
+        let mut watch = Watch::default();
+        watch.shut_down_after(Some(2));
+        assert_eq!(watch.observe(Some(&state("OL")), 0), []);
+        assert_eq!(watch.observe(Some(&state("OB DISCHRG")), 100), [Event::OnBattery]);
+        assert_eq!(watch.observe(None, 180), [], "a missed reading keeps the time");
+        assert_eq!(watch.observe(Some(&state("OB DISCHRG")), 219), [], "a second early");
+        assert_eq!(watch.observe(Some(&state("OB DISCHRG")), 220), [Event::ShuttingDown]);
+        assert_eq!(watch.observe(Some(&state("OB DISCHRG")), 223), [], "once");
+        assert_eq!(watch.observe(Some(&state("OB DISCHRG LB")), 226), [], "told already");
+
+        // Back in time: the next power cut counts anew.
+        let mut watch = Watch::default();
+        watch.shut_down_after(Some(2));
+        watch.observe(Some(&state("OB")), 0);
+        assert_eq!(watch.observe(Some(&state("OL")), 60), [Event::OnMains]);
+        assert_eq!(watch.observe(Some(&state("OB")), 100), [Event::OnBattery]);
+        assert_eq!(watch.observe(Some(&state("OB")), 200), [], "the first cut's minute does not count");
+        assert_eq!(watch.observe(Some(&state("OB")), 220), [Event::ShuttingDown]);
+
+        // Without the rule, the time tells nothing.
+        let mut watch = Watch::default();
+        watch.observe(Some(&state("OB")), 0);
+        assert_eq!(watch.observe(Some(&state("OB")), 100_000), []);
     }
 
     #[test]
     fn a_nas_that_starts_on_battery_says_so() {
         let mut watch = Watch::default();
-        assert_eq!(watch.observe(Some(&state("OB LB"))), [Event::OnBattery, Event::ShuttingDown]);
+        assert_eq!(watch.observe(Some(&state("OB LB")), 0), [Event::OnBattery, Event::ShuttingDown]);
     }
 
     #[test]
@@ -665,38 +714,38 @@ mod tests {
         // The power is back, the NAS has started, the battery is still
         // low while it charges: nothing goes down.
         let mut watch = Watch::default();
-        assert_eq!(watch.observe(Some(&state("OL CHRG LB"))), []);
-        assert_eq!(watch.observe(Some(&state("OL CHRG"))), []);
+        assert_eq!(watch.observe(Some(&state("OL CHRG LB")), 0), []);
+        assert_eq!(watch.observe(Some(&state("OL CHRG")), 0), []);
         // The power fails again before it has charged: now it does.
-        assert_eq!(watch.observe(Some(&state("OL CHRG LB"))), []);
-        assert_eq!(watch.observe(Some(&state("OB LB"))), [Event::OnBattery, Event::ShuttingDown]);
+        assert_eq!(watch.observe(Some(&state("OL CHRG LB")), 0), []);
+        assert_eq!(watch.observe(Some(&state("OB LB")), 0), [Event::OnBattery, Event::ShuttingDown]);
     }
 
     #[test]
     fn a_shutdown_forced_after_a_time_on_battery_is_told_as_one() {
         let mut watch = Watch::default();
-        watch.observe(Some(&state("OL")));
-        assert_eq!(watch.observe(Some(&state("OB"))), [Event::OnBattery]);
-        assert_eq!(watch.observe(Some(&state("FSD OB"))), [Event::ShuttingDown]);
-        assert_eq!(watch.observe(Some(&state("FSD OB"))), []);
+        watch.observe(Some(&state("OL")), 0);
+        assert_eq!(watch.observe(Some(&state("OB")), 0), [Event::OnBattery]);
+        assert_eq!(watch.observe(Some(&state("FSD OB")), 0), [Event::ShuttingDown]);
+        assert_eq!(watch.observe(Some(&state("FSD OB")), 0), []);
     }
 
     #[test]
     fn a_ups_that_stops_answering_is_told_after_a_few_misses_and_once() {
         let mut watch = Watch::default();
-        watch.observe(Some(&state("OL")));
-        assert_eq!(watch.observe(None), []);
-        assert_eq!(watch.observe(None), []);
-        assert_eq!(watch.observe(None), [Event::Unreachable]);
-        assert_eq!(watch.observe(None), [], "once");
+        watch.observe(Some(&state("OL")), 0);
+        assert_eq!(watch.observe(None, 0), []);
+        assert_eq!(watch.observe(None, 0), []);
+        assert_eq!(watch.observe(None, 0), [Event::Unreachable]);
+        assert_eq!(watch.observe(None, 0), [], "once");
         // Back, it is watched as before, and a new silence is told again.
-        assert_eq!(watch.observe(Some(&state("OL"))), []);
+        assert_eq!(watch.observe(Some(&state("OL")), 0), []);
         for _ in 0..2 {
-            assert_eq!(watch.observe(None), []);
+            assert_eq!(watch.observe(None, 0), []);
         }
-        assert_eq!(watch.observe(None), [Event::Unreachable]);
+        assert_eq!(watch.observe(None, 0), [Event::Unreachable]);
         // What happened while it was silent shows when it answers.
-        assert_eq!(watch.observe(Some(&state("OB"))), [Event::OnBattery]);
+        assert_eq!(watch.observe(Some(&state("OB")), 0), [Event::OnBattery]);
         watch.forget();
         assert_eq!(watch, Watch::default());
     }

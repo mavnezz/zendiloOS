@@ -3872,9 +3872,13 @@ battery, as it comes with the battery nearly full when the minutes on
 battery are over; the page says each as what it is (`low_battery`,
 `shutting_down`), and when zendiloosd stops answering after a shutdown was
 under way, that the NAS is shutting down. A NAS that follows another
-device's UPS and shuts down after its minutes on battery does not tell the
-shutdown, as no state of the UPS shows it: the power cut's notification
-said when it would come.
+device's UPS and shuts down after its minutes on battery sees no such
+state: its forced shutdown is its own (`upssched` asks its `upsmon`, a
+secondary, which sets no flag at the other device's server). zendiloosd
+tells that shutdown by its own clock, once the minutes are over since it
+first saw the UPS on battery in that power cut, within the ten seconds
+`upsmon` waits; a NAS that started during a power cut counts from its
+first look, so it may go down before it tells.
 The first look after a start, or after the settings changed, tells
 nothing but trouble that is there already (a NAS that starts on battery
 says so); a power cut that ended while the NAS was down is not told as

@@ -323,6 +323,42 @@ async fn a_new_battery_asked_for_is_told_once_also_when_zendiloosd_starts_again(
 }
 
 #[tokio::test]
+async fn following_another_devices_ups_the_shutdown_after_its_minutes_on_battery_is_told() {
+    let fakes = Fakes::default();
+    let follower = ups(&fakes);
+    fakes.link.says("OL");
+    let later =
+        SettingsInput { shutdown: ShutdownWhen::AfterMinutes(2), ..input(Some(server(Some("secret")))) };
+    follower.set(later, &alice(), &context()).await.unwrap();
+    follower.watch().await;
+    fakes.link.says("OB DISCHRG");
+    follower.watch().await;
+    fakes.clock.advance(119);
+    follower.watch().await;
+    assert_eq!(codes(&fakes), ["ups_on_battery"], "a second early");
+    fakes.clock.advance(1);
+    follower.watch().await;
+    fakes.clock.advance(3);
+    follower.watch().await;
+    assert_eq!(codes(&fakes), ["ups_on_battery", "ups_shutdown"], "once");
+    let told = fakes.notifications.all();
+    assert_eq!(told[1].params.get("why").map(String::as_str), Some("time"));
+
+    // A UPS on the NAS itself shows its forced shutdown: the clock says nothing.
+    let fakes = Fakes::default();
+    let local = ups(&fakes);
+    fakes.link.says("OL");
+    let minutes = SettingsInput { shutdown: ShutdownWhen::AfterMinutes(2), ..input(Some(usb())) };
+    local.set(minutes, &alice(), &context()).await.unwrap();
+    local.watch().await;
+    fakes.link.says("OB DISCHRG");
+    local.watch().await;
+    fakes.clock.advance(600);
+    local.watch().await;
+    assert_eq!(codes(&fakes), ["ups_on_battery"]);
+}
+
+#[tokio::test]
 async fn a_power_cut_is_told_with_the_rule_the_nas_shuts_down_by() {
     let fakes = Fakes::default();
     let ups = ups(&fakes);

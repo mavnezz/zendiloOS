@@ -52,7 +52,7 @@ checks and how to run it.
 | `vm-hostname-test` | renaming the machine: the host name, `/etc/hosts`, Samba's NetBIOS name, `<name>.local` through Avahi, the certificate; the name put back |
 | `vm-web-server-test` | the web interface's ports and certificates, ACME |
 | `vm-notify-test` | notifications by e-mail and webhook |
-| `vm-ups-test` | a UPS: Network UPS Tools installed from its page, NUT's simulated UPS followed, a power cut and its end told, its state passed on to other devices with their account, the VM powered off below the charge set and, following a second NUT server as another device's, after its minutes on battery; started again, a UPS gone silent told |
+| `vm-ups-test` | a UPS: Network UPS Tools installed from its page, NUT's simulated UPS followed, a power cut and its end told, its state passed on to other devices with their account, the VM powered off below the charge set and, following a second NUT server as another device's, after its minutes on battery, its shutdown told by the clock; started again, a UPS gone silent told |
 | `vm-network-test` | changing a card's addresses, a change that cuts the VM off going back |
 | `vm-network-takeover-test` | taking the network over from ifupdown, confirmed and not (VM 3) |
 | `vm-network-bridge-test` | bridges, bonds and VLANs, frames bridged past Docker's FORWARD chain (VM 3, with spare cards) |
