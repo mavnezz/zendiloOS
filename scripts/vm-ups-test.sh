@@ -22,7 +22,8 @@
 #   7. minutes on battery: a power cut that ends in time shuts nothing
 #      down, one that lasts powers the VM off
 #   8. another device's UPS: no driver and no server here, its state read
-#      from there; after the minutes on battery the VM powers off
+#      from there; after the minutes on battery the VM powers off, its
+#      shutdown told although the other device's UPS does not show it
 #   9. started again without the other device, the UPS is told as not
 #      answering
 #  10. no UPS: NUT is switched off
@@ -364,11 +365,16 @@ wait_for "the other device's UPS in the API" "ups | jq -e '.reading.model == \"O
 ups | jq -e '.settings.source | .password_set and (has("password") | not)' >/dev/null \
     || fail "the source as the API shows it: $(ups | jq -c .settings.source)"
 cut_before=$(told ups_on_battery)
+down_before=$(told ups_shutdown)
 began=$(date +%s)
 play_other 'ups.status=OB DISCHRG'
 wait_for "the other device's power cut to be told" "(( \$(told ups_on_battery) > $cut_before ))" 60
 off_and_on_again "a minute on battery"
 took=$(( $(date +%s) - began ))
+# No state of the other device's UPS shows this NAS's own forced shutdown:
+# zendiloosd tells it by its clock.
+(( $(told ups_shutdown) > down_before )) || fail "following another device, the shutdown was not told"
+[[ $(newest ups_shutdown why) == time ]] || fail "the shutdown was told as $(newest ups_shutdown why)"
 say "   (the VM was back $took seconds after the power cut)"
 
 say "9. A UPS that no longer answers is told"

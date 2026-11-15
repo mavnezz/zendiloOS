@@ -2,12 +2,13 @@
 //! crate.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use zendiloos_jobs::Jobs;
 use zendiloos_jobs::testing::{FixedClock, MemoryJobs};
-use zendiloos_kernel::{AuditEntry, AuditLog, PortError, RequestContext, Timestamp};
+use zendiloos_kernel::{AuditEntry, AuditLog, Clock, PortError, RequestContext, Timestamp};
 use zendiloos_notify::Notifier;
 use zendiloos_notify::testing::MemoryNotifications;
 
@@ -137,6 +138,27 @@ impl AuditLog for MemoryAudit {
     }
 }
 
+/// A clock that stands until a test moves it on.
+pub struct MovingClock(AtomicI64);
+
+impl Default for MovingClock {
+    fn default() -> Self {
+        Self(AtomicI64::new(FixedClock.now().unix_seconds()))
+    }
+}
+
+impl MovingClock {
+    pub fn advance(&self, seconds: i64) {
+        self.0.fetch_add(seconds, Ordering::SeqCst);
+    }
+}
+
+impl Clock for MovingClock {
+    fn now(&self) -> Timestamp {
+        Timestamp::from_unix_seconds(self.0.load(Ordering::SeqCst))
+    }
+}
+
 /// The fakes behind a [`Ups`], for a test to look into.
 #[derive(Default)]
 pub struct Fakes {
@@ -146,11 +168,12 @@ pub struct Fakes {
     pub jobs: Arc<MemoryJobs>,
     pub notifications: Arc<MemoryNotifications>,
     pub audit: Arc<MemoryAudit>,
+    pub clock: Arc<MovingClock>,
 }
 
 /// The use cases over `fakes`.
 pub fn ups(fakes: &Fakes) -> Ups {
-    let clock = Arc::new(FixedClock);
+    let clock = fakes.clock.clone();
     Ups::new(UpsPorts {
         store: fakes.store.clone(),
         host: fakes.host.clone(),
