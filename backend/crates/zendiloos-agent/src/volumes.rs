@@ -287,6 +287,9 @@ impl Volumes {
     }
 
     pub(crate) async fn list(&self) -> Result<Response, OperationError> {
+        if !crate::docker::installed(&self.docker)? {
+            return Ok(Response::DockerOutput { text: "[]".to_owned() });
+        }
         Ok(Response::DockerOutput { text: self.inspected().await? })
     }
 
@@ -343,6 +346,9 @@ impl Volumes {
 
     /// What each local volume's data takes up: a bounded walk each.
     pub(crate) async fn sizes(&self) -> Result<Response, OperationError> {
+        if !crate::docker::installed(&self.docker)? {
+            return Ok(Response::VolumeSizes { sizes: Vec::new() });
+        }
         let root = self.data_root().await?;
         let values: Vec<Value> = serde_json::from_str(&self.inspected().await?)
             .map_err(|e| OperationError::Failed(format!("Docker inspects the volumes unreadably: {e}")))?;

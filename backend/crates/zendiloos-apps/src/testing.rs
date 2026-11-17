@@ -114,6 +114,7 @@ pub struct FakeReader {
     served: Mutex<BTreeMap<String, Vec<CatalogApp>>>,
     stopped: Mutex<Vec<String>>,
     icons: AtomicUsize,
+    fetched: Mutex<Vec<String>>,
 }
 
 impl FakeReader {
@@ -130,11 +131,16 @@ impl FakeReader {
     pub fn icons_fetched(&self) -> usize {
         self.icons.load(Ordering::Relaxed)
     }
+
+    pub fn fetched(&self) -> Vec<String> {
+        self.fetched.lock().unwrap().clone()
+    }
 }
 
 #[async_trait]
 impl CatalogReader for FakeReader {
     async fn fetch(&self, address: &str) -> Result<String, CatalogError> {
+        self.fetched.lock().unwrap().push(address.to_owned());
         if self.stopped.lock().unwrap().iter().any(|a| a == address)
             || !self.served.lock().unwrap().contains_key(address)
         {

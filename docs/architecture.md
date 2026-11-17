@@ -1555,7 +1555,16 @@ an index in the same format. Adding one is confirmed after a warning, and
 its apps say they are not from the zendiloOS community catalog. `zendiloosd` fetches
 indexes over https (redirects only to https, a size limit, a timeout) and
 checks every entry with the catalog's own checks before showing it; an
-entry that fails is left out, not repaired. Icons are cached, checked to be
+entry that fails is left out, not repaired. Due sources are checked at
+startup and every thirty seconds: a successful fetch waits six hours,
+while a failed fetch retries after 30 seconds, then 1, 2, 4 and at most
+5 minutes, retaining the last readable index. Only failed sources retry;
+healthy sources keep their interval. Manual refresh bypasses the wait,
+and success resets a source's backoff. Scheduled and manual fetches run
+one at a time so older results cannot replace newer ones.
+An open App Center reads an empty catalog or failed source status every
+thirty seconds until it recovers, so the result appears without a click.
+Icons are cached, checked to be
 PNG and served as `image/png`. Each app names the architectures its
 images are made for (`architectures`, which the catalog's checks hold
 against the registries): an app whose list lacks the NAS's is shown, marked
@@ -1751,7 +1760,12 @@ the agent again from the kept files, which then offers the share again).
 
 **Use over time:** zendiloosd samples `docker stats` every 20 seconds and
 keeps twelve hours in memory, by container name, with the network's rates
-from its counters.
+from its counters. Before Docker is installed, the agent returns empty
+readings and listings without executing its CLI (including Compose and
+volumes), so the background samplers and the App Center report no missing
+binary errors. Installation is noticed on the next call without restarting
+zendiloOS. An installed Docker that fails still reports its error, and
+mutating requests never turn into successful no-ops.
 
 **Newer images:** every six hours (if wanted) zendiloosd asks the
 registries for the digest under each tag the containers run, with a

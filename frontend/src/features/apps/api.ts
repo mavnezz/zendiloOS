@@ -8,6 +8,8 @@ export function useCatalog() {
   return useQuery({
     queryKey: ['apps', 'catalog'],
     queryFn: () => unwrap(api.GET('/api/v1/apps/catalog')),
+    // Pick up a scheduled retry while the empty store is already open.
+    refetchInterval: (query) => (query.state.data?.length === 0 ? 30_000 : false),
   })
 }
 
@@ -29,6 +31,10 @@ export function useSources() {
   return useQuery({
     queryKey: ['apps', 'sources'],
     queryFn: () => unwrap(api.GET('/api/v1/apps/sources')),
+    refetchInterval: (query) =>
+      query.state.data?.some((source) => source.refreshed_at === null || source.refresh_error)
+        ? 30_000
+        : false,
   })
 }
 

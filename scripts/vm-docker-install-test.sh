@@ -3,7 +3,8 @@
 # Docker's Debian packages are removed (their configuration stays), then
 # installed again through the API as a job, by apt in a unit of its own
 # outside the agent's sandbox, and its data put back on the pool. Apps on
-# it run again afterwards.
+# it run again afterwards. While the plugin is missing, the App Center
+# and Docker's read-only pages still answer normally.
 #
 # Needs the VM running with the package installed and set up, Docker's
 # data on a pool and the network for apt; account and password as for
@@ -51,6 +52,16 @@ apps=$(vm 'sudo docker ps -q | wc -l')
 say "1. Docker's packages go; their configuration and the data stay"
 vm 'sudo DEBIAN_FRONTEND=noninteractive apt-get -q -y remove docker.io docker-compose docker-cli' >/dev/null
 call GET /apps/docker | jq -e '.installed == false' >/dev/null || fail "still installed: $(call GET /apps/docker)"
+
+# A fresh NAS has no Docker yet: listings are empty (stored projects may
+# remain), rather than HTTP 500 responses from trying a missing binary.
+for path in /apps/projects /docker/containers /docker/images /docker/networks /docker/volumes; do
+    curl -fsk -b "$work/admin.jar" "$api$path" | jq -e 'type == "array"' >/dev/null \
+        || fail "$path does not answer normally without Docker"
+done
+curl -fsk -b "$work/admin.jar" "$api/docker/overview" \
+    | jq -e '.containers == 0 and .images == 0' >/dev/null \
+    || fail "the overview does not answer normally without Docker"
 
 say "2. Installed again through the store, as a job"
 job=$(call POST /apps/docker/install "{\"pool\":\"$pool\"}" | jq -er .id) || fail "install refused"

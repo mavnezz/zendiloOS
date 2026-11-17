@@ -151,6 +151,64 @@ fn project(name: &str) -> ProjectName {
 }
 
 #[tokio::test]
+async fn optional_docker_reads_are_empty_until_installation_and_recover_without_a_restart() {
+    let host = Host::new();
+    let binary = host.root.join("docker");
+    let saved = host.root.join("docker.saved");
+    fs::rename(&binary, &saved).unwrap();
+    for (request, expected) in [
+        (Request::DockerContainers {}, "[]"),
+        (Request::DockerNetworks {}, "[]"),
+        (Request::DockerStats {}, ""),
+        (Request::DockerImages {}, ""),
+        (Request::DockerDiskUsage {}, ""),
+        (Request::DockerVolumes {}, "[]"),
+    ] {
+        assert_eq!(host.output(request).await, expected);
+    }
+    assert_eq!(host.agent.execute(&Request::AppsStatus {}).await, Response::Apps { compose_ls: "[]".into() });
+    assert_eq!(
+        host.agent.execute(&Request::DockerVolumeSizes {}).await,
+        Response::VolumeSizes { sizes: vec![] }
+    );
+    assert!(host.calls().is_empty(), "no Docker command while the plugin is absent");
+    // Mutations still fail: a missing plugin is never a successful action.
+    let start = Request::ControlContainer {
+        container: ContainerId::parse(FIRST).unwrap(),
+        action: ContainerAction::Start,
+    };
+    assert!(matches!(host.agent.execute(&start).await, Response::Error { .. }));
+
+    fs::rename(&saved, &binary).unwrap();
+    assert!(host.output(Request::DockerContainers {}).await.contains(FIRST));
+    assert!(matches!(
+        host.agent.execute(&Request::AppsStatus {}).await,
+        Response::Apps { compose_ls } if compose_ls.contains("stack")
+    ));
+}
+
+#[tokio::test]
+async fn an_installed_docker_that_fails_is_not_treated_as_an_empty_engine() {
+    let host = Host::new();
+    fs::write(host.root.join("docker"), "#!/bin/sh\necho 'daemon is down' >&2\nexit 1\n").unwrap();
+    for request in [
+        Request::DockerContainers {},
+        Request::DockerStats {},
+        Request::DockerImages {},
+        Request::DockerNetworks {},
+        Request::DockerDiskUsage {},
+        Request::DockerVolumes {},
+        Request::DockerVolumeSizes {},
+        Request::AppsStatus {},
+    ] {
+        assert!(
+            matches!(host.agent.execute(&request).await, Response::Error { message, .. } if message.contains("daemon is down")),
+            "{request:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn every_container_is_inspected_at_once() {
     let host = Host::new();
 
