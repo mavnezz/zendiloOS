@@ -15778,7 +15778,7 @@
         "tags": [
           "vms"
         ],
-        "summary": "Removes the VM: powered off, undefined, its disks destroyed; the images\nit had stay in the library. Needs `vms.manage`.",
+        "summary": "Removes the VM: powered off, undefined, its disks destroyed; the images\nit had stay in the library. A VM not made yet goes too once no job makes\nit any more (its making cut off by a restart). Needs `vms.manage`.",
         "operationId": "delete_vm",
         "parameters": [
           {
@@ -15813,7 +15813,7 @@
             }
           },
           "409": {
-            "description": "`vm_creating`; `refused`",
+            "description": "`refused`: it is being made, backed up, restored or changed; one not made yet goes once no job makes it any more",
             "content": {
               "application/json": {
                 "schema": {
@@ -16337,7 +16337,7 @@
             }
           },
           "409": {
-            "description": "`vm_creating`; `refused`: libvirt's reason, such as it runs already",
+            "description": "`vm_creating`; `refused`: libvirt's reason, such as it runs already, or it is being backed up, restored, rolled back, changed or deleted",
             "content": {
               "application/json": {
                 "schema": {

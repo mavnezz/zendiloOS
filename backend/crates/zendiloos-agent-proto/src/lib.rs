@@ -789,7 +789,9 @@ pub enum Request {
     /// read from it into a zstd-compressed raw image, its UEFI variables
     /// and its TPM's state, and a manifest with `settings`, all in a
     /// transient unit that may write only there; the snapshot goes again.
-    /// Answers [`Response::VmBackedUp`].
+    /// The disks are those in `disks`, the slots `settings` has: refused
+    /// if one has no zvol, or if the domain uses one of the VM's zvols
+    /// that they lack. Answers [`Response::VmBackedUp`].
     BackUpVm {
         id: VmId,
         root: BackupRoot,
@@ -797,6 +799,7 @@ pub enum Request {
         stem: BackupStem,
         label: SnapshotLabel,
         settings: VmBackupSettings,
+        disks: Vec<VmDiskSlot>,
     },
     /// Restores a backup's `files` from `folder` beneath `root` into the VM
     /// `spec` describes, checking each file's SHA-256 while it is read: a

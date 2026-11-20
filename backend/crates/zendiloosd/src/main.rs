@@ -424,8 +424,9 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         audit: audit.clone(),
         clock: Arc::new(SystemClock),
     });
-    // Images being copied or uploaded when zendiloosd stopped were cut off:
-    // what of them is on the host goes, with their records.
+    // Images being copied or uploaded when zendiloosd stopped were cut off,
+    // and so were VMs being made or restored as new ones: what of them is
+    // on the host goes, with their records.
     let unfinished = vms.clone();
     tokio::spawn(async move {
         match unfinished.discard_unfinished_images(&RequestContext::default()).await {
@@ -433,6 +434,13 @@ async fn serve(config: Config) -> anyhow::Result<()> {
             Ok(removed) => tracing::info!(removed, "vms: removed images whose copy or upload was cut off"),
             Err(error) => {
                 tracing::warn!(%error, "vms: cannot remove images whose copy or upload was cut off")
+            }
+        }
+        match unfinished.discard_unfinished_vms(&RequestContext::default()).await {
+            Ok(0) => {}
+            Ok(removed) => tracing::info!(removed, "vms: removed virtual machines whose making was cut off"),
+            Err(error) => {
+                tracing::warn!(%error, "vms: cannot remove virtual machines whose making was cut off")
             }
         }
     });

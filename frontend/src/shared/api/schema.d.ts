@@ -4945,7 +4945,8 @@ export interface paths {
         put?: never;
         /**
          * Removes the VM: powered off, undefined, its disks destroyed; the images
-         *     it had stay in the library. Needs `vms.manage`.
+         *     it had stay in the library. A VM not made yet goes too once no job makes
+         *     it any more (its making cut off by a restart). Needs `vms.manage`.
          */
         post: operations["delete_vm"];
         delete?: never;
@@ -21808,7 +21809,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `vm_creating`; `refused` */
+            /** @description `refused`: it is being made, backed up, restored or changed; one not made yet goes once no job makes it any more */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -22162,7 +22163,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `vm_creating`; `refused`: libvirt's reason, such as it runs already */
+            /** @description `vm_creating`; `refused`: libvirt's reason, such as it runs already, or it is being backed up, restored, rolled back, changed or deleted */
             409: {
                 headers: {
                     [name: string]: unknown;

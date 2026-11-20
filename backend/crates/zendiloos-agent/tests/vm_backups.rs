@@ -16,9 +16,9 @@ use zendiloos_agent::{DevicePaths, Erasable, ErasePolicy, HostPaths, Operations,
 use zendiloos_agent_proto::{
     BackupRoot, BackupStem, ErrorCode, MacAddress, PciAddress, PoolName, Request, Response, Role,
     ShareLocation, ShareName, SharePath, SnapshotFrequency, SnapshotLabel, SnapshotNote, VmAction,
-    VmBackupPart, VmBackupSettings, VmBoot, VmConsistency, VmCpus, VmDevices, VmDisk, VmDiskBus, VmDiskSize,
-    VmDiskSlot, VmFirmware, VmId, VmMemory, VmNetwork, VmNic, VmNicModel, VmNicSlot, VmOs, VmSpec, VmStorage,
-    VmUsbDevice, VolumeNumber,
+    VmBackupFile, VmBackupPart, VmBackupSettings, VmBoot, VmConsistency, VmCpus, VmDevices, VmDisk,
+    VmDiskBus, VmDiskSize, VmDiskSlot, VmFirmware, VmId, VmMemory, VmNetwork, VmNic, VmNicModel, VmNicSlot,
+    VmOs, VmSpec, VmStorage, VmUsbDevice, VolumeNumber,
 };
 
 const ID: &str = "0a1b2c3d4e5f";
@@ -52,6 +52,31 @@ impl Host {
     fn set_state(&self, id: &str, state: &str) {
         fs::write(self.path(&format!("state/zendiloos-{id}")), format!("{state}\n")).unwrap();
     }
+
+    fn state_of(&self, id: &str) -> String {
+        fs::read_to_string(self.path(&format!("state/zendiloos-{id}"))).unwrap_or_default().trim().to_owned()
+    }
+
+    /// Whether libvirt starts the domain with the machine.
+    fn autostarts(&self, id: &str) -> bool {
+        self.path(&format!("state/autostart.zendiloos-{id}")).exists()
+    }
+
+    /// The agent again, as after a restart.
+    fn restarted(&self) -> Operations {
+        operations_at(&self.root)
+    }
+
+    /// Waits until a program was called with `what` among its arguments.
+    async fn called(&self, what: &str) {
+        for _ in 0..800 {
+            if self.calls().iter().any(|call| call.contains(what)) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        panic!("never called with {what}: {:?}", self.calls())
+    }
 }
 
 fn script(root: &Path, name: &str, body: &str) -> PathBuf {
@@ -82,7 +107,10 @@ case "$*" in
           "$(cat "$root/snaps/$(flat "$snap").note" 2>/dev/null || echo -)" "$(cat "$root/snaps/$(flat "$snap").consistency")"
       done < "$root/snaps/order" 2>/dev/null; exit 0 ;;
   'get -H -p -o value volsize '*) [ -f "$root/zvol/$last" ] && stat -c %s "$root/zvol/$last" ;;
-  'create -s -V '*) mkdir -p "$(dirname "$root/zvol/$last")"; truncate -s "${4%G}M" "$root/zvol/$last" ;;
+  'create -s -V '*) mkdir -p "$(dirname "$root/zvol/$last")"
+      # With slow-devices, the device shows a moment after the zvol is made, as udev makes it.
+      if [ -f "$root/slow-devices" ]; then (sleep 1; truncate -s "${4%G}M" "$root/zvol/$last") </dev/null >/dev/null 2>&1 &
+      else truncate -s "${4%G}M" "$root/zvol/$last"; fi ;;
   'set volsize='*) v=${2#volsize=}; case "$v" in *G) truncate -s "${v%G}M" "$root/zvol/$last" ;; *) truncate -s "$v" "$root/zvol/$last" ;; esac ;;
   'set snapdev=visible '*) for s in "$root"/snaps/$(flat "$last")@*; do case "$s" in *.schedule|*.note|*.consistency) continue ;; esac
         [ -f "$s" ] && cp "$s" "$root/zvol/$(basename "$s" | tr + /)"; done; exit 0 ;;
@@ -94,37 +122,60 @@ case "$*" in
       done
       for snap in "$@"; do f="$root/snaps/$(flat "$snap")"; cp "$root/zvol/${snap%@*}" "$f"
         echo "$schedule" > "$f.schedule"; echo "$note" > "$f.note"; echo "$consistency" > "$f.consistency"; echo "$snap" >> "$root/snaps/order"; done ;;
-  'destroy -r '*) rm -f "$root/zvol/$last"; for s in "$root"/snaps/$(flat "$last")@*; do rm -f "$s"; done ;;
+  'destroy -r '*) if grep -qx "$last" "$root/busy" 2>/dev/null; then echo "cannot destroy '$last': dataset is busy" >&2; exit 1; fi
+      rm -f "$root/zvol/$last"; for s in "$root"/snaps/$(flat "$last")@*; do rm -f "$s"; done ;;
   'destroy '*@*) [ -f "$root/snaps/$(flat "$last")" ] || exit 1; rm -f "$root/snaps/$(flat "$last")"* "$root/zvol/$last"
       grep -v "^$last\$" "$root/snaps/order" > "$root/snaps/order.new"; mv "$root/snaps/order.new" "$root/snaps/order" ;;
   'destroy '*) rm -f "$root/zvol/$last" ;;
-  'rollback '*) cp "$root/snaps/$(flat "$last")" "$root/zvol/${last%@*}"
+  'rollback '*) while [ -f "$root/hold-rollback" ]; do sleep 0.05; done
+      cp "$root/snaps/$(flat "$last")" "$root/zvol/${last%@*}"
       if [ "$2" = -r ]; then after=$(sed -n "\|^$last\$|,\$p" "$root/snaps/order" | tail -n +2 | grep "^${last%@*}@")
-        for s in $after; do rm -f "$root/snaps/$(flat "$s")"*; grep -v "^$s\$" "$root/snaps/order" > "$root/snaps/order.new"; mv "$root/snaps/order.new" "$root/snaps/order"; done; fi ;;
+        for s in $after; do rm -f "$root/snaps/$(flat "$s")"*; grep -v "^$s\$" "$root/snaps/order" > "$root/snaps/order.new"; mv "$root/snaps/order.new" "$root/snaps/order"; done; fi
+      echo "zfs rolled back $last" >> "$root/calls.log" ;;
 esac
 "#;
 
-/// Domains are files below `state/` holding what they do; the guest agent
-/// answers if `state/agent` is there.
+/// Domains are files below `state/` holding what they do, and
+/// `autostart.<domain>` while they start with the machine; the guest agent
+/// answers if `state/agent` is there, and only after libvirt gave up on it
+/// with `state/agent-slow`. `libvirt-down`, `lookup-fails` (a domain there
+/// that virsh cannot get), `define-fails`,
+/// `suspend-fails`, `resume-fails` (once) and `autostart-fails` make
+/// libvirt fail as it says.
 const VIRSH: &str = r#"
 state={root}/state
 shift 2
 case "$1" in
-  domstate) test -f "$state/$2" && cat "$state/$2" ;;
-  define) name=$(sed -n 's/.*<name>\(.*\)<\/name>.*/\1/p' "$3"); cp "$3" "$state/$name.defined"
+  domstate) if [ -f "$state/libvirt-down" ]; then echo 'error: failed to connect to the hypervisor' >&2; exit 1; fi
+      if [ -f "$state/$2" ] && [ ! -f "$state/lookup-fails" ]; then cat "$state/$2"
+      else echo "error: failed to get domain '$2'" >&2; exit 1; fi ;;
+  list) if [ -f "$state/libvirt-down" ]; then echo 'error: failed to connect to the hypervisor' >&2; exit 1; fi
+      for f in "$state"/zendiloos-*; do case "$f" in *.defined) ;; *) [ -e "$f" ] && basename "$f" ;; esac; done; true ;;
+  define) if [ -f "$state/define-fails" ]; then echo 'error: XML error: refused' >&2; exit 1; fi
+          name=$(sed -n 's/.*<name>\(.*\)<\/name>.*/\1/p' "$3"); cp "$3" "$state/$name.defined"
           [ -f "$state/$name" ] || echo 'shut off' > "$state/$name" ;;
   domuuid) test -f "$state/$2" && echo {uuid} ;;
   start) echo running > "$state/${2#--reset-nvram}"; [ "$2" = --reset-nvram ] && echo running > "$state/$3"; true ;;
-  domfsfreeze) test -f "$state/agent" ;;
-  domfsthaw|suspend|resume|autostart|attach-device|detach-device) exit 0 ;;
-  undefine) eval last=\${$#}; rm -f "$state/$last" ;;
+  domfsfreeze) if [ -f "$state/agent-slow" ]; then echo 'error: Guest agent is not responding: Guest agent not available for now' >&2; exit 1; fi
+      test -f "$state/agent" || { echo 'error: Guest agent is not responding: QEMU guest agent is not connected' >&2; exit 1; } ;;
+  suspend) test ! -f "$state/suspend-fails" ;;
+  resume) if [ -f "$state/resume-fails" ]; then rm "$state/resume-fails"; exit 1; fi ;;
+  autostart) if [ -f "$state/autostart-fails" ]; then echo 'error: cannot change autostart' >&2; exit 1; fi
+      if [ "$2" = --disable ]; then rm -f "$state/autostart.$3"; else touch "$state/autostart.$2"; fi ;;
+  domfsthaw|attach-device|detach-device) exit 0 ;;
+  undefine) eval last=\${$#}; rm -f "$state/$last" "$state/autostart.$last" ;;
 esac
 "#;
 
-/// Units: what `systemd-run` is asked runs here, as the unit would.
+/// Units: what `systemd-run` is asked runs here, as the unit would; not
+/// before `hold-unit` is gone, and ending only once `hold-unit-end` is.
 const SYSTEMD_RUN: &str = r#"
 while [ "${1#--}" != "$1" ]; do shift; done
-exec "$@"
+while [ -f {root}/hold-unit ]; do sleep 0.05; done
+"$@"
+status=$?
+while [ -f {root}/hold-unit-end ]; do sleep 0.05; done
+exit $status
 "#;
 
 fn host() -> Host {
@@ -163,13 +214,28 @@ fn host() -> Host {
     .unwrap();
     let fill =
         |template: &str| template.replace("{root}", &root.display().to_string()).replace("{uuid}", UUID);
+    script(&root, "zfs", &fill(ZFS));
+    script(&root, "virsh", &fill(VIRSH));
+    script(&root, "systemd-run", &fill(SYSTEMD_RUN));
+    script(&root, "systemctl", "[ \"$1\" = show ] && echo inactive; exit 0");
+    script(&root, "udevadm", "");
+    script(&root, "busctl", "exit 1");
+    fs::write(root.join("libvirtd"), "").unwrap();
+    fs::write(root.join("qemu"), "").unwrap();
+    let operations = operations_at(&root);
+    Host { _dir: dir, root, operations }
+}
+
+/// The agent on the fake host at `root`: another one, as after a restart.
+fn operations_at(root: &Path) -> Operations {
+    let root = root.to_path_buf();
     let tools = Tools {
-        zfs: script(&root, "zfs", &fill(ZFS)),
-        virsh: script(&root, "virsh", &fill(VIRSH)),
-        systemd_run: script(&root, "systemd-run", SYSTEMD_RUN),
-        systemctl: script(&root, "systemctl", "[ \"$1\" = show ] && echo inactive; exit 0"),
-        udevadm: script(&root, "udevadm", ""),
-        busctl: script(&root, "busctl", "exit 1"),
+        zfs: root.join("zfs"),
+        virsh: root.join("virsh"),
+        systemd_run: root.join("systemd-run"),
+        systemctl: root.join("systemctl"),
+        udevadm: root.join("udevadm"),
+        busctl: root.join("busctl"),
         libvirtd: root.join("libvirtd"),
         qemu: root.join("qemu"),
         swtpm: root.join("swtpm-binary"),
@@ -177,8 +243,6 @@ fn host() -> Host {
         virt_fw_vars: root.join("virt-fw-vars"),
         ..Tools::default()
     };
-    fs::write(&tools.libvirtd, "").unwrap();
-    fs::write(&tools.qemu, "").unwrap();
     let paths = Paths {
         host: HostPaths {
             units: root.join("units"),
@@ -216,9 +280,7 @@ fn host() -> Host {
         },
         ..Paths::default()
     };
-    let operations =
-        Operations::with_paths(Role::System, &tools, Erasable::Policy(ErasePolicy::None), paths).unwrap();
-    Host { _dir: dir, root, operations }
+    Operations::with_paths(Role::System, &tools, Erasable::Policy(ErasePolicy::None), paths).unwrap()
 }
 
 fn tank() -> VmStorage {
@@ -248,6 +310,10 @@ fn devices() -> VmDevices {
 }
 
 fn spec_of(id: &str, firmware: VmFirmware, devices: VmDevices) -> VmSpec {
+    spec_with(id, firmware, devices, false)
+}
+
+fn spec_with(id: &str, firmware: VmFirmware, devices: VmDevices, autostart: bool) -> VmSpec {
     VmSpec::new(
         VmId::parse(id).unwrap(),
         VmOs::Windows,
@@ -255,7 +321,7 @@ fn spec_of(id: &str, firmware: VmFirmware, devices: VmDevices) -> VmSpec {
         VmMemory::new(1024).unwrap(),
         firmware,
         devices,
-        false,
+        autostart,
         VolumeNumber::new(1).unwrap(),
     )
     .unwrap()
@@ -287,7 +353,11 @@ fn refused(response: &Response, says: &str) {
 
 /// A VM with two disks, data written into them as a guest would.
 async fn defined(host: &Host) {
-    let spec = spec_of(ID, VmFirmware::Uefi, devices());
+    defined_with(host, devices(), false).await;
+}
+
+async fn defined_with(host: &Host, devices: VmDevices, autostart: bool) {
+    let spec = spec_with(ID, VmFirmware::Uefi, devices, autostart);
     assert_eq!(host.run(Request::DefineVm { spec }).await, Response::Done);
     fs::write(host.zvol(ID, 0), [b"boot sector".as_slice(), &[0u8; 2000], b"data"].concat()).unwrap();
     fs::OpenOptions::new().write(true).open(host.zvol(ID, 0)).unwrap().set_len(1 << 20).unwrap();
@@ -421,15 +491,53 @@ fn settings() -> VmBackupSettings {
 }
 
 async fn backed_up(host: &Host) -> Response {
+    backed_up_as(host, "20261112-030000").await
+}
+
+async fn backed_up_as(host: &Host, stem: &str) -> Response {
+    backed_up_with(host, stem, vec![slot(0), slot(1)]).await
+}
+
+/// A backup of the VM, recorded with the disks in `disks`.
+async fn backed_up_with(host: &Host, stem: &str, disks: Vec<VmDiskSlot>) -> Response {
     host.run(Request::BackUpVm {
         id: vm(),
         root: share(),
         folder: SharePath::parse("vms").unwrap(),
-        stem: BackupStem::parse("20261112-030000").unwrap(),
+        stem: BackupStem::parse(stem).unwrap(),
         label: label("zdl-2026-11-12_03.00.00"),
         settings: settings(),
+        disks,
     })
     .await
+}
+
+/// A restore of the backup in `folder` into the VM `spec` describes, over
+/// it or as a new one.
+fn restore_request(
+    spec: VmSpec,
+    folder: &SharePath,
+    files: &[VmBackupFile],
+    over: bool,
+    remove: Vec<VmDiskSlot>,
+) -> Request {
+    Request::RestoreVm {
+        spec,
+        root: share(),
+        folder: folder.clone(),
+        files: files.to_vec(),
+        over,
+        remove,
+        label: label("zdl-2026-11-12_09.00.00"),
+    }
+}
+
+/// A backup of the VM: its folder and files.
+async fn a_backup(host: &Host) -> (SharePath, Vec<VmBackupFile>) {
+    match backed_up(host).await {
+        Response::VmBackedUp { folder, files, .. } => (folder, files),
+        other => panic!("not backed up: {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -795,4 +903,357 @@ async fn a_running_vm_on_two_pools_is_paused_for_its_snapshot_without_a_guest_ag
         .await;
     assert_eq!(paused, Response::VmSnapshotTaken { consistency: VmConsistency::Crash });
     assert_eq!(host.calls().iter().filter(|call| call.contains("suspend")).count(), 1);
+}
+
+/// What a disk of the VM holds now.
+fn holds(host: &Host, slot: u8) -> Vec<u8> {
+    fs::read(host.zvol(ID, slot)).unwrap()
+}
+
+#[tokio::test]
+async fn while_a_restore_writes_a_vms_disks_it_is_not_started_and_other_vms_go_on() {
+    let host = host();
+    defined(&host).await;
+    let (folder, files) = a_backup(&host).await;
+    let other = VmId::parse(COPY).unwrap();
+    assert_eq!(
+        host.run(Request::DefineVm { spec: spec_of(COPY, VmFirmware::Uefi, devices()) }).await,
+        Response::Done
+    );
+    fs::write(host.path("hold-unit"), "").unwrap();
+    let spec = spec_of(ID, VmFirmware::Uefi, devices());
+    let restore = host.run(restore_request(spec.clone(), &folder, &files, true, vec![]));
+    let meanwhile = async {
+        host.called("restore-vm").await;
+        let quickly = std::time::Duration::from_secs(5);
+        let snapshot = Request::SnapshotVm {
+            id: other,
+            label: label("zdl-2026-11-12_10.00.00"),
+            schedules: vec![],
+            note: None,
+        };
+        let snapshot = tokio::time::timeout(quickly, host.run(snapshot)).await;
+        let start = Request::ControlVm { id: vm(), action: VmAction::Start };
+        let start = tokio::time::timeout(quickly, host.run(start)).await;
+        let change = Request::UpdateVm { spec, remove: vec![] };
+        let change = tokio::time::timeout(quickly, host.run(change)).await;
+        let state = host.state_of(ID);
+        fs::remove_file(host.path("hold-unit")).unwrap();
+        (snapshot, start, change, state)
+    };
+    let (restored, (snapshot, start, change, state)) = tokio::join!(restore, meanwhile);
+    assert_eq!(
+        snapshot.expect("another VM is snapshotted while the restore writes"),
+        Response::VmSnapshotTaken { consistency: VmConsistency::Off }
+    );
+    for answer in [start.expect("refused at once"), change.expect("refused at once")] {
+        assert_eq!(answer.error_code(), Some(ErrorCode::Conflict), "{answer:?}");
+        refused(&answer, "restore");
+    }
+    assert_eq!(state, "shut off");
+    assert_eq!(restored, Response::Done);
+    assert!(!host.calls().iter().any(|call| call.ends_with(&format!(" start zendiloos-{ID}"))));
+}
+
+#[tokio::test]
+async fn a_start_waits_for_a_rollback_of_the_vms_disks() {
+    let host = host();
+    defined(&host).await;
+    let first = label("zdl-2026-11-12_03.00.00");
+    let taken =
+        host.run(Request::SnapshotVm { id: vm(), label: first.clone(), schedules: vec![], note: None }).await;
+    assert_eq!(taken, Response::VmSnapshotTaken { consistency: VmConsistency::Off });
+    fs::write(host.zvol(ID, 0), vec![3u8; 1 << 20]).unwrap();
+    fs::write(host.path("hold-rollback"), "").unwrap();
+    let rollback = host.run(Request::RollbackVmSnapshot { id: vm(), label: first, newer: false });
+    let start = async {
+        host.called("zfs rollback").await;
+        host.run(Request::ControlVm { id: vm(), action: VmAction::Start }).await
+    };
+    let release = async {
+        host.called("zfs rollback").await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        fs::remove_file(host.path("hold-rollback")).unwrap();
+    };
+    let (rolled_back, started, ()) = tokio::join!(rollback, start, release);
+    assert_eq!((rolled_back, started), (Response::Done, Response::Done));
+    let calls = host.calls();
+    let back = calls.iter().rposition(|call| call.starts_with("zfs rolled back")).unwrap();
+    let start = calls.iter().position(|call| call.ends_with(&format!(" start zendiloos-{ID}"))).unwrap();
+    assert!(back < start, "started only once its disks were back: {calls:?}");
+}
+
+#[tokio::test]
+async fn a_restore_over_a_vm_cut_off_is_undone_before_anything_starts_it() {
+    let host = host();
+    defined_with(&host, devices(), true).await;
+    assert!(host.autostarts(ID));
+    let (folder, files) = a_backup(&host).await;
+    // The VM went on after its backup.
+    let since = vec![4u8; 1 << 20];
+    fs::write(host.zvol(ID, 0), &since).unwrap();
+    // Its restore writes it all, and the machine goes down before it ends.
+    fs::write(host.path("hold-unit-end"), "").unwrap();
+    let spec = spec_with(ID, VmFirmware::Uefi, devices(), true);
+    let restore = host.run(restore_request(spec, &folder, &files, true, vec![]));
+    let written = async {
+        host.called("restore-vm").await;
+        for _ in 0..400 {
+            if holds(&host, 0) != since {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        host.autostarts(ID)
+    };
+    let autostarts_meanwhile = tokio::select! {
+        _ = restore => panic!("the restore ended"),
+        autostarts = written => autostarts,
+    };
+    fs::remove_file(host.path("hold-unit-end")).unwrap();
+    assert!(!autostarts_meanwhile, "libvirt does not start it with the machine while its disks are written");
+    assert!(holds(&host, 0) != since, "half restored");
+
+    let again = host.restarted();
+    again.recover().await;
+    assert!(holds(&host, 0) == since, "back to what it was before the restore");
+    assert!(host.autostarts(ID), "starting with the machine again");
+    let Response::VmSnapshots { zfs_list } = again.execute(&Request::VmSnapshots {}).await else {
+        panic!("no list")
+    };
+    assert!(!zfs_list.contains("zdl-2026-11-12_09.00.00"), "the snapshot from before went: {zfs_list}");
+    assert_eq!(
+        again.execute(&Request::ControlVm { id: vm(), action: VmAction::Start }).await,
+        Response::Done
+    );
+}
+
+#[tokio::test]
+async fn a_restore_as_a_new_vm_cut_off_leaves_nothing_of_it() {
+    let host = host();
+    defined(&host).await;
+    let (folder, files) = a_backup(&host).await;
+    fs::write(host.path("hold-unit-end"), "").unwrap();
+    let copy = spec_with(COPY, VmFirmware::Uefi, devices(), true);
+    let restore = host.run(restore_request(copy, &folder, &files, false, vec![]));
+    let written = async {
+        host.called("restore-vm").await;
+        host.autostarts(COPY)
+    };
+    let autostarts = tokio::select! {
+        _ = restore => panic!("the restore ended"),
+        autostarts = written => autostarts,
+    };
+    fs::remove_file(host.path("hold-unit-end")).unwrap();
+    assert!(!autostarts, "a VM being restored does not start with the machine");
+    assert!(host.zvol(COPY, 0).exists());
+
+    host.restarted().recover().await;
+    assert!(!host.zvol(COPY, 0).exists() && !host.zvol(COPY, 1).exists(), "its disks went");
+    assert!(!host.path(&format!("state/zendiloos-{COPY}")).exists(), "and its domain");
+    assert!(host.zvol(ID, 0).exists(), "the VM it came from stays");
+}
+
+#[tokio::test]
+async fn a_restore_over_a_vm_writes_nothing_libvirt_would_not_take_and_holds_once_written() {
+    let host = host();
+    defined(&host).await;
+    let (folder, files) = a_backup(&host).await;
+    let since = vec![4u8; 1 << 20];
+    fs::write(host.zvol(ID, 0), &since).unwrap();
+    // libvirt refuses the backup's definition: nothing is written.
+    fs::write(host.path("state/define-fails"), "").unwrap();
+    let spec = spec_of(ID, VmFirmware::Uefi, devices());
+    let failed = host.run(restore_request(spec.clone(), &folder, &files, true, vec![])).await;
+    assert!(matches!(failed, Response::Error { .. }), "{failed:?}");
+    assert!(holds(&host, 0) == since, "nothing written");
+    assert!(!host.calls().iter().any(|call| call.contains("restore-vm")), "the unit never ran");
+    fs::remove_file(host.path("state/define-fails")).unwrap();
+
+    // A third disk the backup has not cannot go: the restore holds.
+    let three = VmDevices { disks: vec![disk(0, 1), disk(1, 2), disk(2, 1)], ..devices() };
+    let change = Request::UpdateVm { spec: spec_of(ID, VmFirmware::Uefi, three), remove: vec![] };
+    assert_eq!(host.run(change).await, Response::Done);
+    fs::write(host.path("busy"), format!("tank/zendiloos.vms/{ID}-disk2\n")).unwrap();
+    assert_eq!(host.run(restore_request(spec, &folder, &files, true, vec![slot(2)])).await, Response::Done);
+    assert!(holds(&host, 0) != since, "restored");
+    assert!(host.zvol(ID, 2).exists(), "the disk that did not go stays");
+    let Response::VmSnapshots { zfs_list } = host.run(Request::VmSnapshots {}).await else {
+        panic!("no list")
+    };
+    assert!(!zfs_list.contains("zdl-2026-11-12_09.00.00"), "{zfs_list}");
+}
+
+#[tokio::test]
+async fn a_freeze_libvirt_gave_up_on_is_thawed_all_the_same() {
+    let host = host();
+    defined(&host).await;
+    host.set_state(ID, "running");
+    fs::write(host.path("state/agent-slow"), "").unwrap();
+    let snapshot =
+        |at: &str| Request::SnapshotVm { id: vm(), label: label(at), schedules: vec![], note: None };
+    assert_eq!(
+        host.run(snapshot("zdl-2026-11-12_11.00.00")).await,
+        Response::VmSnapshotTaken { consistency: VmConsistency::Crash }
+    );
+    let calls = host.calls();
+    let at = |end: &str| calls.iter().position(|call| call.ends_with(end));
+    let freeze = at(&format!("domfsfreeze zendiloos-{ID}")).unwrap();
+    let snap = calls.iter().position(|call| call.starts_with("zfs snapshot")).unwrap();
+    let thaw = at(&format!("domfsthaw zendiloos-{ID}")).expect("thawed after the freeze that failed");
+    assert!(freeze < snap && snap < thaw, "{calls:?}");
+    // Without a guest agent there is nothing to thaw.
+    fs::remove_file(host.path("state/agent-slow")).unwrap();
+    let from = host.calls().len();
+    assert_eq!(
+        host.run(snapshot("zdl-2026-11-12_12.00.00")).await,
+        Response::VmSnapshotTaken { consistency: VmConsistency::Crash }
+    );
+    assert!(!host.calls()[from..].iter().any(|call| call.contains("domfsthaw")));
+}
+
+#[tokio::test]
+async fn a_restore_that_fails_leaves_the_uefi_variables_and_the_tpm_as_they_were() {
+    let host = host();
+    fs::write(host.path("swtpm-binary"), "").unwrap();
+    let with_tpm = VmDevices { tpm: true, ..devices() };
+    defined_with(&host, with_tpm.clone(), false).await;
+    let nvram = host.path(&format!("nvram/zendiloos-{ID}_VARS.fd"));
+    let tpm = host.path(&format!("swtpm/{UUID}/tpm2/tpm2-00.permall"));
+    fs::create_dir_all(tpm.parent().unwrap()).unwrap();
+    fs::write(&nvram, b"uefi variables").unwrap();
+    fs::write(&tpm, b"tpm state").unwrap();
+    let (folder, files) = a_backup(&host).await;
+    fs::write(&nvram, b"variables since").unwrap();
+    fs::write(&tpm, b"tpm since").unwrap();
+    // The TPM's state in the backup is not the one it wrote.
+    let copy = host.path(&format!("volume1/backups/{}/tpm2-00.permall", folder.as_str()));
+    fs::remove_file(&copy).unwrap();
+    fs::write(&copy, b"tpm other").unwrap();
+    fs::set_permissions(&copy, fs::Permissions::from_mode(0o644)).unwrap();
+    let spec = spec_of(ID, VmFirmware::Uefi, with_tpm);
+    refused(&host.run(restore_request(spec, &folder, &files, true, vec![])).await, "SHA-256 differs");
+    assert_eq!(fs::read(&nvram).unwrap(), b"variables since");
+    assert_eq!(fs::read(&tpm).unwrap(), b"tpm since");
+}
+
+#[tokio::test]
+async fn a_restore_waits_for_the_devices_of_the_disks_it_makes() {
+    let host = host();
+    defined(&host).await;
+    let (folder, files) = a_backup(&host).await;
+    fs::write(host.path("slow-devices"), "").unwrap();
+    let copy = spec_of(COPY, VmFirmware::Uefi, devices());
+    assert_eq!(host.run(restore_request(copy, &folder, &files, false, vec![])).await, Response::Done);
+    assert!(fs::read(host.zvol(COPY, 0)).unwrap() == holds(&host, 0), "restored");
+}
+
+#[tokio::test]
+async fn a_libvirt_that_does_not_answer_is_not_taken_for_a_vm_that_is_not_there() {
+    let host = host();
+    defined(&host).await;
+    host.set_state(ID, "running");
+    fs::write(host.path("state/libvirt-down"), "").unwrap();
+    let snapshot = Request::SnapshotVm {
+        id: vm(),
+        label: label("zdl-2026-11-12_13.00.00"),
+        schedules: vec![],
+        note: None,
+    };
+    let snapshot = host.run(snapshot).await;
+    assert!(matches!(snapshot, Response::Error { .. }), "not taken as of a VM that is off: {snapshot:?}");
+    let deleted = host.run(Request::DeleteVm { id: vm() }).await;
+    assert!(matches!(deleted, Response::Error { .. }), "{deleted:?}");
+    assert!(host.zvol(ID, 0).exists() && host.zvol(ID, 1).exists(), "its disks stay");
+    fs::remove_file(host.path("state/libvirt-down")).unwrap();
+    // libvirt answers, but cannot get a domain it lists: no less a failure.
+    fs::write(host.path("state/lookup-fails"), "").unwrap();
+    let deleted = host.run(Request::DeleteVm { id: vm() }).await;
+    assert!(matches!(deleted, Response::Error { .. }), "{deleted:?}");
+    assert!(host.zvol(ID, 0).exists(), "its disks stay");
+    fs::remove_file(host.path("state/lookup-fails")).unwrap();
+    assert_eq!(host.run(Request::DeleteVm { id: vm() }).await, Response::Done);
+    assert!(!host.zvol(ID, 0).exists());
+}
+
+#[tokio::test]
+async fn a_vm_on_two_pools_is_not_snapshotted_at_two_moments_and_resumes_after() {
+    let host = host();
+    fs::write(
+        host.path("units/volume2-\\x40vms.mount"),
+        "[Mount]\nWhat=cold/zendiloos.vms\nWhere=/volume2/@vms\n",
+    )
+    .unwrap();
+    let cold = VmStorage { pool: PoolName::parse("cold").unwrap(), volume: VolumeNumber::new(2).unwrap() };
+    let two = VmDevices { disks: vec![disk(0, 1), VmDisk { location: cold, ..disk(1, 1) }], ..devices() };
+    assert_eq!(
+        host.run(Request::DefineVm { spec: spec_of(ID, VmFirmware::Uefi, two) }).await,
+        Response::Done
+    );
+    host.set_state(ID, "running");
+    let snapshot =
+        |at: &str| Request::SnapshotVm { id: vm(), label: label(at), schedules: vec![], note: None };
+    // Neither frozen nor paused: no snapshots of two moments.
+    fs::write(host.path("state/suspend-fails"), "").unwrap();
+    refused(&host.run(snapshot("zdl-2026-11-12_07.00.00")).await, "one moment");
+    assert!(!host.calls().iter().any(|call| call.starts_with("zfs snapshot")));
+    fs::remove_file(host.path("state/suspend-fails")).unwrap();
+    // Paused, it resumes even if libvirt does not let it at first.
+    fs::write(host.path("state/resume-fails"), "").unwrap();
+    assert_eq!(
+        host.run(snapshot("zdl-2026-11-12_08.00.00")).await,
+        Response::VmSnapshotTaken { consistency: VmConsistency::Crash }
+    );
+    let resumed =
+        host.calls().iter().filter(|call| call.ends_with(&format!("resume zendiloos-{ID}"))).count();
+    assert_eq!(resumed, 2, "asked again");
+}
+
+#[tokio::test]
+async fn a_change_libvirt_took_keeps_its_disks_whatever_fails_after() {
+    let host = host();
+    defined(&host).await;
+    // Autostart cannot be set once libvirt took the definition with a disk more.
+    fs::write(host.path("state/autostart-fails"), "").unwrap();
+    let three = VmDevices { disks: vec![disk(0, 1), disk(1, 2), disk(2, 1)], ..devices() };
+    let change = Request::UpdateVm { spec: spec_of(ID, VmFirmware::Uefi, three), remove: vec![] };
+    assert_eq!(host.run(change).await, Response::Done);
+    assert!(host.zvol(ID, 2).exists(), "the disk the domain names now stays");
+    fs::remove_file(host.path("state/autostart-fails")).unwrap();
+    // Disk 1 cannot go once the domain no longer names it: the change holds.
+    fs::write(host.path("busy"), format!("tank/zendiloos.vms/{ID}-disk1\n")).unwrap();
+    let without = VmDevices { disks: vec![disk(0, 1), disk(2, 1)], ..devices() };
+    let change = Request::UpdateVm { spec: spec_of(ID, VmFirmware::Uefi, without), remove: vec![slot(1)] };
+    assert_eq!(host.run(change).await, Response::Done);
+    let domain = fs::read_to_string(host.path(&format!("state/zendiloos-{ID}.defined"))).unwrap();
+    assert!(!domain.contains("-disk1'") && domain.contains("-disk2'"), "{domain}");
+    assert!(host.zvol(ID, 1).exists(), "the disk that did not go stays");
+}
+
+#[tokio::test]
+async fn a_backup_has_the_disks_the_vm_is_recorded_with() {
+    let host = host();
+    defined(&host).await;
+    // A disk whose removal failed: no longer in the domain, its zvol left.
+    fs::write(host.zvol(ID, 2), vec![8u8; 1 << 20]).unwrap();
+    let (_, files) = a_backup(&host).await;
+    let parts: Vec<VmBackupPart> = files.iter().map(|file| file.part).collect();
+    assert_eq!(
+        parts,
+        [
+            VmBackupPart::Disk { slot: slot(0), volsize: 1 << 20 },
+            VmBackupPart::Disk { slot: slot(1), volsize: 2 << 20 }
+        ]
+    );
+    // A disk of the record without its zvol: no backup that would lack it.
+    refused(&backed_up_with(&host, "20261112-040000", vec![slot(0), slot(1), slot(3)]).await, "disk 3");
+    // A disk the domain uses that the record lacks: neither.
+    let three = VmDevices { disks: vec![disk(0, 1), disk(1, 2), disk(2, 1)], ..devices() };
+    let change = Request::UpdateVm { spec: spec_of(ID, VmFirmware::Uefi, three), remove: vec![] };
+    assert_eq!(host.run(change).await, Response::Done);
+    refused(&backed_up_with(&host, "20261112-050000", vec![slot(0), slot(1)]).await, "uses");
+    let Response::VmSnapshots { zfs_list } = host.run(Request::VmSnapshots {}).await else {
+        panic!("no list")
+    };
+    assert!(zfs_list.is_empty(), "no snapshot for a backup refused: {zfs_list}");
 }

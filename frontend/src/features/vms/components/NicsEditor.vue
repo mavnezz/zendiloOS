@@ -171,7 +171,7 @@ function toNetwork(): void {
       variant="outline"
       class="justify-self-start"
       :disabled="disabled || form.nics.length >= NICS_MAX"
-      @click="form = addNic(form)"
+      @click="form = addNic(form, before?.nics)"
     >
       <Plus />
       {{ t('vms.devices.addNic') }}

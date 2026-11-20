@@ -291,6 +291,8 @@ pub struct FakeVmHost {
     pub hold_work: Mutex<Option<Arc<tokio::sync::Notify>>>,
     /// The next restore fails with this.
     pub fail_restore: Mutex<Option<String>>,
+    /// The next removal fails with this.
+    pub fail_remove: Mutex<Option<String>>,
 }
 
 /// A keyboard plugged in; with an IOMMU, a graphics card with its sound in
@@ -364,6 +366,7 @@ impl Default for FakeVmHost {
             devices: Mutex::new(devices()),
             hold_work: Mutex::default(),
             fail_restore: Mutex::default(),
+            fail_remove: Mutex::default(),
         }
     }
 }
@@ -615,6 +618,9 @@ impl VmHost for FakeVmHost {
 
     async fn remove(&self, vm: &Vm, _: &RequestContext) -> Result<(), HostError> {
         self.call(format!("remove {}", vm.id));
+        if let Some(reason) = lock(&self.fail_remove).take() {
+            return Err(HostError::Failed(reason));
+        }
         lock(&self.domains).remove(&vm.id);
         lock(&self.zvols).retain(|zvol, _| !zvol.contains(&format!("/{}-disk", vm.id)));
         Ok(())

@@ -13,20 +13,30 @@
 //! same VM, and the agent answers only once it ended: should the client
 //! hang up (zendiloosd cancels the job) or the agent be asked to stop, it
 //! stops the unit and waits for it first, as for Docker's volumes. A VM
-//! whose unit still runs is neither changed, nor deleted, nor restored.
+//! whose unit still runs is neither started, changed, deleted nor restored.
+//!
+//! Neither holds the lock of the VMs' changes while its unit runs, which
+//! may take hours: other VMs are changed and snapshotted meanwhile. A
+//! restore writes down what undoes it before its first write
+//! (`zendiloos-<id>.restoring` beside the domain's XML, with the domain's
+//! definition from before) and turns the VM's autostart off: one cut off
+//! by a restart of the agent or of the machine is undone as the agent
+//! starts again, before anything may start the VM, and libvirt never
+//! starts half-restored disks with the machine.
 
 use std::path::PathBuf;
+use std::sync::PoisonError;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use zendiloos_agent_proto::{
     BackupRoot, BackupStem, Response, SharePath, SnapshotLabel, SnapshotNote, VmBackupFile, VmBackupPart,
     VmBackupSettings, VmDiskSlot, VmId, VmSpec,
 };
 use zendiloos_exec::{ExecError, Limits, Surroundings};
 
-use super::{DiskPlan, QUICK, SLOW, Vms, refused, run};
+use super::{Autostart, DiskPlan, QUICK, SLOW, Vms, refused, remove_if_there, run, virsh};
 use crate::operations::OperationError;
 use crate::vm_backup_unit::{
     BackupDisk, RestoreFile, VmBackupDone, VmBackupJob, VmBackupWork, VmRemoveJob, VmRestoreJob,
@@ -51,6 +61,40 @@ const RESTORE_CAPABILITIES: &str = "CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_FOW
 const SWTPM_USER: &str = "tss";
 /// Removing a backup's files from a share or drive.
 const REMOVE_CAPABILITIES: &str = "CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE";
+
+/// How long a restore's undoing is waited for once its unit stopped.
+const UNDONE_WITHIN: Duration = Duration::from_secs(10 * 60);
+
+/// What undoes a restore, written down before it writes anything.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RestoreMarker {
+    /// Over the VM there was; else a new one, which goes again.
+    pub over: bool,
+    /// The snapshot of the disks there were, which they return to.
+    pub label: SnapshotLabel,
+    /// Those disks' zvols.
+    pub kept: Vec<String>,
+    /// The zvols the restore makes, which go again.
+    pub made: Vec<String>,
+    /// Whether the VM started with the machine before.
+    pub autostart: bool,
+    /// Whether its UEFI variables were to start afresh at its next start.
+    pub reset_nvram: bool,
+}
+
+/// A restore under way for a VM: nothing else is done with it until this
+/// goes.
+struct Restoring<'a> {
+    vms: &'a Vms,
+    id: VmId,
+}
+
+impl Drop for Restoring<'_> {
+    fn drop(&mut self) {
+        self.vms.restoring.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.id);
+    }
+}
 
 /// The unit a backup or restore of `id` runs in.
 fn unit_name(work: VmBackupWork, id: &VmId) -> String {
@@ -141,6 +185,7 @@ impl Vms {
 
     /// Refused while a backup or restore of the VM still runs.
     pub(super) async fn not_busy(&self, id: &VmId) -> Result<(), OperationError> {
+        self.not_restoring_now(id)?;
         let running = self.running_units(id).await?;
         if running.is_empty() {
             return Ok(());
@@ -150,6 +195,152 @@ impl Vms {
             id.as_str(),
             running.join(", ")
         )))
+    }
+
+    /// Refused while a restore of the VM is under way.
+    fn not_restoring_now(&self, id: &VmId) -> Result<(), OperationError> {
+        if self.restoring.lock().unwrap_or_else(PoisonError::into_inner).contains(id) {
+            return Err(OperationError::Busy(format!(
+                "a restore of the virtual machine {} is under way",
+                id.as_str()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Refused while a restore of the VM is under way; one cut off before
+    /// and not undone yet is undone first. With the lock held.
+    pub(super) async fn not_restoring(&self, id: &VmId) -> Result<(), OperationError> {
+        self.not_restoring_now(id)?;
+        self.undo_cut_off(id).await
+    }
+
+    /// Undoes a restore of the VM that was cut off, if one was and is not
+    /// undone yet; refused while that fails.
+    async fn undo_cut_off(&self, id: &VmId) -> Result<(), OperationError> {
+        let Some(marker) = self.read_restore_marker(id) else { return Ok(()) };
+        tracing::warn!(vm = id.as_str(), "vms: a restore that was cut off is undone");
+        self.undo_restore(id, &marker).await.map_err(|error| {
+            refused(format!(
+                "a restore of the virtual machine {} was cut off and cannot be undone yet: {error}",
+                id.as_str()
+            ))
+        })
+    }
+
+    /// Nothing works on the VM's disks but what asks: refused while a
+    /// backup or restore of it runs, and a restore cut off is undone first.
+    /// With the lock held.
+    pub(super) async fn settled(&self, id: &VmId) -> Result<(), OperationError> {
+        self.not_busy(id).await?;
+        self.undo_cut_off(id).await
+    }
+
+    /// `zendiloos-<id>.restoring`: a restore under way, or cut off.
+    pub(super) fn restore_marker(&self, id: &VmId) -> PathBuf {
+        self.paths.domains.join(format!("{}.restoring", id.domain()))
+    }
+
+    /// The domain's definition from before a restore over it.
+    pub(super) fn before_restore_file(&self, id: &VmId) -> PathBuf {
+        self.paths.domains.join(format!("{}.xml.before-restore", id.domain()))
+    }
+
+    fn read_restore_marker(&self, id: &VmId) -> Option<RestoreMarker> {
+        let path = self.restore_marker(id);
+        let text = std::fs::read(&path).ok()?;
+        match serde_json::from_slice(&text) {
+            Ok(marker) => Some(marker),
+            Err(error) => {
+                tracing::error!(%error, path = %path.display(), "vms: a restore's marker cannot be read");
+                None
+            }
+        }
+    }
+
+    /// The restore is not to be undone any more: it is done, or the VM goes.
+    pub(super) fn forget_restore(&self, id: &VmId) -> Result<(), OperationError> {
+        remove_if_there(&self.restore_marker(id))?;
+        remove_if_there(&self.before_restore_file(id))
+    }
+
+    /// Undoes a restore that failed or was cut off: a new VM goes with its
+    /// disks; one restored over gets its disks back as they were before
+    /// (rolled back to the snapshot then, those made destroyed), its
+    /// definition from before and its autostart. A disk gone since is
+    /// nothing to return. Its UEFI variables and TPM are as they were
+    /// unless the unit finished writing them. Once all of it is done, the
+    /// marker goes; until then the VM is refused.
+    async fn undo_restore(&self, id: &VmId, marker: &RestoreMarker) -> Result<(), OperationError> {
+        if !marker.over {
+            self.remove_vm(id).await?;
+            return self.forget_restore(id);
+        }
+        let mut failed: Vec<String> = Vec::new();
+        let mut rolled_back = Vec::new();
+        for zvol in &marker.kept {
+            if !self.exists(zvol).await? {
+                continue;
+            }
+            let snapshot = format!("{zvol}@{}", marker.label.as_str());
+            match run(&self.tools.zfs, &["rollback", &snapshot], SLOW).await {
+                Ok(()) => rolled_back.push(snapshot),
+                Err(error) => failed.push(format!("{zvol} did not return: {error}")),
+            }
+        }
+        for zvol in &marker.made {
+            if self.exists(zvol).await?
+                && let Err(error) = run(&self.tools.zfs, &["destroy", "-r", zvol], SLOW).await
+            {
+                failed.push(format!("{zvol} stays: {error}"));
+            }
+        }
+        let before = self.before_restore_file(id);
+        if before.exists() {
+            let path = before.to_string_lossy().into_owned();
+            match run(&self.tools.virsh, &virsh(&["define", "--validate", &path]), QUICK).await {
+                Ok(()) => {
+                    if let Err(error) = std::fs::rename(&before, self.domain_file(id)) {
+                        failed.push(format!("the definition from before is not kept: {error}"));
+                    }
+                }
+                Err(error) => {
+                    failed.push(format!("libvirt did not take the definition from before: {error}"))
+                }
+            }
+        }
+        let reset = self.reset_marker(id);
+        let marked =
+            if marker.reset_nvram { crate::durable::replace(&reset, b"") } else { remove_if_there(&reset) };
+        if let Err(error) = marked {
+            failed.push(error.to_string());
+        }
+        if marker.autostart {
+            let domain = id.domain();
+            if let Err(error) = run(&self.tools.virsh, &virsh(&["autostart", &domain]), QUICK).await {
+                failed.push(format!("its autostart is off: {error}"));
+            }
+        }
+        if !failed.is_empty() {
+            // The snapshot from before stays, to return to on the next try.
+            return Err(OperationError::Failed(failed.join("; ")));
+        }
+        self.forget_restore(id)?;
+        for snapshot in rolled_back {
+            let _ = run(&self.tools.zfs, &["destroy", &snapshot], SLOW).await;
+        }
+        Ok(())
+    }
+
+    /// A restore that failed is undone, or said to be not undone yet.
+    async fn give_up_restore(&self, id: &VmId, marker: &RestoreMarker) {
+        if let Err(error) = self.undo_restore(id, marker).await {
+            tracing::error!(
+                %error,
+                vm = id.as_str(),
+                "vms: a restore that failed is not undone; it is tried again before the VM is used"
+            );
+        }
     }
 
     async fn stop_unit(&self, name: &str) {
@@ -184,6 +375,35 @@ impl Vms {
             tracing::warn!(unit = name, "a VM's unit nobody waits for any more is stopped");
             self.stop_unit(&name).await;
         }
+        // Restores cut off: undone before anything may start their VMs.
+        let cut_off: Vec<VmId> = std::fs::read_dir(&self.paths.domains)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter_map(|entry| {
+                        let name = entry.file_name().to_string_lossy().into_owned();
+                        VmId::of_domain(name.strip_suffix(".restoring")?)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if cut_off.is_empty() || !self.installed() {
+            return;
+        }
+        let _serial = self.serial.lock().await;
+        for id in cut_off {
+            let Some(marker) = self.read_restore_marker(&id) else { continue };
+            match self.undo_restore(&id, &marker).await {
+                Ok(()) => {
+                    tracing::warn!(vm = id.as_str(), over = marker.over, "vms: a restore cut off is undone")
+                }
+                Err(error) => tracing::error!(
+                    %error,
+                    vm = id.as_str(),
+                    "vms: a restore cut off is not undone yet; it is tried again before the VM is used"
+                ),
+            }
+        }
     }
 
     /// Stops whatever still works on the VM's backup or restore, and gives
@@ -196,6 +416,15 @@ impl Vms {
         let still = self.running_units(id).await?;
         if !still.is_empty() {
             return Err(OperationError::Failed(format!("{} still runs", still.join(", "))));
+        }
+        // A restore whose unit stopped undoes what it did: until it is done
+        // the VM is not to be removed or used.
+        let until = Instant::now() + UNDONE_WITHIN;
+        while self.restoring.lock().unwrap_or_else(PoisonError::into_inner).contains(id) {
+            if Instant::now() > until {
+                return Err(OperationError::Failed("the restore is still being undone".into()));
+            }
+            crate::waiting::wait(tokio::time::sleep(Duration::from_millis(200))).await?;
         }
         for (_, zvol) in self.vm_zvols(id).await.unwrap_or_default() {
             let _ = run(&self.tools.zfs, &["inherit", "snapdev", &zvol], QUICK).await;
@@ -311,7 +540,17 @@ impl Vms {
 
     /// The device of `zvol`'s snapshot `label`, once udev made it.
     async fn snapshot_device(&self, zvol: &str, label: &SnapshotLabel) -> Result<PathBuf, OperationError> {
-        let device = self.paths.zvols.join(format!("{zvol}@{}", label.as_str()));
+        self.device_of(&format!("{zvol}@{}", label.as_str())).await
+    }
+
+    /// The device of a zvol or a zvol's snapshot (`/dev/zvol/<name>`), once
+    /// udev made it: it shows a moment after the zvol was made, or after its
+    /// snapshots were made to show.
+    async fn device_of(&self, name: &str) -> Result<PathBuf, OperationError> {
+        let device = self.paths.zvols.join(name);
+        if device.exists() {
+            return Ok(device);
+        }
         let _ = zendiloos_exec::run(
             &self.tools.udevadm,
             ["settle", "--timeout=30"],
@@ -328,8 +567,58 @@ impl Vms {
         Ok(device)
     }
 
+    /// The zvols a backup reads: one for each disk the VM is recorded with
+    /// (`disks`, as zendiloosd records it), refused if one has none or two.
+    /// A zvol of the VM's that the record has not is refused while its
+    /// domain names it, as the backup would lack a disk the VM uses; one it
+    /// does not name (a disk whose removal failed) is left out.
+    async fn backed_up_zvols(
+        &self,
+        id: &VmId,
+        disks: &[VmDiskSlot],
+    ) -> Result<Vec<(VmDiskSlot, String)>, OperationError> {
+        let found = self.vm_zvols(id).await?;
+        let mut zvols = Vec::new();
+        for slot in disks {
+            let mut of_slot = found.iter().filter(|(found, _)| found == slot);
+            match (of_slot.next(), of_slot.next()) {
+                (Some((_, zvol)), None) => zvols.push((*slot, zvol.clone())),
+                (None, _) => {
+                    return Err(refused(format!("disk {} of the virtual machine has no zvol", slot.get())));
+                }
+                (Some(_), Some(_)) => {
+                    return Err(refused(format!(
+                        "disk {} of the virtual machine has zvols on more than one location",
+                        slot.get()
+                    )));
+                }
+            }
+        }
+        let domain = std::fs::read_to_string(self.domain_file(id)).unwrap_or_default();
+        for (slot, zvol) in &found {
+            if disks.contains(slot) {
+                continue;
+            }
+            let device = self.paths.zvols.join(zvol);
+            if domain.contains(&format!("<source dev='{}'/>", device.display())) {
+                return Err(refused(format!(
+                    "the virtual machine's domain uses {zvol}, of which zendiloOS has no disk: save its \
+                     settings once, which defines it anew"
+                )));
+            }
+            tracing::warn!(
+                vm = id.as_str(),
+                zvol,
+                "vms: a zvol of the VM's that it does not use is not backed up"
+            );
+        }
+        Ok(zvols)
+    }
+
     /// Backs the VM up into `<folder>/<id>/<stem>` beneath `root`, from a
-    /// snapshot `label` of its disks that goes again afterwards.
+    /// snapshot `label` of its disks that goes again afterwards: the disks
+    /// `disks` its record has.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn back_up(
         &self,
         id: &VmId,
@@ -338,6 +627,7 @@ impl Vms {
         stem: &BackupStem,
         label: &SnapshotLabel,
         settings: &VmBackupSettings,
+        disks: &[VmDiskSlot],
     ) -> Result<Response, OperationError> {
         let too_long = |_| refused("the folder's path is too long");
         let target =
@@ -346,10 +636,11 @@ impl Vms {
         let (consistency, zvols) = {
             let _serial = crate::waiting::lock(&self.serial).await?;
             self.require_defined(id).await?;
-            self.not_busy(id).await?;
+            self.settled(id).await?;
+            let zvols = self.backed_up_zvols(id, disks).await?;
             let note = SnapshotNote::parse("Backup").ok();
             let consistency = self.take_snapshot(id, label, &[], note.as_ref()).await?;
-            (consistency, self.vm_zvols(id).await?)
+            (consistency, zvols)
         };
         let outcome = async {
             let mut disks = Vec::new();
@@ -391,7 +682,8 @@ impl Vms {
             let _ = run(&self.tools.zfs, &["inherit", "snapdev", zvol], QUICK).await;
         }
         {
-            let _serial = crate::waiting::lock(&self.serial).await?;
+            // Also once the client is gone: a step of the work, not a wait for it.
+            let _serial = self.serial.lock().await;
             if let Err(error) = self.destroy_snapshots(id, label).await {
                 tracing::warn!(%error, vm = id.as_str(), "vms: the backup's snapshot stays");
             }
@@ -402,7 +694,9 @@ impl Vms {
 
     /// Restores the backup's `files` into the VM `spec` describes: a new
     /// one defined first, one there (`over`) returned to snapshot `label`
-    /// of its disks should anything fail.
+    /// of its disks and to its definition from before should anything
+    /// fail. The lock is not held while the unit writes; the VM is busy
+    /// meanwhile.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn restore(
         &self,
@@ -429,63 +723,178 @@ impl Vms {
         if remove.iter().any(|slot| spec.disks().iter().any(|disk| disk.slot == *slot)) {
             return Err(refused("a disk is both restored and removed"));
         }
-        let _serial = crate::waiting::lock(&self.serial).await?;
-        self.require_installed()?;
-        self.locations_of(spec).await?;
-        self.check_devices(spec).await?;
-        self.not_busy(&spec.id).await?;
-        // What existed before, to return to; what was made, to destroy.
-        let mut kept: Vec<String> = Vec::new();
-        let mut made: Vec<String> = Vec::new();
-        if over {
-            self.require_shut_off(&spec.id).await?;
-            if !self.vm_zvols(&spec.id).await?.is_empty() {
-                self.take_snapshot(
-                    &spec.id,
-                    label,
-                    &[],
-                    SnapshotNote::parse("Before a restore").ok().as_ref(),
-                )
-                .await?;
-            }
-            kept = self.vm_zvols(&spec.id).await?.into_iter().map(|(_, zvol)| zvol).collect();
-            for disk in spec.disks() {
-                let zvol = Self::disk_zvol(spec, disk);
-                let plan = match self.volsize(&zvol).await? {
-                    None => DiskPlan::Make,
-                    Some(size) if size < disk.size.bytes() => DiskPlan::Grow,
-                    Some(_) => DiskPlan::Keep,
-                };
-                let done = match plan {
-                    DiskPlan::Keep => Ok(()),
-                    DiskPlan::Make => self.make_disk(spec, disk).await.map(|()| made.push(zvol.clone())),
-                    DiskPlan::Grow => {
-                        run(&self.tools.zfs, &["set", &format!("volsize={}G", disk.size.gib()), &zvol], SLOW)
-                            .await
-                    }
-                };
-                if let Err(error) = done {
-                    self.undo_restore(label, &kept, &made).await;
+        let (job, marker, _restoring) = {
+            let _serial = crate::waiting::lock(&self.serial).await?;
+            self.require_installed()?;
+            self.locations_of(spec).await?;
+            self.check_devices(spec).await?;
+            self.settled(&spec.id).await?;
+            let marker = if over {
+                self.prepare_over(spec, label).await?
+            } else {
+                self.prepare_new(spec, label).await?
+            };
+            let job = match self.restore_job(spec, &place, folder, files, over).await {
+                Ok(job) => job,
+                Err(error) => {
+                    self.give_up_restore(&spec.id, &marker).await;
                     return Err(error);
                 }
-            }
-        } else {
-            if self.defined(&spec.id).await? {
-                return Err(OperationError::Conflict);
-            }
-            for disk in spec.disks() {
-                let zvol = Self::disk_zvol(spec, disk);
-                if let Err(error) = self.make_disk(spec, disk).await {
-                    self.destroy_disks(&made).await;
-                    return Err(error);
+            };
+            self.restoring.lock().unwrap_or_else(PoisonError::into_inner).insert(spec.id.clone());
+            (job, marker, Restoring { vms: self, id: spec.id.clone() })
+        };
+        let unit = Unit {
+            work: VmBackupWork::Restore,
+            name: unit_name(VmBackupWork::Restore, &spec.id),
+            writable: vec![self.paths.nvram.clone(), self.paths.swtpm.clone()],
+            capabilities: RESTORE_CAPABILITIES,
+            zvols: Some("rw"),
+            description: format!("restore the virtual machine {}", spec.id.as_str()),
+            until: Instant::now() + WORK_FOR,
+        };
+        let restored: Result<serde_json::Value, OperationError> = self.run_unit(unit, &job).await;
+        // Also once the client is gone: a step of the work, not a wait for it.
+        let _serial = self.serial.lock().await;
+        if let Err(error) = restored {
+            self.give_up_restore(&spec.id, &marker).await;
+            return Err(error);
+        }
+        self.finish_restore(spec, files, remove, &marker).await?;
+        Ok(Response::Done)
+    }
+
+    /// Writes down what undoes a restore, and over a VM its definition from
+    /// before.
+    fn write_restore_marker(&self, id: &VmId, marker: &RestoreMarker) -> Result<(), OperationError> {
+        if marker.over {
+            let file = self.domain_file(id);
+            match std::fs::read(&file) {
+                Ok(xml) => crate::durable::replace(&self.before_restore_file(id), &xml)?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    tracing::warn!(vm = id.as_str(), "vms: the domain's definition from before is not kept");
                 }
-                made.push(zvol);
-            }
-            if let Err(error) = self.define_domain(spec, false).await {
-                self.destroy_disks(&made).await;
-                return Err(error);
+                Err(error) => return Err(OperationError::Read(file, error)),
             }
         }
+        let json = serde_json::to_vec_pretty(marker)
+            .map_err(|e| OperationError::Failed(format!("the restore's marker: {e}")))?;
+        crate::durable::replace(&self.restore_marker(id), &json)
+    }
+
+    /// Before a restore over the VM writes: a snapshot of its disks to
+    /// return to, what undoes the restore written down, its autostart off,
+    /// its disks made or grown, the backup's domain defined. Undone should
+    /// any of it fail.
+    async fn prepare_over(
+        &self,
+        spec: &VmSpec,
+        label: &SnapshotLabel,
+    ) -> Result<RestoreMarker, OperationError> {
+        self.require_shut_off(&spec.id).await?;
+        let had = self.vm_zvols(&spec.id).await?;
+        if !had.is_empty() {
+            let note = SnapshotNote::parse("Before a restore").ok();
+            self.take_snapshot(&spec.id, label, &[], note.as_ref()).await?;
+        }
+        let mut plan = Vec::new();
+        for disk in spec.disks() {
+            let zvol = Self::disk_zvol(spec, disk);
+            let step = match self.volsize(&zvol).await? {
+                None => DiskPlan::Make,
+                Some(size) if size < disk.size.bytes() => DiskPlan::Grow,
+                Some(_) => DiskPlan::Keep,
+            };
+            plan.push((disk, zvol, step));
+        }
+        let marker = RestoreMarker {
+            over: true,
+            label: label.clone(),
+            kept: had.into_iter().map(|(_, zvol)| zvol).collect(),
+            made: plan
+                .iter()
+                .filter(|(_, _, step)| matches!(step, DiskPlan::Make))
+                .map(|(_, zvol, _)| zvol.clone())
+                .collect(),
+            autostart: spec.autostart,
+            reset_nvram: self.reset_marker(&spec.id).exists(),
+        };
+        if let Err(error) = self.write_restore_marker(&spec.id, &marker) {
+            if !marker.kept.is_empty() {
+                let _ = self.destroy_snapshots(&spec.id, label).await;
+            }
+            let _ = self.forget_restore(&spec.id);
+            return Err(error);
+        }
+        let prepared = async {
+            // libvirt starts no half-restored disks with the machine.
+            let domain = spec.id.domain();
+            run(&self.tools.virsh, &virsh(&["autostart", "--disable", &domain]), QUICK).await?;
+            for (disk, zvol, step) in &plan {
+                match step {
+                    DiskPlan::Keep => {}
+                    DiskPlan::Make => self.make_disk(spec, disk).await?,
+                    DiskPlan::Grow => {
+                        let size = format!("volsize={}G", disk.size.gib());
+                        run(&self.tools.zfs, &["set", &size, zvol], SLOW).await?;
+                    }
+                }
+            }
+            // Before anything is written: what libvirt refuses writes nothing.
+            self.define_domain(spec, true, Autostart::Leave).await
+        }
+        .await;
+        if let Err(error) = prepared {
+            self.give_up_restore(&spec.id, &marker).await;
+            return Err(error);
+        }
+        Ok(marker)
+    }
+
+    /// Before a restore as a new VM writes: what undoes it written down,
+    /// its disks made, its domain defined, not started with the machine
+    /// yet. Undone should any of it fail.
+    async fn prepare_new(
+        &self,
+        spec: &VmSpec,
+        label: &SnapshotLabel,
+    ) -> Result<RestoreMarker, OperationError> {
+        if self.defined(&spec.id).await? {
+            return Err(OperationError::Conflict);
+        }
+        let marker = RestoreMarker {
+            over: false,
+            label: label.clone(),
+            kept: Vec::new(),
+            made: spec.disks().iter().map(|disk| Self::disk_zvol(spec, disk)).collect(),
+            autostart: false,
+            reset_nvram: false,
+        };
+        self.write_restore_marker(&spec.id, &marker)?;
+        let prepared = async {
+            for disk in spec.disks() {
+                self.make_disk(spec, disk).await?;
+            }
+            self.define_domain(spec, false, Autostart::Leave).await
+        }
+        .await;
+        if let Err(error) = prepared {
+            self.give_up_restore(&spec.id, &marker).await;
+            return Err(error);
+        }
+        Ok(marker)
+    }
+
+    /// What the restore's unit is asked: each file of the backup and where
+    /// it goes, the disks' devices once udev made them.
+    async fn restore_job(
+        &self,
+        spec: &VmSpec,
+        place: &std::path::Path,
+        folder: &SharePath,
+        files: &[VmBackupFile],
+        over: bool,
+    ) -> Result<VmRestoreJob, OperationError> {
         let mut targets = Vec::new();
         for file in files {
             let target = match file.part {
@@ -495,7 +904,7 @@ impl Vms {
                         .iter()
                         .find(|disk| disk.slot == slot)
                         .ok_or_else(|| refused("no disk"))?;
-                    self.paths.zvols.join(Self::disk_zvol(spec, disk))
+                    self.device_of(&Self::disk_zvol(spec, disk)).await?
                 }
                 VmBackupPart::Nvram => self.nvram_file(&spec.id),
                 VmBackupPart::Tpm if spec.tpm() => match self.tpm_file(&spec.id).await {
@@ -512,54 +921,43 @@ impl Vms {
                 .and_then(|passwd| crate::passwd::lookup(&passwd, SWTPM_USER));
             targets.push(RestoreFile { file: file.clone(), target, owner });
         }
-        let job = VmRestoreJob { root: place.clone(), folder: folder.clone(), files: targets };
-        let unit = Unit {
-            work: VmBackupWork::Restore,
-            name: unit_name(VmBackupWork::Restore, &spec.id),
-            writable: vec![self.paths.nvram.clone(), self.paths.swtpm.clone()],
-            capabilities: RESTORE_CAPABILITIES,
-            zvols: Some("rw"),
-            description: format!("restore the virtual machine {}", spec.id.as_str()),
-            until: Instant::now() + WORK_FOR,
-        };
-        let restored: Result<serde_json::Value, OperationError> = self.run_unit(unit, &job).await;
-        if let Err(error) = restored {
-            if over {
-                self.undo_restore(label, &kept, &made).await;
-            }
-            // A new VM goes as zendiloosd removes what its making left.
-            return Err(error);
-        }
-        if over {
-            self.define_domain(spec, true).await?;
-            if files.iter().any(|file| file.part == VmBackupPart::Nvram) {
-                let _ = std::fs::remove_file(self.reset_marker(&spec.id));
-            }
-            for slot in remove {
-                for zvol in self.zvols_in(&spec.id, *slot).await? {
-                    run(&self.tools.zfs, &["destroy", "-r", &zvol], SLOW).await?;
-                }
-            }
-            if !kept.is_empty()
-                && let Err(error) = self.destroy_snapshots(&spec.id, label).await
-            {
-                tracing::warn!(%error, vm = spec.id.as_str(), "vms: the snapshot from before the restore stays");
-            }
-        }
-        Ok(Response::Done)
+        Ok(VmRestoreJob { root: place.to_path_buf(), folder: folder.clone(), files: targets })
     }
 
-    /// A restore over a VM that failed: its disks back to the snapshot
-    /// from before, what it made gone.
-    async fn undo_restore(&self, label: &SnapshotLabel, kept: &[String], made: &[String]) {
-        for zvol in kept {
-            let snapshot = format!("{zvol}@{}", label.as_str());
-            if let Err(error) = run(&self.tools.zfs, &["rollback", &snapshot], SLOW).await {
-                tracing::error!(%error, zvol, "vms: a disk did not return to what it was before the restore");
-            }
-            let _ = run(&self.tools.zfs, &["destroy", &snapshot], SLOW).await;
+    /// Once the unit wrote it all, the restore holds: it is not undone any
+    /// more, and what does not work out after (autostart, a disk that would
+    /// go, the snapshot from before) is only said. Should even the marker
+    /// not go, the restore is undone, as it would be at the next start.
+    async fn finish_restore(
+        &self,
+        spec: &VmSpec,
+        files: &[VmBackupFile],
+        remove: &[VmDiskSlot],
+        marker: &RestoreMarker,
+    ) -> Result<(), OperationError> {
+        let vm = spec.id.as_str();
+        if files.iter().any(|file| file.part == VmBackupPart::Nvram)
+            && let Err(error) = remove_if_there(&self.reset_marker(&spec.id))
+        {
+            tracing::warn!(%error, vm, "vms: the restored UEFI variables start afresh at the next start");
         }
-        self.destroy_disks(made).await;
+        if let Err(error) = self.forget_restore(&spec.id) {
+            self.give_up_restore(&spec.id, marker).await;
+            return Err(error);
+        }
+        if spec.autostart {
+            let domain = spec.id.domain();
+            if let Err(error) = run(&self.tools.virsh, &virsh(&["autostart", &domain]), QUICK).await {
+                tracing::warn!(%error, vm, "vms: the restored VM does not start with the machine");
+            }
+        }
+        self.destroy_removed(&spec.id, remove).await;
+        if !marker.kept.is_empty()
+            && let Err(error) = self.destroy_snapshots(&spec.id, &marker.label).await
+        {
+            tracing::warn!(%error, vm, "vms: the snapshot from before the restore stays");
+        }
+        Ok(())
     }
 
     /// Removes a backup's files and its folder once empty, in a unit.

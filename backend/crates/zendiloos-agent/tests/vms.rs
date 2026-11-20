@@ -103,7 +103,8 @@ fn host(installed: bool) -> Host {
         &format!(
             "state={state}\nshift 2\n\
              case \"$1\" in\n\
-             domstate) test -f \"$state/$2\" && cat \"$state/$2\" ;;\n\
+             domstate) if [ -f \"$state/$2\" ]; then cat \"$state/$2\"; else \
+                       echo \"error: failed to get domain '$2'\" >&2; exit 1; fi ;;\n\
              define) name=$(sed -n 's/.*<name>\\(.*\\)<\\/name>.*/\\1/p' \"$3\"); \
                      uuid=$(sed -n 's/.*<uuid>\\(.*\\)<\\/uuid>.*/\\1/p' \"$3\"); \
                      if [ -f \"$state/$name\" ]; then [ \"$uuid\" = \"$(cat \"$state/uuid.$name\")\" ] || \
@@ -111,7 +112,8 @@ fn host(installed: bool) -> Host {
                      else echo 'shut off' > \"$state/$name\"; echo 8b45cec4-586f-4885-973a-9e24c63b82fe > \"$state/uuid.$name\"; fi ;;\n\
              domuuid) cat \"$state/uuid.$2\" ;;\n\
              undefine) eval last=\\${{$#}}; rm \"$state/$last\" \"$state/uuid.$last\" ;;\n\
-             list) printf ' Id   Name                     State\\n----------------------------------------\\n'\n\
+             list) if [ \"$3\" = --name ]; then for f in \"$state\"/zendiloos-*; do [ -e \"$f\" ] && basename \"$f\"; done; exit 0; fi\n\
+                   printf ' Id   Name                     State\\n----------------------------------------\\n'\n\
                    for f in \"$state\"/zendiloos-*; do [ -e \"$f\" ] && printf ' -    %s   %s\\n' \"$(basename \"$f\")\" \"$(cat \"$f\")\"; done\n\
                    printf ' 3    win10                    running\\n' ;;\n\
              start) grep -q running \"$state/$2\" && {{ echo 'error: Requested operation is not valid: domain is already active' >&2; exit 1; }}; echo running > \"$state/$2\" ;;\n\
@@ -1061,7 +1063,7 @@ async fn a_card_goes_directly_only_on_a_wired_card_or_bond() {
     let xml = fs::read_to_string(host.path(&format!("domains/zendiloos-{ID}.xml"))).unwrap();
     assert!(
         xml.contains(
-            "<interface type='direct'>\n      <mac address='52:54:00:00:00:00'/>\n      \
+            "<interface type='direct'>\n      <!-- card 0 -->\n      <mac address='52:54:00:00:00:00'/>\n      \
              <source dev='enp1s0' mode='bridge'/>\n      <model type='virtio'/>\n    </interface>"
         ),
         "{xml}"
@@ -1118,7 +1120,7 @@ async fn a_card_goes_on_an_internal_network_only_while_the_nas_is_kept_off_it() 
         Response::Done
     );
     let xml = fs::read_to_string(host.path(&format!("domains/zendiloos-{ID}.xml"))).unwrap();
-    assert!(xml.contains("<interface type='bridge'>\n      <mac address='52:54:00:00:00:00'/>\n      <source bridge='vmnet0'/>"), "{xml}");
+    assert!(xml.contains("<interface type='bridge'>\n      <!-- card 0 -->\n      <mac address='52:54:00:00:00:00'/>\n      <source bridge='vmnet0'/>"), "{xml}");
     assert!(
         host.calls().contains(&"systemctl is-active --quiet zendiloos-internal-networks.service".to_owned())
     );

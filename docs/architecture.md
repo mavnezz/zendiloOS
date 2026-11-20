@@ -2807,7 +2807,22 @@ random source; VGA and no balloon for the others; Hyper-V's enlightenments
 and local time for Windows; a VNC console on a Unix socket and nothing
 listening on a network. Making a VM is a job (`vms.create`): its disks
 made, the domain defined; what a failure leaves goes again, its record
-too. Start, shut down (ACPI), restart (ACPI), force off, autostart on and
+too, unless the host does not let go of it: then the record stays (as
+being made) and the VM can be deleted, so nothing of it is left on the
+host unseen. A VM not made yet that no job makes any more (its job cut
+off by a restart of zendiloosd, as a restore as a new VM can be too) goes
+at zendiloosd's next start with what of it is on the host, its backup or
+restore unit ended first (`EndVmWork`); one the host keeps stays and is
+deleted by hand, which its card offers then. A start is one of the VM's
+changes in the agent: it waits for one under way (a rollback, a change of
+its hardware) and is refused while a backup or restore of the VM runs,
+and so does zendiloosd (`the virtual machine is being restored`), whose
+card disables Start meanwhile; QEMU never opens a disk something else
+writes. libvirt that cannot be asked (its daemon restarting, its socket
+hanging) is never taken for a domain that is not there: virsh says
+"failed to get domain" of both, so a domain whose state it does not give
+is taken as not there only once `virsh list --all --name` answers without
+it. Start, shut down (ACPI), restart (ACPI), force off, autostart on and
 off, a change, and delete with the name typed again (the domain undefined
 with its NVRAM, its zvols destroyed; the images in its drives stay in the
 library) are audited (`vms.install`, `vms.storage`, `vms.create`,
@@ -2838,7 +2853,15 @@ the agent (`UpdateVm`), which looks at libvirt's state itself. A disk only
 grows (`zfs set volsize`; the guest grows its partition itself), never
 shrinks; the agent looks at every zvol's size first and changes nothing if
 one would. A disk removed is destroyed with its data, after the domain no
-longer names it, and only with the VM's name typed again. A card keeps
+longer names it, and only with the VM's name typed again; one that does
+not go then (busy, held) stays where it is, said in the agent's journal,
+and the change holds all the same, so zendiloosd records what the domain
+is. Once libvirt took a definition nothing after it fails the change
+(the file kept, the UEFI variables' marker, autostart only warn), so no
+disk the new definition names is destroyed under it. The edit dialog
+gives a disk or card added a slot the VM as saved did not have while
+there is one, so a new disk is never the zvol of one removed in the same
+edit, nor a new card given the address of one removed. A card keeps
 its MAC address by its slot, from the VM's record as it is once the
 change holds the lock that changes and creations take (read again then,
 not from a look before the host was asked); a card on a bridge, internal
@@ -2852,7 +2875,10 @@ sends them in another order is no hardware change. (Issue #71, cards with
 other addresses after an edit in two of about ten runs of the VM test,
 has no cause found in the code: a test changes VMs at random, the cards in
 any order, others made and changed at the same time, and every card keeps
-its address.)
+its address. The file the agent keeps notes each card's slot, and
+defining a domain anew it says in its journal, with the VM, the slot and
+both addresses, when a slot's address changes from libvirt's definition
+to the new one: `vms: a card's MAC address changed`.)
 
 **The network.** A card's network is one of four kinds, which the
 Networks page lists with the VMs on each and what each means in one line.
@@ -3155,11 +3181,15 @@ and how consistent it is are ZFS properties (`zendiloos:note`,
 `zendiloos:schedule`, `zendiloos:consistency`), so nothing about them is
 kept anywhere else. Taken while the VM is off, it is as consistent as it
 gets; while it runs, the agent first asks the QEMU guest agent to freeze
-the guest's file systems (`virsh domfsfreeze`, thawed right after) and,
-without it, the snapshot is crash-consistent, as after a power cut, which
-the interface says; a running VM with disks on more than one pool is then
-paused for the moment of the snapshots (`virsh suspend`, `resume`), so they
-are of one moment. A rollback (`zfs rollback`) is only for a VM that is
+the guest's file systems (`virsh domfsfreeze`, thawed right after, also
+after a freeze libvirt gave up waiting for, which the guest may finish
+after all; only where libvirt says no guest agent is connected is there
+nothing to thaw) and, without it, the snapshot is crash-consistent, as
+after a power cut, which the interface says; a running VM with disks on
+more than one pool is then paused for the moment of the snapshots
+(`virsh suspend`, `resume`, asked again should it not resume at once), so
+they are of one moment, and not snapshotted if it can be neither frozen
+nor paused. A rollback (`zfs rollback`) is only for a VM that is
 shut off, and only to the newest snapshot unless the administrator agrees
 that the newer ones go (`zfs rollback -r`; the API refuses with
 `newer_snapshots` naming them); each disk keeps the size it has, as disks
@@ -3187,7 +3217,10 @@ and a restore never hands a stream from a share users may write to the
 kernel's `zfs receive`, only bytes into the guest's own disk; zeros, what
 a sparse zvol mostly holds, cost almost nothing compressed. What it costs:
 each disk is read whole (holes read quickly), and there are no incremental
-backups. The agent makes the snapshots' devices show for the time of the
+backups. The disks backed up are those zendiloosd records for the VM (`disks` of
+`BackUpVm`): a backup is refused if one of them has no zvol, or if the
+domain uses a zvol of the VM's the record has not; a zvol the domain does
+not use (a disk whose removal failed) is left out. The agent makes the snapshots' devices show for the time of the
 backup (`snapdev=visible`, then inherited again) and runs the work in a
 transient unit of its own (this binary as `back-up-vm`,
 `zendiloos-vm-backup-<id>.service`), outside its sandbox: the system read
@@ -3199,8 +3232,9 @@ read the share may read the VM's disks, which the interface says. Once
 written, the backup is recorded (`vm_backups`, migration 0062) and stays
 recorded when its VM goes. A backup or restore can be canceled (`POST
 /vms/{id}/backups/cancel`): zendiloosd ends its request, the agent stops
-the unit and waits for it (`EndVmWork` makes sure), and the job ends as
-`canceled`; meanwhile the VM is neither changed nor deleted nor snapshotted
+the unit and waits for it (`EndVmWork` makes sure, and waits too until a
+restore's unit stopped is undone), and the job ends as `canceled`;
+meanwhile the VM is neither started, changed nor deleted nor snapshotted
 on schedule, and the agent refuses as long as the unit runs.
 
 A backup is restored (`POST /vms/backups/{id}/restore`) as a new VM, of a
@@ -3210,17 +3244,35 @@ again: it gets the backup's settings back (its disks at least the size they
 have, a disk the backup has not destroyed, its cards' MAC addresses as
 they were). Images no longer in the library leave their drives empty, a
 card on a network the machine no longer has goes through the NAS, and the
-host's USB and PCI devices are not given again. The agent defines a new VM
-first; over an old one it snapshots its disks first, makes or grows them,
-and defines the domain anew only once the files are in. The unit
+host's USB and PCI devices are not given again. Before it writes, the
+agent writes down what undoes the restore (`zendiloos-<id>.restoring`
+beside the domain's XML, over an old VM with its definition from before)
+and turns the VM's autostart off, so libvirt never starts half-restored
+disks with the machine. It defines a new VM first; over an old one it
+snapshots its disks first, makes or grows them and defines the domain
+anew from the backup's settings, so what libvirt refuses writes nothing;
+it waits for the devices of the zvols it made. While the unit writes, the
+agent does not hold the lock of the VMs' changes (other VMs are changed,
+snapshotted and backed up meanwhile), but the VM itself is neither
+started, changed, snapshotted nor deleted. The unit
 (`restore-vm`, `DeviceAllow=block-zvol rw`, writable libvirt's folders of
 the UEFI variables and the TPM states) opens each file beneath the share's
 root without following a link, refuses one others may write, and checks
 its SHA-256 and size against the record while it reads; it writes runs of
 zeros as holes (`fallocate` punching them, which a zvol frees) and punches
-what lies after the image, so a disk stays sparse. Should anything fail, a
-new VM goes again with its disks, and an old one's disks return to the
-snapshot from before; once restored, that snapshot goes. A backup is
+what lies after the image, so a disk stays sparse; the UEFI variables
+and the TPM's state are written beside their places and put there only
+once both are checked. Should anything fail before the unit is done, a
+new VM goes again with its disks (the agent removes it itself), and an
+old one's disks return to the snapshot from before, with its definition
+and autostart from before. A restore cut off by a restart of the agent or
+of the machine is undone in the same way as the agent starts again
+(before zendiloosd is answered), and one whose undoing fails then is
+tried again before the VM is started, changed, backed up or snapshotted,
+which are refused until it is; deleting the VM ends it. Once the unit
+wrote everything the restore holds: its autostart is set as its settings
+say, a disk that would go and does not stays (as on a change), and the
+snapshot from before goes. A backup is
 deleted with its files (`remove-vm-backup`, its folder once empty).
 Audited: `vms.backup`, `vms.backup_cancel`, `vms.restore`,
 `vms.backup_delete`.

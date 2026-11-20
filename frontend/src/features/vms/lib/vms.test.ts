@@ -148,6 +148,19 @@ describe('the VM settings', () => {
     expect(windows.drives).toEqual([{ slot: 0, image: IMAGE.id }])
   })
 
+  it('give a disk or card added in an edit a slot the VM did not have, so it is not the one removed', () => {
+    let form = addNic(addDisk(presetForm('linux', PLUGIN, 'box')))
+    const before = { disks: form.disks, nics: form.nics }
+    form = removeNic(removeDisk(form, 1), 0)
+    // Not the removed disk's zvol, nor the removed card's MAC address.
+    expect(addDisk(form, before.disks).disks.map((disk) => disk.slot)).toEqual([0, 2])
+    expect(addNic(form, before.nics).nics.map((nic) => nic.slot)).toEqual([1, 2])
+    // With no other slot left, one the VM had.
+    let full = form
+    for (let n = 0; n < NICS_MAX; n++) full = addNic(full, before.nics)
+    expect(full.nics.map((nic) => nic.slot)).toEqual([1, 2, 3, 0])
+  })
+
   it('add devices in free slots up to their limits, and remove them from the boot order', () => {
     let form = presetForm('linux', PLUGIN, 'box')
     for (let n = 0; n < DISKS_MAX + 1; n++) form = addDisk(form)

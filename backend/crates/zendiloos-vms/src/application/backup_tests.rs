@@ -342,6 +342,39 @@ async fn a_backup_can_be_canceled_and_keeps_the_vm_from_changing_meanwhile() {
 }
 
 #[tokio::test]
+async fn a_vm_does_not_start_while_its_backup_or_restore_runs() {
+    let test = TestVms::new(FakeVmHost::ready());
+    let id = made(&test, settings("big")).await;
+    let started = |test: &TestVms| test.host.calls().iter().filter(|call| call.starts_with("start ")).count();
+    let hold = std::sync::Arc::new(tokio::sync::Notify::new());
+    *test.host.hold_work.lock().unwrap() = Some(hold.clone());
+    let share = BackupTarget::Share { share_id: 1 };
+    let job = test.vms.back_up(&id, share, "", &alice(), &context()).await.unwrap();
+    while !test.host.calls().iter().any(|call| call.starts_with("back_up")) {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let start = test.vms.control(&id, VmAction::Start, &alice(), &context()).await;
+    assert!(matches!(&start, Err(VmsError::Refused(why)) if why.contains("being backed up")), "{start:?}");
+    hold.notify_one();
+    assert_eq!(finished(&test, &job).await.state, JobState::Succeeded);
+
+    let backup = test.vms.backups().await.unwrap()[0].backup.id;
+    let hold = std::sync::Arc::new(tokio::sync::Notify::new());
+    *test.host.hold_work.lock().unwrap() = Some(hold.clone());
+    let over = RestoreAs::Over { confirm: "big".into() };
+    let (_, job) = test.vms.restore(backup, over, &alice(), &context()).await.unwrap();
+    while !test.host.calls().iter().any(|call| call.starts_with("restore")) {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let start = test.vms.control(&id, VmAction::Start, &alice(), &context()).await;
+    assert!(matches!(&start, Err(VmsError::Refused(why)) if why.contains("being restored")), "{start:?}");
+    assert_eq!(started(&test), 0, "the host was never asked");
+    hold.notify_one();
+    assert_eq!(finished(&test, &job).await.state, JobState::Succeeded);
+    assert!(test.vms.control(&id, VmAction::Start, &alice(), &context()).await.is_ok());
+}
+
+#[tokio::test]
 async fn the_hosts_devices_go_to_a_vm_as_its_rules_say() {
     let test = TestVms::new(FakeVmHost::ready());
     let keyboard = UsbDevice { vendor: 0x046d, product: 0xc31c };

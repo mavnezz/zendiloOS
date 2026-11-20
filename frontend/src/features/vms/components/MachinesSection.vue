@@ -12,7 +12,7 @@ import { Button } from '@/shared/ui/button'
 import { ConfirmDialog } from '@/shared/ui/confirm-dialog'
 
 import { useBackupActions, useVmActions, useVmImages, useVms, useVmStats } from '../api'
-import { workOf } from '../lib/backups'
+import { beingMade, workOf } from '../lib/backups'
 import BackupDialog from './BackupDialog.vue'
 import CreateVmDialog from './CreateVmDialog.vue'
 import DeleteVmDialog from './DeleteVmDialog.vue'
@@ -126,6 +126,7 @@ function forceOff(): void {
             :load="loadOf(vm)"
             :busy="busy === vm.id"
             :work="workOf(jobs.list, vm.name) ?? null"
+            :cut-off="vm.state === 'creating' && !beingMade(jobs.list, vm.name)"
             @console="openApp?.('vm-console', vm.id)"
             @start="act(vm, actions.start)"
             @shut-down="act(vm, actions.shutDown)"
