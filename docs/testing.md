@@ -93,14 +93,14 @@ the group passed and keep running after a failure.
 
 | Group | Its VMs | Tests, in order | Time |
 |---|---|---|---|
-| storage | the pool tank on the NVMe disk | storage, pool-delete, enclosure, removable, notify | 18 min |
+| storage | the pool tank on the NVMe disk | storage, pool-delete, enclosure, removable, notify | 17 min |
 | sharing | the pools apps (NVMe) and tank (a SATA disk), Docker on apps, NFS on | sharing, permissions, services, accounts, two-factor, backup | 14 min |
-| security | set up only | security, hostname, web-server, ups | 19 min |
-| docker | the pool apps (NVMe), Docker on it, Uptime Kuma from the App Center as a project | docker-install, docker, app-center, project-pins, docker-volumes, firewall | 22 min |
-| vms | the pools apps and tank; Debian's kernel instead of the cloud one, for a USB controller | network, vms, vm-backup | 13 min |
-| network | two spare cards | network-takeover, network-bridge | 10 min |
+| security | set up only | security, hostname, web-server, ups | 20 min |
+| docker | the pool apps (NVMe), Docker on it, Uptime Kuma from the App Center as a project | docker-install, docker, app-center, project-pins, docker-volumes, firewall | 19 min |
+| vms | the pools apps and tank; Debian's kernel instead of the cloud one, for a USB controller | network, vms, vm-backup | 15 min |
+| network | two spare cards | network-takeover, network-bridge | 12 min |
 | restore | a second VM, installed and never set up; the first with tank and a share | config-backup | 12 min |
-| pool-import | one VM (3), installed and never set up | pool-import | 14 min |
+| pool-import | one VM (3), installed and never set up | pool-import | 10 min |
 | upgrade | nothing installed; 0.2.0's package from GitHub's releases, the last before share-level permissions | upgrade, update | 6 min |
 
 The times, of a run in November 2026, include making the VMs: about four
