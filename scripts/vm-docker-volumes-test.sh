@@ -154,17 +154,19 @@ reach_of() {
 import subprocess, sys, time
 unit, seconds = sys.argv[1], int(sys.argv[2])
 for _ in range(seconds * 10):
-    pid = subprocess.run(["systemctl", "show", "-p", "MainPID", "--value", unit],
-                         capture_output=True, text=True).stdout.strip()
+    # Its main process and the filter systemd applies, in one call: the
+    # unit may end soon.
+    shown = subprocess.run(["systemctl", "show", "-p", "MainPID", "-p", "SystemCallFilter", unit],
+                           capture_output=True, text=True).stdout
+    values = dict(line.split("=", 1) for line in shown.splitlines() if "=" in line)
+    pid, allowed = values.get("MainPID", ""), values.get("SystemCallFilter", "")
     if pid and pid != "0":
         break
     time.sleep(0.1)
 else:
     print("unseen")
     sys.exit(0)
-# The filter systemd applies: an allow-list, connect() not in it.
-allowed = subprocess.run(["systemctl", "show", "-p", "SystemCallFilter", "--value", unit],
-                         capture_output=True, text=True).stdout.strip()
+# An allow-list, connect() not in it.
 if not allowed or allowed.startswith("~") or "connect" in allowed.split():
     print("connects: its system calls are no allow-list without connect()")
 probe = """
