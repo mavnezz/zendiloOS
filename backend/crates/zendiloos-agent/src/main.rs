@@ -10,7 +10,8 @@ use zendiloos_agent::config::Config;
 use zendiloos_agent::{
     HostPaths, Operations, Server, VmBackupWork, VolumeJob, choose_boot_kernel, docker_bridges,
     lower_file_overrides, passwd, pin_project, pin_shares, power_off_drive, run_backup_unit, run_iso_job,
-    run_packages, run_upload_job, run_vm_backup_job, run_volume_job, serve, unpin_project, unpin_shares,
+    run_packages, run_put_etc_file, run_upload_job, run_vm_backup_job, run_volume_job, serve, unpin_project,
+    unpin_shares,
 };
 use zendiloos_agent_proto::{AppName, DiskName, ProjectName, Role};
 
@@ -74,6 +75,10 @@ enum Command {
     /// A backup task's work: rsync between its places (a job of the system
     /// agent's, in a unit of its own), its secrets read from standard input
     BackupUnit { job: String },
+    /// Make one of the files directly in /etc the system agent changes
+    /// (hosts, hostid, resolv.conf) a file of what comes on standard input,
+    /// a link or nothing (a job of the system agent's, in a unit of its own)
+    PutEtcFile { job: String },
     /// Let frames within the bridges zendiloOS made pass Docker's FORWARD
     /// chain, and nothing more (zendiloos-docker-bridges.service)
     DockerBridges,
@@ -85,7 +90,8 @@ enum Command {
 impl Command {
     /// Whether it is a unit's work, all of it in this process, that runs as
     /// the first process of a PID namespace of its own (`PrivatePIDs=`):
-    /// the volumes' units, the VMs' backups, ISOs and uploads.
+    /// the volumes' units, the VMs' backups, ISOs and uploads, the files
+    /// directly in /etc.
     fn in_own_pid_namespace(&self) -> bool {
         matches!(
             self,
@@ -100,6 +106,7 @@ impl Command {
                 | Command::BackUpVm { .. }
                 | Command::RestoreVm { .. }
                 | Command::RemoveVmBackup { .. }
+                | Command::PutEtcFile { .. }
         )
     }
 }
@@ -234,6 +241,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         return Ok(());
     }
+    if let Some(Command::PutEtcFile { job }) = &cli.command {
+        return run_put_etc_file(job, &mut std::io::stdin().lock())
+            .map_err(|error| anyhow::anyhow!("{error}"));
+    }
     if let Some(Command::DockerBridges) = &cli.command {
         let directory = zendiloos_agent::NetworkPaths::default().directory;
         let report = docker_bridges::sync(&directory, &docker_bridges::Family::debian())
@@ -281,6 +292,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             | Command::RestoreVm { .. }
             | Command::RemoveVmBackup { .. }
             | Command::BackupUnit { .. }
+            | Command::PutEtcFile { .. }
             | Command::DockerBridges
             | Command::ChooseBootKernel => unreachable!("handled above"),
         };

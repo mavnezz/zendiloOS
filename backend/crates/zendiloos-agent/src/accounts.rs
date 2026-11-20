@@ -7,6 +7,11 @@
 //! untouched, whatever zendiloosd asks for. An app's account (`app-<id>`,
 //! with [`APP_COMMENT`] and a primary group of the same name) is neither a
 //! managed user nor a managed group: only the app requests touch it.
+//!
+//! The shadow tools change files directly in `/etc`, which the agent's
+//! sandbox may not write: they run in transient units
+//! ([`crate::etc_units`]). smbpasswd writes Samba's state directory and
+//! runs here.
 
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
@@ -16,6 +21,7 @@ use zendiloos_agent_proto::{AppName, GroupName, Password, Response, RestoredGrou
 use zendiloos_exec::{Limits, Program};
 
 use crate::config::Tools;
+use crate::etc_units::EtcUnits;
 use crate::operations::OperationError;
 use crate::passwd;
 
@@ -169,6 +175,8 @@ pub(crate) struct Accounts {
     groupdel: Program,
     gpasswd: Program,
     smbpasswd: Program,
+    /// The units the shadow tools run in.
+    etc: EtcUnits,
     /// The shadow tools lock the account files themselves, but give up
     /// quickly when they find them locked; one change at a time avoids that.
     serial: tokio::sync::Mutex<()>,
@@ -177,7 +185,11 @@ pub(crate) struct Accounts {
 const LIMITS: Limits = Limits { timeout: Duration::from_secs(30), max_stdout: 64 * 1024 };
 
 impl Accounts {
-    pub(crate) fn new(tools: &Tools, files: AccountFiles) -> Result<Self, zendiloos_exec::ExecError> {
+    pub(crate) fn new(
+        tools: &Tools,
+        files: AccountFiles,
+        etc: EtcUnits,
+    ) -> Result<Self, zendiloos_exec::ExecError> {
         Ok(Self {
             files,
             useradd: Program::new(&tools.useradd)?,
@@ -186,6 +198,7 @@ impl Accounts {
             groupdel: Program::new(&tools.groupdel)?,
             gpasswd: Program::new(&tools.gpasswd)?,
             smbpasswd: Program::new(&tools.smbpasswd)?,
+            etc,
             serial: tokio::sync::Mutex::new(()),
         })
     }
@@ -219,7 +232,7 @@ impl Accounts {
             name.as_str(),
         ];
         self.write_high_water(&set_high_water(&marks, IdKind::User, uid.parse().unwrap_or(ID_MIN)))?;
-        run(&self.useradd, &args).await?;
+        self.etc.shadow_tool(&self.useradd, &args).await?;
         Ok(Response::Done)
     }
 
@@ -236,7 +249,7 @@ impl Accounts {
         if let Err(error) = run(&self.smbpasswd, &["-x", name.as_str()]).await {
             tracing::info!(user = name.as_str(), %error, "no Samba entry removed");
         }
-        run(&self.userdel, &["--", name.as_str()]).await?;
+        self.etc.shadow_tool(&self.userdel, &["--", name.as_str()]).await?;
         Ok(Response::Done)
     }
 
@@ -282,7 +295,7 @@ impl Accounts {
         let gid = next_id(&group, &marks, IdKind::Group)
             .ok_or_else(|| OperationError::Setup("no group IDs left".to_owned()))?;
         self.write_high_water(&set_high_water(&marks, IdKind::Group, gid))?;
-        run(&self.groupadd, &["--gid", &gid.to_string(), "--", name.as_str()]).await?;
+        self.etc.shadow_tool(&self.groupadd, &["--gid", &gid.to_string(), "--", name.as_str()]).await?;
         Ok(Response::Done)
     }
 
@@ -293,7 +306,7 @@ impl Accounts {
             return Ok(Response::Done);
         }
         require_managed_group(&passwd, &group, name)?;
-        run(&self.groupdel, &["--", name.as_str()]).await?;
+        self.etc.shadow_tool(&self.groupdel, &["--", name.as_str()]).await?;
         Ok(Response::Done)
     }
 
@@ -309,7 +322,7 @@ impl Accounts {
             require_managed(&passwd, &group, member)?;
         }
         let list = members.iter().map(UserName::as_str).collect::<Vec<_>>().join(",");
-        run(&self.gpasswd, &["--members", &list, "--", name.as_str()]).await?;
+        self.etc.shadow_tool(&self.gpasswd, &["--members", &list, "--", name.as_str()]).await?;
         Ok(Response::Done)
     }
 
@@ -324,11 +337,11 @@ impl Accounts {
                 None => Ok(Response::Done),
             };
         }
-        run(&self.userdel, &["--", &name]).await?;
+        self.etc.shadow_tool(&self.userdel, &["--", &name]).await?;
         // userdel removes the group itself where USERGROUPS_ENAB is set.
         let (_, group) = self.read_files().await?;
         if passwd::group_id(&group, &name).is_some() {
-            run(&self.groupdel, &["--", &name]).await?;
+            self.etc.shadow_tool(&self.groupdel, &["--", &name]).await?;
         }
         Ok(Response::Done)
     }
@@ -472,14 +485,19 @@ impl Accounts {
                 "--",
                 user.name.as_str(),
             ];
-            run(&self.useradd, &args).await?;
+            self.etc.shadow_tool(&self.useradd, &args).await?;
         }
         for restored in &make_groups {
-            run(&self.groupadd, &["--gid", &restored.gid.to_string(), "--", restored.name.as_str()]).await?;
+            self.etc
+                .shadow_tool(
+                    &self.groupadd,
+                    &["--gid", &restored.gid.to_string(), "--", restored.name.as_str()],
+                )
+                .await?;
         }
         for restored in &groups {
             let list = restored.members.iter().map(UserName::as_str).collect::<Vec<_>>().join(",");
-            run(&self.gpasswd, &["--members", &list, "--", restored.name.as_str()]).await?;
+            self.etc.shadow_tool(&self.gpasswd, &["--members", &list, "--", restored.name.as_str()]).await?;
         }
         Ok(if left_out.is_empty() { Response::Done } else { Response::RestoredWithout { left_out } })
     }

@@ -158,7 +158,11 @@ fn host(erasable: Erasable) -> Host {
         hostnamectl: "/bin/false".into(),
         timedatectl: script("timedatectl", ""),
         sshd: script("sshd", ""),
-        systemd_run: script("systemd-run", ""),
+        // The shadow tools' units run them, after their options.
+        systemd_run: script(
+            "systemd-run",
+            "case \"$*\" in *' on the accounts '*) while [ \"${1#--}\" != \"$1\" ]; do shift; done; exec \"$@\" ;; esac",
+        ),
         docker: script("docker", ""),
         dockerd: script("dockerd", ""),
         useradd: script("useradd", ""),
@@ -859,6 +863,17 @@ async fn an_apps_account_goes_with_its_group_and_nobody_elses_does() {
     let calls = host.calls();
     assert!(calls.contains(&"userdel -- app-kuma".to_owned()), "{calls:?}");
     assert!(calls.contains(&"groupdel -- app-kuma".to_owned()), "the group too: {calls:?}");
+    // In a unit that may write /etc, with CAP_CHOWN alone.
+    let unit = calls.iter().find(|call| call.contains("userdel on the accounts")).expect("userdel's unit");
+    for wanted in [
+        " --property=ReadWritePaths=/etc ",
+        " --property=CapabilityBoundingSet=CAP_CHOWN ",
+        " --property=PrivateNetwork=yes ",
+        " --property=TemporaryFileSystem=/run:ro ",
+    ] {
+        assert!(unit.contains(wanted), "{wanted} in {unit}");
+    }
+    assert!(unit.ends_with(" /userdel -- app-kuma"), "the test's own folder left out: {unit}");
     assert_refused(host.run(delete("paperless")).await, ErrorCode::Forbidden, "not managed");
     assert_eq!(host.run(delete("gone")).await, Response::Done, "nothing to delete");
 }

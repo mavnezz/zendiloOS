@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
 use zendiloos_agent::config::Tools;
-use zendiloos_agent::{Erasable, ErasePolicy, NetworkPaths, Operations, Paths};
+use zendiloos_agent::{Erasable, ErasePolicy, HostPaths, NetworkPaths, Operations, Paths};
 use zendiloos_agent_proto::{
     BondMode, ConfirmWithin, DeviceAction, ErrorCode, FilesDigest, Ifupdown, InterfaceName, Ipv4Config,
     Ipv6Config, MacAddress, NameServers, Netdev, NetdevKind, NetworkChange, NetworkConfig, NetworkEdit,
@@ -122,10 +122,14 @@ impl Host {
             hostnamectl: "/bin/false".into(),
             timedatectl: any.clone(),
             sshd: any.clone(),
-            // A transient unit deleting a link takes it off the host.
+            // A transient unit deleting a link takes it off the host; one
+            // writing a file directly in /etc runs, after its options.
             systemd_run: script(
                 "systemd-run",
-                "case \"$*\" in *\"link delete dev\"*) for last; do :; done; sed -i \"/^$last /d\" $R/links ;; esac",
+                "case \"$*\" in\n\
+                 *\"link delete dev\"*) for last; do :; done; sed -i \"/^$last /d\" $R/links ;;\n\
+                 *\" put-etc-file \"*) while [ \"${1#--}\" != \"$1\" ]; do shift; done; exec \"$@\" ;;\n\
+                 esac",
             ),
             docker: any.clone(),
             setsid: "/usr/bin/setsid".into(),
@@ -174,7 +178,10 @@ impl Host {
             resolv_conf: self.root.join("resolv.conf"),
             internal: self.root.join("internal-networks.nft"),
         };
-        let paths = Paths { network, ..Paths::default() };
+        // resolv.conf is written by this crate's own binary, in a unit.
+        let host =
+            HostPaths { agent: PathBuf::from(env!("CARGO_BIN_EXE_zendiloos-agent")), ..HostPaths::default() };
+        let paths = Paths { network, host, ..Paths::default() };
         let operations =
             Operations::with_paths(Role::System, &self.tools, Erasable::Policy(ErasePolicy::Unused), paths)
                 .unwrap();

@@ -20,6 +20,7 @@ use crate::configuration::{Configuration, ConfigurationPaths, ConfigurationPlace
 use crate::docker::Docker;
 use crate::emmc::Emmc;
 use crate::enclosure::Enclosure;
+use crate::etc_units::EtcUnits;
 use crate::files::Files;
 use crate::firewall::{Firewall, FirewallPaths};
 use crate::host_name::{HostNamePaths, HostNames};
@@ -130,6 +131,8 @@ impl Operations {
             network: paths.network.directory.clone(),
         };
         let pools = Pools::new(tools, erasable, paths.host.clone())?;
+        // What lies directly in `/etc` is changed in units of its own.
+        let etc = EtcUnits::new(Program::new(&tools.systemd_run)?, paths.host.agent.clone());
         Ok(Self {
             configuration: Configuration::new(
                 Program::new(&tools.systemctl)?,
@@ -138,6 +141,7 @@ impl Operations {
                 configuration,
                 paths.accounts.clone(),
                 pools.changes(),
+                etc.clone(),
             ),
             systemctl: Program::new(&tools.systemctl)?,
             lsblk: Program::new(&tools.lsblk)?,
@@ -150,9 +154,9 @@ impl Operations {
                 paths.host.volumes.clone(),
                 paths.host.removable.clone(),
             ),
-            network: std::sync::Arc::new(Network::new(tools, paths.network)?),
+            network: std::sync::Arc::new(Network::new(tools, paths.network, etc.clone())?),
             time: Time::new(tools, paths.time)?,
-            host_names: HostNames::new(tools, paths.host_name)?,
+            host_names: HostNames::new(tools, paths.host_name, etc.clone())?,
             ssh: Ssh::new(tools, paths.ssh)?,
             ups: Ups::new(tools, paths.ups)?,
             web: Web::new(tools, paths.web)?,
@@ -218,7 +222,7 @@ impl Operations {
                 Program::new(&tools.systemd_run)?,
                 paths.host.clone(),
             ),
-            accounts: Accounts::new(tools, paths.accounts)?,
+            accounts: Accounts::new(tools, paths.accounts, etc)?,
             pools,
             role,
         })

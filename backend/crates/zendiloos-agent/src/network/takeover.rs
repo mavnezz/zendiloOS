@@ -20,6 +20,11 @@
 //! cut off is done again at the agent's next start. Once confirmed, the
 //! record goes; people's copies of what ifupdown had stay beside the files
 //! (`interfaces.zendiloos-previous`, `resolv.conf.zendiloos-previous`).
+//!
+//! `/etc/resolv.conf` and the copy beside it lie directly in `/etc`, which
+//! the agent's sandbox may not write: a transient unit writes them
+//! ([`crate::etc_units`]); ifupdown's files are in `/etc/network`, which it
+//! may.
 
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -35,6 +40,7 @@ use zendiloos_agent_proto::{
 };
 
 use super::{MANAGER_CALL, Network, networkd_file, not_found, remove, unconfigured};
+use crate::etc_units::EtcFile;
 use crate::operations::OperationError;
 
 /// The record of a takeover waiting to be confirmed, in `/etc/network`.
@@ -115,6 +121,15 @@ fn put(path: &Path, saved: &Saved) -> Result<(), OperationError> {
         Saved::Missing => remove(path),
         Saved::File { text, mode } => crate::durable::replace_mode(path, text.as_bytes(), *mode),
         Saved::Link { target } => crate::durable::link(path, target),
+    }
+}
+
+/// What `saved` is, for a file directly in `/etc`.
+fn in_etc(saved: &Saved) -> EtcFile<'_> {
+    match saved {
+        Saved::Missing => EtcFile::Missing,
+        Saved::File { text, mode } => EtcFile::File { content: text.as_bytes(), mode: *mode },
+        Saved::Link { target } => EtcFile::Link { target },
     }
 }
 
@@ -281,7 +296,7 @@ impl Network {
     /// From ifupdown to systemd-networkd; the record is written already.
     async fn switch(&self, record: &Record) -> Result<(), OperationError> {
         put(&kept(&self.interfaces_path()), &record.interfaces)?;
-        put(&kept(&self.paths.resolv_conf), &record.resolv_conf)?;
+        self.etc.put(&kept(&self.paths.resolv_conf), in_etc(&record.resolv_conf)).await?;
         for set_up in &record.set_up {
             let file = self.file(&set_up.config.interface);
             crate::durable::replace(&file, networkd_file(&set_up.config).as_bytes())?;
@@ -294,7 +309,7 @@ impl Network {
             _ => 0o644,
         };
         crate::durable::replace_mode(&self.interfaces_path(), LOOPBACK.as_bytes(), mode)?;
-        crate::durable::link(&self.paths.resolv_conf, STUB)?;
+        self.etc.put(&self.paths.resolv_conf, EtcFile::Link { target: STUB }).await?;
         self.systemctl(&["enable", "--now", "systemd-resolved.service"]).await?;
         self.systemctl(&["enable", "--now", "systemd-networkd.socket", "systemd-networkd.service"]).await
     }
@@ -328,8 +343,9 @@ impl Network {
             tracing::error!("network: not all of ifupdown's files are back; trying again at the next start");
             return;
         }
-        for copy in [kept(&self.interfaces_path()), kept(&self.paths.resolv_conf), path] {
-            if let Err(error) = remove(&copy) {
+        let resolv_conf = self.etc.put(&kept(&self.paths.resolv_conf), EtcFile::Missing).await;
+        for removed in [remove(&kept(&self.interfaces_path())), resolv_conf, remove(&path)] {
+            if let Err(error) = removed {
                 tracing::error!(%error, "network: cannot remove what the takeover left");
             }
         }
@@ -379,7 +395,7 @@ impl Network {
                 None => back(remove(&file), "a systemd-networkd file"),
             }
         }
-        back(put(&self.paths.resolv_conf, &record.resolv_conf), "/etc/resolv.conf");
+        back(self.etc.put(&self.paths.resolv_conf, in_etc(&record.resolv_conf)).await, "/etc/resolv.conf");
         back(put(&self.interfaces_path(), &record.interfaces), "/etc/network/interfaces");
         log(self.systemctl(&["restart", "networking.service"]).await, "ifupdown did not come up");
         restored
