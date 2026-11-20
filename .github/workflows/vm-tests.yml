@@ -156,7 +156,7 @@ jobs:
           name: vm-tests-deb
           path: dist
 
-      # GH_TOKEN: the upgrade group fetches the latest release's package.
+      # GH_TOKEN: the upgrade group fetches an older release's package (v0.2.0).
       - name: scripts/vm-ci.sh ${{ matrix.group }}
         env:
           GROUP: ${{ matrix.group }}
