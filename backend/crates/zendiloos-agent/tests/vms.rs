@@ -1120,7 +1120,10 @@ async fn a_card_goes_on_an_internal_network_only_while_the_nas_is_kept_off_it() 
         Response::Done
     );
     let xml = fs::read_to_string(host.path(&format!("domains/zendiloos-{ID}.xml"))).unwrap();
-    assert!(xml.contains("<interface type='bridge'>\n      <!-- card 0 -->\n      <mac address='52:54:00:00:00:00'/>\n      <source bridge='vmnet0'/>"), "{xml}");
+    assert!(
+        xml.contains("<interface type='bridge'>\n      <!-- card 0 -->\n      <mac address='52:54:00:00:00:00'/>\n      <source bridge='vmnet0'/>"),
+        "the card is on the internal network's bridge"
+    );
     assert!(
         host.calls().contains(&"systemctl is-active --quiet zendiloos-internal-networks.service".to_owned())
     );

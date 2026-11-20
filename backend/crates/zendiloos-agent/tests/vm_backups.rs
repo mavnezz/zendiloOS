@@ -1226,7 +1226,7 @@ async fn a_change_libvirt_took_keeps_its_disks_whatever_fails_after() {
     let change = Request::UpdateVm { spec: spec_of(ID, VmFirmware::Uefi, without), remove: vec![slot(1)] };
     assert_eq!(host.run(change).await, Response::Done);
     let domain = fs::read_to_string(host.path(&format!("state/zendiloos-{ID}.defined"))).unwrap();
-    assert!(!domain.contains("-disk1'") && domain.contains("-disk2'"), "{domain}");
+    assert!(!domain.contains("-disk1'") && domain.contains("-disk2'"), "the domain names disk 2, not disk 1");
     assert!(host.zvol(ID, 1).exists(), "the disk that did not go stays");
 }
 
