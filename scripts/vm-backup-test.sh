@@ -152,14 +152,16 @@ names() { vm "sudo ls -1A \"$1\" 2>/dev/null" || true; }
 # processes it sees ("processes N"); "unseen" if it never ran.
 reach_of() {
     vm "sudo python3 - '$1' ${2:-60}" <<'PY'
-import subprocess, sys, time
+import os, subprocess, sys, time
 unit, seconds = sys.argv[1], int(sys.argv[2])
-for _ in range(seconds * 10):
+for _ in range(seconds * 20):
     pid = subprocess.run(["systemctl", "show", "-p", "MainPID", "--value", unit],
                          capture_output=True, text=True).stdout.strip()
-    if pid and pid != "0":
+    # Once its main process is the agent: before, systemd still sets the
+    # unit up, in the host's namespaces.
+    if pid and pid != "0" and os.path.realpath("/proc/%s/exe" % pid).endswith("/zendiloos-agent"):
         break
-    time.sleep(0.1)
+    time.sleep(0.05)
 else:
     print("unseen")
     sys.exit(0)

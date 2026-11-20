@@ -151,18 +151,20 @@ volume_json() { call GET /docker/volumes | jq -c --arg v "$1" '.[] | select(.nam
 # "unseen" if it never ran.
 reach_of() {
     vm "sudo python3 - '$1' ${2:-60}" <<'PY'
-import subprocess, sys, time
+import os, subprocess, sys, time
 unit, seconds = sys.argv[1], int(sys.argv[2])
-for _ in range(seconds * 10):
+for _ in range(seconds * 20):
     # Its main process and the filter systemd applies, in one call: the
     # unit may end soon.
     shown = subprocess.run(["systemctl", "show", "-p", "MainPID", "-p", "SystemCallFilter", unit],
                            capture_output=True, text=True).stdout
     values = dict(line.split("=", 1) for line in shown.splitlines() if "=" in line)
     pid, allowed = values.get("MainPID", ""), values.get("SystemCallFilter", "")
-    if pid and pid != "0":
+    # Once its main process is the agent: before, systemd still sets the
+    # unit up, in the host's namespaces.
+    if pid and pid != "0" and os.path.realpath("/proc/%s/exe" % pid).endswith("/zendiloos-agent"):
         break
-    time.sleep(0.1)
+    time.sleep(0.05)
 else:
     print("unseen")
     sys.exit(0)
