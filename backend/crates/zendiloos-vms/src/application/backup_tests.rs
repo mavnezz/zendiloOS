@@ -375,6 +375,56 @@ async fn a_vm_does_not_start_while_its_backup_or_restore_runs() {
 }
 
 #[tokio::test]
+async fn a_restore_over_a_vm_canceled_late_is_recorded_as_the_host_has_it() {
+    let test = TestVms::new(FakeVmHost::ready());
+    let id = made(&test, settings("big")).await;
+    let job =
+        test.vms.back_up(&id, BackupTarget::Share { share_id: 1 }, "", &alice(), &context()).await.unwrap();
+    assert_eq!(finished(&test, &job).await.state, JobState::Succeeded);
+    let backup = test.vms.backups().await.unwrap()[0].backup.id;
+    let vm = test.vms.get(&id, &context()).await.unwrap().vm;
+    test.vms.update(&id, VmChange { cpus: 2, ..change_of(&vm) }, None, &alice(), &context()).await.unwrap();
+    let restore_late = |fail: Option<&str>| {
+        let hold = std::sync::Arc::new(tokio::sync::Notify::new());
+        *test.host.hold_work.lock().unwrap() = Some(hold.clone());
+        *test.host.fail_restore.lock().unwrap() = fail.map(str::to_owned);
+        hold
+    };
+    let ends = |test: &TestVms| test.host.calls().iter().filter(|call| call.starts_with("end_work")).count();
+
+    // Canceled while the host's unit stops: the host undoes it, the record stays.
+    let hold = restore_late(Some("the unit was stopped"));
+    let over = || RestoreAs::Over { confirm: "big".into() };
+    let (_, job) = test.vms.restore(backup, over(), &alice(), &context()).await.unwrap();
+    while !test.host.calls().iter().any(|call| call.starts_with("restore")) {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    test.vms.cancel_work(&id, &alice(), &context()).await.unwrap();
+    while ends(&test) < 1 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    hold.notify_one();
+    let ended = finished(&test, &job).await;
+    assert_eq!(ended.error.as_ref().map(|error| error.code.as_str()), Some("canceled"));
+    assert_eq!(test.repository.find(&id).await.unwrap().unwrap().settings.cpus, 2);
+
+    // Canceled once the host had done it all: it holds, and is recorded.
+    let hold = restore_late(None);
+    let calls = test.host.calls().len();
+    let (_, job) = test.vms.restore(backup, over(), &alice(), &context()).await.unwrap();
+    while !test.host.calls()[calls..].iter().any(|call| call.starts_with("restore")) {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    test.vms.cancel_work(&id, &alice(), &context()).await.unwrap();
+    while ends(&test) < 2 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    hold.notify_one();
+    assert_eq!(finished(&test, &job).await.state, JobState::Succeeded);
+    assert_eq!(test.repository.find(&id).await.unwrap().unwrap().settings.cpus, 1, "as the host has it");
+}
+
+#[tokio::test]
 async fn the_hosts_devices_go_to_a_vm_as_its_rules_say() {
     let test = TestVms::new(FakeVmHost::ready());
     let keyboard = UsbDevice { vendor: 0x046d, product: 0xc31c };

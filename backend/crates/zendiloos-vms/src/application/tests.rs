@@ -290,6 +290,20 @@ async fn vms_cut_off_while_being_made_go_when_zendiloosd_starts_again() {
 }
 
 #[tokio::test]
+async fn saved_while_it_is_off_a_vm_is_defined_anew_even_unchanged() {
+    let test = TestVms::new(FakeVmHost::ready());
+    let id = made(&test, small("box")).await;
+    let vm = test.vms.get(&id, &context()).await.unwrap().vm;
+    test.vms.update(&id, change_of(&vm), None, &alice(), &context()).await.unwrap();
+    assert!(test.host.calls().contains(&format!("update {id} 1 []")), "{:?}", test.host.calls());
+    // Running, an unchanged save asks the host for nothing.
+    test.host.set_state(&id, PowerState::Running);
+    let before = test.host.calls().len();
+    test.vms.update(&id, change_of(&vm), None, &alice(), &context()).await.unwrap();
+    assert_eq!(test.host.calls().len(), before);
+}
+
+#[tokio::test]
 async fn vms_run_and_stop_and_say_so() {
     let test = TestVms::new(FakeVmHost::ready());
     let id = made(&test, small("box")).await;

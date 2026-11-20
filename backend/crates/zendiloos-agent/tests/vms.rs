@@ -105,7 +105,8 @@ fn host(installed: bool) -> Host {
              case \"$1\" in\n\
              domstate) if [ -f \"$state/$2\" ]; then cat \"$state/$2\"; else \
                        echo \"error: failed to get domain '$2'\" >&2; exit 1; fi ;;\n\
-             define) name=$(sed -n 's/.*<name>\\(.*\\)<\\/name>.*/\\1/p' \"$3\"); \
+             dumpxml) eval last=\\${{$#}}; cat \"$state/xml.$last\" ;;\n\
+             define) name=$(sed -n 's/.*<name>\\(.*\\)<\\/name>.*/\\1/p' \"$3\"); cp \"$3\" \"$state/xml.$name\"; \
                      uuid=$(sed -n 's/.*<uuid>\\(.*\\)<\\/uuid>.*/\\1/p' \"$3\"); \
                      if [ -f \"$state/$name\" ]; then [ \"$uuid\" = \"$(cat \"$state/uuid.$name\")\" ] || \
                        {{ echo \"error: operation failed: domain '$name' already exists with uuid $(cat \"$state/uuid.$name\")\" >&2; exit 1; }}; \
@@ -131,18 +132,20 @@ fn host(installed: bool) -> Host {
         "zfs",
         &format!(
             "state={state}\neval last=\\${{$#}}\nzv=\"$state/zvols/$(echo \"$last\" | tr / +)\"\n\
+             missing() {{ echo \"cannot open '$last': dataset does not exist\" >&2; exit 1; }}\n\
              case \"$*\" in\n\
              *'-s local -d 0'*) echo 1 ;;\n\
              'get -H -o value zendiloos:volume tank') echo 1 ;;\n\
              'get -H -o value zendiloos:volume cold') echo 2 ;;\n\
+             'list -H -o name tank'|'list -H -o name cold') exit 0 ;;\n\
              'list -H -o name -d 1 '*) echo \"$last\"; if [ -f \"$state/vms.$last\" ]; then echo \"$last/zendiloos.vms\"; fi ;;\n\
              'list -H -o name -t volume -r '*) for f in \"$state/zvols/${{last%%/*}}+\"*; do [ -e \"$f\" ] && basename \"$f\" | tr + /; done; true ;;\n\
-             'list -H -o name '*/zendiloos.vms) test -f \"$state/vms.${{last%%/*}}\" ;;\n\
-             'list -H -o name '*/zendiloos.vms/*) test -f \"$zv\" ;;\n\
+             'list -H -o name '*/zendiloos.vms) test -f \"$state/vms.${{last%%/*}}\" || missing ;;\n\
+             'list -H -o name '*/zendiloos.vms/*) test -f \"$zv\" || missing ;;\n\
              'list -H -p -r -t filesystem,volume '*) for d in \"$@\"; do case \"$d\" in */zendiloos.vms) \
                  printf '%s\\tfilesystem\\t4096\\t1024\\t1024\\t1000000\\t-\\n' \"$d\"; \
                  for f in \"$state/zvols/${{d%%/*}}+\"*; do [ -e \"$f\" ] && printf '%s\\tvolume\\t2048\\t2048\\t2048\\t1000000\\t%s\\n' \"$(basename \"$f\" | tr + /)\" \"$(cat \"$f\")\"; done ;; esac; done ;;\n\
-             'get -H -p -o value volsize '*) cat \"$zv\" ;;\n\
+             'get -H -p -o value volsize '*) if [ -f \"$zv\" ]; then cat \"$zv\"; else missing; fi ;;\n\
              'create -s -V '*) echo $(( ${{4%G}} * 1073741824 )) > \"$zv\" ;;\n\
              create*zendiloos.vms) touch \"$state/vms.${{last%%/*}}\" ;;\n\
              'set volsize='*) v=${{2#volsize=}}; echo $(( ${{v%G}} * 1073741824 )) > \"$zv\" ;;\n\

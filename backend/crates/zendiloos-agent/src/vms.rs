@@ -901,7 +901,8 @@ impl Vms {
         Ok(uuid)
     }
 
-    /// The zvol's size in bytes; none if there is no such zvol.
+    /// The zvol's size in bytes; none if there is no such zvol. That ZFS
+    /// could not be asked is no such answer (see [`Vms::exists`]).
     async fn volsize(&self, dataset: &str) -> Result<Option<u64>, OperationError> {
         let output = zendiloos_exec::run(
             &self.tools.zfs,
@@ -909,16 +910,75 @@ impl Vms {
             QUICK,
         )
         .await?;
-        if !output.status.success() {
-            return Ok(None);
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).trim().parse().ok());
         }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().parse().ok())
+        self.missing(dataset, &output.stderr).await.map(|()| None)
     }
 
+    /// Whether the dataset is there. Only ZFS's "dataset does not exist",
+    /// with the dataset's pool there, says it is not: a pool that is not
+    /// imported says the same of every dataset of it, and anything else is
+    /// no answer. A disk taken for gone that is not would be left out of an
+    /// undo, or made anew over itself.
     async fn exists(&self, dataset: &str) -> Result<bool, OperationError> {
         let output =
             zendiloos_exec::run(&self.tools.zfs, ["list", "-H", "-o", "name", dataset], QUICK).await?;
-        Ok(output.status.success())
+        if output.status.success() {
+            return Ok(true);
+        }
+        self.missing(dataset, &output.stderr).await.map(|()| false)
+    }
+
+    /// Fine if ZFS's `complaint` about `dataset` is that it does not exist
+    /// and its pool is imported; else what ZFS said.
+    async fn missing(&self, dataset: &str, complaint: &str) -> Result<(), OperationError> {
+        let said = || {
+            let complaint = complaint.trim().replace('\n', " ");
+            OperationError::Failed(format!("ZFS does not say whether {dataset} is there: {complaint}"))
+        };
+        let pool = dataset.split('/').next().unwrap_or(dataset);
+        if !complaint.contains("dataset does not exist") || pool == dataset {
+            return Err(said());
+        }
+        let imported =
+            zendiloos_exec::run(&self.tools.zfs, ["list", "-H", "-o", "name", pool], QUICK).await?;
+        if imported.status.success() { Ok(()) } else { Err(said()) }
+    }
+
+    /// The zvols of the VM's disks in `spec` that its domain, as libvirt
+    /// has it, does not use: left from a disk removed before whose zvol
+    /// did not go, or on another location than the disk now. A disk of
+    /// `spec` in such a slot is a new one, so they go first; one that does
+    /// not refuses the change, and a new disk is never an old one with its
+    /// data.
+    async fn clear_leftovers(&self, spec: &VmSpec) -> Result<(), OperationError> {
+        let domain = spec.id.domain();
+        let defined =
+            zendiloos_exec::run(&self.tools.virsh, virsh(&["dumpxml", "--inactive", &domain]), QUICK)
+                .await?
+                .success(&self.tools.virsh)?;
+        let defined = String::from_utf8_lossy(&defined.stdout).into_owned();
+        for disk in spec.disks() {
+            for zvol in self.zvols_in(&spec.id, disk.slot).await? {
+                let device = self.paths.zvols.join(&zvol);
+                if defined.contains(&format!("dev='{}'", device.display())) {
+                    continue;
+                }
+                tracing::warn!(
+                    vm = spec.id.as_str(),
+                    zvol,
+                    "vms: a zvol left from a disk removed before goes"
+                );
+                run(&self.tools.zfs, &["destroy", "-r", &zvol], SLOW).await.map_err(|error| {
+                    refused(format!(
+                        "disk {} would be {zvol}, left from a disk removed before, which does not go: {error}",
+                        disk.slot.get()
+                    ))
+                })?;
+            }
+        }
+        Ok(())
     }
 
     /// The images the drives hold are in the library, the bridges the cards
@@ -1063,6 +1123,7 @@ impl Vms {
             return Err(refused(format!("disk {} is both kept and removed", slot.get())));
         }
         self.check_devices(spec).await?;
+        self.clear_leftovers(spec).await?;
         let mut plan = Vec::new();
         for disk in spec.disks() {
             let zvol = Self::disk_zvol(spec, disk);
@@ -1389,9 +1450,10 @@ impl Vms {
         if vms_locations(&self.host).is_empty() {
             return Err(refused("the virtual machines' storage is not set up"));
         }
-        // A restore cut off is not undone any more: the VM goes.
-        self.forget_restore(id)?;
         self.remove_vm(id).await?;
+        // A restore cut off is not undone any more: the VM is gone. Should
+        // the removal fail, it still is, before the VM is next used.
+        self.forget_restore(id)?;
         Ok(Response::Done)
     }
 

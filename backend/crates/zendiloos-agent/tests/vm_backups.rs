@@ -90,23 +90,28 @@ fn script(root: &Path, name: &str, body: &str) -> PathBuf {
 /// zvols are files below `zvol/`; snapshots copies below `snaps/`, named
 /// with `+` for `/`, their properties beside them, the order they were
 /// taken in `snaps/order`; a snapshot's device shows below `zvol/` while
-/// its zvol has `snapdev=visible`.
+/// its zvol has `snapdev=visible`. `busy` lists zvols that do not go, and
+/// with `pool-gone` the pool tank is not imported.
 const ZFS: &str = r#"
 root={root}
 eval last=\${$#}
 flat() { echo "$1" | tr / +; }
+missing() { echo "cannot open '$last': dataset does not exist" >&2; exit 1; }
+# With pool-gone, tank is not imported: ZFS says its datasets do not exist.
+if [ -f "$root/pool-gone" ]; then case "$*" in *tank*) missing ;; esac; fi
 case "$*" in
+  'list -H -o name tank'|'list -H -o name cold') exit 0 ;;
   'list -H -o name tank/zendiloos.vms'|'list -H -o name cold/zendiloos.vms') exit 0 ;;
   'list -H -o name -t snapshot '*) test -f "$root/snaps/$(flat "$last")" ;;
   'list -H -o name -s createtxg -t snapshot -d 1 '*)
       grep "^$last@" "$root/snaps/order" 2>/dev/null; exit 0 ;;
-  'list -H -o name '*/zendiloos.vms/*) test -f "$root/zvol/$last" ;;
+  'list -H -o name '*/zendiloos.vms/*) test -f "$root/zvol/$last" || missing ;;
   'list -H -p -r -t snapshot '*)
       while read -r snap; do [ -f "$root/snaps/$(flat "$snap")" ] || continue
         printf '%s\t1793000000\t4096\t8192\t%s\t%s\t%s\n' "$snap" "$(cat "$root/snaps/$(flat "$snap").schedule" 2>/dev/null || echo -)" \
           "$(cat "$root/snaps/$(flat "$snap").note" 2>/dev/null || echo -)" "$(cat "$root/snaps/$(flat "$snap").consistency")"
       done < "$root/snaps/order" 2>/dev/null; exit 0 ;;
-  'get -H -p -o value volsize '*) [ -f "$root/zvol/$last" ] && stat -c %s "$root/zvol/$last" ;;
+  'get -H -p -o value volsize '*) if [ -f "$root/zvol/$last" ]; then stat -c %s "$root/zvol/$last"; else missing; fi ;;
   'create -s -V '*) mkdir -p "$(dirname "$root/zvol/$last")"
       # With slow-devices, the device shows a moment after the zvol is made, as udev makes it.
       if [ -f "$root/slow-devices" ]; then (sleep 1; truncate -s "${4%G}M" "$root/zvol/$last") </dev/null >/dev/null 2>&1 &
@@ -161,7 +166,14 @@ case "$1" in
   suspend) test ! -f "$state/suspend-fails" ;;
   resume) if [ -f "$state/resume-fails" ]; then rm "$state/resume-fails"; exit 1; fi ;;
   autostart) if [ -f "$state/autostart-fails" ]; then echo 'error: cannot change autostart' >&2; exit 1; fi
-      if [ "$2" = --disable ]; then rm -f "$state/autostart.$3"; else touch "$state/autostart.$2"; fi ;;
+      if [ "$2" = --disable ]; then rm -f "$state/autostart.$3"
+        # Turned off only after a restore marked itself: a power cut between the two starts it at boot.
+        for marker in {root}/domains/*.restoring; do if [ -e "$marker" ]; then touch "$state/disabled-after-marking"; fi; done
+      else touch "$state/autostart.$2"; fi ;;
+  dominfo) test -f "$state/$2" || { echo "error: failed to get domain '$2'" >&2; exit 1; }
+      echo "Name:           $2"; echo "State:          $(cat "$state/$2")"
+      if [ -f "$state/autostart.$2" ]; then echo 'Autostart:      enable'; else echo 'Autostart:      disable'; fi ;;
+  dumpxml) eval last=\${$#}; cat "$state/$last.defined" ;;
   domfsthaw|attach-device|detach-device) exit 0 ;;
   undefine) eval last=\${$#}; rm -f "$state/$last" "$state/autostart.$last" ;;
 esac
@@ -217,7 +229,14 @@ fn host() -> Host {
     script(&root, "zfs", &fill(ZFS));
     script(&root, "virsh", &fill(VIRSH));
     script(&root, "systemd-run", &fill(SYSTEMD_RUN));
-    script(&root, "systemctl", "[ \"$1\" = show ] && echo inactive; exit 0");
+    // With unit-stuck, a VM's unit stays active whatever stop says.
+    script(
+        &root,
+        "systemctl",
+        &fill(
+            "if [ \"$1\" = show ]; then if [ -f {root}/unit-stuck ]; then echo active; else echo inactive; fi; fi; exit 0",
+        ),
+    );
     script(&root, "udevadm", "");
     script(&root, "busctl", "exit 1");
     fs::write(root.join("libvirtd"), "").unwrap();
@@ -1256,4 +1275,142 @@ async fn a_backup_has_the_disks_the_vm_is_recorded_with() {
         panic!("no list")
     };
     assert!(zfs_list.is_empty(), "no snapshot for a backup refused: {zfs_list}");
+}
+
+/// A restore over the VM that writes everything and is cut off before it
+/// ends, as by a power cut; what disk 0 held before it.
+async fn cut_off_restore(host: &Host, spec: VmSpec) -> Vec<u8> {
+    let (folder, files) = a_backup(host).await;
+    let since = vec![4u8; 1 << 20];
+    fs::write(host.zvol(ID, 0), &since).unwrap();
+    fs::write(host.path("hold-unit-end"), "").unwrap();
+    let restore = host.run(restore_request(spec, &folder, &files, true, vec![]));
+    let written = async {
+        host.called("restore-vm").await;
+        for _ in 0..400 {
+            if holds(host, 0) != since {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    };
+    tokio::select! {
+        _ = restore => panic!("the restore ended"),
+        () = written => {}
+    }
+    fs::remove_file(host.path("hold-unit-end")).unwrap();
+    assert!(holds(host, 0) != since, "half restored");
+    since
+}
+
+/// What undoes a restore of the VM, while it is not undone.
+fn restore_marker(host: &Host) -> PathBuf {
+    host.path(&format!("domains/zendiloos-{ID}.restoring"))
+}
+
+#[tokio::test]
+async fn a_disk_added_where_a_removed_one_was_left_is_a_new_one() {
+    let host = host();
+    fs::write(
+        host.path("units/volume2-\\x40vms.mount"),
+        "[Mount]\nWhat=cold/zendiloos.vms\nWhere=/volume2/@vms\n",
+    )
+    .unwrap();
+    defined(&host).await;
+    let old = holds(&host, 1);
+    // Disk 1 does not go as it is removed: the change holds, its zvol stays.
+    fs::write(host.path("busy"), format!("tank/zendiloos.vms/{ID}-disk1\n")).unwrap();
+    let without = VmDevices { disks: vec![disk(0, 1)], ..devices() };
+    let change = Request::UpdateVm { spec: spec_of(ID, VmFirmware::Uefi, without), remove: vec![slot(1)] };
+    assert_eq!(host.run(change).await, Response::Done);
+    assert!(host.zvol(ID, 1).exists());
+    // A disk added in its slot is a new one, never the old one with its data.
+    let with = VmDevices { disks: vec![disk(0, 1), disk(1, 2)], ..devices() };
+    let change = Request::UpdateVm { spec: spec_of(ID, VmFirmware::Uefi, with.clone()), remove: vec![] };
+    refused(&host.run(change.clone()).await, "left from a disk removed");
+    assert!(holds(&host, 1) == old, "nothing taken over");
+    let domain = fs::read_to_string(host.path(&format!("state/zendiloos-{ID}.defined"))).unwrap();
+    assert!(!domain.contains("-disk1'"), "the domain still has no disk 1");
+    fs::remove_file(host.path("busy")).unwrap();
+    assert_eq!(host.run(change).await, Response::Done);
+    assert!(holds(&host, 1).iter().all(|b| *b == 0), "a new, empty disk");
+    // Left on one pool, added on another: a new disk there.
+    fs::write(host.path("busy"), format!("tank/zendiloos.vms/{ID}-disk1\n")).unwrap();
+    let without = VmDevices { disks: vec![disk(0, 1)], ..devices() };
+    let change = Request::UpdateVm { spec: spec_of(ID, VmFirmware::Uefi, without), remove: vec![slot(1)] };
+    assert_eq!(host.run(change).await, Response::Done);
+    fs::remove_file(host.path("busy")).unwrap();
+    let cold = VmStorage { pool: PoolName::parse("cold").unwrap(), volume: VolumeNumber::new(2).unwrap() };
+    let elsewhere =
+        VmDevices { disks: vec![disk(0, 1), VmDisk { location: cold, ..disk(1, 2) }], ..devices() };
+    let change = Request::UpdateVm { spec: spec_of(ID, VmFirmware::Uefi, elsewhere), remove: vec![] };
+    assert_eq!(host.run(change).await, Response::Done);
+    assert!(!host.zvol(ID, 1).exists(), "the one left went");
+    assert!(host.path(&format!("zvol/cold/zendiloos.vms/{ID}-disk1")).exists());
+}
+
+#[tokio::test]
+async fn a_restore_cut_off_is_not_undone_while_its_pool_is_away_and_is_once_it_is_back() {
+    let host = host();
+    defined(&host).await;
+    let since = cut_off_restore(&host, spec_of(ID, VmFirmware::Uefi, devices())).await;
+    fs::write(host.path("pool-gone"), "").unwrap();
+    let again = host.restarted();
+    again.recover().await;
+    assert!(restore_marker(&host).exists(), "kept while its disks cannot be seen");
+    let start = again.execute(&Request::ControlVm { id: vm(), action: VmAction::Start }).await;
+    assert!(matches!(start, Response::Error { .. }), "{start:?}");
+    assert!(holds(&host, 0) != since, "nothing was rolled back");
+    fs::remove_file(host.path("pool-gone")).unwrap();
+    assert_eq!(
+        again.execute(&Request::ControlVm { id: vm(), action: VmAction::Start }).await,
+        Response::Done
+    );
+    assert!(holds(&host, 0) == since, "undone once the pool is back, before the start");
+    assert!(!restore_marker(&host).exists());
+}
+
+#[tokio::test]
+async fn a_restore_cut_off_is_undone_only_once_its_unit_stopped_and_its_vm_is_off() {
+    let host = host();
+    defined(&host).await;
+    let since = cut_off_restore(&host, spec_of(ID, VmFirmware::Uefi, devices())).await;
+    // Its unit does not stop: nothing is undone under what it writes.
+    fs::write(host.path("unit-stuck"), "").unwrap();
+    host.restarted().recover().await;
+    assert!(restore_marker(&host).exists() && holds(&host, 0) != since, "not undone under its unit");
+    fs::remove_file(host.path("unit-stuck")).unwrap();
+    // Started meanwhile: nothing is rolled back under the running guest.
+    host.set_state(ID, "running");
+    host.restarted().recover().await;
+    assert!(restore_marker(&host).exists() && holds(&host, 0) != since, "not undone while it runs");
+    host.set_state(ID, "shut off");
+    host.restarted().recover().await;
+    assert!(!restore_marker(&host).exists() && holds(&host, 0) == since);
+}
+
+#[tokio::test]
+async fn a_restore_turns_autostart_off_before_it_marks_itself_and_gives_back_libvirts() {
+    let host = host();
+    // libvirt starts it with the machine, its record says it does not.
+    defined_with(&host, devices(), true).await;
+    cut_off_restore(&host, spec_of(ID, VmFirmware::Uefi, devices())).await;
+    assert!(!host.autostarts(ID));
+    assert!(!host.path("state/disabled-after-marking").exists(), "off before the restore marked itself");
+    host.restarted().recover().await;
+    assert!(host.autostarts(ID), "as libvirt had it before");
+}
+
+#[tokio::test]
+async fn a_delete_that_fails_keeps_what_undoes_a_restore_cut_off() {
+    let host = host();
+    defined(&host).await;
+    cut_off_restore(&host, spec_of(ID, VmFirmware::Uefi, devices())).await;
+    fs::write(host.path("busy"), format!("tank/zendiloos.vms/{ID}-disk1\n")).unwrap();
+    let deleted = host.run(Request::DeleteVm { id: vm() }).await;
+    assert!(matches!(deleted, Response::Error { .. }), "{deleted:?}");
+    assert!(restore_marker(&host).exists(), "kept while the VM is there");
+    fs::remove_file(host.path("busy")).unwrap();
+    assert_eq!(host.run(Request::DeleteVm { id: vm() }).await, Response::Done);
+    assert!(!restore_marker(&host).exists());
 }

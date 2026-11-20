@@ -32,7 +32,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use zendiloos_agent_proto::{
     BackupRoot, BackupStem, Response, SharePath, SnapshotLabel, SnapshotNote, VmBackupFile, VmBackupPart,
-    VmBackupSettings, VmDiskSlot, VmId, VmSpec,
+    VmBackupSettings, VmDisk, VmDiskSlot, VmId, VmSpec,
 };
 use zendiloos_exec::{ExecError, Limits, Surroundings};
 
@@ -219,6 +219,16 @@ impl Vms {
     /// undone yet; refused while that fails.
     async fn undo_cut_off(&self, id: &VmId) -> Result<(), OperationError> {
         let Some(marker) = self.read_restore_marker(id) else { return Ok(()) };
+        // Not under a unit that still writes (one that did not stop).
+        let running = self.running_units(id).await?;
+        if !running.is_empty() {
+            return Err(OperationError::Busy(format!(
+                "a restore of the virtual machine {} was cut off, and its unit still runs ({}): it is undone \
+                 once that ended",
+                id.as_str(),
+                running.join(", ")
+            )));
+        }
         tracing::warn!(vm = id.as_str(), "vms: a restore that was cut off is undone");
         self.undo_restore(id, &marker).await.map_err(|error| {
             refused(format!(
@@ -272,6 +282,15 @@ impl Vms {
     /// unless the unit finished writing them. Once all of it is done, the
     /// marker goes; until then the VM is refused.
     async fn undo_restore(&self, id: &VmId, marker: &RestoreMarker) -> Result<(), OperationError> {
+        // Nothing is rolled back under a guest that runs (started by hand,
+        // or by libvirt at a boot before the marker was written).
+        if let Some(state) = self.domain_state(id).await?
+            && state != "shut off"
+        {
+            return Err(refused(format!(
+                "the virtual machine is {state}: what the restore did is undone once it is shut off"
+            )));
+        }
         if !marker.over {
             self.remove_vm(id).await?;
             return self.forget_restore(id);
@@ -392,11 +411,8 @@ impl Vms {
         }
         let _serial = self.serial.lock().await;
         for id in cut_off {
-            let Some(marker) = self.read_restore_marker(&id) else { continue };
-            match self.undo_restore(&id, &marker).await {
-                Ok(()) => {
-                    tracing::warn!(vm = id.as_str(), over = marker.over, "vms: a restore cut off is undone")
-                }
+            match self.undo_cut_off(&id).await {
+                Ok(()) => tracing::warn!(vm = id.as_str(), "vms: a restore cut off is undone"),
                 Err(error) => tracing::error!(
                     %error,
                     vm = id.as_str(),
@@ -602,8 +618,8 @@ impl Vms {
             let device = self.paths.zvols.join(zvol);
             if domain.contains(&format!("<source dev='{}'/>", device.display())) {
                 return Err(refused(format!(
-                    "the virtual machine's domain uses {zvol}, of which zendiloOS has no disk: save its \
-                     settings once, which defines it anew"
+                    "the virtual machine's domain uses {zvol}, of which zendiloOS has no disk: shut it down and \
+                     save its settings, which defines its domain anew from them"
                 )));
             }
             tracing::warn!(
@@ -756,6 +772,17 @@ impl Vms {
         let restored: Result<serde_json::Value, OperationError> = self.run_unit(unit, &job).await;
         // Also once the client is gone: a step of the work, not a wait for it.
         let _serial = self.serial.lock().await;
+        // Gone meanwhile (canceled, the agent stopping): nobody records the
+        // restore, so the host goes back to what is recorded.
+        let restored = restored.and_then(|done| {
+            if crate::waiting::is_given_up() {
+                Err(OperationError::Failed(
+                    "the restore was canceled, or the agent stops: it is undone".into(),
+                ))
+            } else {
+                Ok(done)
+            }
+        });
         if let Err(error) = restored {
             self.give_up_restore(&spec.id, &marker).await;
             return Err(error);
@@ -782,54 +809,34 @@ impl Vms {
         crate::durable::replace(&self.restore_marker(id), &json)
     }
 
-    /// Before a restore over the VM writes: a snapshot of its disks to
-    /// return to, what undoes the restore written down, its autostart off,
-    /// its disks made or grown, the backup's domain defined. Undone should
-    /// any of it fail.
+    /// Before a restore over the VM writes: zvols in the backup's slots its
+    /// domain does not use destroyed (they are no disks of the VM's),
+    /// autostart turned off, a snapshot of its disks to return to, what
+    /// undoes the restore written down, its disks made or grown, the
+    /// backup's domain defined. Undone should any of it fail.
     async fn prepare_over(
         &self,
         spec: &VmSpec,
         label: &SnapshotLabel,
     ) -> Result<RestoreMarker, OperationError> {
         self.require_shut_off(&spec.id).await?;
-        let had = self.vm_zvols(&spec.id).await?;
-        if !had.is_empty() {
-            let note = SnapshotNote::parse("Before a restore").ok();
-            self.take_snapshot(&spec.id, label, &[], note.as_ref()).await?;
-        }
-        let mut plan = Vec::new();
-        for disk in spec.disks() {
-            let zvol = Self::disk_zvol(spec, disk);
-            let step = match self.volsize(&zvol).await? {
-                None => DiskPlan::Make,
-                Some(size) if size < disk.size.bytes() => DiskPlan::Grow,
-                Some(_) => DiskPlan::Keep,
-            };
-            plan.push((disk, zvol, step));
-        }
-        let marker = RestoreMarker {
-            over: true,
-            label: label.clone(),
-            kept: had.into_iter().map(|(_, zvol)| zvol).collect(),
-            made: plan
-                .iter()
-                .filter(|(_, _, step)| matches!(step, DiskPlan::Make))
-                .map(|(_, zvol, _)| zvol.clone())
-                .collect(),
-            autostart: spec.autostart,
-            reset_nvram: self.reset_marker(&spec.id).exists(),
-        };
-        if let Err(error) = self.write_restore_marker(&spec.id, &marker) {
-            if !marker.kept.is_empty() {
-                let _ = self.destroy_snapshots(&spec.id, label).await;
+        self.clear_leftovers(spec).await?;
+        // Off before anything else: should the machine go down from here on,
+        // libvirt starts no half-restored disks at boot. What it was is
+        // libvirt's to say, not the record's.
+        let autostart = self.autostarts(&spec.id).await?;
+        let domain = spec.id.domain();
+        run(&self.tools.virsh, &virsh(&["autostart", "--disable", &domain]), QUICK).await?;
+        let (marker, plan) = match self.mark_over(spec, label, autostart).await {
+            Ok(marked) => marked,
+            Err(error) => {
+                if autostart {
+                    let _ = run(&self.tools.virsh, &virsh(&["autostart", &domain]), QUICK).await;
+                }
+                return Err(error);
             }
-            let _ = self.forget_restore(&spec.id);
-            return Err(error);
-        }
+        };
         let prepared = async {
-            // libvirt starts no half-restored disks with the machine.
-            let domain = spec.id.domain();
-            run(&self.tools.virsh, &virsh(&["autostart", "--disable", &domain]), QUICK).await?;
             for (disk, zvol, step) in &plan {
                 match step {
                     DiskPlan::Keep => {}
@@ -849,6 +856,73 @@ impl Vms {
             return Err(error);
         }
         Ok(marker)
+    }
+
+    /// The snapshot of the VM's disks a restore over it returns to, what
+    /// becomes of each disk, and what undoes it written down; nothing left
+    /// of it should that fail.
+    async fn mark_over<'a>(
+        &self,
+        spec: &'a VmSpec,
+        label: &SnapshotLabel,
+        autostart: bool,
+    ) -> Result<(RestoreMarker, Vec<(&'a VmDisk, String, DiskPlan)>), OperationError> {
+        let had = self.vm_zvols(&spec.id).await?;
+        if !had.is_empty() {
+            let note = SnapshotNote::parse("Before a restore").ok();
+            self.take_snapshot(&spec.id, label, &[], note.as_ref()).await?;
+        }
+        let planned = async {
+            let mut plan = Vec::new();
+            for disk in spec.disks() {
+                let zvol = Self::disk_zvol(spec, disk);
+                let step = match self.volsize(&zvol).await? {
+                    None => DiskPlan::Make,
+                    Some(size) if size < disk.size.bytes() => DiskPlan::Grow,
+                    Some(_) => DiskPlan::Keep,
+                };
+                plan.push((disk, zvol, step));
+            }
+            let marker = RestoreMarker {
+                over: true,
+                label: label.clone(),
+                kept: had.iter().map(|(_, zvol)| zvol.clone()).collect(),
+                made: plan
+                    .iter()
+                    .filter(|(_, _, step)| matches!(step, DiskPlan::Make))
+                    .map(|(_, zvol, _)| zvol.clone())
+                    .collect(),
+                autostart,
+                reset_nvram: self.reset_marker(&spec.id).exists(),
+            };
+            self.write_restore_marker(&spec.id, &marker)?;
+            Ok((marker, plan))
+        }
+        .await;
+        if planned.is_err() {
+            if !had.is_empty() {
+                let _ = self.destroy_snapshots(&spec.id, label).await;
+            }
+            let _ = self.forget_restore(&spec.id);
+        }
+        planned
+    }
+
+    /// Whether libvirt starts the domain with the machine (`virsh dominfo`).
+    async fn autostarts(&self, id: &VmId) -> Result<bool, OperationError> {
+        let domain = id.domain();
+        let output = zendiloos_exec::run(&self.tools.virsh, virsh(&["dominfo", &domain]), QUICK)
+            .await?
+            .success(&self.tools.virsh)?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let said = text.lines().find_map(|line| line.strip_prefix("Autostart:")).map(str::trim);
+        match said {
+            Some("enable") => Ok(true),
+            Some("disable") => Ok(false),
+            _ => Err(OperationError::Failed(format!(
+                "libvirt does not say whether {domain} starts with the machine"
+            ))),
+        }
     }
 
     /// Before a restore as a new VM writes: what undoes it written down,

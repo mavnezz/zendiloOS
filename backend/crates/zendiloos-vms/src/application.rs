@@ -1048,12 +1048,19 @@ impl Vms {
         let (attach, detach) = settings.usb_changes(&vm.settings);
         let removed = settings.removed_disks(&vm.settings);
         let media = settings.changed_media(&vm.settings);
-        if hardware {
-            let states = self.ports.host.states(context).await?;
-            if states.get(&vm.id) != Some(&PowerState::ShutOff) {
-                return Err(VmsError::Running);
-            }
+        let state = match self.ports.host.states(context).await {
+            Ok(states) => states.get(&vm.id).copied(),
+            Err(error) if hardware => return Err(error.into()),
+            // Its name or autostart changes all the same.
+            Err(_) => None,
+        };
+        if hardware && state != Some(PowerState::ShutOff) {
+            return Err(VmsError::Running);
         }
+        // Saved while it is off, its domain is defined anew from its
+        // settings even if they did not change, so that it holds what they
+        // say (a domain that came apart from them is put right this way).
+        let redefine = hardware || state == Some(PowerState::ShutOff);
         if !removed.is_empty()
             && check_name(confirm.unwrap_or_default()).ok().as_deref() != Some(vm.settings.name.as_str())
         {
@@ -1061,7 +1068,7 @@ impl Vms {
         }
         let changed = Vm { settings, ..vm.clone() };
         let done = async {
-            if hardware {
+            if redefine {
                 self.ports.host.update(&changed, library.volume, &removed, context).await?;
             } else {
                 for drive in &media {

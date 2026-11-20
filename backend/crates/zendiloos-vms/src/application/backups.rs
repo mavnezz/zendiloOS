@@ -1,6 +1,7 @@
 //! Backups of a VM into a share or onto a removable drive, and restores as
 //! a new VM or over the VM a backup came from. Each runs as a job with its
-//! progress, can be canceled (the agent then stops its unit), and keeps
+//! progress, can be canceled (the agent then stops its unit; a restore
+//! whose unit was done holds, and is recorded), and keeps
 //! the VM from being changed, deleted or snapshotted on schedule
 //! meanwhile. A backup is recorded once written; it stays recorded when its
 //! VM goes, to be restored as a new one.
@@ -337,14 +338,27 @@ impl Vms {
                 };
                 let (steps, forwarded) = forward(&progress);
                 let host = &this.ports.host;
-                let ran = tokio::select! {
-                    ran = host.restore(&restored, library.volume, &backup, over, &remove, &label, &steps, &context_owned) => Some(ran),
-                    () = cancel.notified() => None,
+                // Canceled, the host stops the unit and undoes the restore;
+                // its answer is still waited for: once the unit was done it
+                // holds, and the record must say what the host has.
+                let (ran, stopped) = {
+                    let restoring = host.restore(&restored, library.volume, &backup, over, &remove, &label, &steps, &context_owned);
+                    tokio::pin!(restoring);
+                    tokio::select! {
+                        ran = restoring.as_mut() => (ran, false),
+                        () = cancel.notified() => {
+                            let (ran, ended) = tokio::join!(restoring.as_mut(), host.end_work(&restored.id, &context_owned));
+                            if let Err(error) = ended {
+                                tracing::warn!(%error, vm = restored.settings.name, "vms: the canceled restore's unit may still run");
+                            }
+                            (ran, true)
+                        }
+                    }
                 };
                 drop(steps);
                 let _ = forwarded.await;
                 let done: Result<(), JobError> = match ran {
-                    Some(Ok(())) => {
+                    Ok(()) => {
                         let recorded = if over {
                             this.ports.repository.update(&restored).await.map(|_| ())
                         } else {
@@ -352,13 +366,8 @@ impl Vms {
                         };
                         recorded.map_err(HostError::Port).map_err(job_error)
                     }
-                    Some(Err(error)) => Err(job_error(error)),
-                    None => {
-                        if let Err(error) = host.end_work(&restored.id, &context_owned).await {
-                            tracing::warn!(%error, vm = restored.settings.name, "vms: the canceled restore's unit may still run");
-                        }
-                        Err(canceled())
-                    }
+                    Err(_) if stopped => Err(canceled()),
+                    Err(error) => Err(job_error(error)),
                 };
                 if done.is_err() && !over {
                     this.undo(&restored, &context_owned).await;

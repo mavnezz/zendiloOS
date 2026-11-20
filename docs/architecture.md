@@ -2856,7 +2856,15 @@ one would. A disk removed is destroyed with its data, after the domain no
 longer names it, and only with the VM's name typed again; one that does
 not go then (busy, held) stays where it is, said in the agent's journal,
 and the change holds all the same, so zendiloosd records what the domain
-is. Once libvirt took a definition nothing after it fails the change
+is. Such a zvol is no disk of the VM's any more: a disk added later in its
+slot (on its location or another) is a new one, so the agent destroys a
+zvol of that slot the domain as libvirt has it does not use before it
+makes the disk, and refuses the change should it not go; a new disk is
+never an old one with its data. Whether a zvol is there only ZFS's
+"dataset does not exist", with its pool imported, says: a pool that is not
+imported says the same of all its datasets, and any other failure of
+`zfs` fails the change. Saved while the VM is shut off, its domain is
+defined anew from its settings even if they did not change. Once libvirt took a definition nothing after it fails the change
 (the file kept, the UEFI variables' marker, autostart only warn), so no
 disk the new definition names is destroyed under it. The edit dialog
 gives a disk or card added a slot the VM as saved did not have while
@@ -3219,8 +3227,10 @@ a sparse zvol mostly holds, cost almost nothing compressed. What it costs:
 each disk is read whole (holes read quickly), and there are no incremental
 backups. The disks backed up are those zendiloosd records for the VM (`disks` of
 `BackUpVm`): a backup is refused if one of them has no zvol, or if the
-domain uses a zvol of the VM's the record has not; a zvol the domain does
-not use (a disk whose removal failed) is left out. The agent makes the snapshots' devices show for the time of the
+domain uses a zvol of the VM's the record has not (saving the VM's
+settings while it is shut off defines its domain anew from them, which
+puts that right); a zvol the domain does not use (a disk whose removal
+failed) is left out. The agent makes the snapshots' devices show for the time of the
 backup (`snapdev=visible`, then inherited again) and runs the work in a
 transient unit of its own (this binary as `back-up-vm`,
 `zendiloos-vm-backup-<id>.service`), outside its sandbox: the system read
@@ -3245,10 +3255,12 @@ have, a disk the backup has not destroyed, its cards' MAC addresses as
 they were). Images no longer in the library leave their drives empty, a
 card on a network the machine no longer has goes through the NAS, and the
 host's USB and PCI devices are not given again. Before it writes, the
-agent writes down what undoes the restore (`zendiloos-<id>.restoring`
-beside the domain's XML, over an old VM with its definition from before)
-and turns the VM's autostart off, so libvirt never starts half-restored
-disks with the machine. It defines a new VM first; over an old one it
+agent turns the VM's autostart off (what it was it reads from libvirt,
+`virsh dominfo`), so libvirt never starts half-restored disks with the
+machine, and then writes down what undoes the restore
+(`zendiloos-<id>.restoring` beside the domain's XML, over an old VM with
+its definition from before); zvols in the backup's slots the old domain
+does not use are destroyed first, as on a change. It defines a new VM first; over an old one it
 snapshots its disks first, makes or grows them and defines the domain
 anew from the backup's settings, so what libvirt refuses writes nothing;
 it waits for the devices of the zvols it made. While the unit writes, the
@@ -3267,9 +3279,14 @@ new VM goes again with its disks (the agent removes it itself), and an
 old one's disks return to the snapshot from before, with its definition
 and autostart from before. A restore cut off by a restart of the agent or
 of the machine is undone in the same way as the agent starts again
-(before zendiloosd is answered), and one whose undoing fails then is
-tried again before the VM is started, changed, backed up or snapshotted,
-which are refused until it is; deleting the VM ends it. Once the unit
+(before zendiloosd is answered), but not while its unit still runs (one
+that did not stop), the VM runs, or ZFS cannot say whether its disks are
+there (its pool not imported yet); one not undone then is tried again
+before the VM is started, changed, backed up or snapshotted, which are
+refused until it is. Deleting the VM ends it, once the VM is gone. A
+restore whose client went while it waited to finish (zendiloosd
+restarting) is undone too. Canceled, zendiloosd still waits for the
+restore's answer: a restore whose unit was done holds, and is recorded. Once the unit
 wrote everything the restore holds: its autostart is set as its settings
 say, a disk that would go and does not stays (as on a change), and the
 snapshot from before goes. A backup is
