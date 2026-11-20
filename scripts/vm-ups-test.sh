@@ -208,8 +208,15 @@ for unit in nut-server nut-monitor; do
     [[ $(vm "systemctl is-active $unit" || true) != active ]] || fail "$unit runs without a UPS"
 done
 vm "sudo grep -q '^MODE=none' /etc/nut/nut.conf" || fail "nut.conf: $(vm 'sudo grep ^MODE /etc/nut/nut.conf')"
+since=$(vm 'date "+%Y-%m-%d %H:%M:%S"')
 [[ $(status_of POST /ups/scan) == 200 ]] || fail "looking for UPSs on USB: $(cat "$work/answer")"
 jq -e '.devices | type == "array"' "$work/answer" >/dev/null || fail "the scan answered: $(cat "$work/answer")"
+# The scanner in its sandbox ends as it does outside of one, as root.
+plain=$(vm 'sudo nut-scanner -U -q >/dev/null 2>&1; echo $?')
+scanned=$(vm "sudo journalctl -u zendiloos-agent --since '$since' --no-pager -o cat | grep 'nut-scanner looked for UPSs on USB'" || true)
+[[ -n $scanned ]] || fail "the scanner's unit did not run"
+[[ $scanned == *"status=exit status: $plain"* ]] || fail "the scanner in its sandbox: $scanned; outside: exit status $plain"
+printf "   ✓ %s\n" "the scanner ran in its sandbox and ended as outside of one (exit status $plain)"
 
 say "2. Settings the API refuses change nothing"
 low='"shutdown":{"kind":"low_battery"}'

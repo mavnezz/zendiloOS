@@ -155,8 +155,9 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 #   monitor are enabled, started and stopped by systemd, outside this
 #   sandbox, and it is NUT's monitor there, not the agent, that shuts the
 #   machine down. UPSs on USB are looked for (nut-scanner) in a transient
-#   unit: this sandbox has no USB devices; that unit has those alone, no
-#   capabilities, no IP network, and none of the control sockets;
+#   unit: this sandbox has no USB devices; that unit has those alone, an
+#   allow-list of the file system as the backup units have, no
+#   capabilities, no IP network and no connect();
 # The contents of volumes are the files agent's (zendiloos-files.service).
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_CHOWN CAP_DAC_READ_SEARCH

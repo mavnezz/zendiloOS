@@ -60,11 +60,16 @@ const ON_BATTERY: &str = "onbatt";
 const BEFORE: &str = ".before-zendiloos";
 /// The scanner's unit. It parses what any USB device plugged in says of
 /// itself, as root (a UPS that NUT's udev rules have not handed to NUT's
-/// group yet must be opened too), and needs nothing but `/sys`, udev's
-/// database and the USB devices: no capabilities, no IP network, no other
-/// devices, nothing written, none of the system's control sockets (root
-/// could ask PID 1 or Docker for anything over them).
-const SCANNER_SANDBOX: [&str; 26] = [
+/// group yet must be opened too), and needs nothing but the programs and
+/// their libraries, `/sys`, udev's data and the USB devices. Being root, it
+/// could read whatever root owns and talk to every root-owned socket, so
+/// its view of the system is an allow-list, as the backup units' is
+/// ([`crate::backup::top_of_system`]): every folder at the top but those
+/// [`crate::backup::KEPT`] is a read-only tmpfs, `/etc` and `/run` with
+/// them, and only the few files below are bound back. It connects to
+/// nothing (`connect()` refused), has no capabilities, no IP network, no
+/// devices but USB's, its own PID namespace, and writes nothing.
+const SCANNER_SANDBOX: &[&str] = &[
     "--property=CapabilityBoundingSet=",
     "--property=NoNewPrivileges=yes",
     "--property=ProtectSystem=strict",
@@ -87,12 +92,19 @@ const SCANNER_SANDBOX: [&str; 26] = [
     "--property=LockPersonality=yes",
     "--property=MemoryDenyWriteExecute=yes",
     "--property=SystemCallArchitectures=native",
+    // The allow-list first, then connect() taken out of it.
     "--property=SystemCallFilter=@system-service",
-    "--property=InaccessiblePaths=-/run/systemd/private -/run/dbus -/run/docker.sock -/run/docker \
-     -/run/containerd -/run/libvirt -/run/zendiloos -/var/lib/zendiloos -/etc/nut -/etc/shadow",
+    "--property=SystemCallFilter=~connect:EPERM",
+    "--property=ProtectProc=invisible",
+    "--property=PrivatePIDs=yes",
+    "--property=PrivateIPC=yes",
+    "--property=TemporaryFileSystem=/sys/firmware:ro /sys/kernel:ro /sys/class/dmi:ro /sys/devices/virtual/dmi:ro",
+    "--property=InaccessiblePaths=-/dev/shm -/dev/mqueue -/dev/hugepages",
+    // What of `/etc` and `/run` it reads: the dynamic linker's cache, the
+    // accounts, and udev's data on the devices, which libusb asks for.
+    "--property=BindReadOnlyPaths=-/etc/ld.so.cache -/etc/passwd -/etc/group -/etc/nsswitch.conf -/run/udev/data",
     "--property=MemoryMax=256M",
     "--property=RuntimeMaxSec=50",
-    "--property=PrivateIPC=yes",
 ];
 
 /// Where NUT's files are; other than the real places in tests.
@@ -102,11 +114,18 @@ pub struct UpsPaths {
     pub dir: PathBuf,
     /// The SNMP driver, which comes with `nut-snmp`.
     pub snmp_driver: PathBuf,
+    /// The top of the system, whose folders the scanner's unit does not
+    /// see: `/`.
+    pub root: PathBuf,
 }
 
 impl Default for UpsPaths {
     fn default() -> Self {
-        Self { dir: PathBuf::from("/etc/nut"), snmp_driver: PathBuf::from("/lib/nut/snmp-ups") }
+        Self {
+            dir: PathBuf::from("/etc/nut"),
+            snmp_driver: PathBuf::from("/lib/nut/snmp-ups"),
+            root: PathBuf::from("/"),
+        }
     }
 }
 
@@ -351,10 +370,19 @@ impl Ups {
             return Err(not_installed());
         }
         let scanner = self.scanner.path().to_string_lossy().into_owned();
-        let mut args = vec!["--wait", "--pipe", "--collect", "--quiet"];
-        args.extend(SCANNER_SANDBOX);
-        args.extend([scanner.as_str(), "-U", "-q"]);
+        let mut args: Vec<String> = ["--wait", "--pipe", "--collect", "--quiet"].map(str::to_owned).into();
+        args.extend(SCANNER_SANDBOX.iter().map(|property| (*property).to_owned()));
+        let (folders, files) = crate::backup::top_of_system(&self.paths.root, &[])?;
+        for folder in folders {
+            args.push(format!("--property=TemporaryFileSystem={}:ro", folder.display()));
+        }
+        if !files.is_empty() {
+            let files: Vec<String> = files.iter().map(|file| format!("-{}", file.display())).collect();
+            args.push(format!("--property=InaccessiblePaths={}", files.join(" ")));
+        }
+        args.extend([scanner, "-U".into(), "-q".into()]);
         let output = zendiloos_exec::run(&self.systemd_run, &args, LIMITS).await?;
+        tracing::info!(status = %output.status, "nut-scanner looked for UPSs on USB");
         // A unit systemd does not start is a failure; nothing found is an
         // answer, whatever the scanner exits with.
         if !output.status.success() && output.stderr.contains("Failed to start transient") {

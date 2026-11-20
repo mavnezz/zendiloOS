@@ -273,7 +273,10 @@ async fn creates_a_mirror_with_equal_partitions_and_a_mount_unit() {
         ]
     );
     let unit = fs::read_to_string(host.path("units/volume2.mount")).unwrap();
-    assert!(unit.contains("What=media\nWhere=/volume2\nType=zfs\nOptions=nosuid,nodev\n"), "{unit}");
+    assert!(
+        unit.contains("What=media\nWhere=/volume2\nType=zfs\nOptions=nosuid,nodev\n"),
+        "the volume's unit"
+    );
     assert!(unit.contains("After=zfs-import.target"), "{unit}");
 }
 
@@ -505,7 +508,7 @@ async fn shares_are_datasets_with_their_own_mount_unit() {
     let unit = fs::read_to_string(host.path("units/volume1-my\\x2dphotos.mount")).unwrap();
     assert!(
         unit.contains("What=tank/my-photos\nWhere=/volume1/my-photos\nType=zfs\nOptions=nosuid,nodev\n"),
-        "{unit}"
+        "the share's unit"
     );
 
     assert_refused(host.run(create("other", "foreign")).await, ErrorCode::Forbidden, "not managed");

@@ -4005,11 +4005,15 @@ back, and the driver, which is not root, could not open it.
   optionally the vendor id, product id and serial number that name one
   UPS among several. *Detect* runs `nut-scanner -U` (in a transient unit:
   the agent's own sandbox has no USB devices; as root, since a UPS NUT's
-  udev rules have not handed to its group yet must be opened too, but
-  without capabilities, IP network or devices other than USB's, writing
-  nothing and reaching none of the system's control sockets, as it parses
-  what any device plugged in says of itself; a unit that does not start is
-  a failure, not "none found") and offers what it found; a single UPS
+  udev rules have not handed to its group yet must be opened too; as it
+  parses what any device plugged in says of itself, its view of the system
+  is an allow-list as the backup units' is: every folder at the top but the
+  programs', the kernel's file systems, `/dev` and `/tmp` a read-only
+  tmpfs, `/etc` and `/run` with them, of which only the dynamic linker's
+  cache, the account files and udev's data are bound back; no
+  capabilities, no IP network, `connect()` refused, no devices but USB's,
+  a PID namespace of its own; a unit that does not start is a failure, not
+  "none found") and offers what it found; a single UPS
   found is taken.
 - *On the network, over SNMP* (`snmp-ups`): the address of the UPS's
   network card, a community, v1 or v2c.

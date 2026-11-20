@@ -60,7 +60,13 @@ impl Host {
         if snmp {
             fs::write(&snmp_driver, "").unwrap();
         }
-        let paths = Paths { ups: UpsPaths { dir: nut, snmp_driver }, ..Paths::default() };
+        // The top of the system, as the scanner's unit is to see it.
+        let system = root.join("system");
+        for folder in ["etc", "var", "run", "srv", "volume1", "usr", "lib", "proc", "sys", "dev", "tmp"] {
+            fs::create_dir_all(system.join(folder)).unwrap();
+        }
+        fs::write(system.join("swapfile"), "").unwrap();
+        let paths = Paths { ups: UpsPaths { dir: nut, snmp_driver, root: system }, ..Paths::default() };
         let agent =
             Operations::with_paths(Role::System, &tools, Erasable::Policy(ErasePolicy::Unused), paths)
                 .unwrap();
@@ -158,7 +164,10 @@ async fn a_usb_ups_gets_its_files_driver_server_and_monitor() {
     // `actions = FSD`, and set or run anything only with `actions` and
     // `instcmds`.
     let followers = users.split("[monuser]").nth(1).unwrap();
-    assert_eq!(followers, "\n    password = for-others\n    upsmon secondary\n", "{users}");
+    assert_eq!(
+        followers, "\n    password = for-others\n    upsmon secondary\n",
+        "the followers' account only follows"
+    );
     let monitor = host.file("upsmon.conf").unwrap();
     assert!(monitor.contains("MONITOR ups@localhost 1 upsmon_local local-pw primary\n"));
     assert!(monitor.contains("POWERDOWNFLAG /etc/killpower\n"));
@@ -351,8 +360,10 @@ async fn what_is_missing_or_does_not_fit_writes_nothing() {
     assert!(with_snmp.file("ups.conf").unwrap().contains("driver = snmp-ups\n    port = 10.0.0.9\n"));
 }
 
-/// The scanner parses what USB devices say of themselves, as root: in a
-/// unit of its own that reaches nothing else.
+/// The scanner parses what any USB device plugged in says of itself, as
+/// root: in a unit of its own that sees, of the system, the programs, the
+/// kernel's file systems, the USB devices and udev's data, and nothing it
+/// could read, write or talk to besides.
 #[tokio::test]
 async fn the_scanner_runs_in_a_sandbox_of_its_own_and_its_devices_come_back() {
     let host = Host::new(true, false);
@@ -362,25 +373,38 @@ async fn the_scanner_runs_in_a_sandbox_of_its_own_and_its_devices_come_back() {
     assert_eq!(devices[0].driver, "usbhid-ups");
     assert_eq!(devices[0].product.as_deref(), Some("Ellipse ECO"));
     let scanner = host.root.join("nut-scanner").display().to_string();
+    let system = host.root.join("system").display().to_string();
     let calls = host.calls();
-    let [call] = calls.as_slice() else { panic!("{calls:?}") };
-    assert!(call.starts_with("systemd-run --wait --pipe --collect --quiet "), "{call}");
-    assert!(call.ends_with(&format!(" {scanner} -U -q")), "{call}");
-    for property in [
+    assert_eq!(calls.len(), 1, "one unit");
+    let call = &calls[0];
+    assert!(call.starts_with("systemd-run --wait --pipe --collect --quiet "), "the unit waited for");
+    assert!(call.ends_with(&format!(" {scanner} -U -q")), "the scanner run");
+    let mut wanted: Vec<String> = [
         "--property=CapabilityBoundingSet= ",
         "--property=NoNewPrivileges=yes ",
         "--property=ProtectSystem=strict ",
         "--property=ProtectHome=yes ",
         "--property=PrivateTmp=yes ",
+        "--property=PrivatePIDs=yes ",
         "--property=DevicePolicy=closed ",
         "--property=DeviceAllow=char-usb_device rw ",
         "--property=RestrictAddressFamilies=AF_UNIX AF_NETLINK ",
         "--property=IPAddressDeny=any ",
-        "--property=SystemCallFilter=@system-service ",
-        "--property=InaccessiblePaths=-/run/systemd/private -/run/dbus -/run/docker.sock ",
+        "--property=SystemCallFilter=@system-service --property=SystemCallFilter=~connect:EPERM ",
+        "--property=BindReadOnlyPaths=-/etc/ld.so.cache -/etc/passwd -/etc/group -/etc/nsswitch.conf -/run/udev/data ",
         "--property=RuntimeMaxSec=50 ",
-    ] {
-        assert!(call.contains(property), "{property:?} missing: {call}");
+    ]
+    .map(str::to_owned)
+    .into();
+    for hidden in ["etc", "run", "srv", "var", "volume1"] {
+        wanted.push(format!("--property=TemporaryFileSystem={system}/{hidden}:ro "));
+    }
+    wanted.push(format!("--property=InaccessiblePaths=-{system}/swapfile "));
+    for property in &wanted {
+        assert!(call.contains(property.as_str()), "{property:?} missing");
+    }
+    for kept in ["usr", "lib", "proc", "sys", "dev", "tmp"] {
+        assert!(!call.contains(&format!("={system}/{kept}:ro")), "{kept} is the unit's");
     }
 
     let bare = Host::new(false, false);
