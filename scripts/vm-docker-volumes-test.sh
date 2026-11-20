@@ -46,7 +46,8 @@
 #      three names each): counted whole while the agent holds few
 #      descriptors, backed up with the later names as links (its unit,
 #      looked into from its mount namespace, connects to no control socket
-#      of the machine and sees only its own few processes), and restored
+#      of the machine, may not connect() at all, and sees only its own few
+#      processes), and restored
 #      with every folder and link
 #  15. hard links whose names a container keeps replacing while the backup
 #      reads them: every link in the archive names a path it holds, so
@@ -161,6 +162,11 @@ for _ in range(seconds * 10):
 else:
     print("unseen")
     sys.exit(0)
+# The filter systemd applies: an allow-list, connect() not in it.
+allowed = subprocess.run(["systemctl", "show", "-p", "SystemCallFilter", "--value", unit],
+                         capture_output=True, text=True).stdout.strip()
+if not allowed or allowed.startswith("~") or "connect" in allowed.split():
+    print("connects: its system calls are no allow-list without connect()")
 probe = """
 import os, socket
 for path in ["/run/systemd/private", "/run/dbus/system_bus_socket", "/run/docker.sock",

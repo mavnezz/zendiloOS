@@ -38,8 +38,12 @@
 #      to reaches a version. Looked at from inside a running unit (its mount
 #      namespace): it cannot connect to systemd's, D-Bus', Docker's,
 #      libvirt's or the agent's socket, sees none of /etc/shadow, /etc/zendiloos,
-#      /var/lib, the shares pinned for apps, and only its own few processes;
-#      the files agent connects to none of those sockets either
+#      /var/lib, the shares pinned for apps, /sys's serial numbers and
+#      firmware, and only its own few processes; the files agent connects to
+#      none of those sockets either, and its system calls are an allow-list
+#      without connect()
+#  10. a restore stopped while rsync writes a large file fails, and leaves no
+#      part of the file behind
 #
 # Google Drive and OneDrive themselves are not reached here: their
 # sign-in and rclone's backends are tested against fakes only.
@@ -171,7 +175,8 @@ for path in ["/run/systemd/private", "/run/dbus/system_bus_socket", "/run/docker
     except OSError:
         pass
 for path in ["/etc/shadow", "/etc/zendiloos", "/etc/ssh", "/var/lib/zendiloos", "/var/lib/ztest-swap-secret",
-             "/run/zendiloos-app-shares", "/run/credentials", "/var/lib/zendiloos-backup"]:
+             "/run/zendiloos-app-shares", "/run/credentials", "/var/lib/zendiloos-backup",
+             "/sys/class/dmi", "/sys/firmware"]:
     if os.path.exists(path):
         print("reaches " + path)
 print("processes %d" % sum(1 for name in os.listdir("/proc") if name.isdigit()))
@@ -657,5 +662,34 @@ reach=$(reach_of zendiloos-files.service 10)
 [[ $reach != unseen && $reach != "cannot look"* ]] || fail "the files agent was not looked into: $reach"
 grep '^connects' <<<"$reach" && fail "the files agent connects to what it must not: $reach"
 ok "the files agent connects to none of the machine's control sockets"
+
+# The filter systemd applies to it: the allow-list, connect() not in it.
+filter=$(vm "systemctl show -p SystemCallFilter --value zendiloos-files.service")
+[[ -n $filter && $filter != "~"* ]] || fail "the files agent's system calls are not an allow-list"
+grep -qw connect <<<"$filter" && fail "the files agent may connect()"
+ok "the files agent's system calls are an allow-list without connect()"
+
+say "10. A restore stopped while rsync writes a large file"
+vm "sudo sh -c 'mkdir -p \"$src/large\" && head -c 300M /dev/urandom > \"$src/large/large.raw\"'"
+large=$(make_task "$(jq -n --argjson s "$src_id" --argjson d "$dst_id" '{
+    name: "ztest large", source: {kind: "share", share_id: $s, path: "large"},
+    target: {kind: "share", share_id: $d, path: ""},
+    mode: {kind: "versioned", keep_last: 2, keep_days: null}, excludes: [], hidden: true}')")
+run_succeeds "$large"
+version=$(call GET "/backup/tasks/$large/versions" | jq -r '.versions[0]')
+restore=$(jq -n --argjson v "$version" --argjson d "$dst_id" '{version: $v, paths: [], existing: "replace",
+    to: {kind: "share", share_id: $d, path: "large-restored"}}')
+[[ $(status POST "/backup/tasks/$large/restore" "$restore") == 202 ]] || fail "restore: $(cat "$work/last")"
+cut=$(jq -r .id "$work/last")
+# Stopped as soon as rsync writes the file, from outside, as a person or a
+# shutdown would.
+unit=zendiloos-backup-restore-$large.service
+vm "for i in \$(seq 1 1200); do sudo ls -A '$dst/large-restored' 2>/dev/null | grep -q '^\.large\.raw\.' && exec sudo systemctl stop $unit; sleep 0.05; done; exit 1" \
+    || fail "the restore never wrote the file"
+state=$(job_end "$cut")
+[[ $state != succeeded* ]] || fail "a restore stopped midway succeeded"
+left=$(vm "sudo find '$dst/large-restored' -name '.large.raw.*'")
+[[ -z $left ]] || fail "the stopped restore left a part of the file behind"
+ok "a restore stopped while rsync wrote fails, and leaves no part of the file"
 
 say "All backup checks passed"
