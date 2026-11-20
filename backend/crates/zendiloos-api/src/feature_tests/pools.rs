@@ -147,6 +147,39 @@ async fn a_pool_named_as_the_configurations_is_adopted_under_another_name() {
     assert_eq!(h.storage.calls()[0], "import tank 66 3 adopt=true force=false as tank2");
 }
 
+/// A pool imported under the configuration's name, though another than its
+/// own: offered, and taken as the configuration's once confirmed.
+#[tokio::test]
+async fn another_pool_of_the_configurations_name_is_taken_as_its_own() {
+    let h = Harness::new();
+    h.storage.known.lock().unwrap().push(KnownPool {
+        name: "tank".into(),
+        volume: VolumeNumber::new(1).unwrap(),
+        shares: vec!["photos".into()],
+        guid: Some(1),
+    });
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let absent = h.send(empty(with_cookie(get("/api/v1/storage/pools/absent"), &admin))).await;
+    assert_eq!(
+        absent.body["not_the_configurations"],
+        json!([{
+            "pool": { "name": "tank", "volume": 1, "mount_point": "/volume1", "shares": ["photos"] },
+            "guid": "9846106214133009000",
+        }])
+    );
+    let claim = |body: Value| h.send(json(with_csrf(post("/api/v1/storage/pools/claim"), &admin), body));
+    let mistyped = claim(json!({ "name": "tank", "confirm": "tnak" })).await;
+    assert_problem(&mistyped, StatusCode::UNPROCESSABLE_ENTITY, "confirmation_mismatch");
+    let taken = claim(json!({ "name": "tank", "confirm": "tank" })).await;
+    assert_eq!(taken.status, StatusCode::NO_CONTENT, "{:?}", taken.body);
+    assert_eq!(h.storage.calls(), ["mount tank 1 photos"]);
+
+    let viewer = h.sign_in("bob", Role::ReadOnly).await;
+    let body = json!({ "name": "tank", "confirm": "tank" });
+    let refused = h.send(json(with_csrf(post("/api/v1/storage/pools/claim"), &viewer), body)).await;
+    assert_problem(&refused, StatusCode::FORBIDDEN, "forbidden");
+}
+
 #[tokio::test]
 async fn importing_is_for_administrators_only() {
     let h = Harness::new();

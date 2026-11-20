@@ -31,6 +31,7 @@ pub(super) fn routes() -> OpenApiRouter<ApiState> {
         .routes(routes!(destroy_pool))
         .routes(routes!(absent_pools))
         .routes(routes!(import_pool))
+        .routes(routes!(claim_pool))
         .routes(routes!(plan_replace))
         .routes(routes!(replace_disk))
         .routes(routes!(scrub_pool))
@@ -1337,6 +1338,17 @@ pub struct KnownFoundPool {
     pub found: FoundPool,
 }
 
+/// A pool imported under the name of one the configuration names, but not
+/// that one by its GUID (made or imported here before the configuration
+/// was restored): it gets no mounts until taken as the configuration's.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OtherPool {
+    /// The configuration's pool of that name.
+    pub pool: NamedPool,
+    /// The GUID of the pool imported, decimal.
+    pub guid: String,
+}
+
 /// The pools the configuration names that are not imported, and the others
 /// on the disks.
 #[derive(Debug, Serialize, ToSchema)]
@@ -1350,6 +1362,9 @@ pub struct AbsentPools {
     pub foreign: Vec<FoundPool>,
     /// The lowest volume number free to adopt one with.
     pub free_volume: Option<u16>,
+    /// Imported under the name of one the configuration names, but another
+    /// pool than the one it knows (`POST /storage/pools/claim`).
+    pub not_the_configurations: Vec<OtherPool>,
 }
 
 /// The pools the configuration names that are not imported (after a
@@ -1389,7 +1404,50 @@ async fn absent_pools(
             })
             .collect(),
         free_volume: absent.free_volume.map(storage::VolumeNumber::get),
+        not_the_configurations: absent
+            .not_the_configurations
+            .into_iter()
+            .map(|other| OtherPool { pool: other.known.into(), guid: other.guid })
+            .collect(),
     }))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ClaimPoolRequest {
+    pub name: String,
+    /// The pool's name, typed again.
+    pub confirm: String,
+}
+
+/// Takes a pool imported under the name of one the configuration names, but
+/// another pool than the one it knows by its GUID, as the configuration's:
+/// its GUID is kept anew, and its volume's mounts, with the configuration's
+/// shares, are made, as for a pool imported. Only one that is the volume the
+/// configuration names. Audited as `storage.claim_pool`. Needs
+/// `storage.manage`.
+#[utoipa::path(
+    post,
+    path = "/storage/pools/claim",
+    tag = "storage",
+    security(("session" = [])),
+    request_body = ClaimPoolRequest,
+    responses(
+        (status = NO_CONTENT, description = "Taken as the configuration's."),
+        (status = NOT_FOUND, body = Problem, description = "`not_found`: no such pool"),
+        (status = FORBIDDEN, body = Problem, description = "`forbidden`; `refused`: it is another volume"),
+        (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`confirmation_mismatch`"),
+    )
+)]
+async fn claim_pool(
+    auth: Auth,
+    State(state): State<ApiState>,
+    Client(client): Client,
+    ApiJson(request): ApiJson<ClaimPoolRequest>,
+) -> Result<StatusCode, ApiError> {
+    auth.require(Permission::StorageManage)?;
+    state.storage.imports.claim(&request.name, &request.confirm, &auth.0.actor(), &client).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Debug, Deserialize, ToSchema)]

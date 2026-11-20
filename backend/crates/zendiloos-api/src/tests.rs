@@ -2082,6 +2082,7 @@ fn openapi_documents_every_route() {
             "/api/v1/storage/overview",
             "/api/v1/storage/pools",
             "/api/v1/storage/pools/absent",
+            "/api/v1/storage/pools/claim",
             "/api/v1/storage/pools/import",
             "/api/v1/storage/pools/plan",
             "/api/v1/storage/pools/{name}/destroy",

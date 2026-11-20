@@ -252,6 +252,23 @@ pub fn message(notification: &Notification, host: &str, language: Language) -> M
                 param("names")
             ),
         ),
+        "pools_not_the_configurations" if german => (
+            "Pools sind nicht die der Konfiguration".to_owned(),
+            format!(
+                "Importiert sind Pools unter dem Namen, den die Konfiguration einem anderen Pool gibt ({}); \
+                 ihre Volumes werden nicht eingehängt. Unter Speicher → Pools lassen sie sich als die der \
+                 Konfiguration übernehmen.",
+                param("names")
+            ),
+        ),
+        "pools_not_the_configurations" => (
+            "Pools are not the configuration's".to_owned(),
+            format!(
+                "Pools are imported under the names the configuration gives other pools ({}); their volumes are \
+                 not mounted. Storage → Pools takes them as the configuration's.",
+                param("names")
+            ),
+        ),
         "network_drift" if german => (
             "Netzwerkdateien geändert".to_owned(),
             format!(
@@ -693,6 +710,12 @@ mod tests {
                 vec![("names", "tank"), ("count", "1")],
                 "Pools not imported",
                 "Pools nicht importiert",
+            ),
+            (
+                "pools_not_the_configurations",
+                vec![("names", "tank"), ("count", "1")],
+                "Pools are not the configuration's",
+                "Pools sind nicht die der Konfiguration",
             ),
         ];
         for (code, params, english, german) in cases {

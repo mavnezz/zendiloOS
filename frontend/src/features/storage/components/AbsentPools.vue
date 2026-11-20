@@ -3,29 +3,49 @@ import { DatabaseBackup, Import } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import type { FoundPool, NamedPool } from '@/shared/api/types'
+import type { FoundPool, NamedPool, OtherPool } from '@/shared/api/types'
+import { problemMessage } from '@/shared/i18n'
+import { Alert } from '@/shared/ui/alert'
 import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
+import { ConfirmDialog } from '@/shared/ui/confirm-dialog'
 
-import { useAbsentPools } from '../api'
+import { claimPool, useAbsentPools, useRefreshStorage } from '../api'
 import ImportPoolDialog from './ImportPoolDialog.vue'
 
 /**
  * The pools the configuration names that are not imported, as after a
  * restore on a machine installed afresh, and the other pools on the disks:
- * imported only when asked. For administrators (`storage.manage`) only.
+ * imported only when asked. A pool imported under a name the configuration
+ * names, but another pool than that one, is taken as the configuration's
+ * once confirmed. For administrators (`storage.manage`) only.
  */
 const { t } = useI18n()
 const { data: absent } = useAbsentPools(true)
+const refresh = useRefreshStorage()
 const importing = ref<{ found: FoundPool; known: NamedPool | null } | null>(null)
+const claiming = ref<OtherPool | null>(null)
+const claimError = ref<string | null>(null)
 
+const others = computed(() => absent.value?.not_the_configurations ?? [])
 const shown = computed(
   () =>
     !!absent.value &&
     (absent.value.known.length > 0 ||
       absent.value.missing.length > 0 ||
-      absent.value.foreign.length > 0),
+      absent.value.foreign.length > 0 ||
+      others.value.length > 0),
 )
+
+async function claim(other: OtherPool): Promise<void> {
+  claimError.value = null
+  try {
+    await claimPool(other.pool.name)
+    await refresh()
+  } catch (failure) {
+    claimError.value = problemMessage(failure)
+  }
+}
 </script>
 
 <template>
@@ -82,6 +102,32 @@ const shown = computed(
         </li>
       </ul>
     </template>
+    <template v-if="others.length">
+      <h4 class="text-xs font-semibold">{{ t('storage.imports.othersTitle') }}</h4>
+      <p class="text-xs text-muted-foreground">{{ t('storage.imports.othersIntro') }}</p>
+      <Alert v-if="claimError" variant="destructive">{{ claimError }}</Alert>
+      <ul class="grid gap-2">
+        <li
+          v-for="other in others"
+          :key="other.pool.name"
+          class="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/50 px-3 py-2"
+        >
+          <span class="font-mono text-sm font-semibold">{{ other.pool.name }}</span>
+          <span class="text-xs text-muted-foreground">
+            {{
+              t('storage.imports.volume', {
+                volume: other.pool.volume,
+                path: other.pool.mount_point,
+              })
+            }}
+          </span>
+          <span class="flex-1" />
+          <Button size="sm" variant="outline" @click="claiming = other">
+            {{ t('storage.imports.claim') }}
+          </Button>
+        </li>
+      </ul>
+    </template>
     <template v-if="absent.missing.length">
       <h4 class="text-xs font-semibold">{{ t('storage.imports.missingTitle') }}</h4>
       <ul class="grid gap-1 text-xs text-muted-foreground">
@@ -115,6 +161,16 @@ const shown = computed(
         </li>
       </ul>
     </template>
+    <ConfirmDialog
+      v-if="claiming"
+      :open="true"
+      :title="t('storage.imports.claimTitle', { name: claiming.pool.name })"
+      :description="t('storage.imports.claimDescription', { name: claiming.pool.name })"
+      :confirm-label="t('storage.imports.claim')"
+      :cancel-label="t('desktop.cancel')"
+      @confirm="claiming && claim(claiming)"
+      @update:open="(open) => !open && (claiming = null)"
+    />
     <ImportPoolDialog
       v-if="importing"
       :open="true"

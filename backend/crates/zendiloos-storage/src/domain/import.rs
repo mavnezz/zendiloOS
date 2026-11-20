@@ -48,6 +48,17 @@ pub struct KnownImportable {
     pub found: ImportablePool,
 }
 
+/// A pool imported under the name of one the configuration names, with
+/// another GUID than the one kept: made or imported here before that
+/// configuration was restored, say. It gets no mounts until an
+/// administrator takes it as the configuration's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OtherPool {
+    pub known: KnownPool,
+    /// The GUID of the pool imported, decimal.
+    pub guid: String,
+}
+
 /// The pools the configuration names that are not imported, and the
 /// others found on the disks.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -66,6 +77,9 @@ pub struct AbsentPools {
     /// of its own (`zpool import <id> <name>`). Under the configuration's,
     /// it would be taken for the configuration's pool.
     pub names_taken: Vec<String>,
+    /// Imported under the name of a pool the configuration names, but not
+    /// that pool by its GUID.
+    pub not_the_configurations: Vec<OtherPool>,
 }
 
 /// What of `known` is not among the pools `imported`, found among those
@@ -77,7 +91,10 @@ pub struct AbsentPools {
 pub fn absent_pools(known: &[KnownPool], imported: &[Pool], found: &[ImportablePool]) -> AbsentPools {
     let mut absent = AbsentPools::default();
     for pool in known {
-        if imported.iter().any(|imported| imported.name == pool.name) {
+        if let Some(other) = imported.iter().find(|imported| imported.name == pool.name) {
+            if let Some(Mismatch::Guid { found, .. }) = mismatch(pool, other) {
+                absent.not_the_configurations.push(OtherPool { known: pool.clone(), guid: found });
+            }
             continue;
         }
         let matching: Vec<&ImportablePool> = found

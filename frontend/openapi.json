@@ -13038,6 +13038,65 @@
         ]
       }
     },
+    "/api/v1/storage/pools/claim": {
+      "post": {
+        "tags": [
+          "storage"
+        ],
+        "summary": "Takes a pool imported under the name of one the configuration names, but\nanother pool than the one it knows by its GUID, as the configuration's:\nits GUID is kept anew, and its volume's mounts, with the configuration's\nshares, are made, as for a pool imported. Only one that is the volume the\nconfiguration names. Audited as `storage.claim_pool`. Needs\n`storage.manage`.",
+        "operationId": "claim_pool",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimPoolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Taken as the configuration's."
+          },
+          "403": {
+            "description": "`forbidden`; `refused`: it is another volume",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such pool",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`confirmation_mismatch`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/storage/pools/import": {
       "post": {
         "tags": [
@@ -16363,7 +16422,8 @@
         "required": [
           "known",
           "missing",
-          "foreign"
+          "foreign",
+          "not_the_configurations"
         ],
         "properties": {
           "foreign": {
@@ -16395,6 +16455,13 @@
               "$ref": "#/components/schemas/NamedPool"
             },
             "description": "On no disk here."
+          },
+          "not_the_configurations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OtherPool"
+            },
+            "description": "Imported under the name of one the configuration names, but another\npool than the one it knows (`POST /storage/pools/claim`)."
           }
         }
       },
@@ -19072,6 +19139,23 @@
           "rack",
           "plain"
         ]
+      },
+      "ClaimPoolRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "confirm"
+        ],
+        "properties": {
+          "confirm": {
+            "type": "string",
+            "description": "The pool's name, typed again."
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
       },
       "ComposeChange": {
         "type": "object",
@@ -24962,6 +25046,24 @@
           "vertical",
           "horizontal"
         ]
+      },
+      "OtherPool": {
+        "type": "object",
+        "description": "A pool imported under the name of one the configuration names, but not\nthat one by its GUID (made or imported here before the configuration\nwas restored): it gets no mounts until taken as the configuration's.",
+        "required": [
+          "pool",
+          "guid"
+        ],
+        "properties": {
+          "guid": {
+            "type": "string",
+            "description": "The GUID of the pool imported, decimal."
+          },
+          "pool": {
+            "$ref": "#/components/schemas/NamedPool",
+            "description": "The configuration's pool of that name."
+          }
+        }
       },
       "PackageUpdate": {
         "type": "object",

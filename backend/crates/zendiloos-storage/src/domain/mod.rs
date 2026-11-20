@@ -27,7 +27,8 @@ pub use enclosure::{
 };
 pub use events::{FILL_THRESHOLDS, StorageEvent, disk_event, pool_events};
 pub use import::{
-    AbsentPools, ImportablePool, KnownImportable, KnownPool, Mismatch, absent_pools, mismatch, used_volumes,
+    AbsentPools, ImportablePool, KnownImportable, KnownPool, Mismatch, OtherPool, absent_pools, mismatch,
+    used_volumes,
 };
 pub use inventory::{
     CalendarDate, InvalidInventory, InventoryDetails, InventoryRecord, MAX_NOTE_CHARS, MAX_VENDOR_CHARS,

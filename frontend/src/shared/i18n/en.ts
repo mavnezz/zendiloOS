@@ -1689,6 +1689,7 @@ const en = {
         updates_failed: 'Update failed',
         network_drift: 'Network files changed outside zendiloOS',
         pools_not_imported: 'Pools not imported',
+        pools_not_the_configurations: 'Pools that are not the configuration’s',
         configuration_backup_failed: 'Configuration backup failed',
         ups_on_battery: 'Power cut: the UPS runs on battery',
         ups_shutdown: 'Power cut: the NAS shuts down',
@@ -2208,6 +2209,13 @@ const en = {
       otherHost: 'Last used by another machine',
       cannotImport: 'Cannot be imported',
       import: 'Import',
+      othersTitle: 'Imported, but not the configuration’s pool',
+      othersIntro:
+        'A pool here has the name of one the configuration names, but it is another pool (made or imported here before the configuration was restored): its volume is not mounted.',
+      claim: 'Take as the configuration’s',
+      claimTitle: 'Take {name} as the configuration’s pool?',
+      claimDescription:
+        'The configuration then knows this pool as its {name}, and its volume is mounted with the configuration’s shares. Do this only if it holds what the configuration’s pool held.',
       missingTitle: 'On no disk here',
       missing: '{name} (volume {volume}): its disks are not in this machine.',
       foreignTitle: 'Other pools on the disks',
@@ -4108,6 +4116,10 @@ const en = {
     pools_not_imported: {
       title: 'Pools not imported',
       body: 'The configuration names pools that are not imported ({names}). Storage → Pools imports them.',
+    },
+    pools_not_the_configurations: {
+      title: 'Pools are not the configuration’s',
+      body: 'Pools are imported under the names the configuration gives other pools ({names}); their volumes are not mounted. Storage → Pools takes them as the configuration’s.',
     },
     network_drift: {
       title: 'Network files changed',

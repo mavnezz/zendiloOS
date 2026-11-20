@@ -127,7 +127,7 @@ impl Context {
         Ok(domain::plan_pool(name, layout, disks, &disks_now, &pools, &reserved)?)
     }
 
-    async fn audit(
+    pub(crate) async fn audit(
         &self,
         action: &'static str,
         outcome: Outcome,

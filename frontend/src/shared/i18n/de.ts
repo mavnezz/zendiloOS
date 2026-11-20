@@ -1729,6 +1729,7 @@ const de: Messages = {
         updates_failed: 'Update fehlgeschlagen',
         network_drift: 'Netzwerkdateien außerhalb von zendiloOS geändert',
         pools_not_imported: 'Pools nicht importiert',
+        pools_not_the_configurations: 'Pools, die nicht die der Konfiguration sind',
         configuration_backup_failed: 'Sicherung der Konfiguration fehlgeschlagen',
         ups_on_battery: 'Stromausfall: die USV läuft auf Akku',
         ups_shutdown: 'Stromausfall: das NAS fährt herunter',
@@ -2256,6 +2257,13 @@ const de: Messages = {
       otherHost: 'Zuletzt von einem anderen Gerät benutzt',
       cannotImport: 'Nicht importierbar',
       import: 'Importieren',
+      othersTitle: 'Importiert, aber nicht der Pool der Konfiguration',
+      othersIntro:
+        'Ein Pool hier trägt den Namen eines Pools der Konfiguration, ist aber ein anderer (hier angelegt oder importiert, bevor die Konfiguration wiederhergestellt wurde): Sein Volume wird nicht eingehängt.',
+      claim: 'Als den der Konfiguration übernehmen',
+      claimTitle: '{name} als Pool der Konfiguration übernehmen?',
+      claimDescription:
+        'Die Konfiguration kennt diesen Pool dann als ihren {name}, und sein Volume wird mit den Freigaben der Konfiguration eingehängt. Tun Sie das nur, wenn er enthält, was der Pool der Konfiguration enthielt.',
       missingTitle: 'Auf keiner Platte hier',
       missing: '{name} (Volume {volume}): Seine Platten sind nicht in diesem Gerät.',
       foreignTitle: 'Weitere Pools auf den Platten',
@@ -4187,6 +4195,10 @@ const de: Messages = {
     pools_not_imported: {
       title: 'Pools nicht importiert',
       body: 'Die Konfiguration nennt Pools, die nicht importiert sind ({names}). Unter Speicher → Pools lassen sie sich importieren.',
+    },
+    pools_not_the_configurations: {
+      title: 'Pools sind nicht die der Konfiguration',
+      body: 'Importiert sind Pools unter dem Namen, den die Konfiguration einem anderen Pool gibt ({names}); ihre Volumes werden nicht eingehängt. Unter Speicher → Pools lassen sie sich als die der Konfiguration übernehmen.',
     },
     network_drift: {
       title: 'Netzwerkdateien geändert',

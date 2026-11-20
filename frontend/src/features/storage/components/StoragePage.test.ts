@@ -521,6 +521,35 @@ describe('pools to import', () => {
     })
   })
 
+  it('takes a pool of the configuration’s name, but another, as its own once confirmed', async () => {
+    on('GET', '/api/v1/storage/pools/absent', {
+      known: [],
+      missing: [],
+      foreign: [],
+      free_volume: 2,
+      not_the_configurations: [
+        {
+          pool: { name: 'tank', volume: 1, mount_point: '/volume1', shares: ['photos'] },
+          guid: '9846106214133009000',
+        },
+      ],
+    })
+    on('POST', '/api/v1/storage/pools/claim', null)
+    await open('pools')
+    expect(page()).toContain(t('storage.imports.othersTitle'))
+    await click(new RegExp(t('storage.imports.claim')))
+    expect(page()).toContain(t('storage.imports.claimTitle', { name: 'tank' }))
+    const confirm = [
+      ...document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button'),
+    ].find((button) => button.textContent?.trim() === t('storage.imports.claim'))!
+    confirm.click()
+    await settle()
+    expect(called('POST', '/api/v1/storage/pools/claim')[0]?.body).toEqual({
+      name: 'tank',
+      confirm: 'tank',
+    })
+  })
+
   it('is not shown to those who may not manage storage', async () => {
     await open('pools', false)
     expect(page()).not.toContain(t('storage.imports.title'))
