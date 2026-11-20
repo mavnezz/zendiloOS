@@ -20,9 +20,10 @@ the [issues](https://github.com/mavnezz/zendiloOS/issues).
 
 CI runs `just check` on every push and pull request, runs the backend's
 tests once more on an arm64 machine, and builds the packages for amd64 and
-arm64 and, for a release, the ISOs. The VM tests and the installation from
-the ISO are run by hand before changes are merged; they are not part of CI
-yet.
+arm64 and, for a release, the ISOs. The VM tests run every night on GitHub
+([below](#every-night-on-github)), and by hand before changes are merged;
+the installation from the ISO has a workflow that is started by hand.
+Neither holds up a pull request or a release.
 
 ## The VM tests
 
@@ -67,6 +68,45 @@ checks and how to run it.
 | `vm-update-test` | updates of Debian and zendiloOS through the interface, signed releases, refusals, a newer kernel without its ZFS module never started |
 | `vm-upgrade-test` | a machine set up with an older package keeps its accounts, pools, shares and files when a newer one is installed |
 | `iso-test` | installing from the ISO, the rescue entry in its menus, the first setup, a pool, the network managed by systemd-networkd, a configuration backup restored |
+
+### Every night on GitHub
+
+The workflow *VM tests* (`.github/workflows/vm-tests.yml`) runs the VM
+tests every night on main, and by hand: Actions → VM tests → Run workflow,
+with one group or all. One job builds the commit's package, and once more
+with a newer version (`<version>.vmtest1`) that `vm-update-test` offers as
+an update. Then each group runs on a runner of its own (4 vCPUs, 16 GB,
+KVM with nested virtualization), in test VMs made afresh there:
+`scripts/vm-ci.sh <group>` creates and starts them, installs the package,
+sets zendiloOS up (`admin`, "correct horse battery") with the setup code,
+makes what the group's tests need and runs the tests in order, stopping at
+the first that fails. The run's summary has each step's time; a group that
+failed leaves each VM's console, the journals of `zendiloosd` and
+`zendiloos-agent` from inside it and each test's output as an artifact.
+Debian's cloud image is kept in the cache for a week.
+
+On a workstation `just vm-ci <group>` does the same, in VMs it makes
+itself (2, and 3 for a second one, or from `ZENDILOOS_VM` on: refused if
+they exist); `just vm-ci list` names the groups. They are destroyed once
+the group passed and keep running after a failure.
+
+| Group | Its VMs | Tests, in order | Time |
+|---|---|---|---|
+| storage | the pool tank on the NVMe disk | storage, pool-delete, enclosure, removable, notify | |
+| sharing | the pools apps (NVMe) and tank (a SATA disk), Docker on apps, NFS on | sharing, permissions, services, accounts, two-factor, backup | |
+| security | set up only | security, ssh, hostname, web-server, ups | |
+| docker | the pool apps (NVMe), Docker on it, Uptime Kuma from the App Center as a project | docker-install, docker, app-center, project-pins, docker-volumes, firewall | |
+| vms | the pools apps and tank; Debian's kernel instead of the cloud one, for a USB controller | network, vms, vm-backup | |
+| network | two spare cards | network-takeover, network-bridge | |
+| restore | a second VM, installed and never set up; the first with tank and a share | config-backup | |
+| pool-import | one VM (3), installed and never set up | pool-import | |
+| upgrade | nothing installed; 0.2.0's package from GitHub's releases | upgrade, update | |
+
+The times include making the VMs, about five minutes. Two tests fail
+sign-ins on purpose, `vm-security-test` and `vm-two-factor-test`; zendiloosd
+counts them per address, so they run in different groups. What CI's VMs
+cannot give is left out: PCI passthrough needs an IOMMU, which
+`vm-vm-backup-test` skips with a note, as it does by hand.
 
 ## arm64
 
