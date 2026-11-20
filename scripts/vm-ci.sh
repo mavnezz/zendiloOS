@@ -28,7 +28,8 @@
 #                          ZENDILOOS_VERSION=<version>.vmtest1 just deb builds
 #                          it); the newest dist/next/zendiloos_*_amd64.deb
 #   ZENDILOOS_CI_OLD_DEB   for vm-upgrade-test, an older one; by default the
-#                          latest release's from GitHub, fetched into dev/vm-ci/
+#                          release ZENDILOOS_CI_OLD_RELEASE's (v0.2.0) from
+#                          GitHub, fetched into dev/vm-ci/
 #
 # Each VM has 2 vCPUs and 2 GB, as scripts/vm.sh makes them; a group with a
 # second VM needs 4 GB and the disks of both (thin, a few GB each).
@@ -45,11 +46,14 @@ repository=mavnezz/zendiloOS
 # The groups, each run in VMs of its own, and their tests in the order they
 # run. The order matters where a test leaves the VM as the next one needs it
 # or would be disturbed by the one before (see each group's preparation).
+# vm-security-test and vm-two-factor-test fail sign-ins on purpose, which
+# zendiloosd counts per address (20 in 15 minutes) for both: they run in
+# different groups.
 groups=(storage sharing security docker vms network restore pool-import upgrade)
 declare -A tests=(
     [storage]="storage pool-delete enclosure removable notify"
-    [sharing]="sharing permissions services accounts backup"
-    [security]="security two-factor ssh hostname web-server ups"
+    [sharing]="sharing permissions services accounts two-factor backup"
+    [security]="security ssh hostname web-server ups"
     [docker]="docker-install docker app-center project-pins docker-volumes firewall"
     [vms]="network vms vm-backup"
     [network]="network-takeover network-bridge"
@@ -217,19 +221,49 @@ nfs_on() {
     say "VM $vm: NFS on"
 }
 
-# The latest release's package, for the upgrade test: through gh when it is
-# there (signed in, or GH_TOKEN in CI), else through GitHub's API.
+# Debian's own kernel in place of the cloud image's, which has no USB
+# drivers: with the USB controller ZENDILOOS_VM_USB=1 gives the VM,
+# vm-vm-backup-test hands a USB device to a VM of its own instead of
+# skipping that step. Its headers come along, so that DKMS builds ZFS for
+# it. The cloud kernel goes: of one version, dpkg orders it after
+# Debian's, and GRUB starts the newest kernel with ZFS. Then the VM starts
+# anew with it.
+usb_kernel() {
+    local vm=$1 kernel boot
+    on "$vm" 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq linux-image-amd64 linux-headers-amd64 >/dev/null'
+    kernel=$(on "$vm" "ls /lib/modules | grep -- '-amd64\$' | grep -v -- '-cloud-' | sort -V | tail -1")
+    [[ -n $kernel ]] || fail "no kernel of Debian's on VM $vm"
+    on "$vm" "ls /lib/modules/$kernel/updates/dkms/zfs.ko* >/dev/null" || fail "no ZFS for $kernel on VM $vm"
+    # It runs while it goes: Debian's package would ask whether to stop.
+    on "$vm" "echo 'linux-base linux-base/removing-running-kernel boolean false' | sudo debconf-set-selections
+        sudo DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq \$(dpkg-query -W -f '\${Package}\n' | grep -- '-cloud-amd64\$') >/dev/null"
+    boot=$(on "$vm" 'cat /proc/sys/kernel/random/boot_id')
+    on "$vm" 'sudo systemctl reboot' || true
+    wait_for "VM $vm to start anew" "[[ \$(on $vm 'cat /proc/sys/kernel/random/boot_id') != $boot ]]" 600
+    [[ $(on "$vm" 'uname -r') == "$kernel" ]] || fail "VM $vm started $(on "$vm" 'uname -r'), not $kernel"
+    on "$vm" 'test -e /sys/bus/usb/devices/usb1' || fail "VM $vm sees no USB controller"
+    wait_for "zendiloosd on VM $vm" "curl -sfk $(base "$vm")/api/v1/health" 180
+    sign_in "$vm" || fail "cannot sign in on VM $vm"
+    say "VM $vm: runs $kernel, with USB"
+}
+
+# A release's package for the upgrade test, through gh when it is there
+# (signed in, or GH_TOKEN in CI), else through GitHub's API. Not the latest
+# release: its database may have the same migrations as the commit, and
+# the test asks for the copy zendiloosd makes before migrating. v0.2.0 is
+# the last release before share-level permissions, whose migration the
+# test checks as well.
 old_package() {
-    local dir=$root/dev/vm-ci/old url
+    local release=${ZENDILOOS_CI_OLD_RELEASE:-v0.2.0} dir=$root/dev/vm-ci/old url
     if [[ -n ${ZENDILOOS_CI_OLD_DEB:-} ]]; then realpath "$ZENDILOOS_CI_OLD_DEB"; return; fi
     rm -rf "$dir" && mkdir -p "$dir"
-    if command -v gh >/dev/null && gh release download --repo "$repository" --pattern 'zendiloos_*_amd64.deb' \
-        --dir "$dir" >&2; then
+    if command -v gh >/dev/null && gh release download "$release" --repo "$repository" \
+        --pattern 'zendiloos_*_amd64.deb' --dir "$dir" >&2; then
         :
     else
-        url=$(curl -fsSL "https://api.github.com/repos/$repository/releases/latest" \
+        url=$(curl -fsSL "https://api.github.com/repos/$repository/releases/tags/$release" \
             | jq -er '.assets[] | select(.name | test("^zendiloos_.*_amd64\\.deb$")) | .browser_download_url') \
-            || fail "no package in the latest release"
+            || fail "no package in the release $release"
         curl -fsSL -o "$dir/${url##*/}" "$url"
     fi
     ls "$dir"/zendiloos_*_amd64.deb
@@ -240,7 +274,13 @@ old_package() {
 # every test unless run_test is told otherwise.
 prepare() {
     case $group in
-        storage | security)
+        storage)
+            # vm-removable-test copies into a share on a pool there is; the
+            # SATA disks stay free for the pools the other tests make.
+            new_vm "$main_vm" installed
+            set_up "$main_vm"
+            make_pool "$main_vm" tank NVME ;;
+        security)
             new_vm "$main_vm" installed
             set_up "$main_vm" ;;
         sharing)
@@ -264,10 +304,12 @@ prepare() {
         vms)
             # vm-vms-test puts the VMs' storage on apps and its second
             # location on tank.
+            export ZENDILOOS_VM_USB=1
             new_vm "$main_vm" installed
             set_up "$main_vm"
             make_pool "$main_vm" apps NVME
-            make_pool "$main_vm" tank SATA ;;
+            make_pool "$main_vm" tank SATA
+            usb_kernel "$main_vm" ;;
         network)
             # Throwaway, with the two spare cards vm-network-bridge-test
             # bonds; vm-network-takeover-test leaves it with ifupdown, which
