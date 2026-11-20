@@ -125,6 +125,7 @@ impl PoolImports {
         })?;
         let import = PoolImport { name: name.clone(), id: found.id, volume, adopt, force: found.other_host };
         let observer = Arc::clone(&self.observer);
+        let known = Arc::clone(&self.known);
         self.context
             .job(
                 "storage.import_pool",
@@ -134,6 +135,7 @@ impl PoolImports {
                 move |admin, steps, request| async move {
                     steps.step("importing_pool", None);
                     admin.import_pool(&import, steps.as_ref(), &request).await?;
+                    remember(known.as_ref(), name.as_str(), import.id).await;
                     steps.step("mounting", None);
                     let mounted = admin.mount_volume(&name, volume, &shares, &request).await?;
                     if !mounted.missing.is_empty() {
@@ -155,7 +157,9 @@ impl PoolImports {
     /// installed afresh, a unit removed by hand), and Samba and NFS told;
     /// the pools not imported told once as a notification, to be imported
     /// on the Storage page. A pool that says another volume number than the
-    /// configuration is left alone.
+    /// configuration, or is another pool of the name (its GUID not the one
+    /// kept), is left alone; the GUID of one the configuration kept none of
+    /// is kept.
     pub async fn reconcile(&self, request: &RequestContext) -> Result<Reconciled, StorageError> {
         let known = self.known.known().await?;
         let imported = self.context.zfs.pools(request).await?;
@@ -169,9 +173,14 @@ impl PoolImports {
                 tracing::warn!(
                     pool = pool.name,
                     ?mismatch,
-                    "storage: the pool is not the volume the configuration names"
+                    "storage: the pool imported is not the one the configuration names"
                 );
                 continue;
+            }
+            if pool.guid.is_none()
+                && let Ok(guid) = found.guid.parse()
+            {
+                remember(self.known.as_ref(), &pool.name, guid).await;
             }
             let Ok(name) = PoolName::parse(&pool.name) else { continue };
             match self.context.admin.mount_volume(&name, pool.volume, &pool.shares, request).await {
@@ -215,6 +224,14 @@ impl PoolImports {
     }
 }
 
+/// Keeps a pool's GUID; a failure is only logged: the pool is matched by
+/// its name alone until it is kept.
+pub(crate) async fn remember(known: &dyn KnownPools, name: &str, guid: u64) {
+    if let Err(error) = known.remember_guid(name, guid).await {
+        tracing::warn!(pool = name, %error, "storage: cannot keep the pool's GUID");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -250,6 +267,7 @@ mod tests {
             name: name.into(),
             volume: VolumeNumber::new(volume).unwrap(),
             shares: shares.iter().map(|&s| s.to_owned()).collect(),
+            guid: None,
         }
     }
 
@@ -305,6 +323,7 @@ mod tests {
         assert_eq!(done.state, JobState::Succeeded, "{:?}", done.error);
         assert_eq!(s.fake.calls(), ["import tank 77 1 adopt=false force=false", "mount tank 1 photos,media"]);
         assert_eq!(*s.fake.volumes_back.lock().unwrap(), [1], "Samba and NFS follow");
+        assert_eq!(*s.fake.guids.lock().unwrap(), [("tank".to_owned(), Some(77))], "its GUID kept");
         let entry = s.audit.entries().pop().unwrap();
         assert_eq!((entry.action, entry.target.as_deref()), ("storage.import_pool", Some("tank")));
     }
@@ -386,6 +405,48 @@ mod tests {
         s.fake.known.lock().unwrap()[0].volume = VolumeNumber::new(5).unwrap();
         s.storage.imports.reconcile(&request).await.unwrap();
         assert_eq!(s.fake.calls().len(), 2);
+    }
+
+    /// A configuration from before GUIDs were kept gets the GUID of its
+    /// pool imported; one that knows another GUID leaves the pool of the
+    /// name alone: after a restore, it may be another pool of that name.
+    #[tokio::test]
+    async fn the_start_keeps_the_guid_of_a_pool_imported_and_leaves_another_of_its_name_alone() {
+        let s = setup();
+        let request = RequestContext::default();
+        s.fake.known.lock().unwrap().push(known("tank", 1, &["photos"]));
+        s.storage.imports.reconcile(&request).await.unwrap();
+        assert_eq!(*s.fake.guids.lock().unwrap(), [("tank".to_owned(), Some(9_846_106_214_133_009_000))]);
+        assert_eq!(s.fake.calls(), ["mount tank 1 photos"]);
+
+        s.storage.imports.reconcile(&request).await.unwrap();
+        assert_eq!(s.fake.guids.lock().unwrap().len(), 1, "kept once");
+
+        s.fake.known.lock().unwrap()[0].guid = Some(1);
+        s.storage.imports.reconcile(&request).await.unwrap();
+        assert_eq!(s.fake.calls().len(), 2, "another pool called tank gets no mounts");
+    }
+
+    /// The disks hold two pools called tank: the configuration's is the
+    /// one with its GUID; the other is offered for adopting only.
+    #[tokio::test]
+    async fn of_two_pools_of_a_name_the_one_with_the_guid_is_imported_as_the_configurations() {
+        let s = setup();
+        let request = RequestContext::default();
+        *s.fake.tank_absent.lock().unwrap() = true;
+        s.fake.known.lock().unwrap().push(KnownPool { guid: Some(77), ..known("tank", 1, &["photos"]) });
+        s.fake.importable.lock().unwrap().extend([found("tank", 66, false), found("tank", 77, false)]);
+
+        let absent = s.storage.imports.absent(&request).await.unwrap();
+        assert_eq!(absent.known.iter().map(|k| k.found.id).collect::<Vec<_>>(), [77]);
+        assert_eq!(absent.foreign, [found("tank", 66, false)]);
+        let job = s.storage.imports.import(ask("tank", 66), &alice(), &request).await.unwrap();
+        assert_eq!(finished(&s.jobs, job).await.state, JobState::Succeeded);
+        assert_eq!(
+            s.fake.calls()[0],
+            "import tank 66 2 adopt=true force=false",
+            "the other one only adopted, as another volume"
+        );
     }
 
     #[tokio::test]

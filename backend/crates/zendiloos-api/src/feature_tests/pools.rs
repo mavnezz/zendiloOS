@@ -33,8 +33,14 @@ fn restored(h: &Harness) {
             name: "tank".into(),
             volume: VolumeNumber::new(1).unwrap(),
             shares: vec!["photos".into()],
+            guid: None,
         },
-        KnownPool { name: "cold".into(), volume: VolumeNumber::new(2).unwrap(), shares: Vec::new() },
+        KnownPool {
+            name: "cold".into(),
+            volume: VolumeNumber::new(2).unwrap(),
+            shares: Vec::new(),
+            guid: None,
+        },
     ]);
     h.storage
         .importable

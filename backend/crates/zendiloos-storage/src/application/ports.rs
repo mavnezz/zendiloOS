@@ -90,6 +90,14 @@ pub trait VolumeOccupants: Send + Sync {
 pub trait KnownPools: Send + Sync {
     /// By name.
     async fn known(&self) -> Result<Vec<KnownPool>, PortError>;
+
+    /// Keeps `guid` as the GUID of the pool `name`: made or imported here,
+    /// or seen imported. It goes into the configuration backup, so that a
+    /// restore takes back this pool and no other of the name.
+    async fn remember_guid(&self, name: &str, guid: u64) -> Result<(), PortError>;
+
+    /// The pool `name` was destroyed: a new one of the name is another.
+    async fn forget_guid(&self, name: &str) -> Result<(), PortError>;
 }
 
 /// Told when a volume's mounts came back (a pool imported, or its units
