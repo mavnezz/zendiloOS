@@ -242,6 +242,66 @@ async fn a_host_id_the_agent_keeps_is_told_and_the_other_files_come_back() {
     );
 }
 
+/// What the agent left out (an account of a name a package takes, Samba's
+/// password of someone who is not one of the people) is told, and the rest
+/// restored.
+#[tokio::test]
+async fn what_the_agent_leaves_out_is_told() {
+    use zendiloos_agent_proto::{RequestId, Response, TransportError};
+
+    struct LeavingOut(SimulatedAgent);
+
+    #[async_trait::async_trait]
+    impl AgentTransport for LeavingOut {
+        async fn call(&self, request: Request, id: Option<RequestId>) -> Result<Response, TransportError> {
+            match request {
+                Request::RestoreAccounts { .. } => {
+                    Ok(Response::RestoredWithout { left_out: vec!["group docker: not restored".into()] })
+                }
+                Request::RestoreConfiguration { files }
+                    if files.iter().any(|file| file.path == ConfigurationPath::SambaPasswords) =>
+                {
+                    Ok(Response::RestoredWithout {
+                        left_out: vec!["Samba's password of \"root\": taken out".into()],
+                    })
+                }
+                other => self.0.call(other, id).await,
+            }
+        }
+    }
+
+    let (_dir, db) = temporary_database().await;
+    let state = tempfile::tempdir().unwrap();
+    let source: Arc<dyn AgentTransport> = Arc::new(SimulatedAgent::new());
+    let snapshots =
+        ConfigurationSnapshots::new(db, source, state.path().to_owned(), "0.1.0", Arc::new(SystemClock));
+    let mut archive = snapshots.create(&passphrase(), &RequestContext::default()).await.unwrap();
+    let opened = archive::read(&archive.bytes, "correct horse battery", &state.path().join("x.db")).unwrap();
+    let accounts = br#"{"users":[],"groups":[{"name":"docker","gid":2005,"members":[]}]}"#;
+    let manifest = opened.manifest.clone();
+    let contents = archive::Contents {
+        manifest: &manifest,
+        settings: &opened.settings,
+        accounts,
+        database: &state.path().join("x.db"),
+        files: &opened.files,
+    };
+    archive.bytes = archive::write(&contents, "correct horse battery").unwrap();
+
+    let fresh = tempfile::tempdir().unwrap();
+    let restored =
+        ConfigurationRestorer::new(Arc::new(LeavingOut(SimulatedAgent::new())), fresh.path().to_owned())
+            .restore(archive.bytes, &passphrase(), audit(), &RequestContext::default())
+            .await
+            .unwrap();
+    assert_eq!(
+        restored.warnings,
+        ["group docker: not restored", "Samba's password of \"root\": taken out"],
+        "{:?}",
+        restored.warnings
+    );
+}
+
 #[tokio::test]
 async fn backups_are_written_into_a_share_and_listed_and_removed() {
     let (_dir, db) = temporary_database().await;

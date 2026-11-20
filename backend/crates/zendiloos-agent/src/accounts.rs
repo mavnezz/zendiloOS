@@ -344,18 +344,51 @@ impl Accounts {
         users: &[RestoredUser],
         groups: &[RestoredGroup],
     ) -> Result<Response, OperationError> {
-        for name in
-            users.iter().map(|user| user.name.as_str()).chain(groups.iter().map(|group| group.name.as_str()))
-        {
-            not_a_package_account(name)?;
-        }
+        // A name a package takes was allowed before: such an account is left
+        // out, said, and a group's member left out is no member.
+        let mut left_out = Vec::new();
+        let users: Vec<&RestoredUser> = users
+            .iter()
+            .filter(|user| {
+                let package = PACKAGE_ACCOUNTS.contains(&user.name.as_str());
+                if package {
+                    left_out.push(format!(
+                        "user {}: a package takes the name for an account of its own; not restored",
+                        user.name.as_str()
+                    ));
+                }
+                !package
+            })
+            .collect();
+        let groups: Vec<RestoredGroup> = groups
+            .iter()
+            .filter(|group| {
+                let package = PACKAGE_ACCOUNTS.contains(&group.name.as_str());
+                if package {
+                    left_out.push(format!(
+                        "group {}: a package takes the name for a group of its own; not restored",
+                        group.name.as_str()
+                    ));
+                }
+                !package
+            })
+            .map(|group| RestoredGroup {
+                members: group
+                    .members
+                    .iter()
+                    .filter(|member| !PACKAGE_ACCOUNTS.contains(&member.as_str()))
+                    .cloned()
+                    .collect(),
+                ..group.clone()
+            })
+            .collect();
         let _serial = crate::waiting::lock(&self.serial).await?;
         let (passwd, group) = self.read_files().await?;
         let users_gid = passwd::group_id(&group, USERS_GROUP)
             .ok_or_else(|| OperationError::Setup(format!("group {USERS_GROUP} is missing")))?;
         let restored_names: Vec<&str> = users.iter().map(|user| user.name.as_str()).collect();
         let mut make_users = Vec::new();
-        for user in users {
+        for &user in &users {
             let taken = passwd::accounts(&passwd)
                 .find(|(name, uid, _)| *uid == user.uid && *name != user.name.as_str());
             if let Some((other, ..)) = taken {
@@ -377,7 +410,7 @@ impl Accounts {
             }
         }
         let mut make_groups = Vec::new();
-        for restored in groups {
+        for restored in &groups {
             if restored.members.iter().any(|member| {
                 !restored_names.contains(&member.as_str())
                     && passwd::lookup(&passwd, member.as_str()).is_none()
@@ -444,11 +477,11 @@ impl Accounts {
         for restored in &make_groups {
             run(&self.groupadd, &["--gid", &restored.gid.to_string(), "--", restored.name.as_str()]).await?;
         }
-        for restored in groups {
+        for restored in &groups {
             let list = restored.members.iter().map(UserName::as_str).collect::<Vec<_>>().join(",");
             run(&self.gpasswd, &["--members", &list, "--", restored.name.as_str()]).await?;
         }
-        Ok(Response::Done)
+        Ok(if left_out.is_empty() { Response::Done } else { Response::RestoredWithout { left_out } })
     }
 
     /// The people's users and groups zendiloOS made, with their IDs and

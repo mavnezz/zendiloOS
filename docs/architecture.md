@@ -1426,16 +1426,18 @@ TLS is rustls with ring and the system's certificate authorities
   TLS and the machine's name go back through their own typed requests, the
   network not at all. What it writes as it is: certificates and keys
   (PEM, checked by `nginx -t` before they stay), Samba's password database
-  (as `SetSmbPassword` could set any managed account's; refused, alone,
-  unless a copy of it, listed with `pdbedit -L`, names the people's
-  accounts and nobody else: Samba authenticates whoever it names), ZFS's
-  host id (four bytes; refused, alone, while pools are imported here that
-  carry this machine's, 4.15) and the IDs handed out (which only rise);
-  users and groups only with managed IDs, refused when a name or ID is
-  another's, or a name packages give accounts of their own (`docker`,
-  `libvirt`, `libvirt-qemu`, `kvm`, `tss`, `nut` and others, some made
-  only once a plugin comes), which no account or group zendiloOS makes may
-  have either: the package would take it for its own.
+  (as `SetSmbPassword` could set any managed account's; alone, a copy of
+  it listed with `pdbedit -L`, and anybody but the people's accounts taken
+  out of the copy, `pdbedit -x`, each said among the restore's warnings:
+  Samba authenticates whoever it names), ZFS's host id (four bytes;
+  refused, alone, while pools are imported here that carry this machine's,
+  4.15) and the IDs handed out (which only rise); users and groups only
+  with managed IDs, refused when a name or ID is another's. An account or
+  group of a name packages give accounts of their own (`docker`,
+  `libvirt`, `libvirt-qemu`, `kvm`, `tss`, `nut` and others, some made only
+  once a plugin comes) is left out, said, and so is a member that was one;
+  no account or group zendiloOS makes may have such a name: the package
+  would take it for its own.
 - `Secret` has a redacted `Debug`/`Display` and is never logged.
 - Every operation is logged to the journal with request ID, peer UID/PID and
   result.

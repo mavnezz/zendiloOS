@@ -1777,6 +1777,13 @@ pub enum Response {
         users: Vec<RestoredUser>,
         groups: Vec<RestoredGroup>,
     },
+    /// A restore of accounts or of the configuration's files was carried
+    /// out, but for what it left out, each said in a sentence: an account
+    /// of a name a package takes, a password Samba's database held for
+    /// someone who is not one of the people here.
+    RestoredWithout {
+        left_out: Vec<String>,
+    },
     HostNameState {
         /// `/etc/hostname` as it is; empty if there is none.
         hostname: String,

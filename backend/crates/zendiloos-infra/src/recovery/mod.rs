@@ -256,7 +256,8 @@ impl ConfigurationRestorer {
         let accounts: AccountsFile = serde_json::from_slice(&opened.accounts).map_err(port)?;
         if !accounts.users.is_empty() || !accounts.groups.is_empty() {
             let request = Request::RestoreAccounts { users: accounts.users, groups: accounts.groups };
-            crate::agent::expect_agent_done(self.transport.as_ref(), request, context).await?;
+            let restored = crate::agent::call_agent(self.transport.as_ref(), request, context).await?;
+            warnings.extend(left_out(restored)?);
         }
         // The name first: renaming makes the own certificate anew, which the
         // backup's then replaces.
@@ -309,15 +310,17 @@ impl ConfigurationRestorer {
         for files in batches {
             let names: Vec<String> = files.iter().map(|file| file.path.as_path()).collect();
             let request = Request::RestoreConfiguration { files };
-            if let Err(error) =
-                crate::agent::expect_agent_done(self.transport.as_ref(), request, context).await
-            {
-                tracing::warn!(%error, "restore: files not put back");
-                warnings.push(format!(
-                    "not put back: {} ({})",
-                    names.join(", "),
-                    crate::agent::reason(&error)
-                ));
+            let restored = crate::agent::call_agent(self.transport.as_ref(), request, context).await;
+            match restored.and_then(left_out) {
+                Ok(left_out) => warnings.extend(left_out),
+                Err(error) => {
+                    tracing::warn!(%error, "restore: files not put back");
+                    warnings.push(format!(
+                        "not put back: {} ({})",
+                        names.join(", "),
+                        crate::agent::reason(&error)
+                    ));
+                }
             }
         }
         let settings: HostSettings = serde_json::from_slice(&opened.settings).unwrap_or_default();
@@ -363,6 +366,15 @@ impl ConfigurationRestorer {
             }
         }
         Ok(warnings)
+    }
+}
+
+/// What the agent left out of a restore it carried out, each a warning.
+fn left_out(restored: Response) -> Result<Vec<String>, PortError> {
+    match restored {
+        Response::Done => Ok(Vec::new()),
+        Response::RestoredWithout { left_out } => Ok(left_out),
+        other => Err(crate::agent::unexpected_answer(other)),
     }
 }
 

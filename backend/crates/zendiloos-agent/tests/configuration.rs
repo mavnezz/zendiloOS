@@ -71,11 +71,24 @@ impl Host {
             gpasswd: script("gpasswd", ""),
             // What Samba's password database it is shown lists: the names
             // in `passdb-lists`, as `pdbedit -L` prints them.
+            // Samba's password database it is shown lists the names in
+            // `passdb-lists`, as `pdbedit -L` prints them, but those taken
+            // out of it (`-x`, noted in `passdb-deleted`), which fails while
+            // `pdbedit-fails` is there.
             pdbedit: script(
                 "pdbedit",
-                &format!("[ -f {list} ] && cat {list}; exit 0", list = at("passdb-lists").display()),
+                &format!(
+                    "case \" $* \" in\n\
+                     *' -x '*) [ -f {fails} ] && exit 1\n\
+                       for a; do case $a in --user=*) echo \"${{a#--user=}}\" >> {deleted} ;; esac; done ;;\n\
+                     *) [ -f {list} ] || exit 0\n\
+                       if [ -f {deleted} ]; then grep -v -F -f {deleted} {list}; else cat {list}; fi ;;\n\
+                     esac\nexit 0",
+                    list = at("passdb-lists").display(),
+                    deleted = at("passdb-deleted").display(),
+                    fails = at("pdbedit-fails").display(),
+                ),
             ),
-            // The pools imported: those `pools` names.
             // The pools imported: those `pools` names; `media` (42) is on
             // the disks, and importing it takes a second.
             zpool: script(
@@ -277,36 +290,53 @@ async fn the_host_id_stays_while_pools_are_imported_that_carry_this_machines() {
     assert_eq!(fs::read(host.at("hostid")).unwrap(), [1, 2, 3, 4]);
 }
 
-/// Samba authenticates whoever its password database names: only the
-/// people's accounts zendiloOS made may be in a restored one, not root, a
-/// system account or someone with no account here.
+/// Samba authenticates whoever its password database names: of a restored
+/// one, only the people's accounts zendiloOS made stay. The others (root, a
+/// system account, an app's, someone with no account here, such as a
+/// person whose account the restore left out) are taken out of a copy,
+/// each said, before it takes the database's place.
 #[tokio::test]
-async fn samba_passwords_only_of_peoples_accounts_are_restored() {
+async fn samba_passwords_of_others_than_the_peoples_accounts_are_taken_out() {
     let host = Host::new();
     let people = format!("{PASSWD}anna:x:2001:990::/nonexistent:/usr/sbin/nologin\n");
     fs::write(host.at("passwd"), people).unwrap();
-    for listed in ["anna:2001:\nroot:0:\n", "zendiloos-files:995:\n", "eve:-1:\n", "debian:1000:\n"] {
-        fs::write(host.at("passdb-lists"), listed).unwrap();
-        let files = vec![file(ConfigurationPath::SambaPasswords, b"restored TDB")];
-        let response = host.agent.execute(&Request::RestoreConfiguration { files }).await;
-        let Response::Error { code, message } = response else { panic!("{listed:?} restored: {response:?}") };
-        assert_eq!(code, ErrorCode::Forbidden, "{message}");
-        assert!(message.contains("passdb.tdb"), "{message}");
-        assert_eq!(fs::read(host.at("samba/private/passdb.tdb")).unwrap(), b"TDB file\0\x01");
-    }
-    let shown = host.calls();
-    let listing = format!(
-        "pdbedit --option=interfaces=127.0.0.1/8 -L -b tdbsam:{}",
-        host.at("samba/private/passdb.tdb.zendiloos-check").display()
-    );
-    assert!(shown.iter().all(|call| call == &listing), "a copy, by itself: {shown:?}");
-    assert!(!host.at("samba/private/passdb.tdb.zendiloos-check").exists(), "the copy goes");
+    let listed = "WARNING: The \"syslog\" option is deprecated\nanna:2001:Anna\nroot:0:\n\
+                  zendiloos-files:995:\neve:-1:\ndebian:1000:\n";
+    fs::write(host.at("passdb-lists"), listed).unwrap();
+    let restore = || Request::RestoreConfiguration {
+        files: vec![file(ConfigurationPath::SambaPasswords, b"restored TDB")],
+    };
 
-    fs::write(host.at("passdb-lists"), "WARNING: The \"syslog\" option is deprecated\nanna:2001:Anna\n")
-        .unwrap();
-    let files = vec![file(ConfigurationPath::SambaPasswords, b"restored TDB")];
-    assert_eq!(host.agent.execute(&Request::RestoreConfiguration { files }).await, Response::Done);
+    // Where they cannot be taken out, the database is not put in place.
+    fs::write(host.at("pdbedit-fails"), "").unwrap();
+    let response = host.agent.execute(&restore()).await;
+    assert!(matches!(response, Response::Error { .. }), "{response:?}");
+    assert_eq!(fs::read(host.at("samba/private/passdb.tdb")).unwrap(), b"TDB file\0\x01");
+    fs::remove_file(host.at("pdbedit-fails")).unwrap();
+    fs::remove_file(host.at("calls.log")).unwrap();
+
+    let response = host.agent.execute(&restore()).await;
+    let Response::RestoredWithout { left_out } = response else { panic!("not restored: {response:?}") };
+    let named: Vec<bool> = ["\"root\"", "\"zendiloos-files\"", "\"eve\"", "\"debian\""]
+        .iter()
+        .map(|name| left_out.iter().any(|said| said.contains(name)))
+        .collect();
+    assert_eq!(named, [true; 4], "{left_out:?}");
+    assert_eq!(left_out.len(), 4, "anna stays: {left_out:?}");
+    let copy = host.at("samba/private/passdb.tdb.zendiloos-check").display().to_string();
+    let calls = host.calls();
+    for name in ["root", "zendiloos-files", "eve", "debian"] {
+        let taken_out = format!("pdbedit --option=interfaces=127.0.0.1/8 -b tdbsam:{copy} -x --user={name}");
+        assert!(calls.contains(&taken_out), "{name} not taken out of the copy");
+    }
+    let listing = format!("pdbedit --option=interfaces=127.0.0.1/8 -L -b tdbsam:{copy}");
+    assert_eq!(calls.iter().filter(|call| **call == listing).count(), 2, "listed again once taken out");
+    assert!(!host.at("samba/private/passdb.tdb.zendiloos-check").exists(), "the copy goes");
     assert_eq!(host.text("samba/private/passdb.tdb"), "restored TDB");
+
+    // Nobody else: as it is.
+    fs::write(host.at("passdb-lists"), "anna:2001:Anna\n").unwrap();
+    assert_eq!(host.agent.execute(&restore()).await, Response::Done);
 }
 
 #[tokio::test]
@@ -452,6 +482,30 @@ async fn accounts_come_back_with_their_ids_where_they_are_missing() {
     assert_eq!(host.calls().iter().filter(|call| call.starts_with("useradd")).count(), 2);
 }
 
+/// Names packages give accounts of their own, here or once a plugin comes,
+/// were allowed before: a backup's account or group of such a name is left
+/// out, said, and the others come back; a group's member left out is no
+/// member.
+#[tokio::test]
+async fn accounts_of_names_packages_take_are_left_out_and_the_others_restored() {
+    let host = Host::new();
+    let request = Request::RestoreAccounts {
+        users: vec![user("anna", 2001), user("nut", 2006)],
+        groups: vec![group("docker", 2005, &["anna"]), group("family", 2003, &["anna", "nut"])],
+    };
+
+    let response = host.agent.execute(&request).await;
+
+    let Response::RestoredWithout { left_out } = response else { panic!("not restored: {response:?}") };
+    assert_eq!(left_out.len(), 2, "{left_out:?}");
+    assert!(left_out[0].contains("nut") && left_out[1].contains("docker"), "{left_out:?}");
+    let calls = host.calls();
+    assert!(calls.iter().any(|call| call.starts_with("useradd") && call.ends_with("-- anna")), "{calls:?}");
+    assert!(!calls.iter().any(|call| call.ends_with("-- nut") || call.ends_with("-- docker")), "{calls:?}");
+    assert!(calls.contains(&"groupadd --gid 2003 -- family".to_owned()), "{calls:?}");
+    assert_eq!(calls.last().unwrap(), "gpasswd --members anna -- family");
+}
+
 #[tokio::test]
 async fn an_id_or_name_taken_otherwise_refuses_the_whole_restore() {
     let host = Host::new();
@@ -461,13 +515,7 @@ async fn an_id_or_name_taken_otherwise_refuses_the_whole_restore() {
         Request::RestoreAccounts { users: vec![user("carl", 2009), user("anna", 2001)], groups: vec![] },
         Request::RestoreAccounts { users: vec![user("eve", 2004)], groups: vec![] },
         Request::RestoreAccounts { users: vec![], groups: vec![group("family", 2003, &["nobody-here"])] },
-        Request::RestoreAccounts { users: vec![], groups: vec![group("staff", 990, &[])] },
-        // Names packages give their accounts, here or once a plugin comes:
-        // the package would take a person's for its own.
-        Request::RestoreAccounts { users: vec![], groups: vec![group("docker", 2005, &[])] },
-        Request::RestoreAccounts { users: vec![], groups: vec![group("libvirt", 2005, &[])] },
-        Request::RestoreAccounts { users: vec![user("nut", 2006)], groups: vec![] },
-        Request::RestoreAccounts { users: vec![user("tss", 2006)], groups: vec![] },
+        Request::RestoreAccounts { users: vec![], groups: vec![group("friends", 990, &[])] },
     ] {
         let response = host.agent.execute(&request).await;
         assert!(matches!(response, Response::Error { code: ErrorCode::Forbidden, .. }), "{response:?}");
