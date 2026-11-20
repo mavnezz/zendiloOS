@@ -2275,9 +2275,15 @@ systemd-resolved, for taking the network over from ifupdown
 (`install-networkd`; systemd-networkd comes with `systemd`): its package
 switches name resolution to it at once, enabling and starting it and
 moving `/etc/resolv.conf` aside for a link to its stub, which nothing would
-tell the name servers while ifupdown still runs the network; so the runner
-disables and stops it again and moves the file back, and the takeover
-switches it on (6).
+tell the name servers while ifupdown still runs the network (Debian's has
+none of its own); so the runner moves the file back and disables and stops
+it again, and the takeover switches it on (6). It does so only where a run
+brought the package (one there before may be in use, and is left as it
+is), and not once systemd-networkd manages the network; also when the run
+failed after the package was configured, or taking it back did: a mark in
+the runner's state (`resolution-to-take-back`), made before apt runs and
+removed once it is taken back, has the next try finish it, though the
+package is installed by then.
 
 **An update cut off** (a power cut while DKMS builds ZFS for the new
 kernel, say) leaves packages unpacked or half configured. apt then sees
