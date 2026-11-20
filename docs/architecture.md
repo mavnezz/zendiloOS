@@ -434,9 +434,11 @@ simple to audit.
   no timeout. Currently: `systemctl`, `systemd-run`,
   `systemd-mount`, `busctl`, `timedatectl`, `lsblk`, `smartctl`, `zpool`,
   `hostnamectl`, `zfs`, `sgdisk`, `wipefs`, `udevadm`, `umount`, `rmdir`, `rm`,
-  `useradd`, `userdel`, `groupadd`, `groupdel`, `gpasswd`, `smbpasswd`,
+  `smbpasswd`,
   `testparm`, `exportfs`, `smbcontrol`, `sshd`, `docker`, `dockerd`,
   `setsid`, `openssl`, `nginx`, `nft`, `virsh`, `ssh-keygen`, `ssh-keyscan` (and, in transient units,
+  `useradd`, `userdel`, `groupadd`, `groupdel` and `gpasswd`, and this
+  binary as `put-etc-file`, which change files directly in `/etc`, 4.6,
   `nut-scanner`, 4.16, `systemd-tmpfiles`, this binary as `copy-vm-iso`, `receive-vm-image`,
   `back-up-vm`, `restore-vm` and `remove-vm-backup`, 4.13, as `backup-unit`, which runs `rsync` and through it `ssh`, and `rclone`, 4.14, and `ip link
   delete` for a network device zendiloOS made that goes, 6).
@@ -465,7 +467,10 @@ simple to audit.
   network over from ifupdown, also `/etc/network/interfaces` and
   `/etc/resolv.conf` (a link to systemd-resolved's stub), with the record
   of what they were in `/etc/network` (6). ifupdown's files are read only
-  below `/etc/network`, never through a link.
+  below `/etc/network`, never through a link. Files directly in `/etc`
+  (`/etc/hosts`, `/etc/hostid`, `/etc/resolv.conf`, the account
+  databases) are written in transient units, the agent's sandbox writes
+  only folders below it (4.6).
 - **Mounts** through generated systemd mount units that the agent asks
   systemd to start. The mount then lives in the host's namespace (the
   hardened agent has its own), dependencies on Samba/NFS are explicit, and
@@ -491,11 +496,13 @@ simple to audit.
   (`NeedDaemonReload`; since systemd 257 every unit is, once a link
   changed without a reload, and `systemctl status` warns about it) and
   reloads if so. A new mount unit is linked before that reload and
-  started after it, so its file and link take one. For the file services
-  and SSH it also goes with `SYSTEMCTL_SKIP_SYSV=1`: smbd and ssh have
-  init scripts too, and for those systemctl runs Debian's `update-rc.d`,
-  which reloads systemd twice whatever `--no-reload` says; their rc.d
-  links count for nothing beside the native units. What has
+  started after it, so its file and link take one. For the file services,
+  SSH, NUT and libvirt it also goes with `SYSTEMCTL_SKIP_SYSV=1`: smbd,
+  ssh, nut-server and libvirtd have init scripts too, and for those
+  systemctl runs Debian's `update-rc.d`, which reloads systemd twice
+  whatever `--no-reload` says and writes `/etc/rc?.d`, which the agent's
+  sandbox may not (4.6); their rc.d links count for nothing beside the
+  native units. What has
   to run outside the agent's sandbox runs as a unit: transient ones through
   `systemd-run` (apt, acme.sh, `nginx -t`, `nft -c`) and `systemd-mount`
   (removable drives), or a unit of the package. The kernel's NFS server
@@ -1443,6 +1450,48 @@ TLS is rustls with ring and the system's certificate authorities
   once a plugin comes) is left out, said, and so is a member that was one;
   no account or group zendiloOS makes may have such a name: the package
   would take it for its own.
+- **`/etc` is not writable as a whole**, only the folders below it the
+  agent works in: `/etc/zendiloos`, `/etc/systemd/system` (mount and pin
+  units, drop-ins), `/etc/systemd/network`,
+  `/etc/systemd/timesyncd.conf.d`, `/etc/ssh/sshd_config.d`,
+  `/etc/samba`, `/etc/exports.d`, `/etc/docker`, `/etc/network` (a
+  takeover), `/etc/nut`, `/etc/zfs` (the ZFS module rewrites `zpool.cache`
+  in the mount namespace of the `zpool` that asks it to),
+  `/etc/tmpfiles.d`, `/etc/apparmor.d/abstractions/libvirt-qemu.d` and
+  `/etc/qemu/firmware`. The files directly in `/etc` it changes are
+  replaced by renaming a new file onto them, and the shadow tools lock
+  theirs with files beside them (`/etc/.pwd.lock`, `passwd.lock`,
+  `passwd+`), so a single file bound writable would not do (a rename onto
+  a mount point fails): they are changed in transient units that may
+  write `/etc` and nothing else, with no network, no devices, no other
+  processes (a PID namespace of their own), an empty `/run` and 50
+  seconds at most. The shadow tools
+  (users and groups) run there with the arguments the agent checked and
+  `CAP_CHOWN` alone (`/etc/shadow` keeps its group), seeing of `/run`
+  only journald's socket for their log lines; `/etc/hosts`, `/etc/hostid`,
+  `/etc/resolv.conf` and the copy beside it of what ifupdown had are
+  written by this binary as `put-etc-file`, which takes those names only,
+  their content on its standard input, with no capability and no
+  `connect()`. Neither sees `/etc/zendiloos`, SSH's host keys or the
+  database, `put-etc-file` not the shadow files either. A folder of the
+  list must be there when the agent starts: one missing then stays
+  read-only until the next start (`-` in the unit lets the agent start
+  without it, and only what writes there fails). Those no package
+  zendiloOS depends on brings, and those of plugins installed later
+  (Docker, NUT, libvirt and QEMU's firmware descriptions), the package
+  makes at its installation and every boot (`systemd-tmpfiles`, `d` lines
+  without mode or owner): as Debian's packages make them, root's and
+  `0755`, and one that is there is left as it is. dpkg too leaves a
+  folder it finds as it is when it unpacks a package that brings it, and
+  NUT's postinst gives `/etc/nut` its group itself, so a plugin installed
+  later finds its folder as it would one it made; the agent need not be
+  restarted, which would wait for every operation under way (a backup,
+  for hours). A machine upgraded from 0.5 gets the folders before the
+  agent is restarted with the new list, those of its plugins kept as they
+  are; a purge removes those left empty that no package brought.
+  `tests/units.rs` holds the list together with every place below `/etc`
+  in the agent's paths and with the folders the package makes, and the VM
+  tests fail on a "Read-only file system" in the agent's journal.
 - `Secret` has a redacted `Debug`/`Display` and is never logged.
 - Every operation is logged to the journal with request ID, peer UID/PID and
   result.
@@ -1451,11 +1500,12 @@ TLS is rustls with ring and the system's certificate authorities
   is needed, `SystemCallFilter`, `NoNewPrivileges` where possible. New
   operations extend this deliberately. The system agent has the
   capabilities `CAP_SYS_RAWIO` and `CAP_SYS_ADMIN` (SMART through SG_IO and
-  NVMe admin commands, partition tables, ZFS ioctls), `CAP_CHOWN` (the
-  shadow tools) and `CAP_DAC_READ_SEARCH` (the folders apps mount); devices
-  closed except SATA/SAS/USB and virtio disks, NVMe (read only) and
-  `/dev/zfs`; writable only `/etc`, Samba's and NFS's state directories,
-  `/run/issue.d` and `/run/zendiloos-acme`.
+  NVMe admin commands, partition tables, ZFS ioctls), `CAP_CHOWN` (NUT's
+  files get the group of their folder) and `CAP_DAC_READ_SEARCH` (the
+  folders apps mount); devices closed except SATA/SAS/USB and virtio
+  disks, NVMe (read only) and `/dev/zfs`; writable only the folders of
+  `/etc` above, Samba's and NFS's state directories, `/run/issue.d` and
+  `/run/zendiloos-acme`.
 - The files agent (`zendiloos-files.service`, the same program with
   `--role files`) serves only requests about share contents. It may write
   below the volumes and act as a user, but touches no disk, no system

@@ -14,3 +14,17 @@ d /var/lib/zendiloos-acme/webroot 0755 zendiloos-acme zendiloos-acme -
 d /run/zendiloos-acme 0700 root root -
 # Issued certificates as nginx reads them.
 d /etc/zendiloos/web/certificates 0700 root root -
+# The folders below /etc the system agent writes that no package zendiloOS
+# depends on brings, or that come with a plugin installed later (Docker,
+# NUT, libvirt and QEMU): its sandbox may write only folders that are there
+# when it starts (zendiloos-agent.service). Made as Debian's packages make
+# them, root's and 0755; one that is there is left as it is, its owner and
+# mode too (NUT's postinst gives /etc/nut its group), as dpkg leaves a
+# folder it finds when it unpacks a package that brings it.
+d /etc/systemd/timesyncd.conf.d - - - -
+d /etc/ssh/sshd_config.d - - - -
+d /etc/exports.d - - - -
+d /etc/docker - - - -
+d /etc/nut - - - -
+d /etc/apparmor.d/abstractions/libvirt-qemu.d - - - -
+d /etc/qemu/firmware - - - -

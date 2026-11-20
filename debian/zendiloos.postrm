@@ -29,6 +29,7 @@ case "$1" in
         # template stays for their fresh starts until a purge.
         rm -f /etc/qemu/firmware/30-zendiloos-x86_64-secure-enrolled.json
         rmdir /etc/qemu/firmware 2>/dev/null || true
+        rmdir /etc/qemu 2>/dev/null || true
         ;;
     purge)
         # The firewall's rules and the VMs', if a remove left them in force.
@@ -73,6 +74,15 @@ case "$1" in
         if [ -d /run/systemd/system ]; then
             systemctl --system daemon-reload >/dev/null 2>&1 || true
         fi
+        # The folders below /etc the package made for the agent
+        # (zendiloos.tmpfiles), where they are empty and no package brought
+        # them.
+        for folder in /etc/systemd/timesyncd.conf.d /etc/ssh/sshd_config.d /etc/exports.d /etc/docker \
+            /etc/nut /etc/apparmor.d/abstractions/libvirt-qemu.d /etc/qemu/firmware /etc/qemu; do
+            if [ -d "$folder" ] && ! dpkg-query -S "$folder" >/dev/null 2>&1; then
+                rmdir "$folder" 2>/dev/null || true
+            fi
+        done
         # The generators the package masked, if they are still masked as it
         # left them; systemd runs them again from the next reload or boot.
         if [ -f /etc/zendiloos/masked-generators ]; then
