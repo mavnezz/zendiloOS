@@ -90,12 +90,18 @@ const ETC: [&str; 10] = [
 const KEY_BYTES: u64 = 16 * 1024;
 /// The sandbox every unit has.
 ///
-/// A unit is stopped with SIGKILL: its process is the first of a PID
-/// namespace, which takes no signal it has no handler for yet, so a SIGTERM
-/// right after the start would be lost and the unit work on. What it leaves
-/// (rsync's temporary files in a version under way, a version cut off) the
-/// next run takes over or removes.
-const SANDBOX: [&str; 23] = [
+/// Beside the view of the file system ([`Backups::unit_args`]): of `/proc`
+/// only the processes (its own, in its PID namespace), no `/sys` at all
+/// (serial numbers, firmware tables), none of the host's shared memory,
+/// message queues or huge pages in its `/dev`, and nothing mounted after it
+/// started (`MountFlags=private`: a pool imported meanwhile stays out).
+///
+/// Stopped, all its processes get SIGTERM: rsync and rclone end and remove
+/// what they were writing; the unit's own process, the first of its PID
+/// namespace, starts nothing more and answers that it was stopped
+/// ([`crate::backup_unit`]). A SIGTERM that comes before it handles one is
+/// lost; SIGKILL follows after [`STOP_FOR`].
+const SANDBOX: [&str; 26] = [
     "--property=NoNewPrivileges=yes",
     "--property=ProtectSystem=strict",
     "--property=ProtectHome=yes",
@@ -114,12 +120,17 @@ const SANDBOX: [&str; 23] = [
     "--property=SystemCallArchitectures=native",
     "--property=SystemCallFilter=@system-service",
     "--property=ProtectProc=invisible",
+    "--property=ProcSubset=pid",
     "--property=PrivateIPC=yes",
     "--property=PrivatePIDs=yes",
-    "--property=KillSignal=SIGKILL",
+    "--property=TemporaryFileSystem=/sys:ro",
+    "--property=InaccessiblePaths=-/dev/shm -/dev/mqueue -/dev/hugepages",
+    "--property=MountFlags=private",
     "--property=LimitNOFILE=65536",
     "--property=MemoryMax=2G",
 ];
+/// What a unit stopped has to end in before it is killed.
+const STOP_FOR: Duration = Duration::from_secs(10);
 
 /// Where the backup plugin's things are; other than the real places only
 /// in tests.
@@ -605,7 +616,7 @@ impl Backups {
         args.extend([
             format!("--property=CapabilityBoundingSet={}", places.capabilities()),
             format!("--property=RuntimeMaxSec={}", runtime.as_secs()),
-            "--property=TimeoutStopSec=60".into(),
+            format!("--property=TimeoutStopSec={}", STOP_FOR.as_secs()),
             self.host.agent.display().to_string(),
             "backup-unit".into(),
             encode(job),

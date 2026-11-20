@@ -242,18 +242,49 @@ impl ManifestKeys {
     }
 }
 
+/// What a manifest's signature covers: these fields, in this order, as
+/// compact JSON, as they were first signed. Fields a manifest gets later
+/// are not signed unless added here under a new [`MAC_CONTEXT`]; so
+/// manifests signed before stay signed.
+#[derive(Serialize)]
+struct Signed<'a> {
+    format: u32,
+    volume: &'a str,
+    driver: &'a str,
+    labels: &'a BTreeMap<String, String>,
+    size_bytes: u64,
+    created: &'a str,
+    backed_up_at: i64,
+    zendiloos_version: &'a str,
+    archive: &'a str,
+    sha256: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    entries: Option<u64>,
+}
+
 fn mac(key: &[u8], manifest: &Manifest) -> Hmac<Sha256> {
-    let mut unsigned = manifest.clone();
-    unsigned.mac = None;
+    let signed = Signed {
+        format: manifest.format,
+        volume: &manifest.volume,
+        driver: &manifest.driver,
+        labels: &manifest.labels,
+        size_bytes: manifest.size_bytes,
+        created: &manifest.created,
+        backed_up_at: manifest.backed_up_at,
+        zendiloos_version: &manifest.zendiloos_version,
+        archive: &manifest.archive,
+        sha256: &manifest.sha256,
+        entries: manifest.entries,
+    };
     let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(key).expect("HMAC takes keys of any length");
     mac.update(MAC_CONTEXT);
-    mac.update(&serde_json::to_vec(&unsigned).unwrap_or_default());
+    mac.update(&serde_json::to_vec(&signed).unwrap_or_default());
     mac
 }
 
 impl Manifest {
-    /// Signs it with `key`: an HMAC-SHA256 over the manifest as JSON
-    /// without its signature, after [`MAC_CONTEXT`].
+    /// Signs it with `key`: an HMAC-SHA256 over its fields as [`Signed`]
+    /// writes them, after [`MAC_CONTEXT`].
     pub(crate) fn sign(&mut self, key: &[u8]) {
         self.mac = Some(key_to_hex(&mac(key, self).finalize().into_bytes()));
     }

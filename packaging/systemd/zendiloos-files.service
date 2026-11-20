@@ -47,16 +47,16 @@ ProtectHome=yes
 ReadOnlyPaths=/var /run -/srv -/opt -/mnt -/media
 InaccessiblePaths=-/var/lib/zendiloos -/var/lib/samba -/etc/zendiloos -/etc/ssh -/etc/shadow -/etc/gshadow
 # It runs as root, and a read-only /run does not keep root from connecting
-# to a socket there: so it connects to none at all (connect() fails; its
-# own socket comes as a descriptor, and Tokio's pair within the process
-# needs no connecting). Hiding the sockets alone would not do: one made
-# anew after it started (docker.sock, when Docker restarts) shows through.
-# Unix sockets stay allowed for that pair. systemd's sockets are under an
-# empty tmpfs as well (its journal stream comes as a descriptor); D-Bus,
-# Docker's and containerd's, libvirt's, Samba's, udev's, the SSH,
-# cloud-init and Avahi sockets, zendiloOS's own and the VMs' consoles are
-# hidden, and so are the other services' credentials.
-SystemCallFilter=~connect:EPERM
+# to a socket there: so it connects to none at all (connect() fails, see
+# the system calls below; its own socket comes as a descriptor, and
+# Tokio's pair within the process needs no connecting). Hiding the sockets
+# alone would not do: one made anew after it started (docker.sock, when
+# Docker restarts) shows through. Unix sockets stay allowed for that pair.
+# systemd's sockets are under an empty tmpfs as well (its journal stream
+# comes as a descriptor); D-Bus, Docker's and containerd's, libvirt's,
+# Samba's, udev's, the SSH, cloud-init and Avahi sockets, zendiloOS's own
+# and the VMs' consoles are hidden, and so are the other services'
+# credentials.
 TemporaryFileSystem=/run/systemd:ro
 InaccessiblePaths=-/run/dbus -/run/docker.sock -/run/docker -/run/containerd -/run/libvirt -/run/samba -/run/udev
 InaccessiblePaths=-/run/zendiloos -/run/zendiloos-vms -/run/zendiloos-acme -/run/credentials -/run/ssh-unix-local
@@ -83,4 +83,9 @@ LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RestrictAddressFamilies=AF_UNIX
 SystemCallArchitectures=native
+# The allow-list first: the first assignment sets what is allowed at all,
+# and the deny-list after it takes connect() out of it (EPERM, as the
+# processes are not killed for trying). The other way round, the
+# allow-list would only empty the deny-list, and nothing be filtered.
 SystemCallFilter=@system-service
+SystemCallFilter=~connect:EPERM

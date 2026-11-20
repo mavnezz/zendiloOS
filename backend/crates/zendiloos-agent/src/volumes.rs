@@ -90,12 +90,18 @@ const MAX_COUNTED: u64 = 1_000_000;
 /// Unix sockets stay allowed for the pairs Tokio makes within the process
 /// (systemd-run has no way to allow no family at all).
 ///
-/// A unit is stopped with SIGKILL: as the first process of its PID
-/// namespace it takes no signal it has no handler for yet, so a SIGTERM
-/// right after the start would be lost and its work go on. Killed, it
-/// leaves what a unit stopped always could: a backup's hidden files, a
-/// restore's fresh folder, which the next one removes.
-pub(crate) const SANDBOX: [&str; 28] = [
+/// The system's secrets are hidden: the key a backup signs with comes on
+/// its standard input, and a bug in what a restore parses must not read
+/// the keys, the shadow files or SSH's host keys into a volume.
+///
+/// A unit is stopped with SIGKILL. Its work is its own process alone, the
+/// first of its PID namespace, which takes no signal it has no handler for
+/// yet, so a SIGTERM right after the start would be lost and its work go
+/// on. Killed, it leaves what it always left, as it had no handler for
+/// SIGTERM before either: a backup's hidden files, a restore's fresh
+/// folder, which the next one removes. No other program in it would clean
+/// up after itself, as rsync in a backup's unit does.
+pub(crate) const SANDBOX: [&str; 29] = [
     "--property=NoNewPrivileges=yes",
     "--property=ProtectSystem=strict",
     "--property=ProtectHome=yes",
@@ -121,6 +127,9 @@ pub(crate) const SANDBOX: [&str; 28] = [
     "--property=PrivatePIDs=yes",
     "--property=KillSignal=SIGKILL",
     "--property=TemporaryFileSystem=/run:ro",
+    // Nor the system's secrets: the key a backup signs with comes on its
+    // standard input.
+    "--property=InaccessiblePaths=-/etc/zendiloos -/etc/shadow -/etc/gshadow -/etc/ssh -/var/lib/zendiloos",
     // zendiloos_agent_proto::REMOVABLE_PLACE
     "--property=BindReadOnlyPaths=-/run/zendiloos-removable",
     "--property=LimitNOFILE=65536",
@@ -428,21 +437,9 @@ impl Volumes {
         Ok(Response::Done)
     }
 
-    /// The keys manifests are signed with; made (one key, root's alone) the
-    /// first time.
+    /// The keys manifests are signed with ([`manifest_keys`]).
     fn keys(&self) -> Result<ManifestKeys, OperationError> {
-        let place = &self.paths.volume_backup_keys;
-        match std::fs::read_to_string(place) {
-            Ok(text) => ManifestKeys::parse(&text)
-                .ok_or_else(|| OperationError::Failed(format!("{} holds no keys", place.display()))),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let keys = ManifestKeys::make().map_err(OperationError::Failed)?;
-                crate::durable::replace_mode(place, keys.text().as_bytes(), 0o600)?;
-                tracing::info!(place = %place.display(), "a key to sign volume backups with was made");
-                Ok(keys)
-            }
-            Err(error) => Err(OperationError::Failed(format!("{}: {error}", place.display()))),
-        }
+        manifest_keys(&self.paths.volume_backup_keys)
     }
 
     /// The share's root, `/volume<N>/<share>`: only while its file system
@@ -817,11 +814,73 @@ impl Volumes {
     }
 }
 
+/// The keys manifests are signed with at `place`, made the first time (one
+/// key, root's alone). A new one is written under a name of its own beside
+/// and linked into place, which fails if a file is there already: two
+/// backups that start at once both sign with the key linked first.
+pub(crate) fn manifest_keys(place: &Path) -> Result<ManifestKeys, OperationError> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt;
+    let read = || match std::fs::read_to_string(place) {
+        Ok(text) => ManifestKeys::parse(&text)
+            .map(Some)
+            .ok_or_else(|| OperationError::Failed(format!("{} holds no keys", place.display()))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(OperationError::Failed(format!("{}: {error}", place.display()))),
+    };
+    if let Some(keys) = read()? {
+        return Ok(keys);
+    }
+    let failed = |error: std::io::Error| OperationError::Failed(format!("{}: {error}", place.display()));
+    let parent = place.parent().ok_or_else(|| OperationError::Failed("no folder for the keys".into()))?;
+    let mut random = [0u8; 8];
+    rustix::rand::getrandom(&mut random, rustix::rand::GetRandomFlags::empty())
+        .map_err(|e| OperationError::Failed(format!("no random name: {e}")))?;
+    let temporary = parent.join(format!(".volume-backup-keys.{:016x}", u64::from_le_bytes(random)));
+    let keys = ManifestKeys::make().map_err(OperationError::Failed)?;
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)
+        .and_then(|mut file| {
+            file.write_all(keys.text().as_bytes())?;
+            file.sync_all()
+        })
+        .and_then(|()| std::fs::hard_link(&temporary, place));
+    let _ = std::fs::remove_file(&temporary);
+    match written {
+        Ok(()) => {
+            std::fs::File::open(parent).and_then(|folder| folder.sync_all()).map_err(failed)?;
+            tracing::info!(place = %place.display(), "a key to sign volume backups with was made");
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(failed(error)),
+    }
+    read()?.ok_or_else(|| OperationError::Failed(format!("{} is gone", place.display())))
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn backups_starting_at_once_make_one_key_between_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let place = dir.path().join("volume-backup-keys");
+        let made: Vec<[u8; 32]> = std::thread::scope(|scope| {
+            let threads: Vec<_> =
+                (0..8).map(|_| scope.spawn(|| *manifest_keys(&place).unwrap().signing())).collect();
+            threads.into_iter().map(|thread| thread.join().unwrap()).collect()
+        });
+        assert!(made.iter().all(|key| *key == made[0]), "all sign with one key");
+        assert_eq!(manifest_keys(&place).unwrap().signing(), &made[0], "and it is the one kept");
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&place).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "no file left beside it");
+    }
 
     #[test]
     fn units_reach_no_socket_and_no_other_process() {

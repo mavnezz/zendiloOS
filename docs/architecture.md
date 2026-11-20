@@ -1452,10 +1452,15 @@ TLS is rustls with ring and the system's certificate authorities
   effective set as it starts and only a thread working on a drive takes up
   again; `/etc`, `/usr` and `/var` read-only, `/run` too (a drive mounted
   below it later is a mount of its own, writable as mounted); the database, Samba's state, `/etc/zendiloos`, SSH keys and
-  the shadow files inaccessible. It connects to no socket (`connect()`
-  fails: its own comes as a descriptor), as a read-only `/run` would not
-  keep root from asking systemd, D-Bus, Docker or libvirt; those sockets,
-  zendiloOS's own and the other services' credentials are hidden too. It
+  the shadow files inaccessible. It connects to no socket (its system
+  calls are `@system-service` with `connect()` taken out, which fails with
+  EPERM; its own socket comes as a descriptor), as a read-only `/run`
+  would not keep root from asking systemd, D-Bus, Docker or libvirt, and
+  hiding their sockets alone does not hold: one made anew after it
+  started shows through; those sockets, zendiloOS's own and the other
+  services' credentials are hidden too. A test reads the shipped units and
+  checks that each filter starts with its allow-list (the first
+  `SystemCallFilter=` sets what is allowed at all). It
   does without `RestrictSUIDSGID`: to
   enforce it, systemd blocks `openat2()`, whose arguments seccomp cannot
   inspect, and `openat2()` is what keeps paths inside a share. Volumes and
@@ -1958,7 +1963,10 @@ always takes), its own IPC, no `connect()` at all (it talks over its pipes)
 and an empty read-only `/run` but for the drives' place (so no control
 socket of the machine to ask: systemd's, D-Bus, Docker's, libvirt's,
 zendiloOS's; root's units would otherwise reach them, a read-only `/run`
-does not stop `connect()`),
+does not stop `connect()`), the system's secrets hidden (`/etc/zendiloos`
+with the keys backups are signed with, the shadow files, SSH's host keys,
+zendiloOS's database: what a restore parses must not read them into a
+volume),
 `SystemCallFilter=@system-service` (not `RestrictSUIDSGID`:
 systemd enforces it by blocking `openat2()`, which keeps the units' paths
 beneath their folders), the whole system read only but the share,
@@ -1994,12 +2002,15 @@ archive all the same. Its progress comes from counting the volume first,
 in memory bounded as above. Beside it goes
 `<volume>-YYYYMMDD-HHMMSS.json`, its manifest: the volume's name, driver,
 labels, size and when it was made, the release's version, the archive's
-name and SHA-256, and its signature (`mac`): an HMAC-SHA256 over the rest
-of the manifest under a key of the system agent's
-(`/etc/zendiloos/volume-backup-keys`, 32 random bytes made at the first
-backup, root's alone, hidden from the files agent and the backup plugin's
-units, carried in the configuration backup; 4.15), which the backup's unit
-is given on its standard input. The folders on the way are walked to beneath the share
+name and SHA-256, and its signature (`mac`): an HMAC-SHA256 over the
+manifest's fields as they were first signed (a fixed set in a fixed order,
+so fields a manifest gets later leave older signatures valid) under a key
+of the system agent's (`/etc/zendiloos/volume-backup-keys`, 32 random
+bytes made at the first backup, root's alone, hidden from the files agent
+and the units, carried in the configuration backup; 4.15), which the
+backup's unit is given on its standard input. The first key is written
+under a name of its own and linked into place, which fails if one is
+there: two backups starting at once sign with the same key. The folders on the way are walked to beneath the share
 (`RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV`) and made as far
 as they are missing (0777, which the share's inherited default ACL
 narrows), and hidden files earlier backups left in the volume's folder
@@ -3408,7 +3419,8 @@ pulled out after "done" keeps it). A server cannot rename: there a file
 once more under its name as hard links of the incomplete one
 (`--link-dest`, no data travels), then the file goes, and only if that
 copy was complete the incomplete one too (otherwise it stays for the next
-run to link from, and the run is partial). A version with its
+run to link from, that run's retention leaves it, and the run is
+partial). A version with its
 `.finishing` file still there counts as cut off. A run cut off therefore
 never leaves a version that looks complete; its folder keeps the suffix
 (or its mark), and the next run takes it over on the NAS (renamed to its
@@ -3487,14 +3499,15 @@ and kind: `zendiloos-backup-run-<task>`, `-restore-`, `-prune-`; a
 listing's of its own). The unit's sandbox: no new privileges,
 `ProtectSystem=strict`, `ProtectHome`, its own `/tmp`, devices and IPC,
 its own PID namespace (`PrivatePIDs`: no other process of the machine to
-see, signal, or reach through `/proc/<pid>/root`; stopped with SIGKILL,
-as the first process of a PID namespace takes no signal it has no
-handler for yet, and what a run killed leaves the next takes over or
-removes), `@system-service`
+see, signal, or reach through `/proc/<pid>/root`), `@system-service`
 system calls, 2 GiB of memory; a view of the file system that is an
 allow-list: every folder at the top of the system a read-only tmpfs but
-`/usr` (and the links into it), `/proc`, `/sys`, its own `/dev` and `/tmp`,
-and `/home` and `/root`, which are hidden; files at the top hidden; of
+`/usr` (and the links into it), `/proc` (its processes alone,
+`ProcSubset=pid`), its own `/dev` (without the host's `/dev/shm`,
+`/dev/mqueue` and `/dev/hugepages`) and `/tmp`, and `/home` and `/root`,
+which are hidden; `/sys` an empty tmpfs too (serial numbers, firmware
+tables); nothing mounted after it started (`MountFlags=private`: a pool
+imported meanwhile stays out); files at the top hidden; of
 `/etc` only the accounts, name resolution, the dynamic linker's cache, the
 certificate authorities and OpenSSL's settings bound back read-only; of
 the volumes and drives only the roots it works on (every `/volume<N>` and
@@ -3506,7 +3519,16 @@ systems, `/var` and the system's secrets are not there at all: neither a
 link a share's writer swaps in below a folder while a run reads it (which
 rclone follows, see below) nor a compromised rsync, ssh or rclone reaches
 them. The network only for a server (`PrivateNetwork=no`, IP, Unix and
-netlink sockets; Unix sockets for rsync's own pairs), none otherwise; and
+netlink sockets; Unix sockets for rsync's own pairs), none otherwise; a
+unit with the network shares the host's network namespace, and with it
+the abstract Unix sockets there (no path in the file system; on Debian 13
+NFS's `fsidd` and exim's notifications), which no file system view hides.
+Stopped, all of a unit's processes get SIGTERM: rsync and rclone end and
+remove what they were writing, and the unit's own process (the first of
+its PID namespace, which must not end before them, or they would be
+killed unfinished) starts nothing more and answers that it was stopped;
+a SIGTERM it takes no handler for yet, right after its start, is lost,
+and SIGKILL follows after ten seconds. And
 the capabilities the
 work needs: none for a server's listing or retention,
 `CAP_DAC_READ_SEARCH` to read whatever a source holds, and to write on the
@@ -3605,10 +3627,10 @@ rsync's changes; a listing (`rclone lsjson`) is written as `rsync
 *rclone's sandbox* is the unit's above, with the network only for a cloud
 or a server. Its remotes are set for rclone alone, by variables of its own
 (`RCLONE_CONFIG_BASE_*` for the place, `RCLONE_CONFIG_DEST_*` for the
-crypt), and a cloud's token by a config file in the unit's private `/tmp`
-(0600); the crypt's password and salt are obscured as rclone keeps them by
-`rclone obscure -` reading them on standard input, and go into that file
-too. None of it is on a
+crypt), and the secrets by a config file in the unit's private `/tmp`
+(0600): a cloud's token and the OAuth client's ID and secret, and the
+crypt's password and salt, obscured as rclone keeps them by
+`rclone obscure -` reading them on standard input. None of it is on a
 command line or in a unit property. A folder of the NAS is opened beneath
 its root as for rsync and given to rclone as `/proc/self/fd/<n>`; rclone
 leaves links out (`--skip-links`), and it has no `--one-file-system` here
@@ -3619,9 +3641,8 @@ writer swaps for a link while it runs is followed (tried with rclone 1.60:
 an encrypted task backed up a root-only file from behind such a link):
 what it then reads is only what the unit's view holds. The unit's own
 folder in `/tmp` is left out by its random name (`--exclude`), and no
-secret is in rclone's environment (the crypt's password and salt are in
-its config file), so neither a link to `/tmp` nor one to `/proc/self`
-leads to them. A restore from an encrypted or cloud backup copies
+secret is in rclone's environment (they are in its config file), so
+neither a link to `/tmp` nor one to `/proc/self` leads to them. A restore from an encrypted or cloud backup copies
 with rclone's filters for the folders asked for (`--filter-from`, their
 names' glob characters escaped) and `--ignore-existing` to keep what is
 there; what it wrote into a share then takes the folder's owner and group

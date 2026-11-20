@@ -175,9 +175,6 @@ async fn an_encrypted_cloud_backup_keeps_its_secrets_off_command_lines_and_bring
     for expected in [
         "RCLONE_CONFIG_BASE_TYPE=drive",
         "RCLONE_CONFIG_BASE_SCOPE=drive.file",
-        "RCLONE_CONFIG_BASE_CLIENT_ID=own.apps.googleusercontent.com",
-        // As rclone keeps an OAuth client's secret: as it is.
-        "RCLONE_CONFIG_BASE_CLIENT_SECRET=shh",
         "RCLONE_CONFIG_DEST_TYPE=crypt",
         "RCLONE_CONFIG_DEST_REMOTE=base:nas/photos",
         "RCLONE_CONFIG_DEST_FILENAME_ENCRYPTION=standard",
@@ -185,13 +182,19 @@ async fn an_encrypted_cloud_backup_keeps_its_secrets_off_command_lines_and_bring
     ] {
         assert!(variables.lines().next().unwrap().contains(expected), "{expected}: {variables}");
     }
-    assert!(!variables.contains("PASSWORD"), "the crypt's secrets in the environment: {variables}");
+    for secret in ["PASSWORD", "CLIENT", "shh"] {
+        assert!(!variables.contains(secret), "a secret in rclone's environment");
+    }
+    // In the config file: the token and the OAuth client (as rclone keeps a
+    // client's secret: as it is), the crypt's password and salt.
     let config = read(dir.path(), "rclone.conf");
     assert!(
-        config.starts_with(
-            "[base]\ntoken = {\"access_token\":\"old\",\"refresh_token\":\"r\"}\n[dest]\npassword = obscured-pbeerpg_ubefr\npassword2 = obscured-crccre\n"
-        ),
-        "{config}"
+        config.starts_with(concat!(
+            "[base]\ntoken = {\"access_token\":\"old\",\"refresh_token\":\"r\"}\n",
+            "client_id = own.apps.googleusercontent.com\nclient_secret = shh\n",
+            "[dest]\npassword = obscured-pbeerpg_ubefr\npassword2 = obscured-crccre\n"
+        )),
+        "the config file is not as written"
     );
     // The unit's own folder is never copied, whatever leads there.
     let scratch =

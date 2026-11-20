@@ -19,6 +19,12 @@
 //! allow-list: what such a link reaches is the source, the target, the
 //! programs and what is public anyway.
 //!
+//! Stopped, the unit's processes all get SIGTERM: rsync and rclone end and
+//! remove what they were writing; the unit's own process, the first of its
+//! PID namespace, must outlive them (its end would kill them unfinished),
+//! so it only notes the stop ([`note_backup_unit_stopped`]), starts nothing
+//! more and answers that it was stopped.
+//!
 //! Secrets come on standard input, one line of JSON ([`UnitInput`]), never
 //! on a command line: a daemon's password and the NAS's SSH key go into
 //! files in a folder with a random name in the unit's private `/tmp`
@@ -32,6 +38,7 @@ use std::io::{BufRead, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rustix::fs::{Mode, OFlags, RenameFlags, ResolveFlags};
 use rustix::io::Errno;
@@ -310,9 +317,31 @@ fn say(out: &mut dyn Write, line: &UnitSays) {
     let _ = out.flush();
 }
 
+/// Set once the unit is asked to stop (SIGTERM, which systemd sends to all
+/// its processes): rsync and rclone, given it too, end and remove what they
+/// were writing, and the unit starts no more of them.
+static STOPPED: AtomicBool = AtomicBool::new(false);
+
+/// What the unit's process does at SIGTERM: notes it, and goes on until its
+/// tools ended. As the first process of its PID namespace it must not end
+/// before them: its end would kill them before they cleaned up.
+pub fn note_backup_unit_stopped() {
+    STOPPED.store(true, Ordering::SeqCst);
+}
+
 /// Runs the job, reading its secrets from `input` and writing
 /// [`UnitSays`] lines to `out`; whether it succeeded.
 pub async fn run_backup_unit(hex: &str, input: &mut dyn BufRead, out: &mut (dyn Write + Send)) -> bool {
+    run_backup_unit_until(hex, input, out, &STOPPED).await
+}
+
+/// As [`run_backup_unit`], stopped once `stopped` is set.
+async fn run_backup_unit_until(
+    hex: &str,
+    input: &mut dyn BufRead,
+    out: &mut (dyn Write + Send),
+    stopped: &AtomicBool,
+) -> bool {
     let outcome = async {
         let job = decode::<UnitJob>(hex).map_err(refused)?;
         let mut line = String::new();
@@ -327,7 +356,7 @@ pub async fn run_backup_unit(hex: &str, input: &mut dyn BufRead, out: &mut (dyn 
             Some(UnitKey(key)) => Some(scratch.file("backup-key", key)?),
             None => None,
         };
-        let unit = Unit { job: &job, scratch: &scratch, secrets: input.secrets, key };
+        let unit = Unit { job: &job, scratch: &scratch, secrets: input.secrets, key, stopped };
         let result = unit.work(out).await;
         drop(scratch);
         result
@@ -712,9 +741,19 @@ struct Unit<'a> {
     secrets: BackupSecrets,
     /// The NAS's SSH key, in the scratch folder.
     key: Option<PathBuf>,
+    /// The unit was asked to stop: nothing more is started.
+    stopped: &'a AtomicBool,
 }
 
 impl Unit<'_> {
+    /// Refused once the unit is asked to stop.
+    fn going_on(&self) -> Result<(), Fail> {
+        if self.stopped.load(Ordering::SeqCst) {
+            return Err(failed("the unit was stopped"));
+        }
+        Ok(())
+    }
+
     fn key(&self) -> Result<&Path, Fail> {
         self.key.as_deref().ok_or_else(|| refused("the NAS's SSH key was not given"))
     }
@@ -839,6 +878,7 @@ impl Unit<'_> {
         heard: &mut Heard,
         out: &mut (dyn Write + Send),
     ) -> Result<Ended, Fail> {
+        self.going_on()?;
         let program = Program::new(&self.job.rsync).map_err(|e| failed(e.to_string()))?;
         let home = self.scratch.0.display().to_string();
         // Times as UTC, in listings too.

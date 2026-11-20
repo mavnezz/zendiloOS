@@ -1162,6 +1162,40 @@ fn a_manifest_is_signed_and_one_made_or_changed_by_anyone_else_is_not_this_nass(
     assert_eq!(format!("{keys:?}"), "ManifestKeys(1 keys)");
 }
 
+/// The signature covers a fixed set of the manifest's fields, in the JSON
+/// they were first signed as: manifests signed then stay signed, whatever
+/// fields come later.
+#[test]
+fn a_manifests_signature_covers_its_fields_as_first_signed() {
+    let mut manifest = Manifest {
+        format: 1,
+        volume: "db".into(),
+        driver: "local".into(),
+        labels: BTreeMap::from([("com.docker.compose.project".to_owned(), "tesla".to_owned())]),
+        size_bytes: 4096,
+        created: "2026-11-01T10:00:00Z".into(),
+        backed_up_at: 1_793_847_600,
+        zendiloos_version: "0.5.1".into(),
+        archive: "db-20261108-030000.tar.zst".into(),
+        sha256: "ab".repeat(32),
+        entries: Some(3),
+        mac: None,
+    };
+    manifest.sign(&KEY);
+    assert_eq!(manifest.mac.as_deref(), Some(SIGNED_AS_FIRST));
+    let keys = ManifestKeys::parse(&format!("{}\n", key_to_hex(&KEY))).unwrap();
+    assert!(manifest.signed_by(&keys));
+    // Without the count of entries, as in manifests before they were counted.
+    manifest.entries = None;
+    manifest.sign(&KEY);
+    assert_eq!(manifest.mac.as_deref(), Some(SIGNED_AS_FIRST_WITHOUT_ENTRIES));
+}
+
+/// What the manifests above were signed as by the first release that signed.
+const SIGNED_AS_FIRST: &str = "d7b2721a97abf48e97ab3c1ddf8abf448162029c4af907a341bdc3c07bc2acdd";
+const SIGNED_AS_FIRST_WITHOUT_ENTRIES: &str =
+    "d679ff70163edfb74010055e48199993800c27c7dd9a19b1972901d0ebb60785";
+
 /// A backup's unit is given its key on standard input, and refuses to run
 /// without.
 #[test]

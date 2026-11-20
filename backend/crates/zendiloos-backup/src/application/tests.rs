@@ -319,6 +319,9 @@ async fn retention_keeps_complete_versions_over_partial_ones_and_removes_unfinis
             mark(format!("{}.finishing", at(3600))),
             folder(&format!("{}.incomplete", at(3600))),
             mark(format!("{}.partial", at(7200))),
+            // What this run keeps on a server when its copy under the
+            // version's name missed files.
+            folder(&format!("{}.incomplete", at(0))),
         ],
     );
     let job = backups.run_now(id, &alice(), &context()).await.unwrap();

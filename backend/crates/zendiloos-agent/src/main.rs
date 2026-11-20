@@ -83,9 +83,9 @@ enum Command {
 }
 
 impl Command {
-    /// Whether it is a unit's work that runs as the first process of a PID
-    /// namespace of its own (`PrivatePIDs=`): the backups' and the volumes'
-    /// units, the VMs' backups, ISOs and uploads.
+    /// Whether it is a unit's work, all of it in this process, that runs as
+    /// the first process of a PID namespace of its own (`PrivatePIDs=`):
+    /// the volumes' units, the VMs' backups, ISOs and uploads.
     fn in_own_pid_namespace(&self) -> bool {
         matches!(
             self,
@@ -100,9 +100,22 @@ impl Command {
                 | Command::BackUpVm { .. }
                 | Command::RestoreVm { .. }
                 | Command::RemoveVmBackup { .. }
-                | Command::BackupUnit { .. }
         )
     }
+}
+
+/// A backup's unit notes SIGTERM and goes on until rsync or rclone, which
+/// get it too, ended ([`zendiloos_agent::note_backup_unit_stopped`]): as
+/// the first process of its PID namespace, its end would kill them before
+/// they removed what they were writing.
+fn note_terminate() -> anyhow::Result<()> {
+    let mut terminate = signal(SignalKind::terminate()).context("cannot handle SIGTERM")?;
+    tokio::spawn(async move {
+        while terminate.recv().await.is_some() {
+            zendiloos_agent::note_backup_unit_stopped();
+        }
+    });
+    Ok(())
 }
 
 /// Ends the process at SIGTERM, as the signal does by default. The kernel
@@ -149,6 +162,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     }
     if cli.command.as_ref().is_some_and(Command::in_own_pid_namespace) {
         end_at_terminate()?;
+    }
+    if let Some(Command::BackupUnit { .. }) = &cli.command {
+        note_terminate()?;
     }
     let volume_job = match &cli.command {
         Some(Command::BackupVolume { job }) => Some((VolumeJob::BackUp, job)),

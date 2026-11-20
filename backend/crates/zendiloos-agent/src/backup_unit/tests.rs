@@ -465,6 +465,24 @@ async fn a_second_pass_that_misses_files_is_told_and_keeps_the_full_copy() {
 const KEY: &str = r#"{"secrets":{},"key":"-----BEGIN OPENSSH PRIVATE KEY-----\nb3Blbg==\n-----END OPENSSH PRIVATE KEY-----\n"}"#;
 
 #[tokio::test]
+async fn a_unit_asked_to_stop_starts_nothing_more() {
+    let (dir, source, _) = places();
+    let rsync = fake_rsync(dir.path());
+    let push =
+        job(run(local(&source, ""), daemon("nas"), BackupMode::Versioned, "2026-11-11_030000Z"), rsync);
+    let mut out = Vec::new();
+    let stopped = AtomicBool::new(true);
+    let ran =
+        run_backup_unit_until(&encode(&push), &mut std::io::Cursor::new(b"\n".to_vec()), &mut out, &stopped)
+            .await;
+    assert!(!ran);
+    let said: Vec<UnitSays> =
+        String::from_utf8_lossy(&out).lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(failure(&said).0, "the unit was stopped");
+    assert!(!dir.path().join("rsync.log").exists(), "rsync was started");
+}
+
+#[tokio::test]
 async fn ssh_runs_with_the_pinned_key_only() {
     let (dir, source, _) = places();
     let rsync = fake_rsync(dir.path());

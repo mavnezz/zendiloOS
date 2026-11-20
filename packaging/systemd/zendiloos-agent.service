@@ -102,17 +102,21 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 #   share and restored by transient units (systemd-run, this binary as
 #   backup-volume, restore-volume or remove-volume-backup), outside this
 #   sandbox, each in a sandbox of its own that may write only the share or
-#   the volume's folder, sees an empty /run (no control socket of the
-#   machine to connect to) and only its own processes (PrivatePIDs); a
+#   the volume's folder, may not connect() at all, sees an empty /run (no
+#   control socket of the machine), none of the system's secrets and only
+#   its own processes (PrivatePIDs), and is stopped with SIGKILL, as its
+#   first process takes no signal it has no handler for yet; a
 #   backup's manifest is signed with a key of this agent's in
 #   /etc/zendiloos/volume-backup-keys, made at the first backup and handed
 #   to the unit on its standard input;
 # - the backup plugin: its runs, listings, retention and restores in
 #   transient units (this binary as backup-unit; rsync, ssh, rclone) whose
-#   view of the system is an allow-list (/usr, the kernel's file systems,
-#   their own /dev and /tmp, of /etc what the tools read, the roots they
-#   work on), with their own processes only; the NAS's SSH key is read here
-#   and handed to the unit on its standard input;
+#   view of the system is an allow-list (/usr, their own processes in
+#   /proc, their own /dev and /tmp, of /etc what the tools read, the roots
+#   they work on; no /sys, nothing mounted after they started), with their
+#   own processes only; stopped with SIGTERM, which rsync and rclone get
+#   too, and killed after ten seconds; the NAS's SSH key is read here and
+#   handed to the unit on its standard input;
 # - virtual machines: libvirt's daemon, outside this sandbox, runs QEMU
 #   and passt; the agent talks to it with virsh over its socket (AF_UNIX)
 #   and keeps each domain's XML in /etc/zendiloos/vms; a VM's disks are

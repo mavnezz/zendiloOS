@@ -317,7 +317,7 @@ impl RcloneHeard {
 
 /// rclone as a unit's work calls it: its remotes, its config file, the
 /// folder worked on.
-struct Rclone {
+struct Rclone<'a> {
     program: Program,
     config: PathBuf,
     cache: PathBuf,
@@ -332,6 +332,8 @@ struct Rclone {
     /// A cloud's token as given, and as rclone wrote it last.
     given: Option<String>,
     token: Option<String>,
+    /// The unit was asked to stop.
+    stopped: &'a AtomicBool,
 }
 
 fn base(option: &str, value: impl Into<String>) -> (String, String) {
@@ -342,9 +344,9 @@ fn crypt(option: &str, value: impl Into<String>) -> (String, String) {
     (format!("RCLONE_CONFIG_DEST_{option}"), value.into())
 }
 
-impl Rclone {
+impl<'a> Rclone<'a> {
     /// rclone for the folder `at` (a folder of the NAS already `opened`).
-    async fn new(unit: &Unit<'_>, at: &End, opened: Option<&Opened>) -> Result<Self, Fail> {
+    async fn new(unit: &Unit<'a>, at: &End, opened: Option<&Opened>) -> Result<Self, Fail> {
         let program = Program::new(&unit.job.rclone).map_err(|e| failed(format!("rclone: {e}")))?;
         let home = unit.scratch.0.display().to_string();
         let mut variables = vec![("HOME".to_owned(), home), ("TZ".to_owned(), "UTC".to_owned())];
@@ -369,20 +371,23 @@ impl Rclone {
                     }
                     BackupCloud::OneDrive => variables.push(base("TYPE", "onedrive")),
                 }
-                if let Some(id) = &access.client_id {
-                    variables.push(base("CLIENT_ID", id.as_str()));
-                }
-                if let Some(secret) = &access.client_secret {
-                    variables.push(base("CLIENT_SECRET", secret.expose()));
-                }
                 if let Some(id) = &access.drive_id {
                     variables.push(base("DRIVE_ID", id.as_str()));
                 }
                 if let Some(kind) = &access.drive_type {
                     variables.push(base("DRIVE_TYPE", kind.as_str()));
                 }
+                // The token and the OAuth client in the config file, not
+                // the environment, which a folder swapped for a link to
+                // /proc/self would have rclone copy.
                 let token = access.token.expose().to_owned();
                 config = format!("[{BASE}]\ntoken = {token}\n");
+                if let Some(id) = &access.client_id {
+                    config.push_str(&format!("client_id = {}\n", id.as_str()));
+                }
+                if let Some(secret) = &access.client_secret {
+                    config.push_str(&format!("client_secret = {}\n", secret.expose()));
+                }
                 given = Some(token);
                 format!("{BASE}:{}", path.as_str())
             }
@@ -447,6 +452,7 @@ impl Rclone {
             cloud,
             token: given.clone(),
             given,
+            stopped: unit.stopped,
         })
     }
 
@@ -465,6 +471,9 @@ impl Rclone {
         out: &mut (dyn Write + Send),
         step: &str,
     ) -> Result<Ended, Fail> {
+        if self.stopped.load(Ordering::SeqCst) {
+            return Err(failed("the unit was stopped"));
+        }
         let mut all = args.to_vec();
         all.extend([
             format!("--config={}", self.config.display()),

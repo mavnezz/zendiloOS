@@ -245,7 +245,15 @@ async fn a_local_run_sees_only_its_roots_and_writes_only_its_target() {
         "--property=NoNewPrivileges=yes",
         "--property=ProtectSystem=strict",
         "--property=PrivatePIDs=yes",
-        "--property=KillSignal=SIGKILL",
+        // Of /proc its processes, no /sys, none of the host's shared
+        // memory, and nothing mounted after it started.
+        "--property=ProcSubset=pid",
+        "--property=TemporaryFileSystem=/sys:ro",
+        "--property=InaccessiblePaths=-/dev/shm -/dev/mqueue -/dev/hugepages",
+        "--property=MountFlags=private",
+        // Stopped with SIGTERM, which rsync gets too; killed after ten
+        // seconds.
+        "--property=TimeoutStopSec=10 ",
         // The rest of the system's top as read-only tmpfs, its files
         // hidden, of /etc only what the tools need.
         "--property=TemporaryFileSystem=/state:ro",
@@ -258,8 +266,9 @@ async fn a_local_run_sees_only_its_roots_and_writes_only_its_target() {
         "--property=CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE",
         "backup-unit ",
     ] {
-        assert!(call.contains(expected), "{expected}: {call}");
+        assert!(call.contains(expected), "{expected} is not among the unit's properties");
     }
+    assert!(!call.contains("KillSignal="), "the unit is stopped with SIGTERM");
     // The volumes' places once only, and nothing of the secrets' places.
     assert_eq!(call.matches("TemporaryFileSystem=/volume1:ro").count(), 1, "{call}");
     assert!(!call.contains("TemporaryFileSystem=/removable/") && !call.contains("/etc/shadow"), "{call}");
