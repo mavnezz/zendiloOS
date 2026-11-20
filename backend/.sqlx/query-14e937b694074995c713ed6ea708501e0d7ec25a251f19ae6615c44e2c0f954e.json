@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO pool_guids (pool, guid) VALUES (?, ?) ON CONFLICT (pool) DO UPDATE SET guid = excluded.guid",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "14e937b694074995c713ed6ea708501e0d7ec25a251f19ae6615c44e2c0f954e"
+}

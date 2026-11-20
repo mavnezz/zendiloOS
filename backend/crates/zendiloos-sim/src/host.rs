@@ -662,8 +662,10 @@ impl Host {
         volume: u16,
         adopt: bool,
         force: bool,
+        rename: Option<&str>,
     ) -> Result<(), Refusal> {
-        if self.pools.iter().any(|pool| pool.name == name || pool.volume == Some(volume)) {
+        let imported = rename.unwrap_or(name);
+        if self.pools.iter().any(|pool| pool.name == imported || pool.volume == Some(volume)) {
             return Err(Refusal::Conflict);
         }
         let index = self
@@ -690,6 +692,7 @@ impl Host {
         }
         let mut pool = self.importable.remove(index).pool;
         pool.volume = Some(volume);
+        pool.name = imported.to_owned();
         self.pools.push(pool);
         Ok(())
     }

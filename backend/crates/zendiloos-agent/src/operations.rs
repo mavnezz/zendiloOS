@@ -129,8 +129,16 @@ impl Operations {
             volume_backup_keys: paths.host.volume_backup_keys.clone(),
             network: paths.network.directory.clone(),
         };
+        let pools = Pools::new(tools, erasable, paths.host.clone())?;
         Ok(Self {
-            configuration: Configuration::new(Program::new(&tools.systemctl)?, configuration),
+            configuration: Configuration::new(
+                Program::new(&tools.systemctl)?,
+                Program::new(&tools.zpool)?,
+                Program::new(&tools.pdbedit)?,
+                configuration,
+                paths.accounts.clone(),
+                pools.changes(),
+            ),
             systemctl: Program::new(&tools.systemctl)?,
             lsblk: Program::new(&tools.lsblk)?,
             udevadm: Program::new(&tools.udevadm)?,
@@ -211,7 +219,7 @@ impl Operations {
                 paths.host.clone(),
             ),
             accounts: Accounts::new(tools, paths.accounts)?,
-            pools: Pools::new(tools, erasable, paths.host)?,
+            pools,
             role,
         })
     }
@@ -276,8 +284,8 @@ impl Operations {
             Request::DestroyPool { name, volume } => self.pools.destroy(name, *volume).await,
             Request::ReplaceDisk { pool, device, disk } => self.pools.replace(pool, *device, disk).await,
             Request::ImportablePools {} => self.pools.importable().await,
-            Request::ImportPool { name, id, volume, adopt, force } => {
-                self.pools.import(name, *id, *volume, *adopt, *force).await
+            Request::ImportPool { name, id, volume, adopt, force, rename } => {
+                self.pools.import(name, *id, *volume, *adopt, *force, rename.as_ref()).await
             }
             Request::MountVolume { pool, volume, shares } => {
                 self.pools.mount_volume(pool, *volume, shares).await

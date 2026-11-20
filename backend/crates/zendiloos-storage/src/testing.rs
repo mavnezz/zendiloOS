@@ -84,6 +84,9 @@ pub struct FakeStorage {
     pub mounts_change: Mutex<bool>,
     /// The volumes whose mounts came back, as told.
     pub volumes_back: Mutex<Vec<u16>>,
+    /// The pools' GUIDs kept and forgotten, in order: `(name, Some(guid))`
+    /// or `(name, None)`; kept ones go to [`FakeStorage::known`] too.
+    pub guids: Mutex<Vec<(String, Option<u64>)>>,
     tokens: AtomicU64,
 }
 
@@ -375,12 +378,13 @@ impl PoolAdmin for FakeStorage {
     ) -> Result<(), AdminError> {
         steps.step("importing_pool", None);
         self.record(format!(
-            "import {} {} {} adopt={} force={}",
+            "import {} {} {} adopt={} force={}{}",
             pool.name,
             pool.id,
             pool.volume.get(),
             pool.adopt,
-            pool.force
+            pool.force,
+            pool.rename.as_ref().map(|name| format!(" as {name}")).unwrap_or_default()
         ));
         self.importable.lock().unwrap().retain(|found| found.id != pool.id);
         if pool.name.as_str() == "tank" {
@@ -405,6 +409,22 @@ impl PoolAdmin for FakeStorage {
 impl KnownPools for FakeStorage {
     async fn known(&self) -> Result<Vec<KnownPool>, PortError> {
         Ok(self.known.lock().unwrap().clone())
+    }
+
+    async fn remember_guid(&self, name: &str, guid: u64) -> Result<(), PortError> {
+        self.guids.lock().unwrap().push((name.to_owned(), Some(guid)));
+        for pool in self.known.lock().unwrap().iter_mut().filter(|pool| pool.name == name) {
+            pool.guid = Some(guid);
+        }
+        Ok(())
+    }
+
+    async fn forget_guid(&self, name: &str) -> Result<(), PortError> {
+        self.guids.lock().unwrap().push((name.to_owned(), None));
+        for pool in self.known.lock().unwrap().iter_mut().filter(|pool| pool.name == name) {
+            pool.guid = None;
+        }
+        Ok(())
     }
 }
 

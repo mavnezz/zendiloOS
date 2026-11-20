@@ -34,6 +34,11 @@ pub struct KnownPool {
     pub volume: VolumeNumber,
     /// The shares on it, by name.
     pub shares: Vec<String>,
+    /// Its GUID (`zpool import`'s id), once zendiloOS made, imported or
+    /// saw it imported; none in a configuration from before that was kept.
+    /// Disks may hold several pools of one name: the configuration's is the
+    /// one with this GUID.
+    pub guid: Option<u64>,
 }
 
 /// A pool the configuration names, not imported, found on the disks.
@@ -41,6 +46,17 @@ pub struct KnownPool {
 pub struct KnownImportable {
     pub known: KnownPool,
     pub found: ImportablePool,
+}
+
+/// A pool imported under the name of one the configuration names, with
+/// another GUID than the one kept: made or imported here before that
+/// configuration was restored, say. It gets no mounts until an
+/// administrator takes it as the configuration's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OtherPool {
+    pub known: KnownPool,
+    /// The GUID of the pool imported, decimal.
+    pub guid: String,
 }
 
 /// The pools the configuration names that are not imported, and the
@@ -56,19 +72,35 @@ pub struct AbsentPools {
     pub foreign: Vec<ImportablePool>,
     /// The lowest volume number free to adopt one with.
     pub free_volume: Option<VolumeNumber>,
+    /// The names of the pools imported here and of those the configuration
+    /// names: a pool found under one of them is adopted only under a name
+    /// of its own (`zpool import <id> <name>`). Under the configuration's,
+    /// it would be taken for the configuration's pool.
+    pub names_taken: Vec<String>,
+    /// Imported under the name of a pool the configuration names, but not
+    /// that pool by its GUID.
+    pub not_the_configurations: Vec<OtherPool>,
 }
 
 /// What of `known` is not among the pools `imported`, found among those
-/// `zpool import` lists or not, and what else it lists. A volume number is
-/// free when no pool imported is that volume and the configuration names
-/// none on it.
+/// `zpool import` lists or not, and what else it lists. A pool found is
+/// the configuration's if it has its name and, where the configuration
+/// knows it, its GUID; another of that name is foreign, to be adopted as
+/// any other. A volume number is free when no pool imported is that volume
+/// and the configuration names none on it.
 pub fn absent_pools(known: &[KnownPool], imported: &[Pool], found: &[ImportablePool]) -> AbsentPools {
     let mut absent = AbsentPools::default();
     for pool in known {
-        if imported.iter().any(|imported| imported.name == pool.name) {
+        if let Some(other) = imported.iter().find(|imported| imported.name == pool.name) {
+            if let Some(Mismatch::Guid { found, .. }) = mismatch(pool, other) {
+                absent.not_the_configurations.push(OtherPool { known: pool.clone(), guid: found });
+            }
             continue;
         }
-        let matching: Vec<&ImportablePool> = found.iter().filter(|found| found.name == pool.name).collect();
+        let matching: Vec<&ImportablePool> = found
+            .iter()
+            .filter(|found| found.name == pool.name && pool.guid.is_none_or(|guid| found.id == guid))
+            .collect();
         if matching.is_empty() {
             absent.missing.push(pool.clone());
         }
@@ -82,6 +114,13 @@ pub fn absent_pools(known: &[KnownPool], imported: &[Pool], found: &[ImportableP
         .cloned()
         .collect();
     absent.free_volume = VolumeNumber::first_free(used_volumes(known, imported));
+    absent.names_taken = imported
+        .iter()
+        .map(|pool| pool.name.clone())
+        .chain(known.iter().map(|pool| pool.name.clone()))
+        .collect();
+    absent.names_taken.sort_unstable();
+    absent.names_taken.dedup();
     absent
 }
 
@@ -97,16 +136,25 @@ pub fn used_volumes(known: &[KnownPool], imported: &[Pool]) -> Vec<VolumeNumber>
 
 /// What a pool's problems are once it is imported anyway: none when its
 /// configuration and the pool agree.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mismatch {
+    /// The pool imported is another of the name: its GUID is not the one
+    /// the configuration knows. Its mounts are left as they are.
+    Guid { found: String, known: u64 },
     /// The pool imported says another volume number than the
     /// configuration: its mounts are left as they are.
     Volume { found: Option<VolumeNumber>, known: VolumeNumber },
 }
 
 /// Whether `imported`, which the configuration knows as `known`, may get
-/// its mounts: only as the same volume.
+/// its mounts: only the same pool, where its GUID is known, as the same
+/// volume.
 pub fn mismatch(known: &KnownPool, imported: &Pool) -> Option<Mismatch> {
+    if let Some(guid) = known.guid
+        && imported.guid.parse::<u64>().ok() != Some(guid)
+    {
+        return Some(Mismatch::Guid { found: imported.guid.clone(), known: guid });
+    }
     (imported.volume != Some(known.volume))
         .then_some(Mismatch::Volume { found: imported.volume, known: known.volume })
 }
@@ -121,7 +169,7 @@ mod tests {
     }
 
     fn known(name: &str, number: u16) -> KnownPool {
-        KnownPool { name: name.into(), volume: volume(number), shares: vec!["photos".into()] }
+        KnownPool { name: name.into(), volume: volume(number), shares: vec!["photos".into()], guid: None }
     }
 
     fn found(name: &str, id: u64) -> ImportablePool {
@@ -168,10 +216,35 @@ mod tests {
         assert_eq!(used_volumes(&names, &pools), [volume(1), volume(2), volume(4)]);
     }
 
+    /// After a restore the disks may hold another pool of the name: the
+    /// old disks of an earlier installation of the machine, which has its
+    /// host id again, or another zendiloOS pool that is volume 1 too.
+    #[test]
+    fn the_configurations_pool_is_the_one_with_its_guid() {
+        let tank = KnownPool { guid: Some(33), ..known("tank", 1) };
+        let absent = absent_pools(std::slice::from_ref(&tank), &[], &[found("tank", 11), found("tank", 33)]);
+        let ids: Vec<u64> = absent.known.iter().map(|k| k.found.id).collect();
+        assert_eq!(ids, [33]);
+        assert_eq!(absent.foreign, [found("tank", 11)], "the other one is adopted, if at all");
+
+        // Only the other one is there: the configuration's is missing.
+        let absent = absent_pools(&[tank], &[], &[found("tank", 11)]);
+        assert!(absent.known.is_empty());
+        assert_eq!(absent.missing.len(), 1);
+        assert_eq!(absent.foreign, [found("tank", 11)]);
+    }
+
     #[test]
     fn nothing_is_absent_once_everything_is_imported() {
         let absent = absent_pools(&[known("tank", 1)], &[imported("tank", Some(1))], &[]);
-        assert_eq!(absent, AbsentPools { free_volume: Some(volume(2)), ..AbsentPools::default() });
+        assert_eq!(
+            absent,
+            AbsentPools {
+                free_volume: Some(volume(2)),
+                names_taken: vec!["tank".into()],
+                ..AbsentPools::default()
+            }
+        );
     }
 
     #[test]
@@ -186,5 +259,12 @@ mod tests {
             mismatch(&tank, &imported("tank", None)),
             Some(Mismatch::Volume { found: None, known: volume(1) })
         );
+        // Another pool of the name, though the same volume.
+        let tank = KnownPool { guid: Some(7), ..tank };
+        assert_eq!(
+            mismatch(&tank, &imported("tank", Some(1))),
+            Some(Mismatch::Guid { found: "1".into(), known: 7 })
+        );
+        assert_eq!(mismatch(&KnownPool { guid: Some(1), ..tank }, &imported("tank", Some(1))), None);
     }
 }

@@ -48,6 +48,10 @@ const STATE_FILE: &str = "run.json";
 const SWTPM_LOCALCA_CONFIG: &str = "/usr/share/zendiloos/swtpm-localca.conf";
 /// The last update's record, also once other runs came after it.
 const UPDATE_FILE: &str = "update.json";
+/// There while systemd-resolved, which a run brought, may have switched
+/// name resolution to its stub, until that is taken back
+/// ([`Debian::leave_resolution_as_it_was`]).
+const RESOLUTION_MARK: &str = "resolution-to-take-back";
 const LIMITS: Limits = Limits { timeout: Duration::from_secs(30), max_stdout: 64 * 1024 };
 /// What virtual machines need, and nothing more (see the task): swtpm
 /// and its tools for a VM's TPM (Windows 11), whose state libvirt sets up
@@ -406,13 +410,24 @@ impl Debian {
             PackageTask::InstallNetworkd => {
                 lists(&mut step)?;
                 step("install")?;
-                let there = self.installed("systemd-resolved");
-                self.apt(&["install", "--yes", "systemd-resolved"])?;
-                if !there {
-                    step("network")?;
-                    self.leave_resolution_as_it_was()?;
+                // Its package switches name resolution to it as soon as it
+                // is configured. Where a run brought it, that is taken back:
+                // also when the run failed after that, or taking it back
+                // did, and so at the next try, though the package is
+                // installed by then. One there before is left as it is.
+                let mark = paths.packages.join(RESOLUTION_MARK);
+                if !self.installed("systemd-resolved") {
+                    fs::write(&mark, b"").map_err(|e| format!("{}: {e}", mark.display()))?;
                 }
-                Ok(())
+                let installed = self.apt(&["install", "--yes", "systemd-resolved"]);
+                let taken_back = if fs::symlink_metadata(&mark).is_ok() {
+                    step("network")?;
+                    self.leave_resolution_as_it_was()
+                        .and_then(|()| fs::remove_file(&mark).map_err(|e| format!("{}: {e}", mark.display())))
+                } else {
+                    Ok(())
+                };
+                installed.and(taken_back)
             }
             PackageTask::Check => {
                 lists(&mut step)?;
@@ -502,18 +517,28 @@ impl Debian {
     /// its package enables and starts it and moves `/etc/resolv.conf` aside
     /// (`.resolv.conf.systemd-resolved.bak`) for a link to its stub. While
     /// ifupdown still manages the network nothing tells it the name
-    /// servers, so it goes back to how it was; taking the network over
-    /// switches it on.
+    /// servers (Debian's has none of its own), so it goes back to how it
+    /// was, the file first, so that names resolve again whatever stopping
+    /// it does; taking the network over switches it on. Where
+    /// systemd-networkd manages the network by now, it tells
+    /// systemd-resolved the name servers: left as it is.
     fn leave_resolution_as_it_was(&self) -> Result<(), String> {
-        debian(&self.systemctl, &["disable", "--now", "systemd-resolved.service"])?;
+        if run_text(&self.systemctl, &["is-enabled", "systemd-networkd.service"])
+            .is_ok_and(|state| state == "enabled")
+        {
+            return Ok(());
+        }
         let resolv_conf = self.etc.join("resolv.conf");
         let moved = self.etc.join(".resolv.conf.systemd-resolved.bak");
         let stub = fs::read_link(&resolv_conf)
             .is_ok_and(|target| target.ends_with("run/systemd/resolve/stub-resolv.conf"));
-        if stub && fs::symlink_metadata(&moved).is_ok() {
-            fs::rename(&moved, &resolv_conf).map_err(|e| format!("{}: {e}", resolv_conf.display()))?;
-        }
-        Ok(())
+        let back = if stub && fs::symlink_metadata(&moved).is_ok() {
+            fs::rename(&moved, &resolv_conf).map_err(|e| format!("{}: {e}", resolv_conf.display()))
+        } else {
+            Ok(())
+        };
+        let stopped = debian(&self.systemctl, &["disable", "--now", "systemd-resolved.service"]);
+        back.and(stopped)
     }
 
     /// The machine's architecture, which the package's name must name.
@@ -1027,6 +1052,7 @@ mod tests {
             "case \"$*\" in\n\
              *--simulate*) [ -e $R/simulate-fails ] && exit 100\n\
                echo 'Inst openssl [3.5.1-1] (3.5.4-1~deb13u1 Debian-Security:13/stable-security [amd64])' ;;\n\
+             *install*systemd-resolved) [ -e $R/install-fails ] && { echo 'E: Sub-process /usr/bin/dpkg returned an error code (1)' >&2; exit 100; } ;;\n\
              *) [ -e $R/apt-fails ] && { echo 'E: Unable to fetch some archives' >&2; exit 100; } ;;\n\
              esac\nexit 0",
         );
@@ -1047,7 +1073,13 @@ mod tests {
              Architecture) cat $R/package-arch 2>/dev/null || echo amd64 ;; esac",
         );
         let dpkg_query = script("dpkg-query", "[ -e $R/resolved-installed ] && echo 'install ok installed'");
-        let systemctl = script("systemctl", "exit 0");
+        let systemctl = script(
+            "systemctl",
+            "case \"$*\" in\n\
+             'is-enabled systemd-networkd.service') [ -e $R/networkd-enabled ] && { echo enabled; exit 0; }; echo disabled; exit 1 ;;\n\
+             disable*) [ -e $R/disable-fails ] && exit 1 ;;\n\
+             esac\nexit 0",
+        );
         let udevadm = script("udevadm", "[ -e $R/udev-fails ] && exit 1; exit 0");
         let systemd_tmpfiles = script(
             "systemd-tmpfiles",
@@ -1399,6 +1431,76 @@ mod tests {
         fs::remove_file(root.path().join("debian.log")).unwrap();
         run_with(&paths, &debian, "ab05", "install-networkd", None, None).unwrap();
         assert!(!called(root.path()).iter().any(|c| c.starts_with("systemctl")), "{:?}", called(root.path()));
+    }
+
+    /// What systemd-resolved's package does when it is configured: it
+    /// moves `/etc/resolv.conf` aside for a link to its stub.
+    fn switched_to_the_stub(etc: &Path) {
+        let _ = fs::remove_file(etc.join("resolv.conf"));
+        fs::write(etc.join(".resolv.conf.systemd-resolved.bak"), "nameserver 192.168.1.1\n").unwrap();
+        std::os::unix::fs::symlink("../run/systemd/resolve/stub-resolv.conf", etc.join("resolv.conf"))
+            .unwrap();
+    }
+
+    /// systemd-resolved's package switched name resolution to its stub,
+    /// and then the run failed (another package's postinst or a trigger in
+    /// the same run), or stopping it again did: name resolution goes back
+    /// all the same, and trying again finishes what is left, though the
+    /// package is installed by then. Nothing tells it name servers while
+    /// ifupdown manages the network, and Debian's has none of its own.
+    #[test]
+    fn name_resolution_goes_back_after_a_failed_run_and_at_the_next_try() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, debian) = host(root.path());
+        let etc = root.path().join("etc");
+        let resolv_conf = || fs::read_to_string(etc.join("resolv.conf")).unwrap();
+        switched_to_the_stub(&etc);
+        fs::write(root.path().join("install-fails"), "").unwrap();
+        let failed = run_with(&paths, &debian, "ab06", "install-networkd", None, None).unwrap_err();
+        assert!(failed.contains("apt-get install failed"), "{failed}");
+        assert_eq!(resolv_conf(), "nameserver 192.168.1.1\n", "back from the stub");
+        assert_eq!(recorded(&paths, STATE_FILE).state, PackageRunState::Failed);
+
+        // Installed this time, but stopping it fails: the file comes back
+        // first all the same, and the next try, with the package installed
+        // by then, stops it.
+        fs::remove_file(root.path().join("install-fails")).unwrap();
+        fs::write(root.path().join("disable-fails"), "").unwrap();
+        switched_to_the_stub(&etc);
+        assert!(run_with(&paths, &debian, "ab07", "install-networkd", None, None).is_err());
+        assert_eq!(resolv_conf(), "nameserver 192.168.1.1\n");
+        fs::write(root.path().join("resolved-installed"), "").unwrap();
+        fs::remove_file(root.path().join("disable-fails")).unwrap();
+        fs::remove_file(root.path().join("debian.log")).unwrap();
+        run_with(&paths, &debian, "ab08", "install-networkd", None, None).unwrap();
+        assert!(
+            called(root.path()).contains(&"systemctl disable --now systemd-resolved.service".to_owned()),
+            "{:?}",
+            called(root.path())
+        );
+
+        // Done: from now on it is left as it is.
+        fs::remove_file(root.path().join("debian.log")).unwrap();
+        run_with(&paths, &debian, "ab09", "install-networkd", None, None).unwrap();
+        assert!(!called(root.path()).iter().any(|c| c.starts_with("systemctl")), "{:?}", called(root.path()));
+    }
+
+    /// Where systemd-networkd manages the network (taken over meanwhile),
+    /// it tells systemd-resolved the name servers: its stub stays.
+    #[test]
+    fn name_resolution_stays_with_systemd_resolved_under_systemd_networkd() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, debian) = host(root.path());
+        let etc = root.path().join("etc");
+        switched_to_the_stub(&etc);
+        fs::write(root.path().join("networkd-enabled"), "").unwrap();
+        run_with(&paths, &debian, "ab0a", "install-networkd", None, None).unwrap();
+        assert!(fs::read_link(etc.join("resolv.conf")).is_ok(), "still the stub");
+        assert!(
+            !called(root.path()).iter().any(|c| c.starts_with("systemctl disable")),
+            "{:?}",
+            called(root.path())
+        );
     }
 
     /// A key made with `minisign -G -W` (its secret one is gone), and

@@ -3958,6 +3958,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/storage/pools/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Takes a pool imported under the name of one the configuration names, but
+         *     another pool than the one it knows by its GUID, as the configuration's:
+         *     its GUID is kept anew, and its volume's mounts, with the configuration's
+         *     shares, are made, as for a pool imported. Only one that is the volume the
+         *     configuration names. Audited as `storage.claim_pool`. Needs
+         *     `storage.manage`.
+         */
+        post: operations["claim_pool"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/storage/pools/import": {
         parameters: {
             query?: never;
@@ -5127,6 +5151,11 @@ export interface components {
             known: components["schemas"]["KnownFoundPool"][];
             /** @description On no disk here. */
             missing: components["schemas"]["NamedPool"][];
+            /**
+             * @description Imported under the name of one the configuration names, but another
+             *     pool than the one it knows (`POST /storage/pools/claim`).
+             */
+            not_the_configurations: components["schemas"]["OtherPool"][];
         };
         Account: {
             /** Format: int64 */
@@ -6065,6 +6094,11 @@ export interface components {
         };
         /** @enum {string} */
         ChassisStyle: "tower" | "rack" | "plain";
+        ClaimPoolRequest: {
+            /** @description The pool's name, typed again. */
+            confirm: string;
+            name: string;
+        };
         ComposeChange: {
             /**
              * @description As for a new project: the `digest` of the check whose risks were
@@ -7193,6 +7227,11 @@ export interface components {
             id: string;
             name: string;
             /**
+             * @description A pool here or one the configuration names has its name: adopted,
+             *     it is imported under a name of its own (`rename`).
+             */
+            name_taken: boolean;
+            /**
              * @description Another machine used it last and did not export it: ZFS imports it
              *     only by force (`zpool import -f`). A configuration backup restored
              *     brings back this machine's host id, so a pool of the machine backed
@@ -7330,6 +7369,11 @@ export interface components {
             /** @description The pool's numeric identifier, as listed. */
             id: string;
             name: string;
+            /**
+             * @description For a pool the configuration does not name: the name it is imported
+             *     under; needed where its own is taken (`name_taken`), and free.
+             */
+            rename?: string | null;
             /**
              * Format: int32
              * @description For a pool the configuration does not name: the volume number it
@@ -8110,6 +8154,17 @@ export interface components {
         };
         /** @enum {string} */
         Orientation: "vertical" | "horizontal";
+        /**
+         * @description A pool imported under the name of one the configuration names, but not
+         *     that one by its GUID (made or imported here before the configuration
+         *     was restored): it gets no mounts until taken as the configuration's.
+         */
+        OtherPool: {
+            /** @description The GUID of the pool imported, decimal. */
+            guid: string;
+            /** @description The configuration's pool of that name. */
+            pool: components["schemas"]["NamedPool"];
+        };
         /** @description A Debian package an update brings. */
         PackageUpdate: {
             /** @description None for one that comes in new. */
@@ -19728,6 +19783,55 @@ export interface operations {
             };
         };
     };
+    claim_pool: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClaimPoolRequest"];
+            };
+        };
+        responses: {
+            /** @description Taken as the configuration's. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden`; `refused`: it is another volume */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `not_found`: no such pool */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `confirmation_mismatch` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     import_pool: {
         parameters: {
             query?: never;
@@ -19758,7 +19862,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `other_host`: another machine used it last, `volume_taken`, `no_volume_number`, `refused`: ZFS cannot import it */
+            /** @description `other_host`: another machine used it last, `volume_taken`, `no_volume_number`, `name_taken`: a pool adopted needs a name of its own (`rename`), `refused`: ZFS cannot import it */
             409: {
                 headers: {
                     [name: string]: unknown;

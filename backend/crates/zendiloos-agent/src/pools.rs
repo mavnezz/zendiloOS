@@ -11,7 +11,10 @@
 //!   which fails while ZFS, md or a filesystem uses them.
 //!
 //! A pool may only be destroyed or changed if its `zendiloos:volume`
-//! property shows that zendiloos created it.
+//! property shows that zendiloos created it. That property is anyone's to
+//! set who makes a pool, so a pool imported is given what zendiloOS gives
+//! its datasets before it goes into ZFS's cache file ([`imported_fixes`]),
+//! and every mount unit says `nosuid,nodev` whatever a dataset says.
 
 use std::collections::HashSet;
 use std::fs;
@@ -47,6 +50,9 @@ pub(crate) const NOTE_PROPERTY: &str = "zendiloos:note";
 const PARTITION_NAME: &str = "zendiloos";
 /// The GPT type OpenZFS uses for its partitions.
 const PARTITION_TYPE: &str = "BF01";
+/// What the datasets of a pool imported are checked for
+/// ([`imported_fixes`]).
+const IMPORT_CHECKED: &str = "mountpoint,sharenfs,sharesmb,setuid,devices";
 /// Properties of every new pool's root dataset (docs/architecture.md, 5).
 const DATASET_PROPERTIES: [&str; 11] = [
     "compression=lz4",
@@ -190,8 +196,9 @@ pub(crate) struct Pools {
     docker: Program,
     dockerd: PathBuf,
     exportfs: Program,
-    /// One change to disks and pools at a time.
-    serial: tokio::sync::Mutex<()>,
+    /// One change to disks and pools at a time; a restore of the host id
+    /// takes it too ([`Pools::changes`]).
+    serial: std::sync::Arc<tokio::sync::Mutex<()>>,
     /// One move of Docker's data at a time; the copy runs without `serial`.
     docker_move: tokio::sync::Mutex<()>,
 }
@@ -214,6 +221,9 @@ fn read(path: &Path) -> Result<String, OperationError> {
 }
 
 const LIMITS: Limits = Limits { timeout: Duration::from_secs(120), max_stdout: 1024 * 1024 };
+/// `zfs get -r` of a pool imported: some 300 bytes a dataset, and a pool
+/// may have tens of thousands (an app platform's or Docker's layers).
+const LISTING_LIMITS: Limits = Limits { timeout: Duration::from_secs(600), max_stdout: 256 * 1024 * 1024 };
 
 impl Pools {
     pub(crate) fn new(
@@ -233,9 +243,15 @@ impl Pools {
             docker: Program::new(&tools.docker)?,
             dockerd: tools.dockerd.clone(),
             exportfs: Program::new(&tools.exportfs)?,
-            serial: tokio::sync::Mutex::new(()),
+            serial: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             docker_move: tokio::sync::Mutex::new(()),
         })
+    }
+
+    /// The lock changes to pools take: whoever must see no pool imported
+    /// meanwhile holds it.
+    pub(crate) fn changes(&self) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        std::sync::Arc::clone(&self.serial)
     }
 
     pub(crate) async fn create(
@@ -1039,18 +1055,24 @@ impl Pools {
     }
 
     /// Imports a pool zendiloos made, as [`Request::ImportPool`] says: by
-    /// its identifier, unmounted, its devices by by-id link; checked to be
-    /// `volume` (with `adopt` made so), otherwise exported again.
+    /// its identifier, unmounted, its devices by by-id link, out of ZFS's
+    /// cache file; checked to be `volume` (with `adopt` made so) and its
+    /// datasets given what zendiloOS gives its own ([`imported_fixes`]),
+    /// then put in the cache file for the next boot; otherwise exported
+    /// again.
     ///
     /// [`Request::ImportPool`]: zendiloos_agent_proto::Request::ImportPool
     pub(crate) async fn import(
         &self,
-        name: &PoolName,
+        listed: &PoolName,
         id: u64,
         volume: VolumeNumber,
         adopt: bool,
         force: bool,
+        rename: Option<&PoolName>,
     ) -> Result<Response, OperationError> {
+        // The name it is imported under: its own, or the one asked for.
+        let name = rename.unwrap_or(listed);
         let _serial = crate::waiting::lock(&self.serial).await?;
         if self.pool_names().await?.iter().any(|imported| imported == name.as_str()) {
             return Err(OperationError::Conflict);
@@ -1067,19 +1089,25 @@ impl Pools {
         let Response::ImportablePools { zpool_import } = self.importable().await? else {
             return Err(OperationError::Failed("zpool import lists nothing".into()));
         };
-        if !listed_pools(&zpool_import).iter().any(|(pool, listed)| pool == name.as_str() && *listed == id) {
+        if !listed_pools(&zpool_import).iter().any(|(pool, found)| pool == listed.as_str() && *found == id) {
             return Err(refused(format!(
                 "there is no pool {} with this identifier to import",
-                name.as_str()
+                listed.as_str()
             )));
         }
         let by_id = self.paths.by_id.to_string_lossy().into_owned();
         let id_text = id.to_string();
-        let mut args = vec!["import", "-N", "-d", by_id.as_str()];
+        // Out of the cache file until checked: a pool imported with a
+        // mount point or a share of its own, cut off here, would be
+        // mounted and exported at the next boot.
+        let mut args = vec!["import", "-N", "-o", "cachefile=none", "-d", by_id.as_str()];
         if force {
             args.push("-f");
         }
         args.push(&id_text);
+        if let Some(rename) = rename {
+            args.push(rename.as_str());
+        }
         crate::progress::step("importing_pool", None);
         match zendiloos_exec::run(&self.zpool, &args, LIMITS).await?.success(&self.zpool) {
             Ok(_) => {}
@@ -1090,7 +1118,7 @@ impl Pools {
         }
         let value = output(&self.zfs, &["get", "-H", "-o", "value", VOLUME_PROPERTY, name.as_str()]).await;
         let found: Option<u16> = value.as_deref().ok().and_then(|value| value.trim().parse().ok());
-        let refusal = match found {
+        let mut refusal = match found {
             Some(found) if found == volume.get() => None,
             Some(_) if adopt => {
                 let property = format!("{VOLUME_PROPERTY}={}", volume.get());
@@ -1101,6 +1129,9 @@ impl Pools {
                 Some(format!("{} was not made by zendiloOS (it has no {VOLUME_PROPERTY})", name.as_str()))
             }
         };
+        if refusal.is_none() {
+            refusal = self.made_ours(name).await.err();
+        }
         if let Some(reason) = refusal {
             if let Err(error) = run(&self.zpool, &["export", name.as_str()]).await {
                 tracing::error!(pool = name.as_str(), %error, "cannot export a pool imported by mistake");
@@ -1108,6 +1139,42 @@ impl Pools {
             return Err(refused(reason));
         }
         Ok(Response::Done)
+    }
+
+    /// Gives the datasets of `pool`, just imported, what zendiloOS gives
+    /// its own ([`imported_fixes`]), and then puts it in ZFS's cache file,
+    /// which ZFS's units import at boot; why not, if not.
+    async fn made_ours(&self, pool: &PoolName) -> Result<(), String> {
+        let args = [
+            "get",
+            "-r",
+            "-H",
+            "-t",
+            "filesystem",
+            "-o",
+            "name,property,value,source",
+            IMPORT_CHECKED,
+            pool.as_str(),
+        ];
+        let listing = zendiloos_exec::run(&self.zfs, args, LISTING_LIMITS)
+            .await
+            .and_then(|done| done.success(&self.zfs))
+            .map_err(|error| error.to_string())?;
+        let listing = String::from_utf8(listing.stdout).map_err(|_| OperationError::NotUtf8.to_string())?;
+        for (dataset, properties) in imported_fixes(pool.as_str(), &listing)? {
+            tracing::warn!(
+                dataset,
+                properties = properties.join(" "),
+                "a pool imported: set as zendiloOS sets them"
+            );
+            let args: Vec<&str> = ["set"]
+                .into_iter()
+                .chain(properties.iter().map(String::as_str))
+                .chain([dataset.as_str()])
+                .collect();
+            run(&self.zfs, &args).await.map_err(|error| error.to_string())?;
+        }
+        run(&self.zpool, &["set", "cachefile=", pool.as_str()]).await.map_err(|error| error.to_string())
     }
 
     /// Makes sure the mounts of an imported pool are in place, as
@@ -1443,6 +1510,7 @@ fn volume_unit(pool: &PoolName, volume: VolumeNumber) -> String {
          What={pool}\n\
          Where=/volume{number}\n\
          Type=zfs\n\
+         Options=nosuid,nodev\n\
          \n\
          [Install]\n\
          WantedBy=multi-user.target\n",
@@ -1464,6 +1532,7 @@ fn share_unit(pool: &PoolName, volume: VolumeNumber, share: &ShareName) -> Strin
          What={pool}/{share}\n\
          Where=/volume{number}/{share}\n\
          Type=zfs\n\
+         Options=nosuid,nodev\n\
          \n\
          [Install]\n\
          WantedBy=multi-user.target\n",
@@ -1486,6 +1555,7 @@ fn homes_unit(pool: &PoolName, volume: VolumeNumber) -> String {
          What={pool}/{HOMES_DATASET}\n\
          Where=/volume{number}/{HOMES_DIRECTORY}\n\
          Type=zfs\n\
+         Options=nosuid,nodev\n\
          \n\
          [Install]\n\
          WantedBy=multi-user.target\n",
@@ -1508,6 +1578,7 @@ fn docker_unit(pool: &PoolName, volume: VolumeNumber) -> String {
          What={pool}/{DOCKER_DATASET}\n\
          Where=/volume{number}/{DOCKER_DIRECTORY}\n\
          Type=zfs\n\
+         Options=nosuid,nodev\n\
          \n\
          [Install]\n\
          WantedBy=multi-user.target\n",
@@ -1531,12 +1602,61 @@ fn vms_unit(pool: &PoolName, volume: VolumeNumber) -> String {
          What={pool}/{VMS_DATASET}\n\
          Where=/volume{number}/{VMS_DIRECTORY}\n\
          Type=zfs\n\
+         Options=nosuid,nodev\n\
          \n\
          [Install]\n\
          WantedBy=multi-user.target\n",
         pool = pool.as_str(),
         number = volume.get(),
     )
+}
+
+/// What must change in a pool just imported, from `zfs get -r -H -t
+/// filesystem -o name,property,value,source` of [`IMPORT_CHECKED`]: the
+/// `zfs set` arguments of each dataset, in the listing's order. Whoever
+/// made the pool chose its properties, and ZFS's units would act on them
+/// from the next boot; zendiloOS's datasets have none of that:
+///
+/// - a mount point only zendiloOS's units mount (`legacy`): not one ZFS
+///   mounts by itself, anywhere (`/root/.ssh`), nor `none`, which the units
+///   could not mount;
+/// - no share ZFS exports (`sharenfs`, `sharesmb` off);
+/// - no set-ID programs or device files (`setuid`, `devices` off).
+///
+/// A value inherited changes with the dataset it comes from. A listing
+/// without the pool's root dataset, or with another pool's, is refused.
+pub(crate) fn imported_fixes(pool: &str, listing: &str) -> Result<Vec<(String, Vec<String>)>, String> {
+    let mut fixes: Vec<(String, Vec<String>)> = Vec::new();
+    let mut root = false;
+    for line in listing.lines().filter(|line| !line.is_empty()) {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let [dataset, property, value, source] = fields[..] else {
+            return Err(format!("zfs lists the properties of {pool} unlike itself: {line:?}"));
+        };
+        if dataset != pool && !dataset.starts_with(&format!("{pool}/")) {
+            return Err(format!("zfs lists the properties of {dataset} among {pool}'s"));
+        }
+        root |= dataset == pool;
+        let wanted = match property {
+            "mountpoint" if value == "legacy" => continue,
+            "mountpoint" => "legacy",
+            "sharenfs" | "sharesmb" | "setuid" | "devices" if value == "off" => continue,
+            "sharenfs" | "sharesmb" | "setuid" | "devices" => "off",
+            _ => continue,
+        };
+        if source.starts_with("inherited") {
+            continue;
+        }
+        let setting = format!("{property}={wanted}");
+        match fixes.last_mut() {
+            Some((last, settings)) if last == dataset => settings.push(setting),
+            _ => fixes.push((dataset.to_owned(), vec![setting])),
+        }
+    }
+    if !root {
+        return Err(format!("zfs lists no properties of {pool}"));
+    }
+    Ok(fixes)
 }
 
 /// `(name, id)` of each pool `zpool import` lists, in its order.

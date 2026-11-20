@@ -201,6 +201,14 @@ export function importPool(body: ImportPoolRequest): Promise<Job> {
   return unwrap(api.POST('/api/v1/storage/pools/import', { body }))
 }
 
+/**
+ * Takes a pool imported under the name of one the configuration names, but
+ * another pool than that one, as the configuration’s.
+ */
+export async function claimPool(name: string): Promise<void> {
+  await unwrap(api.POST('/api/v1/storage/pools/claim', { body: { name, confirm: name } }))
+}
+
 /** Reads everything again, SMART included. */
 export function useRefreshStorage() {
   const client = useQueryClient()

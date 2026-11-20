@@ -273,7 +273,10 @@ async fn creates_a_mirror_with_equal_partitions_and_a_mount_unit() {
         ]
     );
     let unit = fs::read_to_string(host.path("units/volume2.mount")).unwrap();
-    assert!(unit.contains("What=media\nWhere=/volume2\nType=zfs\n"), "{unit}");
+    assert!(
+        unit.contains("What=media\nWhere=/volume2\nType=zfs\nOptions=nosuid,nodev\n"),
+        "the volume's unit"
+    );
     assert!(unit.contains("After=zfs-import.target"), "{unit}");
 }
 
@@ -503,7 +506,10 @@ async fn shares_are_datasets_with_their_own_mount_unit() {
     );
     assert_eq!(calls.last().unwrap(), "systemctl start volume1-my\\x2dphotos.mount");
     let unit = fs::read_to_string(host.path("units/volume1-my\\x2dphotos.mount")).unwrap();
-    assert!(unit.contains("What=tank/my-photos\nWhere=/volume1/my-photos\nType=zfs\n"), "{unit}");
+    assert!(
+        unit.contains("What=tank/my-photos\nWhere=/volume1/my-photos\nType=zfs\nOptions=nosuid,nodev\n"),
+        "the share's unit"
+    );
 
     assert_refused(host.run(create("other", "foreign")).await, ErrorCode::Forbidden, "not managed");
 
@@ -1093,8 +1099,26 @@ fn importing(host: &Host, status: u8, said: &str) {
     );
 }
 
-/// `zfs`: volume 1 in use; the imported media says `volume`.
+/// What `zfs get -r` lists of a pool zendiloOS made, `media` with a share.
+const MEDIA_AS_MADE: &str = "media\\tmountpoint\\tlegacy\\tlocal\\n\
+    media\\tsharenfs\\toff\\tdefault\\nmedia\\tsharesmb\\toff\\tdefault\\n\
+    media\\tsetuid\\toff\\tlocal\\nmedia\\tdevices\\toff\\tlocal\\n\
+    media/photos\\tmountpoint\\tlegacy\\tlocal\\nmedia/photos\\tsharenfs\\toff\\tdefault\\n\
+    media/photos\\tsharesmb\\toff\\tdefault\\nmedia/photos\\tsetuid\\toff\\tlocal\\n\
+    media/photos\\tdevices\\toff\\tlocal\\n";
+
+/// The listing of the properties a pool imported is checked for.
+const CHECKED: &str = "zfs get -r -H -t filesystem -o name,property,value,source mountpoint,sharenfs,sharesmb,setuid,devices media";
+
+/// `zfs`: volume 1 in use; the imported media says `volume`, its datasets
+/// as zendiloOS makes them.
 fn media_says(host: &Host, volume: &str) {
+    media_with(host, volume, MEDIA_AS_MADE, "");
+}
+
+/// `zfs`: as [`media_says`], the datasets' properties as `listing` (a
+/// `printf` format) says; `zfs set` runs `set`.
+fn media_with(host: &Host, volume: &str, listing: &str, set: &str) {
     program(
         host,
         "zfs",
@@ -1102,6 +1126,8 @@ fn media_says(host: &Host, volume: &str) {
             "case \"$*\" in\n\
              *'-s local -d 0'*) echo 1 ;;\n\
              'get -H -o value zendiloos:volume media') echo {volume} ;;\n\
+             'get -r -H -t filesystem '*) printf '{listing}' ;;\n\
+             set\\ *) {set} ;;\n\
              *) ;;\n\
              esac"
         ),
@@ -1115,6 +1141,7 @@ fn import(name: &str, id: u64, volume: u16, adopt: bool, force: bool) -> Request
         volume: VolumeNumber::new(volume).unwrap(),
         adopt,
         force,
+        rename: None,
     }
 }
 
@@ -1149,11 +1176,146 @@ async fn imports_a_pool_by_its_identifier_unmounted_as_the_volume_it_says() {
             "zpool list -H -o name",
             "zfs get -H -o value -s local -d 0 zendiloos:volume",
             "zpool import -d /dev/disk/by-id",
-            "zpool import -N -d /dev/disk/by-id 42",
+            "zpool import -N -o cachefile=none -d /dev/disk/by-id 42",
             "zfs get -H -o value zendiloos:volume media",
-        ]
+            CHECKED,
+            "zpool set cachefile= media",
+        ],
+        "in the cache file for the next boot only once checked"
     );
     assert!(!host.path("units/volume2.mount").exists(), "mounted by its own request");
+}
+
+/// Whoever made a pool may have set any property on its datasets: ZFS's
+/// own units would then mount them where they say at the next boot (an
+/// `authorized_keys` of theirs in `/root/.ssh`), export them over NFS to
+/// anyone, and honour their set-ID programs and device files. Once
+/// imported, before it goes into the cache file, a pool gets what
+/// zendiloOS gives its datasets.
+#[tokio::test]
+async fn a_pool_imported_neither_mounts_nor_shares_nor_runs_anything_by_itself() {
+    let host = host(Erasable::Policy(ErasePolicy::None));
+    importing(&host, 0, "");
+    let crafted = "media\\tmountpoint\\t/media\\tdefault\\nmedia\\tsharenfs\\toff\\tdefault\\n\
+        media\\tsharesmb\\toff\\tdefault\\nmedia\\tsetuid\\ton\\tdefault\\n\
+        media\\tdevices\\toff\\tlocal\\n\
+        media/keys\\tmountpoint\\t/root/.ssh\\tlocal\\n\
+        media/keys\\tsharenfs\\trw=@0.0.0.0/0,no_root_squash\\tlocal\\n\
+        media/keys\\tsharesmb\\toff\\tdefault\\nmedia/keys\\tsetuid\\ton\\tinherited from media\\n\
+        media/keys\\tdevices\\ton\\treceived\\n\
+        media/photos\\tmountpoint\\tnone\\tlocal\\nmedia/photos\\tsharenfs\\toff\\tdefault\\n\
+        media/photos\\tsharesmb\\ton\\tlocal\\nmedia/photos\\tsetuid\\ton\\tinherited from media\\n\
+        media/photos\\tdevices\\toff\\tinherited from media\\n";
+    media_with(&host, "2", crafted, "");
+
+    assert_eq!(host.run(import("media", 42, 2, false, false)).await, Response::Done);
+
+    let calls = host.calls();
+    let checked = calls.iter().position(|call| call == CHECKED).expect("checked");
+    assert_eq!(
+        &calls[checked + 1..],
+        [
+            "zfs set mountpoint=legacy setuid=off media",
+            "zfs set mountpoint=legacy sharenfs=off devices=off media/keys",
+            "zfs set mountpoint=legacy sharesmb=off media/photos",
+            "zpool set cachefile= media",
+        ],
+        "what is inherited follows its dataset's parent; `none` the units could not mount"
+    );
+}
+
+/// `zfs get -r` says some 300 bytes of each dataset: a pool with thousands
+/// (a TrueNAS's ix-applications, Docker's or k3s's layers) is read whole.
+#[tokio::test]
+async fn a_pool_of_many_datasets_is_imported() {
+    let host = host(Erasable::Policy(ErasePolicy::None));
+    importing(&host, 0, "");
+    program(
+        &host,
+        "zfs",
+        "case \"$*\" in\n\
+         *'-s local -d 0'*) echo 1 ;;\n\
+         'get -H -o value zendiloos:volume media') echo 2 ;;\n\
+         'get -r -H -t filesystem '*) printf 'media\\tmountpoint\\tlegacy\\tlocal\\n'\n\
+           i=0; while [ $i -lt 6000 ]; do\n\
+             for p in mountpoint sharenfs sharesmb setuid devices; do\n\
+               printf 'media/apps/layers/%08d\\t%s\\tlegacy\\tinherited from media\\n' $i $p\n\
+             done; i=$((i + 1)); done ;;\n\
+         *) ;;\n\
+         esac",
+    );
+    assert_eq!(host.run(import("media", 42, 2, false, false)).await, Response::Done);
+    assert_eq!(host.calls().last().map(String::as_str), Some("zpool set cachefile= media"));
+}
+
+/// A pool whose name another has here, or the configuration, is imported
+/// under a name of its own; everything after is done under that name.
+#[tokio::test]
+async fn a_pool_is_imported_under_another_name_if_asked() {
+    let host = host(Erasable::Policy(ErasePolicy::None));
+    importing(&host, 0, "");
+    program(
+        &host,
+        "zfs",
+        "case \"$*\" in\n\
+         *'-s local -d 0'*) echo 1 ;;\n\
+         'get -H -o value zendiloos:volume media2') echo 3 ;;\n\
+         'get -r -H -t filesystem '*' media2') printf 'media2\\tmountpoint\\tlegacy\\tlocal\\n' ;;\n\
+         *) ;;\n\
+         esac",
+    );
+    let renamed = Request::ImportPool {
+        name: PoolName::parse("media").unwrap(),
+        id: 43,
+        volume: VolumeNumber::new(2).unwrap(),
+        adopt: true,
+        force: false,
+        rename: Some(PoolName::parse("media2").unwrap()),
+    };
+    assert_eq!(host.run(renamed).await, Response::Done);
+    let calls = host.calls();
+    let import = calls
+        .iter()
+        .position(|call| call == "zpool import -N -o cachefile=none -d /dev/disk/by-id 43 media2");
+    let import = import.expect("imported as media2");
+    assert_eq!(
+        &calls[import + 1..],
+        [
+            "zfs get -H -o value zendiloos:volume media2",
+            "zfs set zendiloos:volume=2 media2",
+            "zfs get -r -H -t filesystem -o name,property,value,source mountpoint,sharenfs,sharesmb,setuid,devices media2",
+            "zpool set cachefile= media2",
+        ]
+    );
+    // Under a name a pool here has: a conflict.
+    let taken = Request::ImportPool {
+        name: PoolName::parse("media").unwrap(),
+        id: 43,
+        volume: VolumeNumber::new(2).unwrap(),
+        adopt: true,
+        force: false,
+        rename: Some(PoolName::parse("tank").unwrap()),
+    };
+    assert_refused(host.run(taken).await, ErrorCode::Conflict, "");
+}
+
+#[tokio::test]
+async fn a_pool_whose_datasets_cannot_be_set_or_are_not_listed_is_exported_again() {
+    let host = host(Erasable::Policy(ErasePolicy::None));
+    importing(&host, 0, "");
+    media_with(&host, "2", "media\\tsetuid\\ton\\tlocal\\n", "echo 'permission denied' >&2; exit 1");
+    let refused = host.run(import("media", 42, 2, false, false)).await;
+    assert_refused(refused, ErrorCode::Forbidden, "permission denied");
+    assert_eq!(host.calls().last().unwrap(), "zpool export media");
+    assert!(!host.calls().iter().any(|call| call.starts_with("zpool set cachefile")), "never cached");
+
+    // A listing without the pool's root, or of another pool's datasets.
+    for listing in ["", "other\\tsetuid\\toff\\tlocal\\n"] {
+        media_with(&host, "2", listing, "");
+        let refused = host.run(import("media", 42, 2, false, false)).await;
+        assert_refused(refused, ErrorCode::Forbidden, "properties");
+        assert_eq!(host.calls().last().unwrap(), "zpool export media");
+    }
 }
 
 #[tokio::test]
@@ -1189,7 +1351,7 @@ async fn a_pool_another_machine_used_last_is_imported_only_by_force() {
     importing(&host, 0, "");
     assert_eq!(host.run(import("media", 43, 2, false, true)).await, Response::Done);
     assert!(
-        host.calls().contains(&"zpool import -N -d /dev/disk/by-id -f 43".to_owned()),
+        host.calls().contains(&"zpool import -N -o cachefile=none -d /dev/disk/by-id -f 43".to_owned()),
         "{:#?}",
         host.calls()
     );
@@ -1215,7 +1377,7 @@ async fn a_pool_that_is_another_volume_or_not_zendiloos_s_is_exported_again() {
     // Adopted: its volume number becomes the one given.
     media_says(&host, "3");
     assert_eq!(host.run(import("media", 42, 2, true, false)).await, Response::Done);
-    assert_eq!(host.calls().last().unwrap(), "zfs set zendiloos:volume=2 media");
+    assert!(host.calls().contains(&"zfs set zendiloos:volume=2 media".to_owned()), "{:#?}", host.calls());
 }
 
 /// `zfs`: tank (volume 1) holds photos and the datasets zendiloos keeps.
@@ -1266,7 +1428,10 @@ async fn a_volumes_mounts_are_made_as_creating_them_writes_them_and_once() {
     expected.push("systemctl start docker.service".to_owned());
     assert_eq!(host.calls(), expected, "one reload; Docker starts on its data mounted anew");
     let read = |unit: &str| fs::read_to_string(host.path("units").join(unit)).unwrap();
-    assert!(read("volume1.mount").contains("What=tank\nWhere=/volume1\nType=zfs\n"));
+    assert!(read("volume1.mount").contains("What=tank\nWhere=/volume1\nType=zfs\nOptions=nosuid,nodev\n"));
+    for unit in &units {
+        assert!(read(unit).contains("\nOptions=nosuid,nodev\n"), "{unit}: no set-ID programs, no devices");
+    }
     assert!(read("volume1-photos.mount").contains("What=tank/photos\nWhere=/volume1/photos\n"));
     assert!(read("volume1-\\x40homes.mount").contains("What=tank/zendiloos.homes\nWhere=/volume1/@homes\n"));
     assert!(read("volume1-\\x40docker.mount").contains("Before=docker.service\n"));

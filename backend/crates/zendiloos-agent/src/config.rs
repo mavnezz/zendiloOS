@@ -66,6 +66,9 @@ pub struct Tools {
     pub groupdel: PathBuf,
     pub gpasswd: PathBuf,
     pub smbpasswd: PathBuf,
+    /// Lists a copy of Samba's password database a configuration backup
+    /// brings, before it is put in place.
+    pub pdbedit: PathBuf,
     pub busctl: PathBuf,
     /// Run in a transient unit, in the host's network namespace: deletes
     /// the link of a bridge, bond or VLAN zendiloOS made.
@@ -149,6 +152,7 @@ impl Default for Tools {
             groupdel: PathBuf::from("/usr/sbin/groupdel"),
             gpasswd: PathBuf::from("/usr/bin/gpasswd"),
             smbpasswd: PathBuf::from("/usr/bin/smbpasswd"),
+            pdbedit: PathBuf::from("/usr/bin/pdbedit"),
             busctl: PathBuf::from("/usr/bin/busctl"),
             ip: PathBuf::from("/usr/sbin/ip"),
             timedatectl: PathBuf::from("/usr/bin/timedatectl"),

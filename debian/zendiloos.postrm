@@ -9,14 +9,12 @@ case "$1" in
         if [ -f /boot/grub/grubenv ] && command -v grub-editenv >/dev/null 2>&1; then
             grub-editenv /boot/grub/grubenv unset saved_entry || true
         fi
-        # The firewall's rules go with the package; nothing would keep them.
-        if command -v nft >/dev/null 2>&1; then
-            nft delete table inet zendiloos_firewall 2>/dev/null || true
-            # And what keeps the NAS off its internal networks for VMs.
-            nft delete table bridge zendiloos_internal 2>/dev/null || true
-        fi
-        # So does what lets frames within its bridges pass Docker's
-        # FORWARD chain: Docker's tables as Docker made them.
+        # The firewall's rules, and what keeps the NAS off its internal
+        # networks for VMs, stay in force: the services they guard (Samba,
+        # NFS, NUT's server, SSH) and the VMs run on. Nothing loads them
+        # again, so they go at the next start, or with a purge.
+        # What lets frames within its bridges pass Docker's FORWARD chain
+        # goes now: Docker's tables as Docker made them.
         for tables in iptables ip6tables; do
             command -v "$tables" >/dev/null 2>&1 || continue
             while "$tables" -w 10 -t filter -C DOCKER-USER -j ZENDILOOS-BRIDGES 2>/dev/null; do
@@ -32,11 +30,46 @@ case "$1" in
         rmdir /etc/qemu/firmware 2>/dev/null || true
         ;;
     purge)
+        # The firewall's rules, if a remove left them in force.
+        if command -v nft >/dev/null 2>&1; then
+            nft delete table inet zendiloos_firewall 2>/dev/null || true
+            nft delete table bridge zendiloos_internal 2>/dev/null || true
+        fi
         # Generated at installation; the database in /var/lib/zendiloos is
-        # kept, since it holds the administrators' work.
+        # kept, since it holds the administrators' work (and so do the
+        # Compose files of apps and projects in /etc/zendiloos, the pools'
+        # mount units and the shares' Samba and NFS configuration, by
+        # which the data stays reachable).
         rm -rf /etc/zendiloos/tls /etc/zendiloos/nginx /etc/zendiloos/firewall /etc/zendiloos/network
         # The agent's state: the template of the VMs' UEFI variables.
         rm -rf /var/lib/zendiloos-agent
+        # The secrets zendiloOS made: the NAS's SSH key for backups,
+        # acme.sh's accounts (their keys, and whatever DNS providers'
+        # scripts kept), the issued certificates' keys with the web
+        # server's settings.
+        rm -rf /var/lib/zendiloos-backup /var/lib/zendiloos-acme /run/zendiloos-acme /etc/zendiloos/web
+        # NUT's files hold the accounts' passwords: what stood in one
+        # before zendiloOS wrote it comes back, those it made go.
+        if [ -d /etc/nut ]; then
+            for file in ups.conf nut.conf upsd.conf upsd.users upsmon.conf upssched.conf; do
+                if [ -f "/etc/nut/$file.before-zendiloos" ]; then
+                    mv -f "/etc/nut/$file.before-zendiloos" "/etc/nut/$file"
+                elif grep -qs '^# Written by zendiloOS' "/etc/nut/$file"; then
+                    rm -f "/etc/nut/$file"
+                fi
+            done
+            rm -f /etc/nut/zendiloos-timer /etc/nut/zendiloos-simulated.dev
+        fi
+        # The units that pin the folders of shares for apps and projects
+        # run the agent, which is gone.
+        for unit in /etc/systemd/system/zendiloos-app-*-shares.service \
+            /etc/systemd/system/zendiloos-project-*-shares.service; do
+            [ -f "$unit" ] && head -n 1 "$unit" | grep -q '^# Created by zendiloOS' || continue
+            rm -f /etc/systemd/system/*.wants/"${unit##*/}" "$unit"
+        done
+        if [ -d /run/systemd/system ]; then
+            systemctl --system daemon-reload >/dev/null 2>&1 || true
+        fi
         # The generators the package masked, if they are still masked as it
         # left them; systemd runs them again from the next reload or boot.
         if [ -f /etc/zendiloos/masked-generators ]; then

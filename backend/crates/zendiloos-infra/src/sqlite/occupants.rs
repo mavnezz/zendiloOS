@@ -71,8 +71,9 @@ impl VolumeOccupants for Occupants {
 
 /// Storage's [`KnownPools`]: every pool a share, an installed app, the
 /// personal folders, a location of the virtual machines' storage or a VM's
-/// disk is on, with its volume number (the first, should rows disagree)
-/// and the shares on it that are not being deleted.
+/// disk is on, with its volume number (the first, should rows disagree),
+/// the shares on it that are not being deleted, and its GUID where kept
+/// (`pool_guids`).
 #[async_trait]
 impl KnownPools for Occupants {
     async fn known(&self) -> Result<Vec<KnownPool>, PortError> {
@@ -92,6 +93,8 @@ impl KnownPools for Occupants {
             .fetch_all(db)
             .await
             .map_err(db_error)?;
+        let guids =
+            sqlx::query!("SELECT pool, guid FROM pool_guids").fetch_all(db).await.map_err(db_error)?;
         let mut known: Vec<KnownPool> = Vec::new();
         for place in places {
             let number = u16::try_from(place.volume).ok().and_then(VolumeNumber::new);
@@ -104,7 +107,11 @@ impl KnownPools for Occupants {
                     );
                 }
                 Some(_) => {}
-                None => known.push(KnownPool { name: place.pool, volume, shares: Vec::new() }),
+                None => {
+                    let guid =
+                        guids.iter().find(|row| row.pool == place.pool).and_then(|row| row.guid.parse().ok());
+                    known.push(KnownPool { name: place.pool, volume, shares: Vec::new(), guid });
+                }
             }
         }
         for share in shares {
@@ -113,6 +120,27 @@ impl KnownPools for Occupants {
             }
         }
         Ok(known)
+    }
+
+    async fn remember_guid(&self, name: &str, guid: u64) -> Result<(), PortError> {
+        let guid = guid.to_string();
+        sqlx::query!(
+            "INSERT INTO pool_guids (pool, guid) VALUES (?, ?) ON CONFLICT (pool) DO UPDATE SET guid = excluded.guid",
+            name,
+            guid
+        )
+        .execute(self.db.pool())
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn forget_guid(&self, name: &str) -> Result<(), PortError> {
+        sqlx::query!("DELETE FROM pool_guids WHERE pool = ?", name)
+            .execute(self.db.pool())
+            .await
+            .map_err(db_error)?;
+        Ok(())
     }
 }
 
@@ -225,5 +253,17 @@ mod tests {
             })
             .collect();
         assert_eq!(named, [("cold", 2, vec!["odd"]), ("tank", 1, vec!["backup", "photos"])]);
+        assert!(known.iter().all(|pool| pool.guid.is_none()), "none kept yet");
+
+        // A GUID kept, changed, and forgotten with its pool; the whole range
+        // of 64 bits.
+        elsewhere.remember_guid("tank", 1).await.unwrap();
+        elsewhere.remember_guid("tank", u64::MAX).await.unwrap();
+        elsewhere.remember_guid("gone", 7).await.unwrap();
+        let guids: Vec<(String, Option<u64>)> =
+            elsewhere.known().await.unwrap().into_iter().map(|pool| (pool.name, pool.guid)).collect();
+        assert_eq!(guids, [("cold".to_owned(), None), ("tank".to_owned(), Some(u64::MAX))]);
+        elsewhere.forget_guid("tank").await.unwrap();
+        assert!(elsewhere.known().await.unwrap().iter().all(|pool| pool.guid.is_none()));
     }
 }

@@ -108,9 +108,7 @@ pub(crate) fn unexpected(response: Response) -> PortError {
     PortError::new(WHAT, format!("unexpected answer: {response:?}"))
 }
 
-pub(crate) use self::{
-    call as call_agent, expect_done as expect_agent_done, unexpected as unexpected_answer,
-};
+pub(crate) use self::{call as call_agent, unexpected as unexpected_answer};
 
 /// Why the agent refused, without the word it puts before its reason
 /// (`refused: apt is busy`): the error a refusal becomes says that itself,

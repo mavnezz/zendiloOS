@@ -354,6 +354,10 @@ vm-network-bridge-test:
 vm-upgrade-test *args:
     scripts/vm-upgrade-test.sh "$@"
 
+# The package removed and purged in the second VM: the firewall stays until a purge, which takes the secrets (see the script)
+vm-remove-test:
+    scripts/vm-remove-test.sh
+
 # A group of the VM tests in VMs made afresh for it, as the nightly workflow
 # runs them: `just vm-ci list` names the groups (see scripts/vm-ci.sh)
 [positional-arguments]

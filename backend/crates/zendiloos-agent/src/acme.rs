@@ -7,7 +7,12 @@
 //! protocol values, and passes on what it writes line by line. A DNS
 //! provider's credentials reach it in an environment file only root reads
 //! (`EnvironmentFile=`, so they show in no command line and no unit
-//! property), removed when it ends. Everything acme.sh keeps lies in
+//! property), removed when it ends. acme.sh's DNS scripts keep what they
+//! were given in the account's `account.conf` (`SAVED_<name>=`, or
+//! `<name>=`) and in the certificate's settings, for renewals of its own,
+//! which zendiloOS never asks of it (it gives them again each time): those
+//! lines are removed as the unit ends, whatever acme.sh did, by the unit
+//! itself as acme.sh's account (`ExecStopPost=`). Everything acme.sh keeps lies in
 //! `/var/lib/zendiloos-acme`: an account's settings and key in
 //! `accounts/<n>`, a certificate's in `certificates/<n>`, and the files
 //! for HTTP challenges in `webroot`, which nginx serves. acme.sh's own
@@ -41,6 +46,8 @@ use crate::web_server::WebServer;
 
 /// The account acme.sh runs as.
 pub const ACME_USER: &str = "zendiloos-acme";
+/// What edits acme.sh's settings as its unit ends.
+const SED: &str = "/usr/bin/sed";
 /// How long acme.sh may take: a DNS provider's records can take minutes to
 /// show.
 const ISSUE_TIMEOUT: Duration = Duration::from_secs(20 * 60);
@@ -114,6 +121,28 @@ pub(crate) fn environment_file(order: &AcmeOrder) -> String {
     file
 }
 
+/// What removes the credentials acme.sh kept as its unit ends: every
+/// `SAVED_` line of the account's settings, and the lines of the names
+/// `order` gives there and in the certificate's settings. `-`: a file
+/// acme.sh did not get to make is no failure of the run.
+fn scrub_property(paths: &AcmePaths, order: &AcmeOrder) -> String {
+    let state = paths.state.display();
+    let mut command = format!("--property=ExecStopPost=-{SED} -i -e /^SAVED_/d");
+    if let AcmeChallenge::Dns { credentials, .. } = &order.challenge {
+        for (name, _) in credentials.iter() {
+            command.push_str(&format!(" -e /^{}=/d", name.as_str()));
+        }
+    }
+    let main = order.domains.main().as_str();
+    let folder = if order.key.is_ecc() { format!("{main}_ecc") } else { main.to_owned() };
+    command.push_str(&format!(
+        " {state}/accounts/{account}/account.conf {state}/certificates/{certificate}/{folder}/{main}.conf",
+        account = order.account,
+        certificate = order.certificate,
+    ));
+    command
+}
+
 /// The arguments of `systemd-run` that run acme.sh for `order`.
 pub(crate) fn issue_arguments(paths: &AcmePaths, order: &AcmeOrder, environment: &Path) -> Vec<String> {
     let state = paths.state.display().to_string();
@@ -149,6 +178,7 @@ pub(crate) fn issue_arguments(paths: &AcmePaths, order: &AcmeOrder, environment:
         // certificates lie in folders only the account enters.
         "--property=UMask=0022",
         &format!("--property=RuntimeMaxSec={}", ISSUE_TIMEOUT.as_secs() - 60),
+        &scrub_property(paths, order),
         &paths.script.display().to_string(),
         "--issue",
         "--force",
@@ -635,6 +665,20 @@ mod tests {
         }
         let http = issue_arguments(&paths, &order(AcmeChallenge::Http, AcmeKey::Rsa2048), Path::new("/x"));
         assert!(http.join(" ").ends_with("--keylength 2048 --domain nas.example.org --domain files.example.org --webroot /var/lib/zendiloos-acme/webroot"));
+
+        // acme.sh's DNS scripts keep what they were given in the account's
+        // settings (`SAVED_<name>=`, or `<name>=`) and the certificate's:
+        // removed as the unit ends, whatever acme.sh did, by its account.
+        let scrub = args.iter().find(|arg| arg.starts_with("--property=ExecStopPost=")).expect("scrubbed");
+        assert_eq!(
+            scrub,
+            "--property=ExecStopPost=-/usr/bin/sed -i -e /^SAVED_/d -e /^IONOS_PREFIX=/d -e /^IONOS_SECRET=/d \
+             /var/lib/zendiloos-acme/accounts/1/account.conf \
+             /var/lib/zendiloos-acme/certificates/3/nas.example.org_ecc/nas.example.org.conf"
+        );
+        let scrub = http.iter().find(|arg| arg.starts_with("--property=ExecStopPost=")).expect("scrubbed");
+        assert!(scrub.contains("-e /^SAVED_/d /var/lib/zendiloos-acme/accounts/1/account.conf "), "{scrub}");
+        assert!(scrub.ends_with("/certificates/3/nas.example.org/nas.example.org.conf"), "{scrub}");
 
         let file = environment_file(&order(ionos(r#"a"b\c$d`e"#), AcmeKey::Ec256));
         assert!(file.ends_with("IONOS_PREFIX=\"prefix\"\nIONOS_SECRET=\"a\\\"b\\\\c\\$d\\`e\"\n"), "{file}");

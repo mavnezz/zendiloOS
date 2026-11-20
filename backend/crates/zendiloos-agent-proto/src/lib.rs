@@ -258,7 +258,9 @@ pub enum Request {
     /// number, which then becomes `volume`; anything else is exported
     /// again. Refused, as ZFS refuses it, if another machine used the pool
     /// last, unless `force` (`zpool import -f`); a conflict if a pool of
-    /// that name is imported or another pool is volume `volume`.
+    /// that name is imported or another pool is volume `volume`. With
+    /// `rename`, imported under that name (`zpool import <id> <rename>`),
+    /// which must be free.
     ImportPool {
         name: PoolName,
         id: u64,
@@ -267,6 +269,8 @@ pub enum Request {
         adopt: bool,
         #[serde(default)]
         force: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rename: Option<PoolName>,
     },
     /// Makes sure the mount units of an imported pool zendiloOS made exist,
     /// as creating them writes them, are enabled and started: the volume's,
@@ -1772,6 +1776,13 @@ pub enum Response {
         /// files have them: their IDs are those their files carry.
         users: Vec<RestoredUser>,
         groups: Vec<RestoredGroup>,
+    },
+    /// A restore of accounts or of the configuration's files was carried
+    /// out, but for what it left out, each said in a sentence: an account
+    /// of a name a package takes, a password Samba's database held for
+    /// someone who is not one of the people here.
+    RestoredWithout {
+        left_out: Vec<String>,
     },
     HostNameState {
         /// `/etc/hostname` as it is; empty if there is none.

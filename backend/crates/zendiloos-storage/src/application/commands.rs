@@ -116,12 +116,18 @@ impl Context {
     ) -> Result<PoolPlan, StorageError> {
         let (devices, pools) = inventory(self.devices.as_ref(), self.zfs.as_ref(), request).await?;
         let disks_now = domain::disks(&devices, &pools);
-        // A volume the configuration names stays its pool's, imported or not.
-        let reserved: Vec<_> = self.known.known().await?.into_iter().map(|pool| pool.volume).collect();
+        // A volume the configuration names stays its pool's, imported or
+        // not, and so does its name: a new pool of it would be taken for
+        // that one.
+        let known = self.known.known().await?;
+        if known.iter().any(|pool| pool.name == name) {
+            return Err(StorageError::Plan(domain::PlanError::NameTaken));
+        }
+        let reserved: Vec<_> = known.into_iter().map(|pool| pool.volume).collect();
         Ok(domain::plan_pool(name, layout, disks, &disks_now, &pools, &reserved)?)
     }
 
-    async fn audit(
+    pub(crate) async fn audit(
         &self,
         action: &'static str,
         outcome: Outcome,
@@ -285,13 +291,21 @@ impl CreatePool {
             disks: plan.disks.iter().map(|d| d.id_link.clone()).collect(),
             volume: plan.volume,
         };
-        c.job(
-            "storage.create_pool",
-            plan.name.to_string(),
-            actor,
-            request,
-            move |admin, steps, request| async move { admin.create_pool(&new, steps.as_ref(), &request).await },
-        )
+        let (zfs, known) = (Arc::clone(&c.zfs), Arc::clone(&c.known));
+        c.job("storage.create_pool", plan.name.to_string(), actor, request, move |admin, steps, request| async move {
+            admin.create_pool(&new, steps.as_ref(), &request).await?;
+            // Its GUID, for the configuration backup.
+            match zfs.pools(&request).await {
+                Ok(pools) => {
+                    let made = pools.iter().find(|pool| pool.name == new.name.as_str());
+                    if let Some(guid) = made.and_then(|pool| pool.guid.parse().ok()) {
+                        super::imports::remember(known.as_ref(), new.name.as_str(), guid).await;
+                    }
+                }
+                Err(error) => tracing::warn!(pool = new.name.as_str(), %error, "storage: the new pool's GUID is not kept"),
+            }
+            Ok(())
+        })
         .await
     }
 }
@@ -331,13 +345,19 @@ impl DestroyPool {
         if !occupants.is_empty() {
             return Err(StorageError::PoolInUse(occupants));
         }
+        let known = Arc::clone(&c.known);
         c.job(
             "storage.destroy_pool",
             pool.to_owned(),
             actor,
             request,
             move |admin, steps, request| async move {
-                admin.destroy_pool(&name, volume, steps.as_ref(), &request).await
+                admin.destroy_pool(&name, volume, steps.as_ref(), &request).await?;
+                // A new pool of the name will be another.
+                if let Err(error) = known.forget_guid(name.as_str()).await {
+                    tracing::warn!(pool = name.as_str(), %error, "storage: the destroyed pool's GUID is kept");
+                }
+                Ok(())
             },
         )
         .await
@@ -740,6 +760,7 @@ mod tests {
         assert!(matches!(wrong, Err(StorageError::ConfirmationMismatch)));
         let job = s.storage.destroy_pool.execute("tank", "tank", &alice(), &request).await.unwrap();
         assert_eq!(finished(&s.jobs, job).await.state, JobState::Succeeded);
+        assert_eq!(*s.fake.guids.lock().unwrap(), [("tank".to_owned(), None)], "a new tank is another pool");
 
         let planned = s
             .storage

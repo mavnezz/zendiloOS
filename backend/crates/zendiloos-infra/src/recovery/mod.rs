@@ -242,7 +242,11 @@ impl ConfigurationRestorer {
 
     /// Puts the host's part back: the accounts first (the passwords and
     /// files name them), the machine's name, the files, then the other
-    /// settings; a setting that fails is only said.
+    /// settings; a setting that fails is only said. Samba's passwords and
+    /// the host id go alone, last: the agent refuses a password database
+    /// that names others than the people's accounts, and keeps this
+    /// machine's host id while pools are imported, and either leaves the
+    /// other files to come back.
     async fn put_back(
         &self,
         opened: &archive::Opened,
@@ -252,7 +256,8 @@ impl ConfigurationRestorer {
         let accounts: AccountsFile = serde_json::from_slice(&opened.accounts).map_err(port)?;
         if !accounts.users.is_empty() || !accounts.groups.is_empty() {
             let request = Request::RestoreAccounts { users: accounts.users, groups: accounts.groups };
-            crate::agent::expect_agent_done(self.transport.as_ref(), request, context).await?;
+            let restored = crate::agent::call_agent(self.transport.as_ref(), request, context).await?;
+            warnings.extend(left_out(restored)?);
         }
         // The name first: renaming makes the own certificate anew, which the
         // backup's then replaces.
@@ -268,12 +273,14 @@ impl ConfigurationRestorer {
             }
             Err(_) => warnings.push(format!("the machine's name {name} is not taken here")),
         }
-        let files: Vec<ConfigurationFile> = opened
+        let (alone, files): (Vec<ConfigurationFile>, Vec<ConfigurationFile>) = opened
             .files
             .iter()
             .filter(|(path, _)| path.restorable())
             .filter_map(|(path, bytes)| ConfigurationFile::new(path.clone(), bytes.clone()).ok())
-            .collect();
+            .partition(|file| {
+                matches!(file.path, ConfigurationPath::SambaPasswords | ConfigurationPath::HostId)
+            });
         let mut batch: Vec<ConfigurationFile> = Vec::new();
         let mut size = 0;
         let mut batches = Vec::new();
@@ -293,18 +300,27 @@ impl ConfigurationRestorer {
         if !batch.is_empty() {
             batches.push(batch);
         }
+        for file in alone {
+            if file.content.as_bytes().len() > BATCH {
+                warnings.push(format!("{} is too large to put back", file.path.as_path()));
+            } else {
+                batches.push(vec![file]);
+            }
+        }
         for files in batches {
             let names: Vec<String> = files.iter().map(|file| file.path.as_path()).collect();
             let request = Request::RestoreConfiguration { files };
-            if let Err(error) =
-                crate::agent::expect_agent_done(self.transport.as_ref(), request, context).await
-            {
-                tracing::warn!(%error, "restore: files not put back");
-                warnings.push(format!(
-                    "not put back: {} ({})",
-                    names.join(", "),
-                    crate::agent::reason(&error)
-                ));
+            let restored = crate::agent::call_agent(self.transport.as_ref(), request, context).await;
+            match restored.and_then(left_out) {
+                Ok(left_out) => warnings.extend(left_out),
+                Err(error) => {
+                    tracing::warn!(%error, "restore: files not put back");
+                    warnings.push(format!(
+                        "not put back: {} ({})",
+                        names.join(", "),
+                        crate::agent::reason(&error)
+                    ));
+                }
             }
         }
         let settings: HostSettings = serde_json::from_slice(&opened.settings).unwrap_or_default();
@@ -350,6 +366,15 @@ impl ConfigurationRestorer {
             }
         }
         Ok(warnings)
+    }
+}
+
+/// What the agent left out of a restore it carried out, each a warning.
+fn left_out(restored: Response) -> Result<Vec<String>, PortError> {
+    match restored {
+        Response::Done => Ok(Vec::new()),
+        Response::RestoredWithout { left_out } => Ok(left_out),
+        other => Err(crate::agent::unexpected_answer(other)),
     }
 }
 

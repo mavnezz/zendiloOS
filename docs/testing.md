@@ -67,6 +67,7 @@ checks and how to run it.
 | `vm-backup-test` | backup tasks: the plugin, mirrors and versions between pools, a USB drive when plugged in, an rsync daemon and SSH with a pinned host key, a pull, restores, an encrypted backup with rclone |
 | `vm-update-test` | updates of Debian and zendiloOS through the interface, signed releases, refusals, a newer kernel without its ZFS module never started |
 | `vm-upgrade-test` | a machine set up with an older package keeps its accounts, pools, shares and files when a newer one is installed |
+| `vm-remove-test` | the package removed: the firewall's rules stay in force; purged: they go, and so do the secrets zendiloOS made (the backup key, acme.sh's accounts, issued keys, NUT's passwords) and its units that run the agent |
 | `iso-test` | installing from the ISO, the rescue entry in its menus, the first setup, a pool, the network managed by systemd-networkd, a configuration backup restored |
 
 ### Every night on GitHub
@@ -101,7 +102,7 @@ the group passed and keep running after a failure.
 | network | two spare cards | network-takeover, network-bridge | 12 min |
 | restore | a second VM, installed and never set up; the first with tank and a share | config-backup | 12 min |
 | pool-import | one VM (3), installed and never set up | pool-import | 10 min |
-| upgrade | nothing installed; 0.2.0's package from GitHub's releases, the last before share-level permissions | upgrade, update | 6 min |
+| upgrade | nothing installed; 0.2.0's package from GitHub's releases, the last before share-level permissions | upgrade, update, remove | 6 min |
 
 The times, of a run in November 2026, include making the VMs: about four
 minutes each, most of it DKMS building ZFS. `vm-security-test` and

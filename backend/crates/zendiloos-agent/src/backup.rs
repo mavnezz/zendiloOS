@@ -69,7 +69,7 @@ const WRITE_CAPABILITIES: &str =
 /// libraries, the kernel's file systems, its own `/dev` and `/tmp`;
 /// `/home` and `/root`, which `ProtectHome=` hides. Every other folder
 /// there is a read-only tmpfs in the unit.
-const KEPT: [&str; 13] =
+pub(crate) const KEPT: [&str; 13] =
     ["usr", "bin", "sbin", "lib", "lib32", "lib64", "libx32", "proc", "sys", "dev", "tmp", "home", "root"];
 /// What of `/etc` a unit sees, read-only: the accounts (ssh insists on its
 /// own), name resolution, the dynamic linker's cache, the certificate
@@ -640,31 +640,7 @@ impl Backups {
     /// names of letters, digits and `._-+@` are passed to systemd; root
     /// alone makes others there.
     fn top_of_system(&self, hidden: &[PathBuf]) -> Result<(Vec<PathBuf>, Vec<PathBuf>), OperationError> {
-        let root = &self.paths.root;
-        let entries = std::fs::read_dir(root).map_err(|e| {
-            OperationError::Failed(format!("{} cannot be listed for a backup's sandbox: {e}", root.display()))
-        })?;
-        let (mut folders, mut files) = (Vec::new(), Vec::new());
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else { continue };
-            let path = entry.path();
-            if KEPT.contains(&name) || hidden.contains(&path) {
-                continue;
-            }
-            if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-+@".contains(&b)) {
-                tracing::warn!(name, "a backup's unit sees this at the top of the system: its name is odd");
-                continue;
-            }
-            match entry.file_type() {
-                Ok(kind) if kind.is_dir() => folders.push(path),
-                Ok(kind) if kind.is_file() => files.push(path),
-                _ => {}
-            }
-        }
-        folders.sort();
-        files.sort();
-        Ok((folders, files))
+        top_of_system(&self.paths.root, hidden)
     }
 
     /// The NAS's SSH key, for a unit that reaches a server over SSH.
@@ -787,6 +763,40 @@ impl Backups {
 /// A task's run's unit: one at a time, as systemd refuses a second.
 fn run_unit(task: BackupTaskId) -> String {
     format!("zendiloos-backup-run-{}.service", task.get())
+}
+
+/// The folders and files at the top of the system (`root`) a transient
+/// unit does not see: all but [`KEPT`] and `hidden` (made something else
+/// already). Only names of letters, digits and `._-+@` are passed to
+/// systemd; root owns the top, and another name is said and left.
+pub(crate) fn top_of_system(
+    root: &Path,
+    hidden: &[PathBuf],
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>), OperationError> {
+    let entries = std::fs::read_dir(root).map_err(|e| {
+        OperationError::Failed(format!("{} cannot be listed for a unit's sandbox: {e}", root.display()))
+    })?;
+    let (mut folders, mut files) = (Vec::new(), Vec::new());
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let path = entry.path();
+        if KEPT.contains(&name) || hidden.contains(&path) {
+            continue;
+        }
+        if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-+@".contains(&b)) {
+            tracing::warn!(name, "a unit sees this at the top of the system: its name is odd");
+            continue;
+        }
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => folders.push(path),
+            Ok(kind) if kind.is_file() => files.push(path),
+            _ => {}
+        }
+    }
+    folders.sort();
+    files.sort();
+    Ok((folders, files))
 }
 
 /// The network a unit has: none, or the host's (IP, and Unix and netlink

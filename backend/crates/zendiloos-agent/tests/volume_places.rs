@@ -83,6 +83,7 @@ impl Agent {
             groupdel: plain("groupdel"),
             gpasswd: plain("gpasswd"),
             smbpasswd: plain("smbpasswd"),
+            pdbedit: plain("pdbedit"),
         };
         let files = AccountFiles {
             passwd: dir.path().join("passwd"),

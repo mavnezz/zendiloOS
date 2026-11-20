@@ -59,7 +59,7 @@ declare -A tests=(
     [network]="network-takeover network-bridge"
     [restore]="config-backup"
     [pool-import]="pool-import"
-    [upgrade]="upgrade update"
+    [upgrade]="upgrade update remove"
 )
 
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
@@ -335,7 +335,8 @@ prepare() {
             new_vm "$second_vm" installed ;;
         upgrade)
             # Nothing installed: the test installs the older package, then
-            # this one; the update test follows on the VM it leaves.
+            # this one; the update test follows on the VM it leaves, and
+            # the remove test, which takes the package away, last.
             old_deb=$(old_package)
             say "The older package: $(basename "$old_deb")"
             next_deb=${ZENDILOOS_CI_NEXT_DEB:-$(ls -t "$root"/dist/next/zendiloos_*_amd64.deb 2>/dev/null | head -1)}

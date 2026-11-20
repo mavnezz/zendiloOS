@@ -125,6 +125,7 @@ impl Agent {
                     dir.path().join("stdin.log").display()
                 ),
             ),
+            pdbedit: script("pdbedit", ""),
         };
         let files = AccountFiles {
             passwd: dir.path().join("passwd"),

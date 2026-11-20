@@ -52,6 +52,7 @@ expect_switched() {
     grep -qx 'apt-get install --yes systemd-resolved' "$dir/calls" || fail "$(basename "$dir"): systemd-resolved"
     grep -qx 'systemctl enable systemd-networkd.service systemd-resolved.service' "$dir/calls" \
         || fail "$(basename "$dir"): the services"
+    [[ ! -e $dir/etc/resolv.conf.zendiloos-installer ]] || fail "$(basename "$dir"): the copy of resolv.conf left"
 }
 
 # Left to ifupdown: nothing changed, nothing installed.
@@ -61,6 +62,21 @@ expect_kept() {
     [[ ! -e $dir/calls && ! -d $dir/etc/systemd/network && -f $dir/etc/resolv.conf && ! -L $dir/etc/resolv.conf ]] \
         || fail "$(basename "$dir"): touched"
     grep -q "$why" "$dir/out" || fail "$(basename "$dir"): does not say why ($why): $(cat "$dir/out")"
+}
+
+# Gone back to ifupdown after a failure on the way: `interfaces` and
+# `resolv.conf` as the installer left them, no file of zendiloOS's, nothing
+# of the switch left behind.
+expect_back() {
+    local dir=$1 before=$2 why=$3
+    diff -u <(printf '%s' "$before") "$dir/etc/network/interfaces" || fail "$(basename "$dir"): interfaces changed"
+    [[ -f $dir/etc/resolv.conf && ! -L $dir/etc/resolv.conf ]] || fail "$(basename "$dir"): resolv.conf is not a file"
+    grep -qx 'nameserver 192.168.1.1' "$dir/etc/resolv.conf" || fail "$(basename "$dir"): resolv.conf: $(cat "$dir/etc/resolv.conf")"
+    [[ -z $(find "$dir/etc/systemd/network" -type f 2>/dev/null) ]] || fail "$(basename "$dir"): files of systemd-networkd left"
+    [[ ! -e $dir/etc/network/interfaces.zendiloos-previous && ! -e $dir/etc/resolv.conf.zendiloos-installer ]] \
+        || fail "$(basename "$dir"): copies left"
+    grep -q "$why" "$dir/out" || fail "$(basename "$dir"): does not say why ($why): $(cat "$dir/out")"
+    grep -q 'ifupdown keeps' "$dir/out" || fail "$(basename "$dir"): does not say ifupdown keeps it: $(cat "$dir/out")"
 }
 
 # Debian has mawk, not gawk: the script runs with each there is here.
@@ -191,8 +207,28 @@ expect_kept "$dir" "$dhcp" 'interfaces.d is not empty'
 dir=$(machine failing "$dhcp")
 printf '#!/bin/sh\nexit 100\n' >"$dir/bin/apt-get"
 run "$dir"
-grep -q 'systemd-resolved could not be installed' "$dir/out" || fail "failing: $(cat "$dir/out")"
-diff -u <(printf '%s' "$dhcp") "$dir/etc/network/interfaces" >/dev/null || fail "failing: changed without systemd-resolved"
+expect_back "$dir" "$dhcp" 'systemd-resolved could not be installed'
+
+echo "Whatever fails on the way, ifupdown keeps the network as the installer left it"
+# systemd-resolved's package points resolv.conf at its stub when it is
+# configured; then the run fails (another package's postinst, a trigger).
+dir=$(machine postinst "$dhcp")
+printf '#!/bin/sh\nmv %s/etc/resolv.conf %s/etc/.resolv.conf.systemd-resolved.bak\nln -s ../run/systemd/resolve/stub-resolv.conf %s/etc/resolv.conf\nexit 100\n' \
+    "$dir" "$dir" "$dir" >"$dir/bin/apt-get"
+run "$dir"
+expect_back "$dir" "$dhcp" 'systemd-resolved could not be installed'
+dir=$(machine enabling "$dhcp")
+printf '#!/bin/sh\necho "systemctl $*" >>%s/calls\n[ "$1" = enable ] && exit 1\nexit 0\n' "$dir" >"$dir/bin/systemctl"
+run "$dir"
+expect_back "$dir" "$dhcp" 'could not be enabled'
+grep -qx 'systemctl disable systemd-networkd.service systemd-resolved.service' "$dir/calls" \
+    || fail "enabling: not disabled again: $(cat "$dir/calls")"
+dir=$(machine unwritable "$dhcp")
+mkdir -p "$dir/etc/systemd/network/05-zendiloos-enp2s0.network"
+run "$dir"
+expect_back "$dir" "$dhcp" '05-zendiloos-enp2s0.network cannot be written'
+grep -qx 'systemctl disable systemd-networkd.service systemd-resolved.service' "$dir/calls" \
+    || fail "unwritable: not disabled again: $(cat "$dir/calls")"
 }
 
 tested=0

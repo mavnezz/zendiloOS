@@ -16,7 +16,8 @@ import { importPool } from '../api'
 
 /**
  * Importing a pool found on the disks: one the configuration names (`known`)
- * as its volume, another adopted with a volume number. A pool another
+ * as its volume, another adopted with a volume number, under a name of its
+ * own where a pool here or the configuration's has its name. A pool another
  * machine used last is imported only once its name is typed.
  */
 const props = defineProps<{
@@ -29,20 +30,24 @@ const open = defineModel<boolean>('open', { default: false })
 const { t } = useI18n()
 const jobs = useJobsStore()
 const confirm = ref('')
+const rename = ref('')
 const volume = ref<number | undefined>(props.freeVolume ?? undefined)
 const error = ref<string | null>(null)
 const pending = ref(false)
 
 const adopting = computed(() => props.known === null)
+const needsName = computed(() => adopting.value && props.found.name_taken)
 const ready = computed(
   () =>
     !pending.value &&
     (!props.found.other_host || confirm.value.trim() === props.found.name) &&
-    (!adopting.value || (volume.value !== undefined && volume.value >= 1 && volume.value <= 999)),
+    (!adopting.value || (volume.value !== undefined && volume.value >= 1 && volume.value <= 999)) &&
+    (!needsName.value || (rename.value.trim() !== '' && rename.value.trim() !== props.found.name)),
 )
 
 watch(open, () => {
   confirm.value = ''
+  rename.value = ''
   volume.value = props.freeVolume ?? undefined
   error.value = null
 })
@@ -57,6 +62,7 @@ async function submit(): Promise<void> {
       volume: adopting.value ? (volume.value ?? null) : null,
       force: props.found.other_host,
       confirm: props.found.other_host ? confirm.value.trim() : null,
+      rename: needsName.value ? rename.value.trim() : undefined,
     })
     jobs.update(job)
     open.value = false
@@ -96,6 +102,19 @@ async function submit(): Promise<void> {
           {{ device.name }} · {{ device.state }}
         </p>
       </div>
+      <template v-if="needsName">
+        <Alert>{{ t('storage.imports.dialog.nameTaken', { name: found.name }) }}</Alert>
+        <div class="grid gap-2">
+          <Label for="import-rename">{{ t('storage.imports.dialog.rename') }}</Label>
+          <Input
+            id="import-rename"
+            v-model="rename"
+            autocomplete="off"
+            spellcheck="false"
+            required
+          />
+        </div>
+      </template>
       <div v-if="adopting" class="grid gap-2">
         <Label for="import-volume">{{ t('storage.imports.dialog.volume') }}</Label>
         <Input

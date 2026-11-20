@@ -32,6 +32,45 @@ const MANAGED_IDS: RangeInclusive<u32> = ID_MIN..=ID_MAX;
 const NOLOGIN: &str = "/usr/sbin/nologin";
 /// The comment of every app's account: how the agent tells them apart.
 pub const APP_COMMENT: &str = "zendiloOS app";
+/// Names the packages zendiloOS and its plugins install give accounts of
+/// their own, some only once a plugin comes (Docker's group, libvirt's,
+/// the TPM's, NUT's), and privileged groups a base system may lack. A
+/// person's account or group of such a name would be found by the package
+/// and taken for its own: its members would reach what it guards (Docker's
+/// or libvirt's socket, the TPM), or its daemon would run as that person.
+pub const PACKAGE_ACCOUNTS: [&str; 22] = [
+    "docker",
+    "libvirt",
+    "libvirt-qemu",
+    "libvirt-dnsmasq",
+    "kvm",
+    "tss",
+    "swtpm",
+    "nut",
+    "statd",
+    "_rpc",
+    "dnsmasq",
+    "avahi",
+    "messagebus",
+    "polkitd",
+    "sshd",
+    "sudo",
+    "adm",
+    "wheel",
+    "staff",
+    "shadow",
+    "disk",
+    "render",
+];
+
+/// Refuses `name` for a person's account or group if a package may take
+/// it for its own ([`PACKAGE_ACCOUNTS`]).
+fn not_a_package_account(name: &str) -> Result<(), OperationError> {
+    if PACKAGE_ACCOUNTS.contains(&name) {
+        return Err(OperationError::Refused(format!("{name} is the name of a package's account")));
+    }
+    Ok(())
+}
 
 /// UID and GID of `app`'s account, if zendiloos made it: user `app-<id>`
 /// with a managed UID and [`APP_COMMENT`], whose primary group has the same
@@ -157,6 +196,7 @@ impl Accounts {
         if passwd::lookup(&passwd, name.as_str()).is_some() {
             return Err(OperationError::Conflict);
         }
+        not_a_package_account(name.as_str())?;
         if passwd::group_id(&group, USERS_GROUP).is_none() {
             return Err(OperationError::Setup(format!("group {USERS_GROUP} is missing")));
         }
@@ -237,6 +277,7 @@ impl Accounts {
         if passwd::group_id(&group, name.as_str()).is_some() {
             return Err(OperationError::Conflict);
         }
+        not_a_package_account(name.as_str())?;
         let marks = self.read_high_water()?;
         let gid = next_id(&group, &marks, IdKind::Group)
             .ok_or_else(|| OperationError::Setup("no group IDs left".to_owned()))?;
@@ -303,13 +344,51 @@ impl Accounts {
         users: &[RestoredUser],
         groups: &[RestoredGroup],
     ) -> Result<Response, OperationError> {
+        // A name a package takes was allowed before: such an account is left
+        // out, said, and a group's member left out is no member.
+        let mut left_out = Vec::new();
+        let users: Vec<&RestoredUser> = users
+            .iter()
+            .filter(|user| {
+                let package = PACKAGE_ACCOUNTS.contains(&user.name.as_str());
+                if package {
+                    left_out.push(format!(
+                        "user {}: a package takes the name for an account of its own; not restored",
+                        user.name.as_str()
+                    ));
+                }
+                !package
+            })
+            .collect();
+        let groups: Vec<RestoredGroup> = groups
+            .iter()
+            .filter(|group| {
+                let package = PACKAGE_ACCOUNTS.contains(&group.name.as_str());
+                if package {
+                    left_out.push(format!(
+                        "group {}: a package takes the name for a group of its own; not restored",
+                        group.name.as_str()
+                    ));
+                }
+                !package
+            })
+            .map(|group| RestoredGroup {
+                members: group
+                    .members
+                    .iter()
+                    .filter(|member| !PACKAGE_ACCOUNTS.contains(&member.as_str()))
+                    .cloned()
+                    .collect(),
+                ..group.clone()
+            })
+            .collect();
         let _serial = crate::waiting::lock(&self.serial).await?;
         let (passwd, group) = self.read_files().await?;
         let users_gid = passwd::group_id(&group, USERS_GROUP)
             .ok_or_else(|| OperationError::Setup(format!("group {USERS_GROUP} is missing")))?;
         let restored_names: Vec<&str> = users.iter().map(|user| user.name.as_str()).collect();
         let mut make_users = Vec::new();
-        for user in users {
+        for &user in &users {
             let taken = passwd::accounts(&passwd)
                 .find(|(name, uid, _)| *uid == user.uid && *name != user.name.as_str());
             if let Some((other, ..)) = taken {
@@ -331,7 +410,7 @@ impl Accounts {
             }
         }
         let mut make_groups = Vec::new();
-        for restored in groups {
+        for restored in &groups {
             if restored.members.iter().any(|member| {
                 !restored_names.contains(&member.as_str())
                     && passwd::lookup(&passwd, member.as_str()).is_none()
@@ -398,11 +477,11 @@ impl Accounts {
         for restored in &make_groups {
             run(&self.groupadd, &["--gid", &restored.gid.to_string(), "--", restored.name.as_str()]).await?;
         }
-        for restored in groups {
+        for restored in &groups {
             let list = restored.members.iter().map(UserName::as_str).collect::<Vec<_>>().join(",");
             run(&self.gpasswd, &["--members", &list, "--", restored.name.as_str()]).await?;
         }
-        Ok(Response::Done)
+        Ok(if left_out.is_empty() { Response::Done } else { Response::RestoredWithout { left_out } })
     }
 
     /// The people's users and groups zendiloOS made, with their IDs and

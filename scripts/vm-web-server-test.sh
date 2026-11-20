@@ -152,11 +152,15 @@ cat >$acme/acme.sh <<'STUB'
 while [ \$# -gt 0 ]; do
     case \$1 in
         --cert-home) home=\$2; shift ;;
+        --config-home) config=\$2; shift ;;
         --domain) [ -n "\$main" ] || main=\$2; shift ;;
     esac
     shift
 done
 echo "Issuing \$main (a stand-in)"
+# What acme.sh's DNS scripts keep of what they were given.
+mkdir -p "\$config"
+printf "ACCOUNT_EMAIL='admin@example.org'\\nSAVED_TEST_TOKEN='kept by acme.sh'\\n" >"\$config/account.conf"
 mkdir -p "\$home/\${main}_ecc"
 cp $made/fullchain.cer "\$home/\${main}_ecc/fullchain.cer"
 cp $made/key.pem "\$home/\${main}_ecc/\$main.key"
@@ -290,6 +294,8 @@ chain leaf-2.pem ca.pem
 job=$(issue)
 [[ $(jq -r .state <<<"$job") == succeeded ]] || fail "a good chain: $job"
 [[ $(serial_in_place) == serial=02 ]] || fail "the pair in place: $(serial_in_place)"
+kept=$(vm "sudo cat /var/lib/zendiloos-acme/accounts/$acme_account/account.conf")
+[[ $kept == "ACCOUNT_EMAIL='admin@example.org'" ]] || fail "acme.sh's account.conf as the unit left it: $kept"
 pair=$(pair_in_place)
 chain leaf-3.pem junk.pem
 job=$(issue)

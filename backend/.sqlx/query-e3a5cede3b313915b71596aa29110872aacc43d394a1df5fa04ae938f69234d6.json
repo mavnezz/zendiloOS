@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT pool, guid FROM pool_guids",
+  "describe": {
+    "columns": [
+      {
+        "name": "pool",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pool_guids",
+            "name": "pool"
+          }
+        }
+      },
+      {
+        "name": "guid",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pool_guids",
+            "name": "guid"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "e3a5cede3b313915b71596aa29110872aacc43d394a1df5fa04ae938f69234d6"
+}

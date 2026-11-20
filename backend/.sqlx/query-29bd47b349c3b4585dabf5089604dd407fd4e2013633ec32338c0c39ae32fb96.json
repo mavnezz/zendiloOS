@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM pool_guids WHERE pool = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "29bd47b349c3b4585dabf5089604dd407fd4e2013633ec32338c0c39ae32fb96"
+}

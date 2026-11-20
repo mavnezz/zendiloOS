@@ -67,7 +67,7 @@ const fn kind(key: &'static str, group: Group, level: Level) -> Kind {
 }
 
 /// Every kind zendiloOS raises, in the order the table shows them.
-pub const KINDS: [Kind; 28] = [
+pub const KINDS: [Kind; 29] = [
     // Degraded a warning; faulted, removed or unavailable an error.
     kind("pool_trouble", Group::Storage, Level::Error),
     kind("pool_recovered", Group::Storage, Level::Success),
@@ -82,6 +82,9 @@ pub const KINDS: [Kind; 28] = [
     kind("removable_pulled", Group::Storage, Level::Warning),
     // Pools the configuration names are not imported, as after a restore.
     kind("pools_not_imported", Group::Storage, Level::Warning),
+    // A pool imported under the name of one the configuration names is
+    // another pool than that one.
+    kind("pools_not_the_configurations", Group::Storage, Level::Warning),
     kind("snapshot_failed", Group::Folders, Level::Warning),
     kind("updates_available", Group::System, Level::Info),
     // Done a success; the ZFS module missing for the new kernel an error.
