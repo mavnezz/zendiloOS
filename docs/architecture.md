@@ -4077,10 +4077,20 @@ as `monuser` with the password `secret`). The page says what to enter
 there: the NAS's address, port 3493, the UPS's name `ups`, the account.
 NUT's protocol is not encrypted here: the account's password crosses the
 LAN in the clear, as between any two NAS that follow one UPS, and the
-account may only follow, never set anything. Where the firewall (4.12) is
-on, a rule for its service *UPS (NUT)*, TCP port 3493, lets those devices
-in, which the page says; while they may follow and no rule lets anyone in,
-the firewall tells so (`firewall_blocked`, as for SMB).
+account may only follow, never set anything (`upsmon secondary` alone: NUT
+lets an account force every device down only as `upsmon primary` or with
+`actions = FSD`). The NAS's own monitor signs in to the same server as
+`upsmon_local`, the primary; NUT binds no account to an address, so while
+the server listens on the network, that account's password (random,
+readable by root and NUT's group only) is what keeps it to the NAS. Where
+the firewall (4.12) is on, a rule for its service *UPS (NUT)*, TCP port
+3493, lets those devices in, which the page says (with their addresses as
+the source, it keeps the port to them); while they may follow and no rule
+lets anyone in, the firewall tells so (`firewall_blocked`, as for SMB).
+Following another device's UPS, the NAS takes what the server at that
+address says, as NUT does without TLS: one that can answer for it on the
+LAN could tell it the battery is low. TLS between NUT's servers and
+monitors is not set up; **[Later]** where both ends offer it.
 
 **Its state and what is told.** zendiloosd reads the UPS's variables
 itself (3.4), for the page (looked at again every ten seconds while it is

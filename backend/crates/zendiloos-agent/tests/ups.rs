@@ -153,6 +153,12 @@ async fn a_usb_ups_gets_its_files_driver_server_and_monitor() {
     let users = host.file("upsd.users").unwrap();
     assert!(users.contains("[upsmon_local]\n    password = local-pw\n    upsmon primary\n"));
     assert!(users.contains("[monuser]\n    password = for-others\n    upsmon secondary\n"));
+    // The devices that follow may only follow: NUT lets an account force
+    // a shutdown of every device only as `upsmon primary` or with
+    // `actions = FSD`, and set or run anything only with `actions` and
+    // `instcmds`.
+    let followers = users.split("[monuser]").nth(1).unwrap();
+    assert_eq!(followers, "\n    password = for-others\n    upsmon secondary\n", "{users}");
     let monitor = host.file("upsmon.conf").unwrap();
     assert!(monitor.contains("MONITOR ups@localhost 1 upsmon_local local-pw primary\n"));
     assert!(monitor.contains("POWERDOWNFLAG /etc/killpower\n"));
