@@ -81,7 +81,10 @@ KVM with nested virtualization), in test VMs made afresh there:
 `scripts/vm-ci.sh <group>` creates and starts them, installs the package,
 sets zendiloOS up (`admin`, "correct horse battery") with the setup code,
 makes what the group's tests need and runs the tests in order, stopping at
-the first that fails. The run's summary has each step's time; a group that
+the first that fails. A test that passed fails too if the system agent's
+journal says it was refused a write ("Read-only file system"): its sandbox
+writes only the folders of `/etc` its unit names (architecture, 4.6), and
+an operation may only log what it could not write. The run's summary has each step's time; a group that
 failed leaves an artifact with each test's output, each VM's console, and
 from inside it the journals of `zendiloosd` and `zendiloos-agent` and the
 whole journal of its boot. Debian's cloud image is kept in the cache for a

@@ -43,6 +43,7 @@ use zendiloos_agent_proto::{
 use zendiloos_exec::{Limits, Program, Surroundings};
 
 use crate::config::Tools;
+use crate::etc_units::EtcUnits;
 use crate::operations::OperationError;
 
 mod takeover;
@@ -113,6 +114,8 @@ pub(crate) struct Network {
     systemd_run: Program,
     /// Run in a transient unit, in the host's namespace: deletes a link.
     ip: PathBuf,
+    /// The unit `/etc/resolv.conf` is written in.
+    etc: EtcUnits,
     paths: NetworkPaths,
     pending: Mutex<Option<Pending>>,
 }
@@ -297,12 +300,17 @@ fn ours(name: &str) -> Option<(InterfaceName, bool)> {
 }
 
 impl Network {
-    pub(crate) fn new(tools: &Tools, paths: NetworkPaths) -> Result<Self, zendiloos_exec::ExecError> {
+    pub(crate) fn new(
+        tools: &Tools,
+        paths: NetworkPaths,
+        etc: EtcUnits,
+    ) -> Result<Self, zendiloos_exec::ExecError> {
         Ok(Self {
             systemctl: Program::new(&tools.systemctl)?,
             busctl: Program::new(&tools.busctl)?,
             systemd_run: Program::new(&tools.systemd_run)?,
             ip: tools.ip.clone(),
+            etc,
             paths,
             pending: Mutex::new(None),
         })

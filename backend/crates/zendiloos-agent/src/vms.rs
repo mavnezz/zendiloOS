@@ -54,7 +54,7 @@ use zendiloos_agent_proto::{
 use zendiloos_exec::{ExecError, Limits, Program, Surroundings};
 
 use crate::operations::OperationError;
-use crate::pools::HostPaths;
+use crate::pools::{HostPaths, link_units};
 use crate::vm_iso::IsoJob;
 use crate::vm_upload::UploadJob;
 use crate::volume_archive::{UnitLine, encode};
@@ -504,10 +504,12 @@ impl Vms {
         crate::vm_user_network::sync(&self.tools.systemctl, &self.passt_places()).await?;
         run(&self.tools.systemctl, &["daemon-reload"], QUICK).await?;
         // QEMU's output goes through virtlogd; without libvirt-daemon-system
-        // nothing else enables its socket before the next boot.
-        run(&self.tools.systemctl, &["enable", "--now", "virtlogd.socket"], QUICK).await?;
-        run(&self.tools.systemctl, &["enable", "--now", "libvirtd.socket"], QUICK).await?;
-        run(&self.tools.systemctl, &["enable", "libvirtd.service"], QUICK).await?;
+        // nothing else enables its socket before the next boot. Without
+        // Debian's SysV hooks: libvirtd has an init script, and update-rc.d
+        // would write /etc/rc?.d, which this sandbox may not.
+        link_units(&self.tools.systemctl, &["enable", "--now", "virtlogd.socket"]).await?;
+        link_units(&self.tools.systemctl, &["enable", "--now", "libvirtd.socket"]).await?;
+        link_units(&self.tools.systemctl, &["enable", "libvirtd.service"]).await?;
         run(&self.tools.systemctl, &["restart", "libvirtd.service"], SLOW).await?;
         Ok(Response::Done)
     }

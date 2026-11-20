@@ -61,9 +61,10 @@ impl Host {
         };
         let tools = Tools {
             systemctl: script("systemctl", "case \"$*\" in 'is-active --quiet smbd.service') exit 0 ;; esac"),
+            // Runs the unit's command, after its options.
             systemd_run: script(
                 "systemd-run",
-                &format!("while [ \"$1\" != {} ]; do shift; done\nexec \"$@\"", nginx.display()),
+                "while [ \"${1#--}\" != \"$1\" ]; do shift; done\nexec \"$@\"",
             ),
             nginx,
             useradd: script("useradd", &add("passwd", "990::/nonexistent:/usr/sbin/nologin")),
@@ -158,7 +159,12 @@ impl Host {
                 samba_passwords: at("samba/private/passdb.tdb"),
                 host_id: at("hostid"),
             },
-            host: HostPaths { volume_backup_keys: at("volume-backup-keys"), ..HostPaths::default() },
+            // The host id is written by this crate's own binary, in a unit.
+            host: HostPaths {
+                volume_backup_keys: at("volume-backup-keys"),
+                agent: PathBuf::from(env!("CARGO_BIN_EXE_zendiloos-agent")),
+                ..HostPaths::default()
+            },
             ..Paths::default()
         };
         let agent =
@@ -250,13 +256,25 @@ async fn a_restore_writes_the_certificates_nginx_takes_and_samba_passwords_while
     let nginx = calls.iter().position(|call| call == "nginx -t -q").unwrap();
     assert_eq!(calls[nginx + 1], "systemctl try-reload-or-restart nginx.service");
     assert_eq!(
-        calls[nginx + 2..],
+        calls[nginx + 2..nginx + 5],
         [
             "systemctl is-active --quiet smbd.service",
             "systemctl stop smbd.service",
             "systemctl start smbd.service"
         ]
     );
+    // The host id lies directly in /etc: written in a unit that may write
+    // its folder, with no capability.
+    let [host_id] = &calls[nginx + 5..] else { panic!("{calls:?}") };
+    assert!(host_id.starts_with("systemd-run --quiet --wait --pipe --collect"), "{host_id}");
+    for wanted in [
+        format!("--description=zendiloOS: writing {} ", host.at("hostid").display()),
+        format!("--property=ReadWritePaths={} ", host.root.display()),
+        "--property=CapabilityBoundingSet= ".to_owned(),
+        format!("{} put-etc-file ", env!("CARGO_BIN_EXE_zendiloos-agent")),
+    ] {
+        assert!(host_id.contains(&wanted), "{wanted} in {host_id}");
+    }
 }
 
 /// A pool imported here carries this machine's host id in its labels: the

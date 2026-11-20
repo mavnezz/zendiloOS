@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use tempfile::TempDir;
 use zendiloos_agent::config::Tools;
-use zendiloos_agent::{Erasable, ErasePolicy, HostNamePaths, Operations, Paths, WebServerPaths};
+use zendiloos_agent::{Erasable, ErasePolicy, HostNamePaths, HostPaths, Operations, Paths, WebServerPaths};
 use zendiloos_agent_proto::{ErrorCode, HostName, Request, Response, Role};
 
 const HOSTS: &str =
@@ -61,9 +61,10 @@ impl Host {
                  -subj) subject=\"$2\"; shift ;;\n\
                  esac; shift; done",
             ),
+            // Runs the unit's command, after its options.
             systemd_run: script(
                 "systemd-run",
-                &format!("while [ \"$1\" != {} ]; do shift; done\nexec \"$@\"", nginx.display()),
+                "while [ \"${1#--}\" != \"$1\" ]; do shift; done\nexec \"$@\"",
             ),
             nginx,
             ..Tools::default()
@@ -86,6 +87,11 @@ impl Host {
         .unwrap();
         let paths = Paths {
             host_name: HostNamePaths { hostname: root.join("hostname"), hosts: root.join("hosts") },
+            // /etc/hosts is written by this crate's own binary, in a unit.
+            host: HostPaths {
+                agent: PathBuf::from(env!("CARGO_BIN_EXE_zendiloos-agent")),
+                ..HostPaths::default()
+            },
             web_server: WebServerPaths {
                 directory: root.join("web"),
                 certificates: root.join("web/certificates"),
@@ -137,6 +143,23 @@ async fn a_rename_reaches_hostnamed_the_hosts_file_the_certificate_and_what_foll
     assert_eq!(response, Response::HostNameSet { certificate_renewed: true, own_certificate_served: true });
     let calls = host.calls();
     assert_eq!(calls[0], "hostnamectl hostname -- office");
+    // /etc/hosts lies directly in /etc: written in a unit that may write
+    // its folder, with no capability.
+    let hosts = &calls[1];
+    assert!(
+        hosts.starts_with("systemd-run --quiet --wait --pipe --collect --service-type=exec"),
+        "{calls:?}"
+    );
+    for wanted in [
+        format!("--description=zendiloOS: writing {} ", host.root.join("hosts").display()),
+        format!("--property=ReadWritePaths={} ", host.root.display()),
+        "--property=CapabilityBoundingSet= ".to_owned(),
+        "--property=SystemCallFilter=~connect:EPERM ".to_owned(),
+        format!("{} put-etc-file ", env!("CARGO_BIN_EXE_zendiloos-agent")),
+    ] {
+        assert!(hosts.contains(&wanted), "{wanted} in {hosts}");
+    }
+    let calls = &calls[1..];
     assert!(calls[1].starts_with("openssl req -x509 -newkey ec"), "{calls:?}");
     assert!(
         calls[1].contains(

@@ -51,6 +51,19 @@ impl Agent {
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
             path
         };
+        // The shadow tools' units run them, after their options; only what
+        // the tools were asked is noted.
+        let systemd_run = dir.path().join("systemd-run");
+        fs::write(
+            &systemd_run,
+            format!(
+                "#!/bin/sh\ncase \"$*\" in *' on the accounts '*) while [ \"${{1#--}}\" != \"$1\" ]; do shift; done; \
+                 exec \"$@\" ;; esac\necho systemd-run \"$@\" >> {}\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&systemd_run, fs::Permissions::from_mode(0o755)).unwrap();
         let tools = Tools {
             openssl: "/bin/false".into(),
             nginx: "/bin/false".into(),
@@ -97,7 +110,7 @@ impl Agent {
             hostnamectl: "/bin/false".into(),
             timedatectl: script("timedatectl", ""),
             sshd: script("sshd", ""),
-            systemd_run: script("systemd-run", ""),
+            systemd_run,
             docker: script("docker", ""),
             setsid: "/usr/bin/setsid".into(),
             dockerd: script("dockerd", ""),

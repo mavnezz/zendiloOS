@@ -347,8 +347,22 @@ prepare() {
     esac
 }
 
+# What the system agent was refused writing on the VMs of the run, a few
+# lines of its journal. Its sandbox writes only some folders of /etc
+# (packaging/systemd/zendiloos-agent.service), and an operation may only
+# log what it could not write; a VM that does not answer (a test powered it
+# off) is passed over.
+refused_writes() {
+    local vm
+    for vm in "${made[@]}"; do
+        timeout 60 env ZENDILOOS_VM="$vm" "$vmsh" ssh \
+            "sudo journalctl -u zendiloos-agent --no-pager -o cat 2>/dev/null | grep -F 'Read-only file system' | head -n 5 | sed 's/^/VM $vm: /'" \
+            2>/dev/null || true
+    done
+}
+
 run_test() {
-    local name=$1 began=$SECONDS env=(ZENDILOOS_VM="$main_vm") args=()
+    local name=$1 began=$SECONDS env=(ZENDILOOS_VM="$main_vm") args=() refused
     case $name in
         config-backup) env+=(ZENDILOOS_SOURCE_VM="$main_vm" ZENDILOOS_TARGET_VM="$second_vm") ;;
         pool-import) env=(ZENDILOOS_VM="$second_vm" ZENDILOOS_DEB="$deb") ;;
@@ -357,6 +371,11 @@ run_test() {
     esac
     say "== vm-$name-test (${env[*]}${args[*]:+ ${args[*]##*/}})"
     if env "${env[@]}" "$root/scripts/vm-$name-test.sh" "${args[@]}" </dev/null 2>&1 | tee "$out/$name.log"; then
+        refused=$(refused_writes)
+        if [[ -n $refused ]]; then
+            note_time "vm-$name-test" "**the agent was refused a write**" $((SECONDS - began))
+            fail "vm-$name-test passed, but the agent was refused a write:"$'\n'"$refused"
+        fi
         note_time "vm-$name-test" passed $((SECONDS - began))
     else
         note_time "vm-$name-test" "**failed**" $((SECONDS - began))

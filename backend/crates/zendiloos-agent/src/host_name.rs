@@ -4,6 +4,8 @@
 //! itself. `/etc/hosts` is the installer's, and only its names are changed:
 //! where it named the old name (Debian's `127.0.1.1` line, or the address
 //! the installer was given), it names the new one, a domain after it kept.
+//! It lies directly in `/etc`, which the agent's sandbox may not write: a
+//! transient unit replaces it ([`crate::etc_units`]).
 //!
 //! What reads the name when it starts follows by a restart, if it runs:
 //! Avahi (`<name>.local`), Samba (its NetBIOS name is the host name's, in
@@ -20,6 +22,7 @@ use zendiloos_agent_proto::{HostName, Response};
 use zendiloos_exec::{Limits, Program};
 
 use crate::config::Tools;
+use crate::etc_units::{EtcFile, EtcUnits};
 use crate::operations::OperationError;
 use crate::web_server::WebServer;
 
@@ -52,15 +55,22 @@ pub(crate) struct HostNames {
     hostnamectl: Program,
     systemctl: Program,
     openssl: Program,
+    /// The unit `/etc/hosts` is written in.
+    etc: EtcUnits,
     paths: HostNamePaths,
 }
 
 impl HostNames {
-    pub(crate) fn new(tools: &Tools, paths: HostNamePaths) -> Result<Self, zendiloos_exec::ExecError> {
+    pub(crate) fn new(
+        tools: &Tools,
+        paths: HostNamePaths,
+        etc: EtcUnits,
+    ) -> Result<Self, zendiloos_exec::ExecError> {
         Ok(Self {
             hostnamectl: Program::new(&tools.hostnamectl)?,
             systemctl: Program::new(&tools.systemctl)?,
             openssl: Program::new(&tools.openssl)?,
+            etc,
             paths,
         })
     }
@@ -77,7 +87,7 @@ impl HostNames {
         zendiloos_exec::run(&self.hostnamectl, ["hostname", "--", name.as_str()], LIMITS)
             .await?
             .success(&self.hostnamectl)?;
-        self.write_hosts(old.as_deref(), name.as_str())?;
+        self.write_hosts(old.as_deref(), name.as_str()).await?;
         let (certificate_renewed, own_certificate_served) =
             match web.renew_own_certificate(&self.openssl, name).await {
                 Ok(served) => (true, served),
@@ -103,7 +113,7 @@ impl HostNames {
     /// `/etc/hosts` with the new name where it had the old one, kept as it
     /// was otherwise; not written if nothing changes, and left alone if it
     /// is not a plain file (a link elsewhere is somebody else's).
-    fn write_hosts(&self, old: Option<&str>, new: &str) -> Result<(), OperationError> {
+    async fn write_hosts(&self, old: Option<&str>, new: &str) -> Result<(), OperationError> {
         let path = &self.paths.hosts;
         let mode = match fs::symlink_metadata(path) {
             Ok(meta) if meta.is_file() => meta.permissions().mode() & 0o7777,
@@ -117,7 +127,7 @@ impl HostNames {
         let before = self.read(path)?.unwrap_or_default();
         let after = hosts_file(&before, old, new);
         if after != before {
-            crate::durable::replace_mode(path, after.as_bytes(), mode)?;
+            self.etc.put(path, EtcFile::File { content: after.as_bytes(), mode }).await?;
         }
         Ok(())
     }

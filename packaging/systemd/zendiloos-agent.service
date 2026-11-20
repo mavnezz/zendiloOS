@@ -25,37 +25,44 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 # - pools: partitioning and ZFS write to disks and /dev/zfs, re-read
 #   partition tables and use ZFS ioctls (CAP_SYS_ADMIN); mount units go to
 #   /etc/systemd/system and are mounted by systemd, outside this sandbox;
-# - the shadow tools and smbpasswd write /etc and Samba's databases and
-#   set the group of /etc/shadow (CAP_CHOWN);
-# - shares: datasets and mount units as for pools; Samba and NFS
-#   configuration in /etc, NFS state in /var/lib/nfs; smbd, wsdd2 and
-#   nfs-server are started, stopped, enabled and disabled by systemd;
-#   smbcontrol makes every smbd read the configuration again and ends the
-#   connections of a share someone lost access to (Samba's messages, in
-#   /run/samba and /var/lib/samba);
+#   the ZFS module rewrites /etc/zfs/zpool.cache in the mount namespace of
+#   the zpool that asks it to;
+# - users and groups: the shadow tools change the account databases
+#   directly in /etc, in transient units (systemd-run) that may write /etc
+#   with CAP_CHOWN alone (which gives /etc/shadow its group), see their
+#   sandbox in etc_units.rs; smbpasswd writes Samba's databases here;
+# - shares: datasets and mount units as for pools; Samba's configuration
+#   in /etc/samba, NFS's in /etc/exports.d, NFS state in /var/lib/nfs;
+#   smbd, wsdd2 and nfs-server are started, stopped, enabled and disabled
+#   by systemd; smbcontrol makes every smbd read the configuration again
+#   and ends the connections of a share someone lost access to (Samba's
+#   messages, in /run/samba and /var/lib/samba);
 # - personal folders: their dataset and mount unit as for shares, and
 #   each user's quota (zfs userquota); the folders themselves are the files
 #   agent's;
 # - time: systemd-timedated sets the zone, network time and the clock
 #   (asked over D-Bus by timedatectl; the agent itself may not touch the
-#   clock), timesyncd's server list goes to /etc;
+#   clock), timesyncd's server list goes to /etc/systemd/timesyncd.conf.d;
 # - the machine's name: systemd-hostnamed sets it (asked over D-Bus by
 #   hostnamectl; the agent's own UTS namespace below keeps the name it
-#   started with), /etc/hosts and the machine's own certificate in
-#   /etc/zendiloos/tls (openssl) are in /etc; Avahi, smbd and wsdd2, which
+#   started with); /etc/hosts is replaced by a transient unit (this binary
+#   as put-etc-file, with no capability), the machine's own certificate
+#   goes to /etc/zendiloos/tls (openssl); Avahi, smbd and wsdd2, which
 #   read the name when they start, are restarted by systemd;
 # - the configuration backup: its files are read where they are; restored,
 #   the certificates go to /etc/zendiloos (nginx -t and a reload, as for
 #   issued ones), Samba's passwords to /var/lib/samba/private (smbd
-#   stopped meanwhile), ZFS's host id to /etc; the people's users and
-#   groups are made with the IDs they had by the shadow tools;
+#   stopped meanwhile), ZFS's host id to /etc/hostid (put-etc-file, as
+#   /etc/hosts); the people's users and groups are made with the IDs they
+#   had by the shadow tools, as above;
 # - SSH: its settings go to /etc/ssh/sshd_config.d; `sshd -t` checks them
 #   in a transient unit (systemd-run), which brings /run/sshd along when
 #   the service is stopped; ssh.service is started, stopped, enabled and
 #   disabled by systemd, and a transient timer turns it off on request;
 # - the web interface's oldest TLS version goes to /etc/zendiloos/nginx,
 #   and nginx is reloaded by systemd;
-# - apps: Docker's data and each app's on datasets as for shares, the
+# - apps: Docker's data and each app's on datasets as for shares (its data
+#   root in /etc/docker/daemon.json, a drop-in in /etc/systemd/system), the
 #   apps' accounts as for people, their checked compose files in
 #   /etc/zendiloos/apps; `docker compose` talks to dockerd over its socket
 #   (AF_UNIX), and dockerd, outside this sandbox, fetches and runs. Before
@@ -88,11 +95,10 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 #   in the host's network namespace; zendiloos-docker-bridges.service
 #   (this binary as `docker-bridges`) lets frames within zendiloOS's
 #   bridges pass Docker's FORWARD chain;
-#   taking it over from ifupdown changes /etc/network/interfaces and
-#   /etc/resolv.conf (a record of them in /etc/network) and has systemd
-#   stop networking.service and start systemd-networkd and
-#   systemd-resolved: the files are in /etc, the services run outside
-#   this sandbox;
+#   taking it over from ifupdown changes /etc/network/interfaces (a record
+#   of what it changes in /etc/network) and /etc/resolv.conf (put-etc-file,
+#   as /etc/hosts) and has systemd stop networking.service and start
+#   systemd-networkd and systemd-resolved, outside this sandbox;
 # - the firewall: its rules go to /etc/zendiloos/firewall, are checked
 #   with `nft -c` in a transient unit and loaded by
 #   zendiloos-firewall.service, both in the host's network namespace,
@@ -131,7 +137,9 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 #   receive-vm-image, and rm) that may write only the VMs' folder, the
 #   receiving one with no capability at all; the free space for an upload
 #   is looked at (statvfs) and its folder listed, read only. The
-#   consoles' folder is made by systemd-tmpfiles in one. A console is
+#   consoles' folder is made by systemd-tmpfiles in one, from
+#   /etc/tmpfiles.d, and AppArmor lets QEMU reach it by rules in
+#   /etc/apparmor.d/abstractions/libvirt-qemu.d. A console is
 #   QEMU's VNC socket in /run/zendiloos-vms, opened without following a
 #   link and connected to (connecting needs no write access to /run), and
 #   handed to zendiloosd like a terminal's master. The host's USB and PCI
@@ -169,8 +177,24 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_CHOWN CAP_DAC_READ_SEARCH
 PrivateNetwork=yes
+# Of /etc only the folders named here may be written, never /etc itself:
+# what lies directly in it (the account databases, /etc/hosts,
+# /etc/hostid, /etc/resolv.conf) is replaced by renaming and changed in the
+# transient units above, which may write /etc and do nothing else. A
+# folder must be there when the agent starts, or it stays read-only here
+# until the next start. Those no package zendiloOS depends on brings, and
+# those of plugins installed later (Docker, NUT, libvirt and QEMU), the
+# package makes, as Debian's packages make them (zendiloos.tmpfiles, at
+# its installation and every boot): a plugin's package finds its folder
+# there and gives it the owner and mode it wants, as for one it made
+# itself. "-": the agent starts without the folder, whose operations then
+# fail. tests/units.rs holds this list, the places the agent writes and
+# the folders the package makes together.
 ProtectSystem=strict
-ReadWritePaths=/etc -/var/lib/samba -/var/cache/samba -/run/samba -/var/lib/nfs -/run/issue.d -/run/zendiloos-acme
+ReadWritePaths=/etc/zendiloos /etc/systemd/system /etc/systemd/network /etc/samba /etc/zfs /etc/tmpfiles.d
+ReadWritePaths=-/etc/systemd/timesyncd.conf.d -/etc/ssh/sshd_config.d -/etc/exports.d -/etc/docker -/etc/nut
+ReadWritePaths=-/etc/network -/etc/apparmor.d/abstractions/libvirt-qemu.d -/etc/qemu/firmware
+ReadWritePaths=-/var/lib/samba -/var/cache/samba -/run/samba -/var/lib/nfs -/run/issue.d -/run/zendiloos-acme
 StateDirectory=zendiloos-agent
 ProtectHome=yes
 PrivateTmp=yes

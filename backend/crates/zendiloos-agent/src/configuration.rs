@@ -24,6 +24,7 @@ use zendiloos_agent_proto::{ConfigurationFile, ConfigurationPath, Response, netw
 use zendiloos_exec::{Limits, Program};
 
 use crate::accounts::{AccountFiles, USERS_GROUP};
+use crate::etc_units::{EtcFile, EtcUnits};
 use crate::operations::OperationError;
 use crate::volume_archive::ManifestKeys;
 use crate::web_server::WebServer;
@@ -103,6 +104,8 @@ pub(crate) struct Configuration {
     /// Held from looking for pools imported until the host id is written:
     /// a pool imported meanwhile would carry this machine's.
     pool_changes: std::sync::Arc<tokio::sync::Mutex<()>>,
+    /// The unit the host id, directly in `/etc`, is written in.
+    etc: EtcUnits,
 }
 
 impl Configuration {
@@ -113,8 +116,9 @@ impl Configuration {
         paths: ConfigurationPaths,
         accounts: AccountFiles,
         pool_changes: std::sync::Arc<tokio::sync::Mutex<()>>,
+        etc: EtcUnits,
     ) -> Self {
-        Self { systemctl, zpool, pdbedit, paths, accounts, pool_changes }
+        Self { systemctl, zpool, pdbedit, paths, accounts, pool_changes, etc }
     }
 
     /// Every file of the configuration that is there, and the accounts.
@@ -205,7 +209,9 @@ impl Configuration {
                     let bytes = samba_passwords.as_deref().unwrap_or(bytes);
                     self.put_samba_passwords(&place, bytes).await?;
                 }
-                ConfigurationPath::HostId => crate::durable::replace_mode(&place, bytes, 0o644)?,
+                ConfigurationPath::HostId => {
+                    self.etc.put(&place, EtcFile::File { content: bytes, mode: 0o644 }).await?;
+                }
                 ConfigurationPath::IdHighWater => {
                     let now = read_plain(&place, file.path.max_bytes())?.unwrap_or_default();
                     let merged =
