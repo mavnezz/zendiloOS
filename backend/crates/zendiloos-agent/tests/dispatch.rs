@@ -71,6 +71,7 @@ impl Host {
             groupdel: p("groupdel"),
             gpasswd: p("gpasswd"),
             smbpasswd: p("smbpasswd"),
+            pdbedit: p("pdbedit"),
             busctl: p("busctl"),
             ip: "/bin/false".into(),
             hostnamectl: "/bin/false".into(),

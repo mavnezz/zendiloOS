@@ -86,6 +86,7 @@ esac
             groupdel: any.clone(),
             gpasswd: any.clone(),
             smbpasswd: any.clone(),
+            pdbedit: any.clone(),
             systemctl: any.clone(),
             busctl: any.clone(),
             ip: "/bin/false".into(),

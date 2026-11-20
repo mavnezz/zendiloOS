@@ -32,6 +32,45 @@ const MANAGED_IDS: RangeInclusive<u32> = ID_MIN..=ID_MAX;
 const NOLOGIN: &str = "/usr/sbin/nologin";
 /// The comment of every app's account: how the agent tells them apart.
 pub const APP_COMMENT: &str = "zendiloOS app";
+/// Names the packages zendiloOS and its plugins install give accounts of
+/// their own, some only once a plugin comes (Docker's group, libvirt's,
+/// the TPM's, NUT's), and privileged groups a base system may lack. A
+/// person's account or group of such a name would be found by the package
+/// and taken for its own: its members would reach what it guards (Docker's
+/// or libvirt's socket, the TPM), or its daemon would run as that person.
+pub const PACKAGE_ACCOUNTS: [&str; 22] = [
+    "docker",
+    "libvirt",
+    "libvirt-qemu",
+    "libvirt-dnsmasq",
+    "kvm",
+    "tss",
+    "swtpm",
+    "nut",
+    "statd",
+    "_rpc",
+    "dnsmasq",
+    "avahi",
+    "messagebus",
+    "polkitd",
+    "sshd",
+    "sudo",
+    "adm",
+    "wheel",
+    "staff",
+    "shadow",
+    "disk",
+    "render",
+];
+
+/// Refuses `name` for a person's account or group if a package may take
+/// it for its own ([`PACKAGE_ACCOUNTS`]).
+fn not_a_package_account(name: &str) -> Result<(), OperationError> {
+    if PACKAGE_ACCOUNTS.contains(&name) {
+        return Err(OperationError::Refused(format!("{name} is the name of a package's account")));
+    }
+    Ok(())
+}
 
 /// UID and GID of `app`'s account, if zendiloos made it: user `app-<id>`
 /// with a managed UID and [`APP_COMMENT`], whose primary group has the same
@@ -157,6 +196,7 @@ impl Accounts {
         if passwd::lookup(&passwd, name.as_str()).is_some() {
             return Err(OperationError::Conflict);
         }
+        not_a_package_account(name.as_str())?;
         if passwd::group_id(&group, USERS_GROUP).is_none() {
             return Err(OperationError::Setup(format!("group {USERS_GROUP} is missing")));
         }
@@ -237,6 +277,7 @@ impl Accounts {
         if passwd::group_id(&group, name.as_str()).is_some() {
             return Err(OperationError::Conflict);
         }
+        not_a_package_account(name.as_str())?;
         let marks = self.read_high_water()?;
         let gid = next_id(&group, &marks, IdKind::Group)
             .ok_or_else(|| OperationError::Setup("no group IDs left".to_owned()))?;
@@ -303,6 +344,11 @@ impl Accounts {
         users: &[RestoredUser],
         groups: &[RestoredGroup],
     ) -> Result<Response, OperationError> {
+        for name in
+            users.iter().map(|user| user.name.as_str()).chain(groups.iter().map(|group| group.name.as_str()))
+        {
+            not_a_package_account(name)?;
+        }
         let _serial = crate::waiting::lock(&self.serial).await?;
         let (passwd, group) = self.read_files().await?;
         let users_gid = passwd::group_id(&group, USERS_GROUP)

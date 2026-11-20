@@ -133,7 +133,9 @@ impl Operations {
             configuration: Configuration::new(
                 Program::new(&tools.systemctl)?,
                 Program::new(&tools.zpool)?,
+                Program::new(&tools.pdbedit)?,
                 configuration,
+                paths.accounts.clone(),
             ),
             systemctl: Program::new(&tools.systemctl)?,
             lsblk: Program::new(&tools.lsblk)?,

@@ -69,6 +69,12 @@ impl Host {
             useradd: script("useradd", &add("passwd", "990::/nonexistent:/usr/sbin/nologin")),
             groupadd: script("groupadd", &add("group", "")),
             gpasswd: script("gpasswd", ""),
+            // What Samba's password database it is shown lists: the names
+            // in `passdb-lists`, as `pdbedit -L` prints them.
+            pdbedit: script(
+                "pdbedit",
+                &format!("[ -f {list} ] && cat {list}; exit 0", list = at("passdb-lists").display()),
+            ),
             // The pools imported: those `pools` names.
             zpool: script(
                 "zpool",
@@ -255,6 +261,38 @@ async fn the_host_id_stays_while_pools_are_imported_that_carry_this_machines() {
     assert_eq!(fs::read(host.at("hostid")).unwrap(), [1, 2, 3, 4]);
 }
 
+/// Samba authenticates whoever its password database names: only the
+/// people's accounts zendiloOS made may be in a restored one, not root, a
+/// system account or someone with no account here.
+#[tokio::test]
+async fn samba_passwords_only_of_peoples_accounts_are_restored() {
+    let host = Host::new();
+    let people = format!("{PASSWD}anna:x:2001:990::/nonexistent:/usr/sbin/nologin\n");
+    fs::write(host.at("passwd"), people).unwrap();
+    for listed in ["anna:2001:\nroot:0:\n", "zendiloos-files:995:\n", "eve:-1:\n", "debian:1000:\n"] {
+        fs::write(host.at("passdb-lists"), listed).unwrap();
+        let files = vec![file(ConfigurationPath::SambaPasswords, b"restored TDB")];
+        let response = host.agent.execute(&Request::RestoreConfiguration { files }).await;
+        let Response::Error { code, message } = response else { panic!("{listed:?} restored: {response:?}") };
+        assert_eq!(code, ErrorCode::Forbidden, "{message}");
+        assert!(message.contains("passdb.tdb"), "{message}");
+        assert_eq!(fs::read(host.at("samba/private/passdb.tdb")).unwrap(), b"TDB file\0\x01");
+    }
+    let shown = host.calls();
+    let listing = format!(
+        "pdbedit --option=interfaces=127.0.0.1/8 -L -b tdbsam:{}",
+        host.at("samba/private/passdb.tdb.zendiloos-check").display()
+    );
+    assert!(shown.iter().all(|call| call == &listing), "a copy, by itself: {shown:?}");
+    assert!(!host.at("samba/private/passdb.tdb.zendiloos-check").exists(), "the copy goes");
+
+    fs::write(host.at("passdb-lists"), "WARNING: The \"syslog\" option is deprecated\nanna:2001:Anna\n")
+        .unwrap();
+    let files = vec![file(ConfigurationPath::SambaPasswords, b"restored TDB")];
+    assert_eq!(host.agent.execute(&Request::RestoreConfiguration { files }).await, Response::Done);
+    assert_eq!(host.text("samba/private/passdb.tdb"), "restored TDB");
+}
+
 #[tokio::test]
 async fn the_keys_volume_backups_are_signed_with_are_backed_up_and_restored_beside_those_there() {
     let host = Host::new();
@@ -381,6 +419,21 @@ async fn an_id_or_name_taken_otherwise_refuses_the_whole_restore() {
         Request::RestoreAccounts { users: vec![user("eve", 2004)], groups: vec![] },
         Request::RestoreAccounts { users: vec![], groups: vec![group("family", 2003, &["nobody-here"])] },
         Request::RestoreAccounts { users: vec![], groups: vec![group("staff", 990, &[])] },
+        // Names packages give their accounts, here or once a plugin comes:
+        // the package would take a person's for its own.
+        Request::RestoreAccounts { users: vec![], groups: vec![group("docker", 2005, &[])] },
+        Request::RestoreAccounts { users: vec![], groups: vec![group("libvirt", 2005, &[])] },
+        Request::RestoreAccounts { users: vec![user("nut", 2006)], groups: vec![] },
+        Request::RestoreAccounts { users: vec![user("tss", 2006)], groups: vec![] },
+    ] {
+        let response = host.agent.execute(&request).await;
+        assert!(matches!(response, Response::Error { code: ErrorCode::Forbidden, .. }), "{response:?}");
+    }
+    assert!(host.calls().is_empty(), "nothing made");
+
+    for request in [
+        Request::CreateGroup { name: GroupName::parse("docker").unwrap() },
+        Request::CreateUser { name: UserName::parse("libvirt-qemu").unwrap() },
     ] {
         let response = host.agent.execute(&request).await;
         assert!(matches!(response, Response::Error { code: ErrorCode::Forbidden, .. }), "{response:?}");

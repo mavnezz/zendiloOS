@@ -118,6 +118,7 @@ impl Host {
             groupdel: any.clone(),
             gpasswd: any.clone(),
             smbpasswd: any.clone(),
+            pdbedit: any.clone(),
             hostnamectl: "/bin/false".into(),
             timedatectl: any.clone(),
             sshd: any.clone(),

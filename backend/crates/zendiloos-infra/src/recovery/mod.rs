@@ -242,9 +242,11 @@ impl ConfigurationRestorer {
 
     /// Puts the host's part back: the accounts first (the passwords and
     /// files name them), the machine's name, the files, then the other
-    /// settings; a setting that fails is only said. The host id goes alone,
-    /// last: the agent keeps this machine's while pools are imported, and
-    /// that leaves the other files to come back.
+    /// settings; a setting that fails is only said. Samba's passwords and
+    /// the host id go alone, last: the agent refuses a password database
+    /// that names others than the people's accounts, and keeps this
+    /// machine's host id while pools are imported, and either leaves the
+    /// other files to come back.
     async fn put_back(
         &self,
         opened: &archive::Opened,
@@ -270,12 +272,14 @@ impl ConfigurationRestorer {
             }
             Err(_) => warnings.push(format!("the machine's name {name} is not taken here")),
         }
-        let (host_id, files): (Vec<ConfigurationFile>, Vec<ConfigurationFile>) = opened
+        let (alone, files): (Vec<ConfigurationFile>, Vec<ConfigurationFile>) = opened
             .files
             .iter()
             .filter(|(path, _)| path.restorable())
             .filter_map(|(path, bytes)| ConfigurationFile::new(path.clone(), bytes.clone()).ok())
-            .partition(|file| file.path == ConfigurationPath::HostId);
+            .partition(|file| {
+                matches!(file.path, ConfigurationPath::SambaPasswords | ConfigurationPath::HostId)
+            });
         let mut batch: Vec<ConfigurationFile> = Vec::new();
         let mut size = 0;
         let mut batches = Vec::new();
@@ -295,8 +299,12 @@ impl ConfigurationRestorer {
         if !batch.is_empty() {
             batches.push(batch);
         }
-        if !host_id.is_empty() {
-            batches.push(host_id);
+        for file in alone {
+            if file.content.as_bytes().len() > BATCH {
+                warnings.push(format!("{} is too large to put back", file.path.as_path()));
+            } else {
+                batches.push(vec![file]);
+            }
         }
         for files in batches {
             let names: Vec<String> = files.iter().map(|file| file.path.as_path()).collect();

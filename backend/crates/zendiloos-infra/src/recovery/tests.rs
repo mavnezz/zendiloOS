@@ -227,13 +227,12 @@ async fn a_host_id_the_agent_keeps_is_told_and_the_other_files_come_back() {
         .unwrap();
 
     let requests = agent.restored.lock().unwrap().clone();
-    assert_eq!(requests.last().unwrap(), &["/etc/hostid"], "alone, last: {requests:?}");
-    assert!(
-        requests[..requests.len() - 1]
-            .iter()
-            .flatten()
-            .any(|path| path == "/var/lib/samba/private/passdb.tdb")
+    assert_eq!(
+        requests[requests.len() - 2..],
+        [vec!["/var/lib/samba/private/passdb.tdb".to_owned()], vec!["/etc/hostid".to_owned()]],
+        "each alone, last: {requests:?}"
     );
+    assert!(requests[0].iter().any(|path| path == "/etc/zendiloos/tls/zendiloos.key"), "{requests:?}");
     assert_eq!(restored.warnings.len(), 1, "{:?}", restored.warnings);
     assert!(
         restored.warnings[0].starts_with("not put back: /etc/hostid (")

@@ -4,6 +4,11 @@
 //! agent's own; a file is read only if it is a plain file there, never
 //! through a link, and no larger than its place allows.
 //!
+//! Samba's password database is put in place only if it names the
+//! people's accounts zendiloOS made and nobody else: Samba authenticates
+//! whoever it names. A copy of it is listed (`pdbedit -L`) beside the place
+//! first.
+//!
 //! The host id is written back only while no pool is imported, or if it is
 //! this machine's already: a pool imported carries this machine's host id
 //! in its labels, and with another one ZFS's units would take it for
@@ -18,6 +23,7 @@ use std::time::Duration;
 use zendiloos_agent_proto::{ConfigurationFile, ConfigurationPath, Response, network_file_name};
 use zendiloos_exec::{Limits, Program};
 
+use crate::accounts::{AccountFiles, USERS_GROUP};
 use crate::operations::OperationError;
 use crate::volume_archive::ManifestKeys;
 use crate::web_server::WebServer;
@@ -87,12 +93,20 @@ impl ConfigurationPaths {
 pub(crate) struct Configuration {
     systemctl: Program,
     zpool: Program,
+    pdbedit: Program,
     paths: ConfigurationPaths,
+    accounts: AccountFiles,
 }
 
 impl Configuration {
-    pub(crate) fn new(systemctl: Program, zpool: Program, paths: ConfigurationPaths) -> Self {
-        Self { systemctl, zpool, paths }
+    pub(crate) fn new(
+        systemctl: Program,
+        zpool: Program,
+        pdbedit: Program,
+        paths: ConfigurationPaths,
+        accounts: AccountFiles,
+    ) -> Self {
+        Self { systemctl, zpool, pdbedit, paths, accounts }
     }
 
     /// Every file of the configuration that is there, and the accounts.
@@ -146,6 +160,9 @@ impl Configuration {
         }
         if let Some(file) = files.iter().find(|file| file.path == ConfigurationPath::HostId) {
             self.check_host_id(file.content.as_bytes()).await?;
+        }
+        if let Some(file) = files.iter().find(|file| file.path == ConfigurationPath::SambaPasswords) {
+            self.check_samba_passwords(file.content.as_bytes()).await?;
         }
         let mut pairs = Vec::new();
         for file in files {
@@ -220,6 +237,62 @@ impl Configuration {
             ConfigurationPath::HostId.as_path(),
             pools.join(", ")
         )))
+    }
+
+    /// Refuses a password database of Samba's that names anyone but the
+    /// people's accounts zendiloOS made (a managed UID, primary group
+    /// [`USERS_GROUP`]): root, a system or package account, an app's, one
+    /// with no account here. Listed from a copy beside its place, removed
+    /// whatever the listing says.
+    async fn check_samba_passwords(&self, restored: &[u8]) -> Result<(), OperationError> {
+        let place = &self.paths.samba_passwords;
+        let refused = |why: String| OperationError::Refused(format!("{}: {why}", place.display()));
+        let mut copy = place.as_os_str().to_owned();
+        copy.push(".zendiloos-check");
+        let copy = PathBuf::from(copy);
+        if let Some(parent) = place.parent() {
+            use std::os::unix::fs::DirBuilderExt;
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)
+                .map_err(|e| OperationError::Write(parent.to_owned(), e))?;
+        }
+        crate::durable::replace_mode(&copy, restored, 0o600)?;
+        let backend = format!("tdbsam:{}", copy.display());
+        // Samba asks the kernel for the network's interfaces as it reads
+        // its configuration, and stops if it finds none and is told none:
+        // the agent has no network and no netlink. It is told one.
+        let args = ["--option=interfaces=127.0.0.1/8", "-L", "-b", backend.as_str()];
+        let listed = zendiloos_exec::run(&self.pdbedit, args, LIMITS).await;
+        let _ = fs::remove_file(&copy);
+        let listed = listed?;
+        if !listed.status.success() {
+            return Err(refused(format!("not a password database Samba reads ({})", listed.stderr.trim())));
+        }
+        let passwd = fs::read_to_string(&self.accounts.passwd)
+            .map_err(|e| OperationError::Read(self.accounts.passwd.clone(), e))?;
+        let group = fs::read_to_string(&self.accounts.group)
+            .map_err(|e| OperationError::Read(self.accounts.group.clone(), e))?;
+        let users_gid = crate::passwd::group_id(&group, USERS_GROUP);
+        // An entry is `name:uid:full name`, the UID -1 for a name with no
+        // account; anything else is Samba speaking (a deprecated option).
+        for line in String::from_utf8_lossy(&listed.stdout).lines() {
+            let mut fields = line.splitn(3, ':');
+            let (Some(name), Some(uid)) = (fields.next(), fields.next()) else { continue };
+            if uid.trim().parse::<i64>().is_err() {
+                continue;
+            }
+            let person = crate::passwd::lookup(&passwd, name).is_some_and(|(uid, gid)| {
+                zendiloos_agent_proto::MANAGED_IDS.contains(&uid) && Some(gid) == users_gid
+            });
+            if !person {
+                return Err(refused(format!(
+                    "Samba would let {name:?} in, who is not one of the people's accounts here"
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Samba's passwords, with Samba stopped meanwhile (it keeps the
