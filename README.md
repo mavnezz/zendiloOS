@@ -169,7 +169,9 @@ just vm install    # install the newest package from dist/
 The test VM answers on https://127.0.0.1:8443. The VM tests (`just
 vm-*-test`) change and destroy things and run in a second VM:
 `ZENDILOOS_VM=2 just vm create` (then `start` and `install` the same way),
-on https://127.0.0.1:8444. How releases are made and
+on https://127.0.0.1:8444. `just vm-ci <group>` runs a group of them in VMs
+made for it, as GitHub does every night
+([testing](docs/testing.md#every-night-on-github)). How releases are made and
 signed: [docs/releases.md](docs/releases.md).
 
 ```text

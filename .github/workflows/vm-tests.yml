@@ -1,0 +1,177 @@
+# The VM tests (docs/testing.md) every night, and by hand: Actions → VM
+# tests → Run workflow, with one group or all. One job builds the package
+# of the commit; then each group of tests runs on a runner of its own, in
+# test VMs made afresh there with KVM (scripts/vm-ci.sh, which runs a group
+# on a workstation as well). A group stops at its first failure and uploads
+# what there is to see: the VMs' consoles, the journals of zendiloosd and
+# zendiloos-agent from inside them (and that of the whole boot), and each
+# test's output.
+#
+# Not part of a pull request's checks: the package is built anew and every
+# group makes its VMs first, so a run takes over half an hour even with the
+# groups side by side. Nothing here holds up a release.
+name: VM tests
+
+on:
+  schedule:
+    # After midnight in Europe, when main has stopped moving.
+    - cron: '23 2 * * *'
+  workflow_dispatch:
+    inputs:
+      group:
+        description: Group of tests (scripts/vm-ci.sh list)
+        type: choice
+        options: [all, storage, sharing, security, docker, vms, network, restore, pool-import, upgrade]
+        default: all
+
+permissions:
+  contents: read
+
+# A night's run and one started by hand for the same group wait for each
+# other instead of cutting one off.
+concurrency:
+  group: vm-tests-${{ github.ref }}-${{ inputs.group || 'all' }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Debian package
+    runs-on: ubuntu-24.04
+    outputs:
+      groups: ${{ steps.groups.outputs.groups }}
+    steps:
+      # The whole history: a development build counts its version from the
+      # last tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Groups
+        id: groups
+        env:
+          GROUP: ${{ inputs.group || 'all' }}
+        run: |
+          if [ "$GROUP" = all ]; then
+            groups=$(scripts/vm-ci.sh groups | jq -Rnc '[inputs]')
+          else
+            groups=$(jq -nc --arg g "$GROUP" '[$g]')
+          fi
+          echo "groups=$groups" >> "$GITHUB_OUTPUT"
+
+      - name: just
+        run: |
+          scripts/install-tools.sh just
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # The commit's package as CI builds it, and the same once more with a
+      # newer version, which vm-update-test offers the VM as an update; it
+      # goes first and aside, so the second build only compiles what the
+      # version changes.
+      - name: just deb
+        run: |
+          version=$(scripts/release-version.sh)
+          ZENDILOOS_VERSION="$version.vmtest1" just deb amd64
+          mkdir -p dist/next
+          mv dist/zendiloos_*_amd64.deb dist/next/
+          ZENDILOOS_VERSION="$version" just deb amd64
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vm-tests-deb
+          path: |
+            dist/zendiloos_*_amd64.deb
+            dist/next/zendiloos_*_amd64.deb
+          if-no-files-found: error
+          retention-days: 3
+
+  test:
+    name: ${{ matrix.group }}
+    needs: package
+    runs-on: ubuntu-24.04
+    # The longest group takes about twenty minutes; a VM that hangs is cut
+    # off long before GitHub's six hours.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        group: ${{ fromJSON(needs.package.outputs.groups) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The tests' probes of WebSockets (scripts/vm-*-probe.mjs) need
+      # Node's WebSocket with headers.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: QEMU and tools
+        run: |
+          sudo apt-get update -q
+          # ipxe-qemu: the cards' option ROMs (efi-virtio.rom), which QEMU
+          # loads even when nothing boots from the network; xorriso makes
+          # cloud-init's seed; netcat talks to QEMU's monitor; the file
+          # systems are those of the removable drives the tests plug in.
+          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ipxe-qemu xorriso \
+            netcat-openbsd jq curl openssh-client dosfstools exfatprogs ntfs-3g e2fsprogs
+          # GitHub's x86 runners have KVM; /dev/kvm is root's until a rule
+          # gives it to everyone.
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          # Whether the VMs may run VMs of their own (vm-vms-test).
+          cat /sys/module/kvm_*/parameters/nested 2>/dev/null || true
+          nproc; free -g; df -h /
+
+      # Debian's cloud image, verified by scripts/vm.sh when it fetches it:
+      # kept for a week, then the newest one.
+      - name: Week
+        id: week
+        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: image
+        with:
+          path: dev/vm/debian-13-genericcloud-amd64.qcow2
+          key: debian-13-genericcloud-amd64-${{ steps.week.outputs.week }}
+
+      - name: Cloud image
+        if: steps.image.outputs.cache-hit != 'true'
+        run: scripts/vm.sh image
+
+      # Saved at once, not when the job ends: a group that fails would
+      # otherwise keep it from the next runs.
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.image.outputs.cache-hit != 'true'
+        continue-on-error: true
+        with:
+          path: dev/vm/debian-13-genericcloud-amd64.qcow2
+          key: debian-13-genericcloud-amd64-${{ steps.week.outputs.week }}
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: vm-tests-deb
+          path: dist
+
+      # GH_TOKEN: the upgrade group fetches an older release's package (v0.2.0).
+      - name: scripts/vm-ci.sh ${{ matrix.group }}
+        env:
+          GROUP: ${{ matrix.group }}
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/vm-ci.sh "$GROUP"
+
+      - name: Summary
+        if: ${{ !cancelled() }}
+        env:
+          GROUP: ${{ matrix.group }}
+        run: cat "dev/vm-ci/$GROUP/summary.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ failure() }}
+        with:
+          name: vm-tests-${{ matrix.group }}
+          path: dev/vm-ci/${{ matrix.group }}/
+          retention-days: 14

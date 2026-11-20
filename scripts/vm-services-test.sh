@@ -124,7 +124,10 @@ has 'fruit:time machine max size = 512000M' "$text"
 has 'vfs objects = shadow_copy2 catia fruit streams_xattr' "$text"
 lacks 'recycle:' "$text"
 # smbd announces it as it starts; Avahi can take a while to pass it on.
-if ! (wait_for "Bonjour" "vm 'avahi-browse -tpr _adisk._tcp 2>/dev/null' | grep -q 'adVN=machines'" 180); then
+# grep reads to the end: stopping at the first match (-q) breaks the pipe
+# while avahi-browse still resolves the record on other cards (docker0),
+# and pipefail counts that.
+if ! (wait_for "Bonjour" "vm 'avahi-browse -tpr _adisk._tcp 2>/dev/null' | grep 'adVN=machines'" 180); then
     fail "the Time Machine share is not on Bonjour: $(vm 'avahi-browse -tpr _adisk._tcp 2>&1' | head -5)"
 fi
 
