@@ -81,9 +81,10 @@ KVM with nested virtualization), in test VMs made afresh there:
 sets zendiloOS up (`admin`, "correct horse battery") with the setup code,
 makes what the group's tests need and runs the tests in order, stopping at
 the first that fails. The run's summary has each step's time; a group that
-failed leaves each VM's console, the journals of `zendiloosd` and
-`zendiloos-agent` from inside it and each test's output as an artifact.
-Debian's cloud image is kept in the cache for a week.
+failed leaves an artifact with each test's output, each VM's console, and
+from inside it the journals of `zendiloosd` and `zendiloos-agent` and the
+whole journal of its boot. Debian's cloud image is kept in the cache for a
+week.
 
 On a workstation `just vm-ci <group>` does the same, in VMs it makes
 itself (2, and 3 for a second one, or from `ZENDILOOS_VM` on: refused if
@@ -92,21 +93,32 @@ the group passed and keep running after a failure.
 
 | Group | Its VMs | Tests, in order | Time |
 |---|---|---|---|
-| storage | the pool tank on the NVMe disk | storage, pool-delete, enclosure, removable, notify | |
-| sharing | the pools apps (NVMe) and tank (a SATA disk), Docker on apps, NFS on | sharing, permissions, services, accounts, two-factor, backup | |
-| security | set up only | security, ssh, hostname, web-server, ups | |
-| docker | the pool apps (NVMe), Docker on it, Uptime Kuma from the App Center as a project | docker-install, docker, app-center, project-pins, docker-volumes, firewall | |
-| vms | the pools apps and tank; Debian's kernel instead of the cloud one, for a USB controller | network, vms, vm-backup | |
-| network | two spare cards | network-takeover, network-bridge | |
-| restore | a second VM, installed and never set up; the first with tank and a share | config-backup | |
-| pool-import | one VM (3), installed and never set up | pool-import | |
-| upgrade | nothing installed; 0.2.0's package from GitHub's releases | upgrade, update | |
+| storage | the pool tank on the NVMe disk | storage, pool-delete, enclosure, removable, notify | 18 min |
+| sharing | the pools apps (NVMe) and tank (a SATA disk), Docker on apps, NFS on | sharing, permissions, services, accounts, two-factor, backup | 14 min |
+| security | set up only | security, hostname, web-server, ups | 19 min |
+| docker | the pool apps (NVMe), Docker on it, Uptime Kuma from the App Center as a project | docker-install, docker, app-center, project-pins, docker-volumes, firewall | 22 min |
+| vms | the pools apps and tank; Debian's kernel instead of the cloud one, for a USB controller | network, vms, vm-backup | 13 min |
+| network | two spare cards | network-takeover, network-bridge | 10 min |
+| restore | a second VM, installed and never set up; the first with tank and a share | config-backup | 12 min |
+| pool-import | one VM (3), installed and never set up | pool-import | 14 min |
+| upgrade | nothing installed; 0.2.0's package from GitHub's releases, the last before share-level permissions | upgrade, update | 6 min |
 
-The times include making the VMs, about five minutes. Two tests fail
-sign-ins on purpose, `vm-security-test` and `vm-two-factor-test`; zendiloosd
-counts them per address, so they run in different groups. What CI's VMs
-cannot give is left out: PCI passthrough needs an IOMMU, which
-`vm-vm-backup-test` skips with a note, as it does by hand.
+The times, of a run in November 2026, include making the VMs: about four
+minutes each, most of it DKMS building ZFS. `vm-security-test` and
+`vm-two-factor-test` fail sign-ins on purpose, which zendiloosd counts per
+address (20 in 15 minutes): they run in different groups, and nginx's limit
+of sign-ins gets a minute's rest after each. What a test skips by itself
+it skips in CI too: PCI passthrough in `vm-vm-backup-test` (the test VM has
+no IOMMU), apps installed the earlier way in `vm-app-center-test` (none can
+be installed so any more), and Debian's updates in `vm-update-test` when the
+cloud image is up to date.
+
+Left out for now: `vm-ssh-test`. Turning SSH on from off with a timer
+(step 4) fails in about every other run: the agent starts `ssh.service`,
+reloads systemd, after which systemd finds the sshd it started a left-over
+process of the unit, and its `reload-or-restart` starts a second sshd that
+cannot bind the port. The unit is left failed, the timer is never set, and
+the API answers 500.
 
 ## arm64
 

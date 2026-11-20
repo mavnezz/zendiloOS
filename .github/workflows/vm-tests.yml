@@ -4,10 +4,12 @@
 # test VMs made afresh there with KVM (scripts/vm-ci.sh, which runs a group
 # on a workstation as well). A group stops at its first failure and uploads
 # what there is to see: the VMs' consoles, the journals of zendiloosd and
-# zendiloos-agent from inside them, and each test's output.
+# zendiloos-agent from inside them (and that of the whole boot), and each
+# test's output.
 #
-# Not part of CI: a group takes up to an hour or two, and every push would
-# wait for it. Nothing here gates a release.
+# Not part of a pull request's checks: the package is built anew and every
+# group makes its VMs first, so a run takes over half an hour even with the
+# groups side by side. Nothing here holds up a release.
 name: VM tests
 
 on:
@@ -89,8 +91,9 @@ jobs:
     name: ${{ matrix.group }}
     needs: package
     runs-on: ubuntu-24.04
-    # The longest group takes about two hours.
-    timeout-minutes: 240
+    # The longest group takes about twenty minutes; a VM that hangs is cut
+    # off long before GitHub's six hours.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
