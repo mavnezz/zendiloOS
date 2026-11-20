@@ -58,6 +58,42 @@ const TIMER: &str = "zendiloos-timer";
 const ON_BATTERY: &str = "onbatt";
 /// What a file's copy from before zendiloOS wrote it is called, after its name.
 const BEFORE: &str = ".before-zendiloos";
+/// The scanner's unit. It parses what any USB device plugged in says of
+/// itself, as root (a UPS that NUT's udev rules have not handed to NUT's
+/// group yet must be opened too), and needs nothing but `/sys`, udev's
+/// database and the USB devices: no capabilities, no IP network, no other
+/// devices, nothing written, none of the system's control sockets (root
+/// could ask PID 1 or Docker for anything over them).
+const SCANNER_SANDBOX: [&str; 26] = [
+    "--property=CapabilityBoundingSet=",
+    "--property=NoNewPrivileges=yes",
+    "--property=ProtectSystem=strict",
+    "--property=ProtectHome=yes",
+    "--property=PrivateTmp=yes",
+    "--property=DevicePolicy=closed",
+    "--property=DeviceAllow=char-usb_device rw",
+    // libusb learns of devices over netlink (udev).
+    "--property=RestrictAddressFamilies=AF_UNIX AF_NETLINK",
+    "--property=IPAddressDeny=any",
+    "--property=ProtectKernelTunables=yes",
+    "--property=ProtectKernelModules=yes",
+    "--property=ProtectKernelLogs=yes",
+    "--property=ProtectControlGroups=yes",
+    "--property=ProtectClock=yes",
+    "--property=ProtectHostname=yes",
+    "--property=RestrictNamespaces=yes",
+    "--property=RestrictRealtime=yes",
+    "--property=RestrictSUIDSGID=yes",
+    "--property=LockPersonality=yes",
+    "--property=MemoryDenyWriteExecute=yes",
+    "--property=SystemCallArchitectures=native",
+    "--property=SystemCallFilter=@system-service",
+    "--property=InaccessiblePaths=-/run/systemd/private -/run/dbus -/run/docker.sock -/run/docker \
+     -/run/containerd -/run/libvirt -/run/zendiloos -/var/lib/zendiloos -/etc/nut -/etc/shadow",
+    "--property=MemoryMax=256M",
+    "--property=RuntimeMaxSec=50",
+    "--property=PrivateIPC=yes",
+];
 
 /// Where NUT's files are; other than the real places in tests.
 #[derive(Debug, Clone)]
@@ -308,20 +344,22 @@ impl Ups {
         Response::UpsFacts { installed: self.installed(), snmp: self.paths.snmp_driver.exists() }
     }
 
-    /// `nut-scanner` in a unit of its own: it opens the USB devices, which
-    /// the agent's own unit keeps away from it.
+    /// `nut-scanner` in a unit of its own ([`SCANNER_SANDBOX`]): it opens
+    /// the USB devices, which the agent's own unit keeps away from it.
     pub(crate) async fn scan(&self) -> Result<Response, OperationError> {
         if !self.scanner.path().exists() {
             return Err(not_installed());
         }
         let scanner = self.scanner.path().to_string_lossy().into_owned();
-        let output = zendiloos_exec::run(
-            &self.systemd_run,
-            &["--wait", "--pipe", "--collect", "--quiet", &scanner, "-U", "-q"],
-            LIMITS,
-        )
-        .await?;
-        // Nothing found is an answer, not a failure, whatever it exits with.
+        let mut args = vec!["--wait", "--pipe", "--collect", "--quiet"];
+        args.extend(SCANNER_SANDBOX);
+        args.extend([scanner.as_str(), "-U", "-q"]);
+        let output = zendiloos_exec::run(&self.systemd_run, &args, LIMITS).await?;
+        // A unit systemd does not start is a failure; nothing found is an
+        // answer, whatever the scanner exits with.
+        if !output.status.success() && output.stderr.contains("Failed to start transient") {
+            return Err(OperationError::Failed(output.stderr.trim().to_owned()));
+        }
         let listing = String::from_utf8_lossy(&output.stdout);
         Ok(Response::UpsFound { devices: found(&listing) })
     }

@@ -345,8 +345,10 @@ async fn what_is_missing_or_does_not_fit_writes_nothing() {
     assert!(with_snmp.file("ups.conf").unwrap().contains("driver = snmp-ups\n    port = 10.0.0.9\n"));
 }
 
+/// The scanner parses what USB devices say of themselves, as root: in a
+/// unit of its own that reaches nothing else.
 #[tokio::test]
-async fn the_scanner_runs_in_a_unit_of_its_own_and_its_devices_come_back() {
+async fn the_scanner_runs_in_a_sandbox_of_its_own_and_its_devices_come_back() {
     let host = Host::new(true, false);
     let found = host.agent.execute(&Request::ScanUps {}).await;
     let Response::UpsFound { devices } = found else { panic!("{found:?}") };
@@ -354,8 +356,47 @@ async fn the_scanner_runs_in_a_unit_of_its_own_and_its_devices_come_back() {
     assert_eq!(devices[0].driver, "usbhid-ups");
     assert_eq!(devices[0].product.as_deref(), Some("Ellipse ECO"));
     let scanner = host.root.join("nut-scanner").display().to_string();
-    assert_eq!(host.calls(), [format!("systemd-run --wait --pipe --collect --quiet {scanner} -U -q")]);
+    let calls = host.calls();
+    let [call] = calls.as_slice() else { panic!("{calls:?}") };
+    assert!(call.starts_with("systemd-run --wait --pipe --collect --quiet "), "{call}");
+    assert!(call.ends_with(&format!(" {scanner} -U -q")), "{call}");
+    for property in [
+        "--property=CapabilityBoundingSet= ",
+        "--property=NoNewPrivileges=yes ",
+        "--property=ProtectSystem=strict ",
+        "--property=ProtectHome=yes ",
+        "--property=PrivateTmp=yes ",
+        "--property=DevicePolicy=closed ",
+        "--property=DeviceAllow=char-usb_device rw ",
+        "--property=RestrictAddressFamilies=AF_UNIX AF_NETLINK ",
+        "--property=IPAddressDeny=any ",
+        "--property=SystemCallFilter=@system-service ",
+        "--property=InaccessiblePaths=-/run/systemd/private -/run/dbus -/run/docker.sock ",
+        "--property=RuntimeMaxSec=50 ",
+    ] {
+        assert!(call.contains(property), "{property:?} missing: {call}");
+    }
 
     let bare = Host::new(false, false);
     assert!(matches!(bare.agent.execute(&Request::ScanUps {}).await, Response::Error { .. }));
+}
+
+/// A unit systemd does not start (a property this systemd does not know)
+/// is a failure, not "no UPS found".
+#[tokio::test]
+async fn a_scanner_whose_unit_does_not_start_fails() {
+    let host = Host::new(true, false);
+    fs::write(
+        host.root.join("systemd-run"),
+        format!(
+            "#!/bin/sh\necho \"systemd-run $*\" >> {}\necho 'Failed to start transient service unit: Unknown assignment' >&2\nexit 1\n",
+            host.root.join("calls.log").display()
+        ),
+    )
+    .unwrap();
+    let failed = host.agent.execute(&Request::ScanUps {}).await;
+    assert!(
+        matches!(&failed, Response::Error { code: ErrorCode::Failed, message } if message.contains("Unknown assignment")),
+        "{failed:?}"
+    );
 }

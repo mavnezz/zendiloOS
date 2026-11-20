@@ -3979,8 +3979,13 @@ back, and the driver, which is not root, could not open it.
   `tripplite_usb`, `richcomm_usb`, `riello_usb`, `nutdrv_atcl_usb`), and
   optionally the vendor id, product id and serial number that name one
   UPS among several. *Detect* runs `nut-scanner -U` (in a transient unit:
-  the agent's own sandbox has no USB devices) and offers what it found; a
-  single UPS found is taken.
+  the agent's own sandbox has no USB devices; as root, since a UPS NUT's
+  udev rules have not handed to its group yet must be opened too, but
+  without capabilities, IP network or devices other than USB's, writing
+  nothing and reaching none of the system's control sockets, as it parses
+  what any device plugged in says of itself; a unit that does not start is
+  a failure, not "none found") and offers what it found; a single UPS
+  found is taken.
 - *On the network, over SNMP* (`snmp-ups`): the address of the UPS's
   network card, a community, v1 or v2c.
 - *On another device* that runs NUT's server (another NAS, a server): its
