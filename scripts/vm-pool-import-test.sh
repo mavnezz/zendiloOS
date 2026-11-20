@@ -16,11 +16,15 @@
 #      on the Storage page, as the restored host id makes it this
 #      machine's own (`other_host` false), and nothing is imported by itself
 #   4. imported: the volume's and the share's mount units written and
-#      started, enabled for the next boot; the file reachable over SMB again
+#      started (nosuid, nodev), enabled for the next boot; the file
+#      reachable over SMB again; a dataset given a mount point and set-ID
+#      programs of its own before the reinstall (as whoever made a pool
+#      may) set as zendiloOS sets its datasets
 #   5. the network's settings set aside, not told as drift; the firewall's
 #      defaults (off) in force, the backup's rules offered; applied, they
 #      go back unless confirmed; applied again and confirmed, they hold
-#   6. after a reboot the pool is imported and mounted by itself
+#   6. after a reboot the pool is imported and mounted by itself, and
+#      that dataset is not
 #
 # One VM serves as both machines, since `vm.sh reinstall` keeps the spare
 # disks: a fresh third VM (QEMU cannot hand a disk image to another VM
@@ -148,6 +152,9 @@ curl -skf -b "$work/jar" -H "Origin: $base" -H "X-CSRF-Token: $(cat "$work/csrf"
     -d "$(jq -n --arg p "$passphrase" '{passphrase: $p}')" -o "$work/backup.tar.zst.age" \
     "$base/api/v1/configuration/backup/download" || fail "no backup"
 old_hostid=$(vm 'od -An -tx4 /etc/hostid | tr -d " "')
+# What ZFS would mount and honour by itself after an import.
+vm "sudo zfs create -o mountpoint=/mnt/stray -o setuid=on -o devices=on $pool/stray" || fail "no dataset stray"
+zfs_at /mnt/stray || fail "$pool/stray is not mounted at /mnt/stray"
 check "$pool (volume $volume) on $(jq -r 'join(", ")' <<<"$free"), $share with hello.txt, the firewall on, host id $old_hostid"
 
 say "2. Reinstalled, the spare disks kept"
@@ -199,11 +206,19 @@ for unit in "volume$volume.mount" "volume$volume-$share.mount"; do
     enabled=$(vm "systemctl is-enabled $unit 2>&1 || true")
     [[ $enabled == "enabled" ]] || fail "$unit is $enabled"
 done
+for place in "/volume$volume" "/volume$volume/$share"; do
+    options=$(vm "findmnt -n -o OPTIONS $place")
+    [[ ,$options, == *,nosuid,* && ,$options, == *,nodev,* ]] || fail "$place is mounted $options"
+done
 smb 'get hello.txt /tmp/back.txt' >/dev/null
 [[ $(vm 'cat /tmp/back.txt') == "$content" ]] || fail "hello.txt is not reachable over SMB again"
 absent=$(call GET /storage/pools/absent)
 jq -e '.known | length == 0' <<<"$absent" >/dev/null || fail "still offered: $absent"
-check "/volume$volume and /volume$volume/$share mounted, their units enabled, hello.txt over SMB"
+stray=$(vm "sudo zfs get -H -o value mountpoint,setuid,devices $pool/stray" | paste -sd ' ' -)
+[[ $stray == "legacy off off" ]] || fail "$pool/stray after the import: mountpoint, setuid, devices $stray"
+cached=$(vm "sudo zpool get -H -o value cachefile $pool")
+[[ $cached == "-" ]] || fail "$pool is not in the default cache file: $cached"
+check "/volume$volume and /volume$volume/$share mounted nosuid,nodev, their units enabled, hello.txt over SMB; $pool/stray legacy, setuid and devices off; in the cache file"
 
 say "5. The network's settings set aside, the firewall's applied with confirmation"
 call GET /network/setup | jq -e '.drift == null' >/dev/null || fail "drift told: $(call GET /network/setup | jq -c .drift)"
@@ -233,6 +248,7 @@ sleep 10
 wait_for "zendiloosd after the reboot" "curl -skf $base/api/v1/health" 300
 wait_for "/volume$volume/$share" "zfs_at /volume$volume/$share" 120
 [[ $(vm "sudo cat /volume$volume/$share/hello.txt") == "$content" ]] || fail "hello.txt after the reboot"
-check "$pool imported and mounted by itself"
+! zfs_at /mnt/stray || fail "$pool/stray is mounted at /mnt/stray after the reboot"
+check "$pool imported and mounted by itself; $pool/stray not"
 
 say "Passed: a pool of the old installation imported after a restore, its share reachable; the firewall's rules applied with confirmation"
