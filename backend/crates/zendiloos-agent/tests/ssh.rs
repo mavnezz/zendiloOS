@@ -61,7 +61,10 @@ impl Host {
                 "case \"$1\" in\n\
                  is-enabled) echo enabled ;;\n\
                  is-active) echo active ;;\n\
-                 show) printf 'SubState=waiting\\nDescription=zendiloOS turns SSH off at 1800000600\\n' ;;\n\
+                 show) case \"$*\" in\n\
+                   *NeedDaemonReload*) echo yes ;;\n\
+                   *) printf 'SubState=waiting\\nDescription=zendiloOS turns SSH off at 1800000600\\n' ;;\n\
+                 esac ;;\n\
                  esac",
             ),
             sshd: script("sshd", &format!("! grep -q 'Port 4444' {}", config.display())),
@@ -160,8 +163,10 @@ async fn ssh_runs_on_its_port_and_a_timer_turns_it_off() {
             // Enabled until the next boot only: the timer does not survive
             // a restart, so neither may the start with the machine.
             "systemctl disable --no-reload ssh.service".to_owned(),
-            "systemctl enable --no-reload --runtime --now ssh.service".to_owned(),
+            "systemctl enable --no-reload --runtime ssh.service".to_owned(),
+            // Reloaded before the start, never just after it.
             "systemctl show --property=NeedDaemonReload --value ssh.service".to_owned(),
+            "systemctl daemon-reload".to_owned(),
             "systemctl reload-or-restart ssh.service".to_owned(),
         ]
     );
@@ -206,6 +211,7 @@ async fn turned_off_it_stays_off_and_no_timer_is_left() {
             "systemctl disable --no-reload --now ssh.service".to_owned(),
             "systemctl disable --no-reload --runtime ssh.service".to_owned(),
             "systemctl show --property=NeedDaemonReload --value ssh.service".to_owned(),
+            "systemctl daemon-reload".to_owned(),
         ]
     );
 }
@@ -225,8 +231,9 @@ async fn turned_on_for_good_it_starts_with_the_machine() {
             "systemctl stop zendiloos-ssh-off.timer".to_owned(),
             "systemctl reset-failed zendiloos-ssh-off.service".to_owned(),
             "systemctl disable --no-reload --runtime ssh.service".to_owned(),
-            "systemctl enable --no-reload --now ssh.service".to_owned(),
+            "systemctl enable --no-reload ssh.service".to_owned(),
             "systemctl show --property=NeedDaemonReload --value ssh.service".to_owned(),
+            "systemctl daemon-reload".to_owned(),
             "systemctl reload-or-restart ssh.service".to_owned(),
         ],
         "no timer"

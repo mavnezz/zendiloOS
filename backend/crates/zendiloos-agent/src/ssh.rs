@@ -153,13 +153,18 @@ impl Ssh {
         if config.off_after.is_some() {
             // Enabled for good, it would outlive its timer across a restart.
             link_units(&self.systemctl, &["disable", "--no-reload", UNIT]).await?;
-            link_units(&self.systemctl, &["enable", "--no-reload", "--runtime", "--now", UNIT]).await?;
+            link_units(&self.systemctl, &["enable", "--no-reload", "--runtime", UNIT]).await?;
         } else {
             link_units(&self.systemctl, &["disable", "--no-reload", "--runtime", UNIT]).await?;
-            link_units(&self.systemctl, &["enable", "--no-reload", "--now", UNIT]).await?;
+            link_units(&self.systemctl, &["enable", "--no-reload", UNIT]).await?;
         }
+        // Linked first and reloaded, then started: a reload just after the
+        // start (enable --now) could leave systemd counting the new sshd as
+        // a left-over of a stopped unit, and the start below then ran a
+        // second one, which found its port taken and failed the unit.
         reload_if_behind(&self.systemctl, UNIT).await?;
-        // A new port needs the listener anew; sshd re-executes on reload.
+        // Starts it if it is not running; a new port needs the listener
+        // anew, and sshd re-executes on reload.
         self.run(&self.systemctl, &["reload-or-restart", UNIT]).await?;
         if let Some(off) = config.off_after {
             let systemctl = self.systemctl.path().to_string_lossy().into_owned();
