@@ -3505,8 +3505,11 @@ allow-list: every folder at the top of the system a read-only tmpfs but
 `/usr` (and the links into it), `/proc` (its processes alone,
 `ProcSubset=pid`), its own `/dev` (without the host's `/dev/shm`,
 `/dev/mqueue` and `/dev/hugepages`) and `/tmp`, and `/home` and `/root`,
-which are hidden; `/sys` an empty tmpfs too (serial numbers, firmware
-tables); nothing mounted after it started (`MountFlags=private`: a pool
+which are hidden; of `/sys` not the firmware's tables, the machine's
+serial numbers (DMI) or the kernel's own (`/sys/firmware`, `/sys/kernel`,
+`/sys/class/dmi`, `/sys/devices/virtual/dmi` empty: systemd mounts `/sys`
+anew for the PID namespace, so a tmpfs over all of it does not hold);
+nothing mounted after it started (`MountFlags=private`: a pool
 imported meanwhile stays out); files at the top hidden; of
 `/etc` only the accounts, name resolution, the dynamic linker's cache, the
 certificate authorities and OpenSSL's settings bound back read-only; of

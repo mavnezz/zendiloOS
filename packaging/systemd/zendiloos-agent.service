@@ -113,7 +113,8 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 #   transient units (this binary as backup-unit; rsync, ssh, rclone) whose
 #   view of the system is an allow-list (/usr, their own processes in
 #   /proc, their own /dev and /tmp, of /etc what the tools read, the roots
-#   they work on; no /sys, nothing mounted after they started), with their
+#   they work on; not /sys's firmware, serial numbers or kernel, nothing
+#   mounted after they started), with their
 #   own processes only; stopped with SIGTERM, which rsync and rclone get
 #   too, and killed after ten seconds; the NAS's SSH key is read here and
 #   handed to the unit on its standard input;

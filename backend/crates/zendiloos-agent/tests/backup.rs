@@ -245,10 +245,11 @@ async fn a_local_run_sees_only_its_roots_and_writes_only_its_target() {
         "--property=NoNewPrivileges=yes",
         "--property=ProtectSystem=strict",
         "--property=PrivatePIDs=yes",
-        // Of /proc its processes, no /sys, none of the host's shared
-        // memory, and nothing mounted after it started.
+        // Of /proc its processes, not /sys's firmware, serial numbers and
+        // kernel, none of the host's shared memory, and nothing mounted
+        // after it started.
         "--property=ProcSubset=pid",
-        "--property=TemporaryFileSystem=/sys:ro",
+        "--property=TemporaryFileSystem=/sys/firmware:ro /sys/kernel:ro /sys/class/dmi:ro /sys/devices/virtual/dmi:ro",
         "--property=InaccessiblePaths=-/dev/shm -/dev/mqueue -/dev/hugepages",
         "--property=MountFlags=private",
         // Stopped with SIGTERM, which rsync gets too; killed after ten

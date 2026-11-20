@@ -91,8 +91,10 @@ const KEY_BYTES: u64 = 16 * 1024;
 /// The sandbox every unit has.
 ///
 /// Beside the view of the file system ([`Backups::unit_args`]): of `/proc`
-/// only the processes (its own, in its PID namespace), no `/sys` at all
-/// (serial numbers, firmware tables), none of the host's shared memory,
+/// only the processes (its own, in its PID namespace), of `/sys` neither
+/// the firmware's tables (ACPI, DMI), the machine's serial numbers nor the
+/// kernel's own (systemd mounts `/sys` anew for the PID namespace, so a
+/// tmpfs over all of it would not hold), none of the host's shared memory,
 /// message queues or huge pages in its `/dev`, and nothing mounted after it
 /// started (`MountFlags=private`: a pool imported meanwhile stays out).
 ///
@@ -123,7 +125,7 @@ const SANDBOX: [&str; 26] = [
     "--property=ProcSubset=pid",
     "--property=PrivateIPC=yes",
     "--property=PrivatePIDs=yes",
-    "--property=TemporaryFileSystem=/sys:ro",
+    "--property=TemporaryFileSystem=/sys/firmware:ro /sys/kernel:ro /sys/class/dmi:ro /sys/devices/virtual/dmi:ro",
     "--property=InaccessiblePaths=-/dev/shm -/dev/mqueue -/dev/hugepages",
     "--property=MountFlags=private",
     "--property=LimitNOFILE=65536",

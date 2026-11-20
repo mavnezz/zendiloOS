@@ -39,7 +39,7 @@
 #      namespace): it cannot connect to systemd's, D-Bus', Docker's,
 #      libvirt's or the agent's socket, sees none of /etc/shadow, /etc/zendiloos,
 #      /var/lib, the shares pinned for apps, /sys's serial numbers and
-#      firmware, and only its own few processes; the files agent connects to
+#      firmware tables, and only its own few processes; the files agent connects to
 #      none of those sockets either, and its system calls are an allow-list
 #      without connect()
 #  10. a restore stopped while rsync writes a large file fails, and leaves no
@@ -176,7 +176,7 @@ for path in ["/run/systemd/private", "/run/dbus/system_bus_socket", "/run/docker
         pass
 for path in ["/etc/shadow", "/etc/zendiloos", "/etc/ssh", "/var/lib/zendiloos", "/var/lib/ztest-swap-secret",
              "/run/zendiloos-app-shares", "/run/credentials", "/var/lib/zendiloos-backup",
-             "/sys/class/dmi", "/sys/firmware"]:
+             "/sys/class/dmi/id", "/sys/devices/virtual/dmi/id", "/sys/firmware/acpi", "/sys/kernel/mm"]:
     if os.path.exists(path):
         print("reaches " + path)
 print("processes %d" % sum(1 for name in os.listdir("/proc") if name.isdigit()))
