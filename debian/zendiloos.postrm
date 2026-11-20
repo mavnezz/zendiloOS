@@ -9,10 +9,11 @@ case "$1" in
         if [ -f /boot/grub/grubenv ] && command -v grub-editenv >/dev/null 2>&1; then
             grub-editenv /boot/grub/grubenv unset saved_entry || true
         fi
-        # The firewall's rules, and what keeps the NAS off its internal
-        # networks for VMs, stay in force: the services they guard (Samba,
-        # NFS, NUT's server, SSH) and the VMs run on. Nothing loads them
-        # again, so they go at the next start, or with a purge.
+        # The firewall's rules, what keeps the NAS off its internal
+        # networks for VMs and what VMs reach through passt stay in force:
+        # the services they guard (Samba, NFS, NUT's server, SSH) and the
+        # VMs run on. Nothing loads them again, so they go at the next
+        # start, or with a purge.
         # What lets frames within its bridges pass Docker's FORWARD chain
         # goes now: Docker's tables as Docker made them.
         for tables in iptables ip6tables; do
@@ -30,10 +31,12 @@ case "$1" in
         rmdir /etc/qemu/firmware 2>/dev/null || true
         ;;
     purge)
-        # The firewall's rules, if a remove left them in force.
+        # The firewall's rules and the VMs', if a remove left them in force.
         if command -v nft >/dev/null 2>&1; then
             nft delete table inet zendiloos_firewall 2>/dev/null || true
             nft delete table bridge zendiloos_internal 2>/dev/null || true
+            nft delete table inet zendiloos_vms 2>/dev/null || true
+            nft delete table bridge zendiloos_vms 2>/dev/null || true
         fi
         # Generated at installation; the database in /var/lib/zendiloos is
         # kept, since it holds the administrators' work (and so do the

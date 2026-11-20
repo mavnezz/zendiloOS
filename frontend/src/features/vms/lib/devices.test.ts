@@ -92,16 +92,30 @@ describe('the host’s PCI devices', () => {
 
 describe('the host’s USB devices', () => {
   const plugged: VmHostUsb[] = [
-    { id: '046d:c31c', port: '1-2', manufacturer: 'Logitech', name: 'USB Keyboard' },
-    { id: '0781:5583', port: '1-3', manufacturer: null, name: null },
-    { id: '0781:5583', port: '1-4', manufacturer: null, name: null },
+    { id: '046d:c31c', port: '1-2', manufacturer: 'Logitech', name: 'USB Keyboard', needed: null },
+    { id: '0781:5583', port: '1-3', manufacturer: null, name: null, needed: null },
+    {
+      id: '0781:5583',
+      port: '1-4',
+      manufacturer: null,
+      name: null,
+      needed: { kind: 'disk', disk: 'sdb' },
+    },
+    { id: '0463:ffff', port: '1-5', manufacturer: 'EATON', name: null, needed: { kind: 'ups' } },
   ]
 
   it('are offered once each, twins marked, and one given but unplugged kept', () => {
     expect(usbChoices(plugged, ['1234:5678'])).toEqual([
-      { id: '046d:c31c', label: 'Logitech USB Keyboard', port: '1-2', twins: false },
-      { id: '0781:5583', label: '0781:5583', port: '1-3', twins: true },
-      { id: '1234:5678', label: '1234:5678', port: null, twins: false },
+      { id: '046d:c31c', label: 'Logitech USB Keyboard', port: '1-2', twins: false, needed: null },
+      {
+        id: '0781:5583',
+        label: '0781:5583',
+        port: '1-3',
+        twins: true,
+        needed: { kind: 'disk', disk: 'sdb' },
+      },
+      { id: '0463:ffff', label: 'EATON', port: '1-5', twins: false, needed: { kind: 'ups' } },
+      { id: '1234:5678', label: '1234:5678', port: null, twins: false, needed: null },
     ])
   })
 

@@ -139,14 +139,21 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 #   database), which network cards the host uses is asked of
 #   systemd-networkd (busctl), and a disk in use below a controller is
 #   found as when erasing disks (holders, mountinfo, swaps, an O_EXCL
-#   open); libvirt binds a PCI device to vfio-pci, outside this sandbox.
+#   open, which a disk of a kind this sandbox may not open, as eMMC,
+#   fails: in use); libvirt binds a PCI device to vfio-pci, outside this
+#   sandbox. libvirt's own autostart stays off: VMs that start with the
+#   machine are started by the agent, once a boot (its boot id recorded in
+#   the state directory), with the checks of any start. What a VM's cards
+#   through passt reach (QEMU's account's traffic) is held by nftables
+#   rules in /etc/zendiloos/network, loaded by
+#   zendiloos-passt.service outside this sandbox.
 #   Snapshots of a VM's disks are taken with zfs; a VM's backups and
 #   restores run in transient units (this binary as back-up-vm,
-#   restore-vm and remove-vm-backup) that may open the zvols' devices
-#   alone (DeviceAllow=block-zvol), read only for a backup, and write only
-#   the share or drive, or libvirt's folders of the UEFI variables and TPM
-#   states, with the volumes' units' empty /run and own processes. The
-#   template of the UEFI variables with Microsoft's
+#   restore-vm and remove-vm-backup) that may open the VM's own zvols'
+#   devices alone (DeviceAllow=/dev/zdN), read only for a backup, and
+#   write only the share or drive, or libvirt's folders of the UEFI
+#   variables and TPM states, with the volumes' units' empty /run and own
+#   processes. The template of the UEFI variables with Microsoft's
 #   certificates of 2023 is made by virt-fw-vars in the state directory
 #   (/var/lib/zendiloos-agent), and described to QEMU's firmware selection
 #   in /etc/qemu/firmware;
@@ -175,6 +182,12 @@ DeviceAllow=block-blkext rw
 DeviceAllow=block-virtblk rw
 DeviceAllow=char-nvme r
 DeviceAllow=/dev/zfs rw
+# Optical drives and SD/eMMC cards, read only: the exclusive open that
+# tells whether one is in use before its USB device or controller goes to
+# a VM (empty: no medium; mounted or claimed: busy). Denied, it would
+# count as in use.
+DeviceAllow=block-sr r
+DeviceAllow=block-mmc r
 # What it runs (Docker Compose, zfs, apt's checks) needs little; a
 # Compose file that reads without end (in a share, a link to a device or a
 # pipe) must not take the machine's memory.

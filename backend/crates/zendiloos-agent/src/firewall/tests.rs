@@ -88,7 +88,7 @@ fn the_file_says_exactly_the_rules() {
     for line in [
         "\t\ttype filter hook input priority filter - 5; policy accept;\n",
         "\t\tct state established,related accept\n",
-        "\t\tiif \"lo\" accept\n",
+        "\t\tiif \"lo\" ct mark and 0x00200000 == 0 accept\n",
         "\t\tiifname { \"br-0123456789ab\", \"docker0\" } accept\n",
         "\t\tudp sport 67 udp dport 68 accept\n",
         "\t\tiifname \"enp1s0\" ip saddr 192.168.1.0/24 tcp dport { 139, 445 } accept\n",
@@ -278,6 +278,32 @@ fn while_a_change_waits_forwarded_connections_opened_before_meet_the_rules() {
     assert!(before_the_rules.contains(&"ct state related accept"), "{forward}");
     // Nothing that forwards lets 443 in: the fallback decides.
     assert_eq!(chain(&waiting, "published").trim_end(), "chain published {\n\t\tdrop");
+}
+
+/// A VM's connections through passt come from the NAS itself: to the NAS's
+/// own addresses over the loopback, to a container's published port
+/// without the forward chain. Marked by `inet zendiloos_vms`, they meet the
+/// rules as the LAN's do, in the input chain and, published, in the output
+/// chain; nothing else of the NAS's own traffic is filtered.
+#[test]
+fn vms_through_passt_meet_the_rules_as_the_lan_does() {
+    let smb = rule(FirewallSource::Any, tcp(&[(445, 445)]), false, FirewallVerdict::Accept);
+    let published = rule(FirewallSource::Any, tcp(&[(8080, 8080)]), true, FirewallVerdict::Accept);
+    let text = ruleset(Some(&config(vec![smb, published], FirewallVerdict::Drop)), Phase::Kept);
+    let input = chain(&text, "input");
+    let lo = input.find("iif \"lo\" ct mark and 0x00200000 == 0 accept").expect("the loopback");
+    assert!(!input.contains("iif \"lo\" accept"), "the loopback passes whatever comes");
+    assert!(lo < input.find("tcp dport { 445 } accept").unwrap(), "the rules come before the loopback");
+    let output = chain(&text, "output");
+    assert!(output.contains("type filter hook output priority filter - 5; policy accept;"), "no output hook");
+    let theirs = output.find("ct mark and 0x00200000 == 0 accept").expect("the NAS's own traffic passes");
+    let jump = output.find("ct status dnat jump published").expect("to the published ports' rules");
+    assert!(
+        theirs < output.find("ct state established,related accept").unwrap() && theirs < jump,
+        "the NAS's own traffic is filtered, or the rules come before it"
+    );
+    assert!(chain(&text, "published").contains("meta l4proto tcp ct original proto-dst { 8080 } accept"));
+    assert_eq!(crate::vm_user_network::CT_MARK, 0x0020_0000);
 }
 
 /// The rules in `dir`; `nft -c` fails while `fail` is there, and

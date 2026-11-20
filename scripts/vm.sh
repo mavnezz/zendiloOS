@@ -11,6 +11,8 @@
 #   scripts/vm.sh removable-detach <id>          pull it out again, unannounced
 #   scripts/vm.sh usb-attach <id>    plug an emulated USB device (QEMU's tablet, 0627:0001) in;
 #                           needs ZENDILOOS_VM_USB=1 at 'start' and a kernel in the VM with USB
+#   scripts/vm.sh usb-stick-attach <image> <id> [serial]  plug a raw disk image in as a USB stick
+#                           (QEMU's usb-storage) on that controller, with the serial number given
 #   scripts/vm.sh usb-detach <id>    pull it out again
 #   scripts/vm.sh stop      power off
 #   scripts/vm.sh reinstall a fresh system disk from the image, as a machine installed
@@ -236,6 +238,20 @@ usb_attach() {
     [[ -z $out ]] || { echo "device_add: $out (started without ZENDILOOS_VM_USB=1?)" >&2; exit 1; }
 }
 
+# A raw image as a USB stick (QEMU's usb-storage, 46f4:0001) on the
+# controller ZENDILOOS_VM_USB=1 gave the VM: a disk on a USB device, which
+# can be handed to a VM inside it.
+usb_stick_attach() {
+    local image=$1 id=$2 serial=${3:-ZDL-USB-$2}
+    [[ -f $image && $id =~ ^[a-z0-9]+$ && $serial =~ ^[A-Za-z0-9_-]+$ ]] \
+        || { echo "usage: usb-stick-attach <image> <id> [serial]" >&2; exit 1; }
+    local out
+    out=$(monitor "drive_add 0 if=none,id=$id-disk,file=$(realpath "$image"),format=raw")
+    [[ $out == *OK* ]] || { echo "drive_add: $out" >&2; exit 1; }
+    out=$(monitor "device_add usb-storage,bus=xhci.0,drive=$id-disk,id=$id,serial=$serial,removable=on")
+    [[ -z $out ]] || { echo "device_add: $out (started without ZENDILOOS_VM_USB=1?)" >&2; exit 1; }
+}
+
 usb_detach() {
     local out
     out=$(monitor "device_del $1")
@@ -285,6 +301,7 @@ case ${1:-} in
     removable-attach) removable_attach "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
     removable-detach) removable_detach "${2:?usage: removable-detach <id>}" ;;
     usb-attach) usb_attach "${2:-}" ;;
+    usb-stick-attach) usb_stick_attach "${2:-}" "${3:-}" "${4:-}" ;;
     usb-detach) usb_detach "${2:?usage: usb-detach <id>}" ;;
     stop) stop ;;
     reinstall) reinstall ;;

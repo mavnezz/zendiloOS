@@ -11,6 +11,14 @@
 #      in a job: a sparse zvol with volmode=dev, a domain zendiloos-<id>
 #      with passt; its zvol is not listed among the NAS's disks; it starts
 #      (into its firmware) and runs as libvirt-qemu
+#   3b. what passt sends, as QEMU's account, is held: the tables inet and
+#      bridge zendiloos_vms are in force; to the loopback it reaches only
+#      what listens on every address, from the NAS's own address (not as
+#      127.0.0.1), never what listens on the loopback alone; DNS and the
+#      internet work; a container's address behind a veth on a bridge is
+#      not reached, nor another network the NAS has a card on but no
+#      default route through (all tried as libvirt-qemu with setpriv,
+#      against stand-ins in network namespaces of the test's)
 #   4. its console's WebSocket answers with QEMU's VNC greeting
 #      (RFB 003.00x); a console from another origin is refused
 #   5. it shuts down (ACPI, or forced off when the firmware does not
@@ -228,6 +236,7 @@ clean() {
     delete_image "$cut_name"
     delete_share
     [[ -n $internal_made ]] && remove_internal
+    remove_stand_ins
     if [[ -n $location_added ]]; then
         status POST "/vms/locations/$location_added/delete" "$(jq -n --arg p "$location_added" '{confirm: $p}')" >/dev/null
     fi
@@ -240,6 +249,20 @@ cleanup() {
     rm -rf "$work"
 }
 trap cleanup EXIT
+
+# The stand-ins of step 3b: listeners, and a container's network namespace
+# behind a veth on a bridge.
+remove_stand_ins() {
+    vm 'sudo pkill -f "http.server --bind (127.0.0.1 8099|0.0.0.0 8097)" 2>/dev/null
+        sudo ip netns pids ztestc 2>/dev/null | xargs -r sudo kill 2>/dev/null
+        sudo ip netns pids ztesto 2>/dev/null | xargs -r sudo kill 2>/dev/null
+        sudo ip netns del ztestc 2>/dev/null; sudo ip link del vethztest 2>/dev/null
+        sudo ip link del ztestbr 2>/dev/null
+        sudo ip netns del ztesto 2>/dev/null; sudo ip link del ztestnet0 2>/dev/null; true' >/dev/null 2>&1 || true
+}
+
+# A command in the VM as QEMU's account, as passt runs.
+as_qemu() { vm "sudo setpriv --reuid=libvirt-qemu --regid=libvirt-qemu --clear-groups -- $*"; }
 
 # Everything of libvirt's that would mean its own network: tables or chains
 # in nftables, a bridge, dnsmasq, a defined network.
@@ -295,7 +318,9 @@ command -v sha256sum >/dev/null || fail "sha256sum is needed on this machine"
 me=$(call GET /auth/session | jq -er .account.id) || fail "no account"
 
 # What nftables holds before: the test checks nothing of libvirt's comes.
-vm 'sudo nft list tables' | sort >"$work/tables.before"
+# zendiloOS's own for passt aside (3b); there may be no table at all.
+own_tables() { grep -v -E '^table (inet|bridge) zendiloos_vms$' || true; }
+vm 'sudo nft list tables' | own_tables | sort >"$work/tables.before"
 firewall_before=$(vm 'sudo nft list table inet zendiloos_firewall 2>/dev/null || true')
 [[ -n $(libvirt_networking) ]] && fail "libvirt's networking is there before the test: $(libvirt_networking)"
 
@@ -391,6 +416,50 @@ jq -e '.state == "running"' "$work/last" >/dev/null || fail "not running: $(cat 
 [[ $(status POST "/vms/$id/start") == 409 ]] || fail "a second start: $(cat "$work/last")"
 vm "pgrep -u libvirt-qemu -f 'guest=$domain' >/dev/null" || fail "QEMU does not run as libvirt-qemu"
 vm "pgrep -u libvirt-qemu passt >/dev/null" || note "passt does not show as a process of libvirt-qemu (named otherwise?)"
+note "passt: $(vm 'pgrep -a -u libvirt-qemu passt' || true)"
+
+say "3b. What passt sends as QEMU's account reaches the NAS as the LAN does, no loopback alone, no container"
+vm 'systemctl is-active --quiet zendiloos-passt.service' || fail "the unit of passt's rules is not active"
+qemu_uid=$(vm 'id -u libvirt-qemu')
+for table in "inet zendiloos_vms" "bridge zendiloos_vms"; do
+    rules=$(vm "sudo nft list table $table") || fail "no table $table"
+    grep -q "meta skuid $qemu_uid" <<<"$rules" || fail "the table $table is not for libvirt-qemu: $rules"
+done
+remove_stand_ins
+vm 'sudo setsid -f python3 -m http.server --bind 127.0.0.1 8099 </dev/null >/dev/null 2>&1
+    sudo setsid -f sh -c "exec python3 -m http.server --bind 0.0.0.0 8097 </dev/null >/tmp/ztest-wildcard.log 2>&1"
+    sudo ip netns add ztestc
+    sudo ip link add ztestbr type bridge && sudo ip addr add 10.98.0.1/24 dev ztestbr && sudo ip link set ztestbr up
+    sudo ip link add vethztest type veth peer name eth0 netns ztestc
+    sudo ip link set vethztest master ztestbr up
+    sudo ip -n ztestc addr add 10.98.0.2/24 dev eth0 && sudo ip -n ztestc link set eth0 up && sudo ip -n ztestc link set lo up
+    sudo setsid -f ip netns exec ztestc python3 -m http.server --bind 10.98.0.2 8098 </dev/null >/dev/null 2>&1
+    sudo ip netns add ztesto
+    sudo ip link add ztestnet0 type veth peer name eth0 netns ztesto
+    sudo ip addr add 10.97.0.1/24 dev ztestnet0 && sudo ip link set ztestnet0 up
+    sudo ip -n ztesto addr add 10.97.0.2/24 dev eth0 && sudo ip -n ztesto link set eth0 up
+    sudo setsid -f ip netns exec ztesto python3 -m http.server --bind 10.97.0.2 8096 </dev/null >/dev/null 2>&1
+    sleep 2' || fail "the stand-ins"
+code() { as_qemu "curl -s -m 4 -o /dev/null -w %{http_code} $1" || true; }
+[[ $(vm 'curl -s -m 4 -o /dev/null -w %{http_code} http://127.0.0.1:8099/') == 200 ]] || fail "the loopback's stand-in does not answer the NAS"
+[[ $(code http://127.0.0.1:8099/) == 000 ]] || fail "QEMU's account reached what listens on the loopback alone"
+[[ $(code http://127.0.0.1:8097/) == 200 ]] || fail "QEMU's account did not reach what listens on every address"
+from=$(vm 'tail -n 1 /tmp/ztest-wildcard.log' | awk '{print $1}')
+[[ -n $from && $from != 127.* ]] || fail "QEMU's account came as $from, not from the NAS's own address"
+note "through the loopback from $from"
+[[ $(as_qemu "curl -sk -m 4 -o /dev/null -w %{http_code} https://127.0.0.1/") =~ ^(200|30[0-9])$ ]] \
+    || fail "QEMU's account did not reach the web interface as the LAN does"
+[[ $(vm 'curl -s -m 4 -o /dev/null -w %{http_code} http://10.98.0.2:8098/') == 200 ]] || fail "the container's stand-in does not answer the NAS"
+[[ $(code http://10.98.0.2:8098/) == 000 ]] || fail "QEMU's account reached a container on its own address"
+as_qemu "getent hosts deb.debian.org" >/dev/null || fail "QEMU's account resolves no names"
+[[ $(code http://deb.debian.org/debian/) =~ ^(200|30[0-9])$ ]] || fail "QEMU's account does not reach the internet"
+# A network on a card of its own, with no default route through it (a
+# storage network, a tunnel): the NAS reaches it, a LAN client does not.
+[[ $(vm 'curl -s -m 4 -o /dev/null -w %{http_code} http://10.97.0.2:8096/') == 200 ]] || fail "the other network's stand-in does not answer the NAS"
+[[ $(code http://10.97.0.2:8096/) == 000 ]] || fail "QEMU's account reached a network the LAN does not"
+rules=$(vm 'sudo nft list table inet zendiloos_vms') || fail "no table inet zendiloos_vms"
+grep -q -E 'oifname != ("|\{)' <<<"$rules" || fail "the rules do not name the default routes' cards"
+remove_stand_ins
 
 say "4. Its console answers with QEMU's VNC greeting"
 wss="wss://${base#https://}/api/v1/vms/$id/console"
@@ -590,7 +659,7 @@ delete_share
 say "13. Nothing of libvirt's networking came, and zendiloOS's rules are as they were"
 found=$(libvirt_networking)
 [[ -z $found ]] || fail "libvirt's networking appeared: $found"
-vm 'sudo nft list tables' | sort >"$work/tables.after"
+vm 'sudo nft list tables' | own_tables | sort >"$work/tables.after"
 diff -u "$work/tables.before" "$work/tables.after" || fail "nftables' tables changed"
 firewall_after=$(vm 'sudo nft list table inet zendiloos_firewall 2>/dev/null || true')
 if [[ -n $firewall_before ]]; then

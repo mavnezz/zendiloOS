@@ -43,3 +43,21 @@ fn the_files_agent_may_connect_to_no_socket() {
     assert_eq!(filters.first().map(String::as_str), Some("@system-service"));
     assert!(filters[1..].iter().any(|filter| filter == "~connect:EPERM"), "connect() is not taken out");
 }
+
+/// The values of the unit's `DeviceAllow=` lines.
+fn devices_allowed(unit: &str) -> Vec<String> {
+    let text = fs::read_to_string(units().join(unit)).expect("a unit the package ships");
+    text.lines().filter_map(|line| line.trim().strip_prefix("DeviceAllow=")).map(str::to_owned).collect()
+}
+
+/// An optical drive or an SD/eMMC card the agent may not open counts as in
+/// use, also when it is empty, so its USB device or controller could go to
+/// no VM: the agent opens them, read only, for the exclusive probe alone.
+#[test]
+fn the_agent_may_open_optical_drives_and_memory_cards_read_only() {
+    let allowed = devices_allowed("zendiloos-agent.service");
+    for class in ["block-sr r", "block-mmc r"] {
+        assert!(allowed.iter().any(|line| line == class), "the agent may not open {class}");
+    }
+    assert!(!allowed.iter().any(|line| line.starts_with("block-sr rw") || line.starts_with("block-mmc rw")));
+}

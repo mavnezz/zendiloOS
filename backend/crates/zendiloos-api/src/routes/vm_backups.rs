@@ -56,9 +56,11 @@ pub struct VmHostUsb {
     pub port: String,
     pub manufacturer: Option<String>,
     pub name: Option<String>,
+    /// Why the host keeps it; such a device is not handed over.
+    pub needed: Option<VmHostNeeds>,
 }
 
-/// Why the host keeps a PCI device.
+/// Why the host keeps a PCI or USB device.
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum VmHostNeeds {
@@ -70,6 +72,8 @@ pub enum VmHostNeeds {
     Network { interface: Option<String> },
     /// A bridge of the PCI bus.
     Bridge,
+    /// The UPS the NAS follows, or the USB controller it is on.
+    Ups,
 }
 
 /// A PCI function of the host's.
@@ -125,6 +129,7 @@ async fn vm_host_devices(
                 port: usb.port,
                 manufacturer: usb.manufacturer,
                 name: usb.name,
+                needed: usb.needed.map(host_needs),
             })
             .collect(),
         pci: devices
@@ -139,15 +144,20 @@ async fn vm_host_devices(
                 device_name: pci.device_name,
                 iommu_group: pci.iommu_group,
                 driver: pci.driver,
-                needed: pci.needed.map(|needed| match needed {
-                    domain::HostNeeds::Disk(disk) => VmHostNeeds::Disk { disk },
-                    domain::HostNeeds::Console => VmHostNeeds::Console,
-                    domain::HostNeeds::Network(interface) => VmHostNeeds::Network { interface },
-                    domain::HostNeeds::Bridge => VmHostNeeds::Bridge,
-                }),
+                needed: pci.needed.map(host_needs),
             })
             .collect(),
     }))
+}
+
+fn host_needs(needs: domain::HostNeeds) -> VmHostNeeds {
+    match needs {
+        domain::HostNeeds::Disk(disk) => VmHostNeeds::Disk { disk },
+        domain::HostNeeds::Console => VmHostNeeds::Console,
+        domain::HostNeeds::Network(interface) => VmHostNeeds::Network { interface },
+        domain::HostNeeds::Bridge => VmHostNeeds::Bridge,
+        domain::HostNeeds::Ups => VmHostNeeds::Ups,
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]

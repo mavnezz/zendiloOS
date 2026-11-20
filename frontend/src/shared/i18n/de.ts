@@ -1767,6 +1767,8 @@ const de: Messages = {
     add: 'Regel hinzufügen',
     rulesHint:
       'Regeln per Ziehen oder mit den Pfeilen ordnen: Die erste passende Regel entscheidet.',
+    vmsHint:
+      'Virtuelle Maschinen mit einer Netzwerkkarte „Über das NAS“ erreichen es von der eigenen Adresse des NAS aus und über keine Netzwerkverbindung: Regeln für jede Verbindung gelten für sie, Regeln, die eine Verbindung nennen, nicht.',
     noRules: 'Noch keine Regeln.',
     columns: {
       enabled: 'An',
@@ -3539,7 +3541,7 @@ const de: Messages = {
         internal: 'Internes Netzwerk',
       },
       means: {
-        user: 'passt: Die VM erreicht LAN und Internet über die Adresse des NAS; nichts erreicht die VM.',
+        user: 'passt: Die VM erreicht LAN, Internet und das NAS wie ein Rechner im LAN, über die Adresse des NAS, und kein anderes Netz, das das NAS erreicht; nichts erreicht die VM.',
         bridge:
           'Die VM ist als eigene Maschine im LAN und bekommt dort ihre Adresse; NAS und VM erreichen einander.',
         direct:
@@ -3734,7 +3736,7 @@ const de: Messages = {
     hostDevices: {
       usb: 'USB-Geräte',
       usbHint:
-        'Nach Hersteller und Produkt zugeordnet, damit ein Gerät der VM bleibt, wenn es anderswo oder neu eingesteckt wird. USB-Geräte werden eingesteckt und abgezogen, während die VM läuft.',
+        'Nach Hersteller und Produkt zugeordnet, damit ein Gerät der VM bleibt, wenn es anderswo oder neu eingesteckt wird; eine Festplatte oder ein Netzwerkadapter ohne Seriennummer nur an dem Anschluss, an dem es übergeben wurde. Geräte, die das NAS braucht (eine Festplatte daran in Gebrauch, sein Netz, seine USV), werden nicht übergeben. USB-Geräte werden eingesteckt und abgezogen, während die VM läuft.',
       usbNone: 'Am NAS steckt kein USB-Gerät.',
       notPlugged: 'Nicht eingesteckt: Ohne es startet die VM nicht.',
       twins:
@@ -3760,6 +3762,7 @@ const de: Messages = {
           'Bleibt beim NAS: eine Netzwerkkarte, und welche Karten das NAS nutzt, ist nicht bekannt.',
         bridge: 'Eine Bridge des PCI-Busses: Sie bleibt beim NAS, und mit ihr ihre Gruppe.',
         noGroup: 'In keiner IOMMU-Gruppe: Es lässt sich nicht übergeben.',
+        ups: 'Bleibt beim NAS: die USV, der es folgt, oder der Controller, an dem sie steckt.',
       },
       heldBy: 'Bleibt zusammen mit {device} beim NAS',
       kinds: {
@@ -3852,7 +3855,7 @@ const de: Messages = {
       noDrives: 'Kein USB-Laufwerk ist eingebunden und beschreibbar.',
       folderInvalid: 'Ein Ordner: Namen getrennt durch /, ohne . oder ..',
       readable:
-        'Wer diese Freigabe oder dieses Laufwerk lesen darf, kann die Festplatten der VM lesen und was sie enthalten.',
+        'Wer diese Freigabe oder dieses Laufwerk lesen darf, kann die Festplatten der VM lesen und was sie enthalten, und ihr TPM und ihre UEFI-Variablen: Damit öffnen sich Festplatten, die der Gast allein mit seinem TPM verschlüsselt (BitLocker ohne PIN, systemd-cryptenroll), überall.',
       running:
         'Die VM läuft: Die Sicherung kommt aus einem Snapshot dieses Moments, absturzkonsistent, es sei denn, der Gastagent hat ihre Dateisysteme eingefroren.',
       into: 'Nach {path}/{id}/…',

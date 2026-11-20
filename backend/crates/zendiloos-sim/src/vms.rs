@@ -58,7 +58,8 @@ fn sim_digest(name: &str) -> ArchiveDigest {
     ArchiveDigest::parse(&format!("{hex:0<64}")[..64]).expect("64 hex digits are a digest")
 }
 
-/// The simulated machine's USB devices: a stick and a keyboard.
+/// The simulated machine's USB devices: a stick, a keyboard, and the UPS
+/// the NAS follows, which goes to no VM.
 fn sim_usb() -> Vec<HostUsbDevice> {
     vec![
         HostUsbDevice {
@@ -67,6 +68,7 @@ fn sim_usb() -> Vec<HostUsbDevice> {
             port: "1-1.2".into(),
             manufacturer: Some("SanDisk".into()),
             name: Some("Ultra Fit".into()),
+            needed: None,
         },
         HostUsbDevice {
             vendor: 0x046d,
@@ -74,6 +76,15 @@ fn sim_usb() -> Vec<HostUsbDevice> {
             port: "1-1.3".into(),
             manufacturer: Some("Logitech".into()),
             name: Some("USB Keyboard".into()),
+            needed: None,
+        },
+        HostUsbDevice {
+            vendor: 0x0463,
+            product: 0xffff,
+            port: "1-1.4".into(),
+            manufacturer: Some("EATON".into()),
+            name: Some("Ellipse ECO".into()),
+            needed: Some(HostNeeds::Ups),
         },
     ]
 }

@@ -9,7 +9,9 @@ use std::path::PathBuf;
 use serde_json::json;
 use tempfile::TempDir;
 use zendiloos_agent::config::Tools;
-use zendiloos_agent::{AccountFiles, Erasable, ErasePolicy, HostPaths, Operations, Paths};
+use zendiloos_agent::{
+    AccountFiles, DevicePaths, Erasable, ErasePolicy, HostPaths, Operations, Paths, VmPaths,
+};
 use zendiloos_agent_proto::{ErrorCode, RemovableId, Request, Response, Role};
 
 const ID: &str = "1A2B-3C4D";
@@ -125,7 +127,13 @@ impl Host {
             group: root.join("group"),
             high_water: root.join("high-water"),
         };
-        let paths = Paths { host, accounts, ..Paths::default() };
+        // The VMs' domains and the host's USB devices, none of them yet.
+        let vms = VmPaths {
+            domains: root.join("vms"),
+            devices: DevicePaths { usb: root.join("usb"), pci: root.join("pci"), ..DevicePaths::default() },
+            ..VmPaths::default()
+        };
+        let paths = Paths { host, accounts, vms, ..Paths::default() };
         let agent =
             Operations::with_paths(Role::System, &tools, Erasable::Policy(ErasePolicy::None), paths).unwrap();
         let host = Self { _dir: dir, root, agent };
@@ -192,6 +200,54 @@ async fn a_stick_is_mounted_at_its_place_with_safe_options() {
         Response::RemovableMounted { read_only: false }
     );
     assert_eq!(host.calls().len(), 1);
+}
+
+/// A stick on a USB device a VM is given is the VM's: mounted, it would
+/// keep the VM from starting with it, so it is never mounted.
+#[tokio::test]
+async fn a_drive_on_a_usb_device_a_vm_is_given_is_not_mounted() {
+    let host = Host::new();
+    host.stick(false);
+    // sdf1 below the USB device 1-2, a SanDisk stick.
+    let device = host.root.join("sys/devices/pci0000:00/0000:00:14.0/usb1/1-2");
+    let partition = device.join("1-2:1.0/host6/target6:0:0/6:0:0:0/block/sdf/sdf1");
+    fs::create_dir_all(&partition).unwrap();
+    for (file, value) in [("idVendor", "0781"), ("idProduct", "5583"), ("bDeviceClass", "00")] {
+        fs::write(device.join(file), format!("{value}\n")).unwrap();
+    }
+    fs::create_dir_all(host.root.join("usb")).unwrap();
+    std::os::unix::fs::symlink(&device, host.root.join("usb/1-2")).unwrap();
+    fs::remove_dir(host.root.join("sys-block/sdf1")).unwrap();
+    std::os::unix::fs::symlink(&partition, host.root.join("sys-block/sdf1")).unwrap();
+    // A VM given another device: mounted as ever.
+    fs::create_dir_all(host.root.join("vms")).unwrap();
+    let domain = |vendor: &str, product: &str| {
+        format!(
+            "<domain>\n  <devices>\n    <hostdev mode='subsystem' type='usb' managed='yes'>\n      <source>\n        \
+             <vendor id='0x{vendor}'/>\n        <product id='0x{product}'/>\n      </source>\n    </hostdev>\n  \
+             </devices>\n</domain>\n"
+        )
+    };
+    fs::write(host.root.join("vms/zendiloos-0a1b2c3d4e5f.xml"), domain("046d", "c31c")).unwrap();
+    assert_eq!(
+        host.agent.execute(&Request::MountRemovable { id: id() }).await,
+        Response::RemovableMounted { read_only: false }
+    );
+    host.agent.execute(&Request::EjectRemovable { id: id(), power_off: false }).await;
+    host.stick(false);
+    let before = host.calls().len();
+    // Given the stick: not mounted.
+    fs::write(host.root.join("vms/zendiloos-0a1b2c3d4e5f.xml"), domain("0781", "5583")).unwrap();
+    let Response::Error { code, message } = host.agent.execute(&Request::MountRemovable { id: id() }).await
+    else {
+        panic!("mounted")
+    };
+    assert_eq!(code, ErrorCode::Forbidden);
+    assert!(message.contains("the virtual machine 0a1b2c3d4e5f is given"), "the refusal does not say why");
+    assert!(
+        !host.calls()[before..].iter().any(|call| call.starts_with("systemd-mount")),
+        "a mount was asked for"
+    );
 }
 
 #[tokio::test]

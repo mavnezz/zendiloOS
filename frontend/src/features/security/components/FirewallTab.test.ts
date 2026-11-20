@@ -101,6 +101,10 @@ describe('the firewall tab', () => {
     expect(rows()[1]).toContain('8000-8100')
     expect(rows()[1]).toContain('Deny')
     expect(document.querySelector('footer')).toBeNull()
+    // Rules naming a connection do not meet VMs through the NAS.
+    expect(document.querySelector('[data-testid="firewall-vms-hint"]')?.textContent?.trim()).toBe(
+      t('firewall.vmsHint'),
+    )
   })
 
   it('adds a rule, orders the rules and applies them', async () => {

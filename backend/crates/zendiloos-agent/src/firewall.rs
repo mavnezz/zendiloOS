@@ -195,13 +195,16 @@ pub(crate) fn ruleset(config: Option<&FirewallConfig>, phase: Phase) -> String {
              \t\tct state established ct direction reply accept\n"
         }
     };
+    let passt = crate::vm_user_network::CT_MARK;
     let _ = write!(
         text,
         "table inet zendiloos_firewall {{\n\
          \tchain input {{\n\
          \t\ttype filter hook input priority filter - 5; policy accept;\n\
          {answers}\
-         \t\tiif \"lo\" accept\n\
+         \t\t# The loopback, but for VMs' connections through passt, which meet\n\
+         \t\t# the rules as the LAN's do.\n\
+         \t\tiif \"lo\" ct mark and {passt:#010x} == 0 accept\n\
          \t\t# Containers reach the NAS.\n\
          \t\tiifname {bridges} accept\n\
          \t\t# What IPv6 needs to work, and answers to DHCP.\n\
@@ -235,6 +238,14 @@ pub(crate) fn ruleset(config: Option<&FirewallConfig>, phase: Phase) -> String {
          \t\t# Nothing else from outside reaches a container, not even sent to\n\
          \t\t# its address through the NAS: no bridge but the machine's own.\n\
          \t\t{to_bridges} drop\n\
+         \t}}\n\
+         \tchain output {{\n\
+         \t\ttype filter hook output priority filter - 5; policy accept;\n\
+         \t\t# VMs' connections through passt to a container's published port\n\
+         \t\t# meet the rules as the LAN's forwarded ones do.\n\
+         \t\tct mark and {passt:#010x} == 0 accept\n\
+         {answers}\
+         \t\tct status dnat jump published\n\
          \t}}\n\
          \tchain published {{\n"
     );

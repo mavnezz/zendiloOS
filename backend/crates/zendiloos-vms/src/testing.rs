@@ -320,6 +320,7 @@ pub fn devices() -> HostDevices {
             port: "1-2".into(),
             manufacturer: Some("Logitech".into()),
             name: Some("USB Keyboard".into()),
+            needed: None,
         }],
         pci: vec![
             pci("0000:01:00.0", 0x030000, 1, None),

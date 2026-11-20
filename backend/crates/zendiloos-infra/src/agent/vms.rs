@@ -466,6 +466,7 @@ fn needs(needs: zendiloos_agent_proto::HostNeeds) -> HostNeeds {
         zendiloos_agent_proto::HostNeeds::Console => HostNeeds::Console,
         zendiloos_agent_proto::HostNeeds::Network { interface } => HostNeeds::Network(interface),
         zendiloos_agent_proto::HostNeeds::Bridge => HostNeeds::Bridge,
+        zendiloos_agent_proto::HostNeeds::Ups => HostNeeds::Ups,
     }
 }
 
@@ -801,6 +802,7 @@ impl VmHost for AgentVms {
                         port: device.port,
                         manufacturer: device.manufacturer,
                         name: device.name,
+                        needed: device.needed.map(needs),
                     })
                     .collect(),
                 pci: pci

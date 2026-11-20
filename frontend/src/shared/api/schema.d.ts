@@ -10012,7 +10012,7 @@ export interface components {
             pci: components["schemas"]["VmHostPci"][];
             usb: components["schemas"]["VmHostUsb"][];
         };
-        /** @description Why the host keeps a PCI device. */
+        /** @description Why the host keeps a PCI or USB device. */
         VmHostNeeds: {
             disk: string;
             /** @enum {string} */
@@ -10027,6 +10027,9 @@ export interface components {
         } | {
             /** @enum {string} */
             kind: "bridge";
+        } | {
+            /** @enum {string} */
+            kind: "ups";
         };
         /** @description A PCI function of the host's. */
         VmHostPci: {
@@ -10053,6 +10056,7 @@ export interface components {
             id: string;
             manufacturer?: string | null;
             name?: string | null;
+            needed?: components["schemas"]["VmHostNeeds"] | null;
             /** @description Where it is plugged in: `1-2.3`. */
             port: string;
         };

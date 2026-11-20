@@ -25,7 +25,7 @@
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsFd;
-use std::os::unix::fs::{FileExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::PathBuf;
 
 use rustix::fs::{AtFlags, FallocateFlags, FileType, OFlags, RenameFlags, fstat, fsync};
@@ -449,17 +449,80 @@ fn restore_disk(
 }
 
 /// A small file of the backup, written and checked beside its place under
-/// a hidden name: put in place only once all of them are.
+/// a hidden name in its folder, held open: put in place only once all of
+/// them are.
 struct Staged {
-    hidden: PathBuf,
+    /// The folder, opened without following a link: `tss` owns the TPM's,
+    /// so nothing there is done by a name that could lead elsewhere.
+    folder: std::os::fd::OwnedFd,
+    hidden: String,
+    name: String,
     target: PathBuf,
-    /// The folders made for it: the TPM's `<uuid>/tpm2`.
-    made: Vec<PathBuf>,
-    owner: Option<(u32, u32)>,
 }
 
-/// Writes a small file of the backup beside `target`, root's alone, under
-/// a hidden name; refused unless it is the file recorded.
+impl Staged {
+    fn discard(&self) {
+        let _ = rustix::fs::unlinkat(&self.folder, self.hidden.as_str(), AtFlags::empty());
+    }
+}
+
+/// The folder of `target`, opened without following a link anywhere in
+/// its path; the folders missing are made as libvirt makes them: root's
+/// and 0711, and the last one, given an `owner`, the owner's and 0700 (a
+/// TPM's `<uuid>/tpm2`, swtpm's).
+fn open_target_folder(
+    target: &std::path::Path,
+    owner: Option<(u32, u32)>,
+) -> Result<std::os::fd::OwnedFd, ArchiveError> {
+    use rustix::fs::{Mode, ResolveFlags};
+
+    let parent = target.parent().filter(|parent| parent.is_absolute()).ok_or_else(|| refused("no folder"))?;
+    let directory = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let no_links = ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS;
+    let components: Vec<&std::ffi::OsStr> = parent
+        .components()
+        .filter_map(|part| match part {
+            std::path::Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect();
+    let mut folder = rustix::fs::openat2(rustix::fs::CWD, "/", directory, Mode::empty(), no_links)
+        .map_err(|e| failed("/", io::Error::from(e)))?;
+    for (at, name) in components.iter().enumerate() {
+        let last = at + 1 == components.len();
+        let next = match rustix::fs::openat2(&folder, *name, directory, Mode::empty(), no_links) {
+            Ok(next) => next,
+            Err(rustix::io::Errno::NOENT) => {
+                let (mode, owner) = match owner {
+                    Some(owner) if last => (0o700, Some(owner)),
+                    _ => (0o711, None),
+                };
+                rustix::fs::mkdirat(&folder, *name, Mode::from_raw_mode(mode))
+                    .map_err(|e| failed(parent.display(), io::Error::from(e)))?;
+                let made = rustix::fs::openat2(&folder, *name, directory, Mode::empty(), no_links)
+                    .map_err(|e| failed(parent.display(), io::Error::from(e)))?;
+                rustix::fs::fchmod(&made, Mode::from_raw_mode(mode))
+                    .map_err(|e| failed(parent.display(), io::Error::from(e)))?;
+                if let Some((uid, gid)) = owner {
+                    rustix::fs::fchown(
+                        &made,
+                        Some(rustix::fs::Uid::from_raw(uid)),
+                        Some(rustix::fs::Gid::from_raw(gid)),
+                    )
+                    .map_err(|e| failed(parent.display(), io::Error::from(e)))?;
+                }
+                made
+            }
+            Err(error) => return Err(failed(parent.display(), io::Error::from(error))),
+        };
+        folder = next;
+    }
+    Ok(folder)
+}
+
+/// Writes a small file of the backup beside `target` under a hidden name,
+/// 0600 and its owner's (root's without one), by its descriptor alone;
+/// refused unless it is the file recorded.
 fn stage_small(
     folder: std::os::fd::BorrowedFd<'_>,
     folder_path: &SharePath,
@@ -481,46 +544,52 @@ fn stage_small(
             path.as_str()
         )));
     }
-    let parent = target.parent().ok_or_else(|| refused("no folder"))?;
-    let made: Vec<PathBuf> =
-        parent.ancestors().take(2).filter(|folder| !folder.exists()).map(std::path::Path::to_owned).collect();
-    std::fs::create_dir_all(parent).map_err(|e| failed(parent.display(), e))?;
-    let hidden = parent.join(format!(
-        ".{}.restore",
-        target.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
-    ));
-    let _ = std::fs::remove_file(&hidden);
-    let written = (|| {
-        let mut out = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(OFlags::NOFOLLOW.bits() as i32)
-            .open(&hidden)?;
+    let name = target
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .ok_or_else(|| refused("no file name"))?;
+    let staged = Staged {
+        folder: open_target_folder(target, owner)?,
+        hidden: format!(".{name}.restore"),
+        name,
+        target: target.to_owned(),
+    };
+    staged.discard();
+    let written = (|| -> io::Result<()> {
+        let fd = rustix::fs::openat(
+            &staged.folder,
+            staged.hidden.as_str(),
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            rustix::fs::Mode::from_raw_mode(0o600),
+        )?;
+        let mut out = File::from(fd);
         out.write_all(&content)?;
         out.sync_all()?;
-        std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o600))
+        rustix::fs::fchmod(&out, rustix::fs::Mode::from_raw_mode(0o600))?;
+        if let Some((uid, gid)) = owner {
+            rustix::fs::fchown(
+                &out,
+                Some(rustix::fs::Uid::from_raw(uid)),
+                Some(rustix::fs::Gid::from_raw(gid)),
+            )?;
+        }
+        Ok(())
     })();
     if let Err(error) = written {
-        let _ = std::fs::remove_file(&hidden);
+        staged.discard();
         return Err(failed(target.display(), error));
     }
-    Ok(Staged { hidden, target: target.to_owned(), made, owner })
+    Ok(staged)
 }
 
-/// Puts a staged file in place, and gives it (and the folders made for it)
-/// to its account.
+/// Puts a staged file in place, within its folder: a rename, which follows
+/// no link.
 fn place_small(staged: &Staged) -> Result<(), ArchiveError> {
-    if let Err(error) = std::fs::rename(&staged.hidden, &staged.target) {
-        let _ = std::fs::remove_file(&staged.hidden);
-        return Err(failed(staged.target.display(), error));
-    }
-    if let Some((uid, gid)) = staged.owner {
-        for path in staged.made.iter().map(PathBuf::as_path).chain([staged.target.as_path()]) {
-            if let Err(error) = std::os::unix::fs::chown(path, Some(uid), Some(gid)) {
-                tracing::warn!(%error, path = %path.display(), "cannot give the restored file to its account");
-            }
-        }
+    let renamed =
+        rustix::fs::renameat(&staged.folder, staged.hidden.as_str(), &staged.folder, staged.name.as_str());
+    if let Err(error) = renamed {
+        staged.discard();
+        return Err(failed(staged.target.display(), io::Error::from(error)));
     }
     Ok(())
 }
@@ -555,7 +624,7 @@ pub(crate) fn restore(
             Ok(file) => staged.push(file),
             Err(error) => {
                 for file in &staged {
-                    let _ = std::fs::remove_file(&file.hidden);
+                    file.discard();
                 }
                 return Err(error);
             }
@@ -564,7 +633,7 @@ pub(crate) fn restore(
     for (at, file) in staged.iter().enumerate() {
         if let Err(error) = place_small(file) {
             for later in &staged[at + 1..] {
-                let _ = std::fs::remove_file(&later.hidden);
+                later.discard();
             }
             return Err(error);
         }
@@ -651,6 +720,8 @@ pub fn run_vm_backup_job(work: VmBackupWork, hex: &str, now: i64, out: &mut dyn 
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use zendiloos_agent_proto::VmDiskSlot;
 
     use super::*;
@@ -785,6 +856,66 @@ mod tests {
         let open = VmRestoreJob { files: vec![RestoreFile { file, target, owner: None }], ..restore_job };
         let error = restore(&open, &mut |_| {}).unwrap_err().to_string();
         assert!(error.contains("written by others"), "{error}");
+    }
+
+    /// The TPM's state goes into a folder swtpm's account owns: nothing is
+    /// done there by a name that could lead elsewhere, and its folders are
+    /// made as libvirt makes them.
+    #[test]
+    fn a_tpms_state_is_restored_by_descriptor_into_folders_as_libvirt_makes_them() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        disk(&root, "disk0");
+        std::fs::write(root.join("tpm"), b"seeds").unwrap();
+        let job = VmBackupJob { tpm: Some(root.join("tpm")), ..job(&root) };
+        let done = back_up(&job, 0, &mut |_| {}).unwrap();
+        let tpm = done.files.iter().find(|file| file.part == VmBackupPart::Tpm).unwrap().clone();
+        let owner = {
+            let meta = std::fs::metadata(&root).unwrap();
+            (meta.uid(), meta.gid())
+        };
+        let state = root.join("swtpm/8b45cec4-586f-4885-973a-9e24c63b82fe");
+        let target = state.join("tpm2/tpm2-00.permall");
+        let restore_job = VmRestoreJob {
+            root: root.join("share"),
+            folder: job.folder.clone(),
+            files: vec![RestoreFile { file: tpm.clone(), target: target.clone(), owner: Some(owner) }],
+        };
+        restore(&restore_job, &mut |_| {}).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"seeds");
+        let mode = |path: &std::path::Path| std::fs::symlink_metadata(path).unwrap().mode() & 0o7777;
+        assert_eq!(mode(&target), 0o600);
+        assert_eq!(mode(&state), 0o711, "<uuid> as libvirt makes it");
+        assert_eq!(mode(&state.join("tpm2")), 0o700, "tpm2 as swtpm keeps it");
+        assert_eq!(std::fs::metadata(&target).unwrap().uid(), owner.0);
+
+        // A link put in the hidden file's place leads nowhere: the file
+        // it names keeps its mode, and the state is a file of its own.
+        let other = root.join("other_VARS.fd");
+        std::fs::write(&other, b"other").unwrap();
+        std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::os::unix::fs::symlink(&other, state.join("tpm2/.tpm2-00.permall.restore")).unwrap();
+        restore(&restore_job, &mut |_| {}).unwrap();
+        assert_eq!(mode(&other), 0o644);
+        assert_eq!(std::fs::read(&other).unwrap(), b"other");
+        assert!(std::fs::symlink_metadata(&target).unwrap().is_file());
+        assert!(!state.join("tpm2/.tpm2-00.permall.restore").exists());
+        // A link anywhere in the folder's path is not followed.
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("linked")).unwrap();
+        let linked = VmRestoreJob {
+            files: vec![RestoreFile {
+                file: tpm,
+                target: root.join("linked/uuid/tpm2/tpm2-00.permall"),
+                owner: Some(owner),
+            }],
+            ..restore_job
+        };
+        assert!(restore(&linked, &mut |_| {}).is_err());
+        assert!(!elsewhere.join("uuid").exists());
     }
 
     #[test]
