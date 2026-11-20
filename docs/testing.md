@@ -95,7 +95,7 @@ the group passed and keep running after a failure.
 |---|---|---|---|
 | storage | the pool tank on the NVMe disk | storage, pool-delete, enclosure, removable, notify | 17 min |
 | sharing | the pools apps (NVMe) and tank (a SATA disk), Docker on apps, NFS on | sharing, permissions, services, accounts, two-factor, backup | 14 min |
-| security | set up only | security, hostname, web-server, ups | 20 min |
+| security | set up only | security, ssh, hostname, web-server, ups | 20 min |
 | docker | the pool apps (NVMe), Docker on it, Uptime Kuma from the App Center as a project | docker-install, docker, app-center, project-pins, docker-volumes, firewall | 19 min |
 | vms | the pools apps and tank; Debian's kernel instead of the cloud one, for a USB controller | network, vms, vm-backup | 15 min |
 | network | two spare cards | network-takeover, network-bridge | 12 min |
@@ -112,13 +112,6 @@ it skips in CI too: PCI passthrough in `vm-vm-backup-test` (the test VM has
 no IOMMU), apps installed the earlier way in `vm-app-center-test` (none can
 be installed so any more), and Debian's updates in `vm-update-test` when the
 cloud image is up to date.
-
-Left out for now: `vm-ssh-test`. Turning SSH on from off with a timer
-(step 4) fails in about every other run: the agent starts `ssh.service`,
-reloads systemd, after which systemd finds the sshd it started a left-over
-process of the unit, and its `reload-or-restart` starts a second sshd that
-cannot bind the port. The unit is left failed, the timer is never set, and
-the API answers 500.
 
 ## arm64
 

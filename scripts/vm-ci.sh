@@ -49,17 +49,11 @@ repository=mavnezz/zendiloOS
 # vm-security-test and vm-two-factor-test fail sign-ins on purpose, which
 # zendiloosd counts per address (20 in 15 minutes) for both: they run in
 # different groups.
-#
-# Left out for now: vm-ssh-test. Turned on from off with a timer, SSH fails
-# in about every other run: after the daemon reload that follows the start,
-# systemd no longer counts the sshd it started as ssh.service's, and the
-# reload-or-restart after it starts a second one, which cannot bind the
-# port (docs/testing.md).
 groups=(storage sharing security docker vms network restore pool-import upgrade)
 declare -A tests=(
     [storage]="storage pool-delete enclosure removable notify"
     [sharing]="sharing permissions services accounts two-factor backup"
-    [security]="security hostname web-server ups"
+    [security]="security ssh hostname web-server ups"
     [docker]="docker-install docker app-center project-pins docker-volumes firewall"
     [vms]="network vms vm-backup"
     [network]="network-takeover network-bridge"
