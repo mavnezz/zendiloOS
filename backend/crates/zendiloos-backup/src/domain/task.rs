@@ -384,6 +384,39 @@ fn nested(a: &str, b: &str) -> bool {
     within(a, b) || within(b, a)
 }
 
+/// Whether two tasks' folders (`a_folder` in the target `a`, `b_folder` in
+/// `b`) are one, or one lies within the other, on the same share or drive,
+/// the same server (its address, port, user and module) or the same cloud
+/// account: one task's mirror would delete what the other wrote, and its
+/// retention remove the other's versions.
+pub fn folders_overlap(a: &Place, a_folder: &str, b: &Place, b_folder: &str) -> bool {
+    let same_server = |x: &Server, y: &Server| {
+        let module = |server: &Server| match &server.transport {
+            Transport::Daemon { module } => Some(module.clone()),
+            Transport::Ssh { .. } => None,
+        };
+        x.host.eq_ignore_ascii_case(&y.host) && x.port == y.port && x.user == y.user && module(x) == module(y)
+    };
+    let (same, a_path, b_path) = match (a, b) {
+        (
+            Place::Nas(NasPlace::Share { share_id: x, path: p }),
+            Place::Nas(NasPlace::Share { share_id: y, path: q }),
+        ) => (x == y, p, q),
+        (
+            Place::Nas(NasPlace::Drive { drive: x, path: p }),
+            Place::Nas(NasPlace::Drive { drive: y, path: q }),
+        ) => (x == y, p, q),
+        (Place::Remote(x), Place::Remote(y)) => (same_server(&x.server, &y.server), &x.path, &y.path),
+        (Place::Cloud(x), Place::Cloud(y)) => (x.account == y.account, &x.path, &y.path),
+        _ => return false,
+    };
+    let joined = |path: &str, folder: &str| {
+        let path = path.trim_end_matches('/');
+        if path.is_empty() { folder.to_owned() } else { format!("{path}/{folder}") }
+    };
+    same && nested(&joined(a_path, a_folder), &joined(b_path, b_folder))
+}
+
 impl TaskSettings {
     pub fn kind(&self) -> TaskKind {
         match (&self.source, &self.target) {
@@ -536,6 +569,32 @@ mod tests {
             port: 873,
             user: "zendi".into(),
         }
+    }
+
+    #[test]
+    fn task_folders_overlap_when_one_lies_within_the_other_on_one_place() {
+        let remote = |host: &str, module: &str, path: &str| {
+            let mut server = daemon();
+            server.host = host.into();
+            server.transport = Transport::Daemon { module: module.into() };
+            Place::Remote(RemotePlace { server, path: path.into() })
+        };
+        let cloud = |account: i64, path: &str| Place::Cloud(CloudPlace { account, path: path.into() });
+        assert!(folders_overlap(&share(2, ""), "A", &share(2, ""), "A"));
+        assert!(folders_overlap(&share(2, "A/current"), "B", &share(2, ""), "A"));
+        assert!(folders_overlap(&share(2, ""), "A", &share(2, "A/"), "B"));
+        assert!(!folders_overlap(&share(2, ""), "A", &share(2, ""), "AB"), "beside, not within");
+        assert!(!folders_overlap(&share(2, ""), "A", &share(3, ""), "A"), "another share");
+        assert!(folders_overlap(
+            &remote("NAS2.lan", "nas", "x"),
+            "A",
+            &remote("nas2.lan", "nas", "x/A"),
+            "B"
+        ));
+        assert!(!folders_overlap(&remote("nas2.lan", "nas", ""), "A", &remote("nas2.lan", "other", ""), "A"));
+        assert!(folders_overlap(&cloud(1, "nas"), "A", &cloud(1, "nas/A"), "B"));
+        assert!(!folders_overlap(&cloud(1, "nas"), "A", &cloud(2, "nas"), "A"));
+        assert!(!folders_overlap(&share(2, ""), "A", &cloud(2, ""), "A"));
     }
 
     fn settings() -> TaskSettings {

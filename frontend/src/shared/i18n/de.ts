@@ -1298,7 +1298,10 @@ const de: Messages = {
         hint: 'Verzeichnet die Sicherungen von Volumes, die in einem Ordner liegen, etwa nachdem zendiloOS neu eingerichtet wurde, damit sie sich hier wiederherstellen lassen.',
         folder: 'Ordner',
         rules:
-          'Übernommen werden Archive namens <Volume>-JJJJMMTT-HHMMSS.tar.zst mit ihrem Manifest (.json) daneben, in diesem Ordner und den Ordnern darin: nur wenn niemand außer root sie ändern darf und nur wenn das Archiv das ist, das sein Manifest nennt. Schon verzeichnete Sicherungen werden übersprungen.',
+          'Übernommen werden Archive namens <Volume>-JJJJMMTT-HHMMSS.tar.zst mit ihrem Manifest (.json) daneben, in diesem Ordner und den Ordnern darin: nur wenn niemand außer root sie ändern darf, nur wenn das Archiv das ist, das sein Manifest nennt, und nur wenn dieses NAS das Manifest signiert hat (nach einer Wiederherstellung seiner Konfiguration auch, was das Gerät davor signiert hat). Schon verzeichnete Sicherungen werden übersprungen.',
+        unverified: 'Auch Sicherungen importieren, die dieses NAS nicht signiert hat',
+        unverifiedHint:
+          'Sicherungen, die eine frühere Version von zendiloOS oder ein anderes Gerät gemacht hat, tragen keine Signatur dieses NAS. Jeder, der in diesen Ordner schreiben darf, könnte eine solche Datei angelegt oder verändert haben, und ihr Inhalt landete beim Wiederherstellen im Volume: Setzen Sie das Häkchen nur, wenn Sie allen vertrauen.',
         noPlan:
           'Importierte Sicherungen gehören zu keinem Sicherungsplan, also löscht keiner sie. Löschen Sie sie hier, sobald Sie sie nicht mehr brauchen.',
         start: 'Importieren',

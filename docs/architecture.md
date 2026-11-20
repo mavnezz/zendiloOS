@@ -1452,7 +1452,16 @@ TLS is rustls with ring and the system's certificate authorities
   effective set as it starts and only a thread working on a drive takes up
   again; `/etc`, `/usr` and `/var` read-only, `/run` too (a drive mounted
   below it later is a mount of its own, writable as mounted); the database, Samba's state, `/etc/zendiloos`, SSH keys and
-  the shadow files inaccessible. It does without `RestrictSUIDSGID`: to
+  the shadow files inaccessible. It connects to no socket (its system
+  calls are `@system-service` with `connect()` taken out, which fails with
+  EPERM; its own socket comes as a descriptor), as a read-only `/run`
+  would not keep root from asking systemd, D-Bus, Docker or libvirt, and
+  hiding their sockets alone does not hold: one made anew after it
+  started shows through; those sockets, zendiloOS's own and the other
+  services' credentials are hidden too. A test reads the shipped units and
+  checks that each filter starts with its allow-list (the first
+  `SystemCallFilter=` sets what is allowed at all). It
+  does without `RestrictSUIDSGID`: to
   enforce it, systemd blocks `openat2()`, whose arguments seccomp cannot
   inspect, and `openat2()` is what keeps paths inside a share. Volumes and
   shares are created with `setuid=off` and `devices=off` instead, which
@@ -1918,9 +1927,20 @@ the archive and the manifest beside it are regular files of root's that
 nobody else may write (no group or other write bit, so no ACL entry may
 either: the group's bits are the ACL's mask), the manifest names this
 archive and volume, and the archive's SHA-256, hashed as it is read, is the
-one the manifest names. What it refuses is listed on the job with why
-("the archive: writable by others", "no manifest beside it", "its SHA-256
-is not the one its manifest names", …); archives zendiloosd recorded
+one the manifest names. That proves little on its own: smbd works as root
+on the shares (`force user = root`, 4.4), and the file manager with root's
+access, so whoever may write the folder can make a pair of root's files
+that pass. So the agent then checks each manifest's signature (an
+HMAC-SHA256 under one of its keys, see below) and says which carry one;
+zendiloosd records the others only when the import is asked to take
+unverified backups too (`unverified`, a box in the dialog that says who
+could have made them), and refuses them otherwise ("its manifest carries no
+signature of this NAS's: …"). Backups made by a version before the
+signatures, or on another machine, are such; those recorded already stay
+restorable as before (by the SHA-256 recorded when they were made). What it
+refuses is listed on the job with why ("the archive: writable by others",
+"no manifest beside it", "its SHA-256 is not the one its manifest names",
+…); archives zendiloosd recorded
 already are passed over, before and after the agent looked. An imported
 backup is recorded as a run that succeeded, at the time its manifest
 names, of no plan (`imported`, no one started it): retention never removes
@@ -1937,8 +1957,17 @@ mounted, and no unit of the volume still running. The work runs in a
 transient unit (`systemd-run`, this binary as `backup-volume`, the job as
 hex digits on its command line), outside the agent's sandbox, which can
 write neither shares nor Docker's data, in a sandbox of its own: no
-network, no devices, no other processes seen (`ProtectProc=invisible`), its
-own IPC, `SystemCallFilter=@system-service` (not `RestrictSUIDSGID`:
+network, no devices, a PID namespace of its own (`PrivatePIDs`: no other
+process seen or signalled; stopped with SIGKILL, which its first process
+always takes), its own IPC, no `connect()` at all (it talks over its pipes)
+and an empty read-only `/run` but for the drives' place (so no control
+socket of the machine to ask: systemd's, D-Bus, Docker's, libvirt's,
+zendiloOS's; root's units would otherwise reach them, a read-only `/run`
+does not stop `connect()`), the system's secrets hidden (`/etc/zendiloos`
+with the keys backups are signed with, the shadow files, SSH's host keys,
+zendiloOS's database: what a restore parses must not read them into a
+volume),
+`SystemCallFilter=@system-service` (not `RestrictSUIDSGID`:
 systemd enforces it by blocking `openat2()`, which keeps the units' paths
 beneath their folders), the whole system read only but the share,
 `CAP_DAC_READ_SEARCH` and `CAP_DAC_OVERRIDE` only, 65536 descriptors and
@@ -1972,8 +2001,16 @@ a later name of a file beyond is written whole, so its data is in the
 archive all the same. Its progress comes from counting the volume first,
 in memory bounded as above. Beside it goes
 `<volume>-YYYYMMDD-HHMMSS.json`, its manifest: the volume's name, driver,
-labels, size and when it was made, the release's version and the
-archive's SHA-256. The folders on the way are walked to beneath the share
+labels, size and when it was made, the release's version, the archive's
+name and SHA-256, and its signature (`mac`): an HMAC-SHA256 over the
+manifest's fields as they were first signed (a fixed set in a fixed order,
+so fields a manifest gets later leave older signatures valid) under a key
+of the system agent's (`/etc/zendiloos/volume-backup-keys`, 32 random
+bytes made at the first backup, root's alone, hidden from the files agent
+and the units, carried in the configuration backup; 4.15), which the
+backup's unit is given on its standard input. The first key is written
+under a name of its own and linked into place, which fails if one is
+there: two backups starting at once sign with the same key. The folders on the way are walked to beneath the share
 (`RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV`) and made as far
 as they are missing (0777, which the share's inherited default ACL
 narrows), and hidden files earlier backups left in the volume's folder
@@ -3353,7 +3390,9 @@ task keeps it), with a marker file `.zendiloos-backup`:
 <target>/<task>/current/                          mirror: the copy
 <target>/<task>/removed/2026-11-11_030000Z/       mirror, if kept: what that run deleted or replaced
 <target>/<task>/2026-11-11_030000Z/               versioned: a complete version
+<target>/<task>/2026-11-11_030000Z.partial        versioned: its run could not copy every file
 <target>/<task>/2026-11-12_030000Z.incomplete/    versioned: a run under way, or cut off
+<target>/<task>/2026-11-12_030000Z.finishing      versioned: a server is still given the version
 ```
 
 - *Mirror*: an exact copy in `current/` (`--delete --delete-excluded`);
@@ -3362,21 +3401,37 @@ task keeps it), with a marker file `.zendiloos-backup`:
 - *Versioned*: each run a dated version, files unchanged since the newest
   complete version hard links to it (`--link-dest`). Retention keeps the
   newest N and those younger than N days (either keeps a version; neither
-  set keeps all; the newest is never removed), and runs after a run that
-  completed, also removing the folders of runs cut off before.
+  set keeps all), and runs after a run that completed, also removing what
+  runs cut off before left. It never removes the newest version nor the
+  newest complete one (whatever the clock says), nor one dated after now
+  (made while the clock was ahead), which does not count towards N
+  either. A version marked partial never pushes complete ones out: N
+  counts the complete versions alone for them, and a partial one stays
+  while it is one of the newest N of all.
 
 A version is named after its run's start in UTC (`2026-11-11_030000Z`:
 the names sort as the times do and none comes twice when the clock goes
 back in autumn) and written as `<stamp>.incomplete`. On the NAS it takes
 its name by one rename (`RENAME_NOREPLACE`) once rsync completed, then the
 folder and the file system are written out (`fsync`, `syncfs`, so a drive
-pulled out after "done" keeps it). A server cannot rename: there the
-version is copied once more under its name as hard links of the
-incomplete one (`--link-dest`, no data travels), and the incomplete one
-removed. A run cut off therefore never leaves a version that looks
-complete; its folder keeps the suffix, and the next run takes it over on
-the NAS (renamed to its own stamp, so what it copied is not copied again)
-or links from it on a server; retention removes what is left. A target
+pulled out after "done" keeps it). A server cannot rename: there a file
+`<stamp>.finishing` is put beside the version first, the version is copied
+once more under its name as hard links of the incomplete one
+(`--link-dest`, no data travels), then the file goes, and only if that
+copy was complete the incomplete one too (otherwise it stays for the next
+run to link from, that run's retention leaves it, and the run is
+partial). A version with its
+`.finishing` file still there counts as cut off. A run cut off therefore
+never leaves a version that looks complete; its folder keeps the suffix
+(or its mark), and the next run takes it over on the NAS (renamed to its
+own stamp, so what it copied is not copied again) or links from it on a
+server; retention removes what is left. A run that could not copy every
+file (rsync's exit 23, of either copy) puts a file `<stamp>.partial`
+beside its version before the version takes its name; files that only
+vanished while it ran (exit 24) leave the version as complete as the
+source was. A target that refuses files for want of space, quota or
+permission (`[receiver]`/`[generator]` errors 28, 122, 13) fails the run
+instead: no version is named, and retention does not run. A target
 folder that holds anything but a backup of zendiloOS's (no marker, other
 entries) is never written: a mirror would delete what is there. On a
 drive whose file system has no hard links (FAT, exFAT, NTFS) only mirrors
@@ -3402,8 +3457,9 @@ nothing starts and what is due stays due (4.10). "Back up now" and "Stop"
 
 **A run** is a job (`backup.run`), with rsync's progress
 (`--info=progress2`) as its percent, and logged: start, end, outcome
-(succeeded; partial when rsync could not read some files or found them
-gone, exit 23 or 24, the version complete but for them; failed; stopped;
+(succeeded; partial when rsync could not copy some files or found them
+gone, exit 23 or 24, the version complete but for them and, for 23,
+marked so; failed; stopped;
 interrupted by a restart of zendiloosd), files and bytes transferred
 (`--info=stats2`), the version, the error; and its transfer list from
 rsync's itemized changes, the first 5000 entries kept, the count of all.
@@ -3441,15 +3497,42 @@ options, patterns, version names) and runs the work in a transient unit
 (`systemd-run --pipe`, this binary as `backup-unit`, one unit per task
 and kind: `zendiloos-backup-run-<task>`, `-restore-`, `-prune-`; a
 listing's of its own). The unit's sandbox: no new privileges,
-`ProtectSystem=strict`, `ProtectHome`, its own `/tmp`, devices, IPC and
-process view, `@system-service` system calls, 2 GiB of memory; of the
-volumes and drives only the roots it works on (every `/volume<N>` and
+`ProtectSystem=strict`, `ProtectHome`, its own `/tmp`, devices and IPC,
+its own PID namespace (`PrivatePIDs`: no other process of the machine to
+see, signal, or reach through `/proc/<pid>/root`), `@system-service`
+system calls, 2 GiB of memory; a view of the file system that is an
+allow-list: every folder at the top of the system a read-only tmpfs but
+`/usr` (and the links into it), `/proc` (its processes alone,
+`ProcSubset=pid`), its own `/dev` (without the host's `/dev/shm`,
+`/dev/mqueue` and `/dev/hugepages`) and `/tmp`, and `/home` and `/root`,
+which are hidden; of `/sys` not the firmware's tables, the machine's
+serial numbers (DMI) or the kernel's own (`/sys/firmware`, `/sys/kernel`,
+`/sys/class/dmi`, `/sys/devices/virtual/dmi` empty: systemd mounts `/sys`
+anew for the PID namespace, so a tmpfs over all of it does not hold);
+nothing mounted after it started (`MountFlags=private`: a pool
+imported meanwhile stays out); files at the top hidden; of
+`/etc` only the accounts, name resolution, the dynamic linker's cache, the
+certificate authorities and OpenSSL's settings bound back read-only; of
+the volumes and drives only the roots it works on (every `/volume<N>` and
 `/run/zendiloos-removable` a read-only tmpfs, the source's root bound in
-read-only, the target's writable); the system's secrets hidden
-(`/etc/shadow`, `/etc/gshadow`, `/etc/ssh`, `/etc/samba`, `/etc/zendiloos`,
-zendiloOS's and Samba's state, the backup's key folder, Docker's and
-libvirt's state); the network only for a server (`PrivateNetwork=no`,
-IP, Unix and netlink sockets), none otherwise; and the capabilities the
+read-only, the target's writable). So `/run` with every control socket
+(systemd's, D-Bus, Docker's, containerd's, libvirt's, zendiloOS's), the
+other shares' folders pinned for apps and projects, the containers' file
+systems, `/var` and the system's secrets are not there at all: neither a
+link a share's writer swaps in below a folder while a run reads it (which
+rclone follows, see below) nor a compromised rsync, ssh or rclone reaches
+them. The network only for a server (`PrivateNetwork=no`, IP, Unix and
+netlink sockets; Unix sockets for rsync's own pairs), none otherwise; a
+unit with the network shares the host's network namespace, and with it
+the abstract Unix sockets there (no path in the file system; on Debian 13
+NFS's `fsidd` and exim's notifications), which no file system view hides.
+Stopped, all of a unit's processes get SIGTERM: rsync and rclone end and
+remove what they were writing, and the unit's own process (the first of
+its PID namespace, which must not end before them, or they would be
+killed unfinished) starts nothing more and answers that it was stopped;
+a SIGTERM it takes no handler for yet, right after its start, is lost,
+and SIGKILL follows after ten seconds. And
+the capabilities the
 work needs: none for a server's listing or retention,
 `CAP_DAC_READ_SEARCH` to read whatever a source holds, and to write on the
 NAS as copied `CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER
@@ -3458,7 +3541,9 @@ roots by descriptor (`openat2` with `RESOLVE_BENEATH`, `NO_SYMLINKS`,
 `NO_MAGICLINKS`, `NO_XDEV`; missing ones of a target made the same way)
 and handed to rsync as `/proc/self/fd/<n>/`, so a folder swapped for a
 link between the check and the copy changes nothing. rsync copies links
-as links and never follows one; links that point outside the copied
+as links and never follows one (below the top, rsync 3.5 opens every path
+without following a link, so a folder a share's writer swaps for a link
+while it runs is refused, tried on Debian 13's rsync); links that point outside the copied
 folder, and every absolute link, are left out (`--safe-links`); it stays
 on the source's file system (`--one-file-system`), skips devices and
 special files, and pulling, a server's links get the same treatment on
@@ -3478,9 +3563,12 @@ travels zendiloosd → agent (the socket) → unit (its standard input, one
 line of JSON) → a file in the unit's private `/tmp` (0600), which rsync
 reads (`--password-file`); it is on no command line, in no unit property
 and in no environment. The NAS's private key never leaves the NAS: root's
-in `/var/lib/zendiloos-backup` (hidden in every unit), it reaches only the
-run's unit as its credential (`LoadCredential=`, in
-`$CREDENTIALS_DIRECTORY`, root's and the unit's alone). `ssh` runs with
+in `/var/lib/zendiloos-backup` (not in any unit's view), the agent reads it
+and passes it to a unit that reaches a server over SSH on its standard
+input, as the other secrets, and the unit writes it into a folder with a
+random name in its private `/tmp` (0700, the file 0600): no other unit, nor
+a link planted in a source, can name where it is (a credential's place,
+`/run/credentials/<unit>/`, could be). `ssh` runs with
 `-F /dev/null`, `IdentitiesOnly`, `BatchMode`, no passwords and the pinned
 `known_hosts` only.
 
@@ -3542,14 +3630,22 @@ rsync's changes; a listing (`rclone lsjson`) is written as `rsync
 *rclone's sandbox* is the unit's above, with the network only for a cloud
 or a server. Its remotes are set for rclone alone, by variables of its own
 (`RCLONE_CONFIG_BASE_*` for the place, `RCLONE_CONFIG_DEST_*` for the
-crypt), and a cloud's token by a config file in the unit's private `/tmp`
-(0600); the crypt's password and salt are obscured as rclone keeps them by
+crypt), and the secrets by a config file in the unit's private `/tmp`
+(0600): a cloud's token and the OAuth client's ID and secret, and the
+crypt's password and salt, obscured as rclone keeps them by
 `rclone obscure -` reading them on standard input. None of it is on a
 command line or in a unit property. A folder of the NAS is opened beneath
 its root as for rsync and given to rclone as `/proc/self/fd/<n>`; rclone
-leaves links out (`--skip-links`) and never follows one, and it has no
-`--one-file-system` of its own here (folders mounted within a share are
-backed up with it). A restore from an encrypted or cloud backup copies
+leaves links out (`--skip-links`), and it has no `--one-file-system` here
+(it takes the device of `/proc/self/fd/<n>` itself, not of the folder, and
+would leave out every folder; folders mounted within a share are backed up
+with it). rclone opens paths by name below the top, so a folder a share's
+writer swaps for a link while it runs is followed (tried with rclone 1.60:
+an encrypted task backed up a root-only file from behind such a link):
+what it then reads is only what the unit's view holds. The unit's own
+folder in `/tmp` is left out by its random name (`--exclude`), and no
+secret is in rclone's environment (they are in its config file), so
+neither a link to `/tmp` nor one to `/proc/self` leads to them. A restore from an encrypted or cloud backup copies
 with rclone's filters for the folders asked for (`--filter-from`, their
 names' glob characters escaped) and `--ignore-existing` to keep what is
 there; what it wrote into a share then takes the folder's owner and group
@@ -3584,16 +3680,22 @@ to). A task is made in a wizard on
 changed in tabs of the same parts; folders come from the folder picker.
 Deleting a task forgets it and its log; what it backed up stays.
 
-**Tested** by unit tests of the domain (tasks, schedules, retention,
+**Tested** by unit tests of the domain (tasks, schedules, retention with
+partial, unfinished and future versions, task folders within others',
 filters, paths, the pasted sign-in address), the agent's operations and
-the unit's work (against real rsync where the machine has it: versions
-with hard links, a run cut off taken over, a mirror's kept changes,
-retention by name only, restores, links planted in the source; a fake
-rsync for daemons and SSH; a fake rclone for clouds, the crypt, SFTP,
+the unit's view of the system, and the unit's work (against real rsync
+where the machine has it: versions with hard links, a run cut off taken
+over, a version marked partial, a target that refuses files, a mirror's
+kept changes, retention by name only, restores, links planted in the
+source; a fake rsync for daemons and SSH, the version's marks there and a
+second copy that misses files; a fake rclone for clouds, the crypt, SFTP,
 restores and retention, with its variables, config file and refreshed
 token), the sign-in against fake token endpoints and Graph, feature tests
 of the API, the frontend's tests, and in the second test VM (`just
-vm-backup-test`, 8, an encrypted backup with real rclone among them).
+vm-backup-test`, 9, an encrypted backup with real rclone among them, and
+a folder of the source exchanged with a link to a folder outside the
+shares while rsync and rclone read it, the units looked into from their
+mount namespaces).
 Google Drive and OneDrive themselves are reached by none of these.
 
 ### 4.15 Configuration backup and recovery
@@ -3617,7 +3719,8 @@ machine's own certificate and key, the issued certificates the web
 interface serves, Samba's passwords (`passdb.tdb`: an account's SMB
 password cannot be made from its web password's hash), ZFS's host id
 (`/etc/hostid`, by which a pool knows its machine), the IDs handed out,
-and for reference SSH's, timesyncd's and TLS's files and the network's
+the keys the agent signs volume backups' manifests with (4.9), and for
+reference SSH's, timesyncd's and TLS's files and the network's
 (`05-zendiloos-*`). Everything else follows from the database at the next
 start, as always (1.2): Samba's and NFS's configuration, the web server's
 ports and certificate, the firewall's rules.
@@ -3676,7 +3779,9 @@ another's here), the files (`RestoreConfiguration`, only those a backup
 puts back, each checked as what it is: PEM, four bytes, `uid=`/`gid=`
 lines; the certificates under the web server's lock, `nginx -t` and a
 reload, the ones before back if nginx refuses; Samba stopped while its
-passwords are written; the IDs handed out only rise), and the settings
+passwords are written; the IDs handed out only rise; the keys the volume
+backups are signed with are added to those there, which keep signing, so
+the old machine's backups import as this one's), and the settings
 through their own requests (the machine's name, 6; the clock; SSH; TLS),
 each that fails only named in the answer. The database is staged as
 `restore/zendiloos.db` with the restore's audit entry written into it

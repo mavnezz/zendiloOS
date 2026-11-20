@@ -23,6 +23,8 @@ const refresh = useRefreshDocker()
 const { data: shares } = useShareList()
 
 const folder = ref('')
+/** Also those this NAS did not sign: asked for each time. */
+const unverified = ref(false)
 const browsing = ref(false)
 const starting = ref(false)
 const failure = ref<string | null>(null)
@@ -39,6 +41,7 @@ const lines = computed(() => job.value?.output ?? [])
 watch(open, (isOpen) => {
   if (!isOpen || running.value) return
   folder.value = ''
+  unverified.value = false
   failure.value = null
   jobId.value = null
 })
@@ -56,7 +59,7 @@ async function start(): Promise<void> {
   starting.value = true
   failure.value = null
   try {
-    const started = await importBackups(target.value)
+    const started = await importBackups({ ...target.value, unverified: unverified.value })
     jobs.update(started)
     jobId.value = started.id
   } catch (problem) {
@@ -69,6 +72,7 @@ async function start(): Promise<void> {
 function again(): void {
   jobId.value = null
   folder.value = ''
+  unverified.value = false
 }
 
 const hint = 'text-xs text-muted-foreground'
@@ -107,6 +111,20 @@ const hint = 'text-xs text-muted-foreground'
         </p>
       </div>
       <p :class="hint">{{ t('docker.backups.importDialog.rules') }}</p>
+      <label class="flex items-start gap-2 text-sm">
+        <input
+          id="import-unverified"
+          v-model="unverified"
+          type="checkbox"
+          class="mt-0.5 size-4 accent-primary"
+        />
+        <span>
+          {{ t('docker.backups.importDialog.unverified') }}
+          <span :class="['block', hint]">{{
+            t('docker.backups.importDialog.unverifiedHint')
+          }}</span>
+        </span>
+      </label>
       <p :class="hint">{{ t('docker.backups.importDialog.noPlan') }}</p>
       <Alert v-if="failure" variant="destructive">{{ failure }}</Alert>
     </form>

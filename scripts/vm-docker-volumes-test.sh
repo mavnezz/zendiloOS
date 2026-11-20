@@ -10,8 +10,9 @@
 #   3. the archive and its manifest lie in the share, readable by tar and
 #      zstd (written by a unit in its sandbox: seccomp's @system-service,
 #      ProtectProc, PrivateIPC), owners and links kept, the manifest's
-#      SHA-256 the archive's, both readable as the share's inherited ACL
-#      says but writable by root only (no write in the ACL mask)
+#      SHA-256 the archive's and the manifest signed, both readable as the
+#      share's inherited ACL says but writable by root only (no write in the
+#      ACL mask)
 #   4. the data changes; restoring under its own name is refused while the
 #      container runs unless it may be stopped, then brings the data back
 #      and the container runs again
@@ -36,11 +37,17 @@
 #  13. the database forgets two backups (as after setting zendiloOS up
 #      anew) and the folder is imported: the backup only root may write is
 #      recorded and restored, the one made group-writable is refused with
-#      why; importing again records nothing; retention leaves the imported
-#      backup alone, and removing it by hand removes its files
+#      why, and so is a root-owned pair a share's writer could have made (a
+#      manifest naming its archive's SHA-256, unsigned) unless the import is
+#      asked to take unverified backups too; importing again records
+#      nothing; retention leaves the imported backup alone, and removing it
+#      by hand removes its files
 #  14. a wide volume (thirty thousand folders, two thousand files with
 #      three names each): counted whole while the agent holds few
-#      descriptors, backed up with the later names as links, and restored
+#      descriptors, backed up with the later names as links (its unit,
+#      looked into from its mount namespace, connects to no control socket
+#      of the machine, may not connect() at all, and sees only its own few
+#      processes), and restored
 #      with every folder and link
 #  15. hard links whose names a container keeps replacing while the backup
 #      reads them: every link in the archive names a path it holds, so
@@ -138,6 +145,49 @@ inside() { vm "sudo docker exec $container sh -c '$1'"; }
 in_volume() { vm "sudo docker run --rm -v $1:/v:ro alpine:3.20 sh -c '$2'"; }
 volume_json() { call GET /docker/volumes | jq -c --arg v "$1" '.[] | select(.name == $v)'; }
 # The Backups page's group of volume $1.
+# What the unit $1 reaches, looked at from its own mount namespace once it
+# runs (waited for up to $2 seconds): each socket it could connect to
+# ("connects to …"), and how many processes it sees ("processes N");
+# "unseen" if it never ran.
+reach_of() {
+    vm "sudo python3 - '$1' ${2:-60}" <<'PY'
+import os, subprocess, sys, time
+unit, seconds = sys.argv[1], int(sys.argv[2])
+for _ in range(seconds * 20):
+    # Its main process and the filter systemd applies, in one call: the
+    # unit may end soon.
+    shown = subprocess.run(["systemctl", "show", "-p", "MainPID", "-p", "SystemCallFilter", unit],
+                           capture_output=True, text=True).stdout
+    values = dict(line.split("=", 1) for line in shown.splitlines() if "=" in line)
+    pid, allowed = values.get("MainPID", ""), values.get("SystemCallFilter", "")
+    # Once its main process is the agent: before, systemd still sets the
+    # unit up, in the host's namespaces.
+    if pid and pid != "0" and os.path.realpath("/proc/%s/exe" % pid).endswith("/zendiloos-agent"):
+        break
+    time.sleep(0.05)
+else:
+    print("unseen")
+    sys.exit(0)
+# An allow-list, connect() not in it.
+if not allowed or allowed.startswith("~") or "connect" in allowed.split():
+    print("connects: its system calls are no allow-list without connect()")
+probe = """
+import os, socket
+for path in ["/run/systemd/private", "/run/dbus/system_bus_socket", "/run/docker.sock",
+             "/run/containerd/containerd.sock", "/run/libvirt/libvirt-sock", "/run/zendiloos/agent.sock"]:
+    s = socket.socket(socket.AF_UNIX)
+    try:
+        s.connect(path)
+        print("connects to " + path)
+    except OSError:
+        pass
+print("processes %d" % sum(1 for name in os.listdir("/proc") if name.isdigit()))
+"""
+done = subprocess.run(["nsenter", "-t", pid, "-m", "--", "python3", "-c", probe], capture_output=True, text=True)
+print(done.stdout.strip() or "cannot look: " + done.stderr.strip())
+PY
+}
+
 backup_group() { call GET /docker/backups | jq -c --arg v "$1" '.[] | select(.volume == $v)'; }
 # Runs the SQL $1 on zendiloosd's database (no double quotes in it).
 sql() {
@@ -259,6 +309,7 @@ sum=$(vm "sudo sha256sum $archive" | cut -d' ' -f1)
 [[ $sum == $(jq -r .sha256 <<<"$backup") ]] || fail "the recorded SHA-256"
 [[ $(vm "sudo cat $manifest" | jq -r '.volume + " " + .sha256 + " " + .labels["com.docker.compose.project"]') \
     == "$volume $sum $project" ]] || fail "the manifest: $(vm "sudo cat $manifest")"
+vm "sudo cat $manifest" | jq -e '.mac | test("^[0-9a-f]{64}$")' >/dev/null || fail "the manifest is not signed"
 for file in "$archive" "$manifest"; do
     acl=$(vm "sudo getfacl -p $file")
     grep -q '^group:zendiloos-files:r' <<<"$acl" || fail "$file lacks the share's ACL: $acl"
@@ -409,6 +460,16 @@ newest_path=$(jq -r .archive <<<"$newest")
 older_path=$(jq -r .archive <<<"$older")
 # Group-writable, as a share's ACL could make it.
 vm "sudo chmod g+w /volume$number/$share/$older_path"
+# A pair a share's writer could make (smbd writes as root): root's, 0644,
+# a manifest naming its archive's SHA-256 and the volume, unsigned.
+forged_path="${newest_path%/*}/$copy-20200101-000000.tar.zst"
+forged_at="/volume$number/$share/$forged_path"
+vm "sudo cp /volume$number/$share/$newest_path $forged_at"
+forged_sha=$(vm "sudo sha256sum $forged_at" | cut -d' ' -f1)
+vm "sudo cat /volume$number/$share/${newest_path%.tar.zst}.json" \
+    | jq --arg sha "$forged_sha" --arg archive "${forged_path##*/}" 'del(.mac) | .sha256 = $sha | .archive = $archive' \
+    | vm "sudo tee ${forged_at%.tar.zst}.json >/dev/null"
+vm "sudo chmod 644 $forged_at ${forged_at%.tar.zst}.json"
 import=$(jq -n --argjson share "$share_id" '{share_id:$share,folder:"docker-backups"}')
 [[ $(status POST /docker/backups/import "$import") == 202 ]] || fail "import: $(cat "$work/last")"
 imported_job=$(jq -r .id "$work/last")
@@ -417,6 +478,8 @@ output=$(call GET "/jobs/$imported_job" | jq -r '.output[]')
 grep -qxF "Recorded $newest_path" <<<"$output" || fail "not recorded: $output"
 grep -qxF "Refused $older_path: the archive: writable by others" <<<"$output" \
     || fail "a group-writable archive was not refused: $output"
+grep -qF "Refused $forged_path: its manifest carries no signature of this NAS's" <<<"$output" \
+    || fail "an unsigned pair was not refused: $output"
 grep -q "^1 recorded, " <<<"$output" || fail "the import's count: $output"
 group=$(backup_group "$copy")
 taken=$(jq -c '.backups[0]' <<<"$group")
@@ -433,6 +496,16 @@ again_job=$(jq -r .id "$work/last")
 job_succeeded "$again_job"
 call GET "/jobs/$again_job" | jq -r '.output[]' | grep -q "^0 recorded, " \
     || fail "recorded again: $(call GET "/jobs/$again_job" | jq -r '.output[]')"
+# Asked to take unverified backups too: the unsigned pair is recorded, and
+# removed again.
+unverified=$(jq '.unverified = true' <<<"$import")
+[[ $(status POST /docker/backups/import "$unverified") == 202 ]] || fail "import unverified: $(cat "$work/last")"
+unverified_job=$(jq -r .id "$work/last")
+job_succeeded "$unverified_job"
+output=$(call GET "/jobs/$unverified_job" | jq -r '.output[]')
+grep -qxF "Recorded $forged_path" <<<"$output" || fail "the unverified pair was not recorded when asked: $output"
+forged=$(backup_group "$copy" | jq -r --arg p "$forged_path" '.backups[] | select(.archive == $p) | .id')
+[[ $(status DELETE "/docker/backups/$forged") == 204 ]] || fail "remove the unverified one: $(cat "$work/last")"
 # The plan keeps two: its next two backups leave the imported one alone.
 sleep 2
 back_up_now "$copy"
@@ -485,7 +558,15 @@ counted=$(jq -c --arg v "$wide" '.[] | select(.name == $v)' <<<"$sizes")
 (( $(cat "$work/descriptors") < 1000 )) \
     || fail "the agent held $(cat "$work/descriptors") descriptors while it counted"
 [[ $(status PUT "/docker/volumes/$wide/backup-plan" "$plan") == 200 ]] || fail "plan: $(cat "$work/last")"
+reach_of "zendiloos-volume-backup-$wide.service" 60 >"$work/reach" &
+looking=$!
 back_up_now "$wide"
+wait "$looking"
+reach=$(cat "$work/reach")
+[[ $reach != unseen && $reach != "cannot look"* ]] || fail "the backup's unit was not looked into: $reach"
+grep '^connects' <<<"$reach" && fail "the backup's unit connects to what it must not: $reach"
+processes=$(sed -n 's/^processes //p' <<<"$reach")
+(( processes > 0 && processes < 10 )) || fail "the backup's unit sees $processes processes"
 wide_backup=$(call GET "/docker/volumes/$wide/backups" | jq -c '.[0]')
 wide_path=$(jq -r .archive <<<"$wide_backup")
 links=$(vm "sudo sh -c 'zstd -dcq /volume$number/$share/$wide_path | tar -tvf -'" | grep -c ' link to ' || true)

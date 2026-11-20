@@ -4036,7 +4036,7 @@
         "tags": [
           "docker"
         ],
-        "summary": "Records the backups found in a folder of a share, in a job: each\n`<volume>-YYYYMMDD-HHMMSS.tar.zst` with its manifest beside it, both\nroot's and writable by nobody else, the archive's SHA-256 the one its\nmanifest names. Those recorded already are passed over; those refused\nare listed with why in the job's output. They belong to no plan, and\nno plan removes them. Needs `containers.manage`.",
+        "summary": "Records the backups found in a folder of a share, in a job: each\n`<volume>-YYYYMMDD-HHMMSS.tar.zst` with its manifest beside it, both\nroot's and writable by nobody else, the archive's SHA-256 the one its\nmanifest names, the manifest signed by this NAS (or, with `unverified`,\nnot). Those recorded already are passed over; those refused are listed\nwith why in the job's output. They belong to no plan, and no plan\nremoves them. Needs `containers.manage`.",
         "operationId": "import_backups",
         "requestBody": {
           "content": {
@@ -22654,6 +22654,10 @@
             "type": "integer",
             "format": "int64",
             "description": "A share the administrator may write."
+          },
+          "unverified": {
+            "type": "boolean",
+            "description": "Also record backups whose manifest this NAS did not sign: made by an\nearlier version of zendiloOS or on another machine, or made or\nchanged by anyone who may write the folder. Off, they are refused."
           }
         },
         "additionalProperties": false

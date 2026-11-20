@@ -207,6 +207,7 @@ fn host(erasable: Erasable) -> Host {
             agent: root.join("zendiloos-agent"),
             packages: root.join("packages"),
             docker_socket: root.join("docker.sock"),
+            volume_backup_keys: root.join("volume-backup-keys"),
             update_spool: root.join("updates"),
             release_keys: vec![root.join("release-signing.pub")],
             share_mounts: true,

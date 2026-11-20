@@ -12,7 +12,8 @@ use zendiloos_notify::{Level, NewNotification};
 use super::ports::{Location, NewRun, RunEnd, RunMode, RunPlan, RunReport, Secrets, Steps};
 use super::{BackupError, Backups, Claim, audited, job_error};
 use crate::domain::{
-    Mode, Outcome, REMOVED, Run, TargetState, Task, Trigger, beyond_retention, removed_beyond, version_name,
+    INCOMPLETE, Mode, Outcome, REMOVED, Run, TargetState, Task, Trigger, beyond_retention, removed_beyond,
+    version_name,
 };
 
 /// The newest step not yet published, and whether a task publishes.
@@ -372,7 +373,8 @@ impl Backups {
     }
 
     /// Removes what retention lets go after a complete run: versions beyond
-    /// it and the folders of versions cut off before (versioned), kept
+    /// it (see [`beyond_retention`]: partial versions never push complete
+    /// ones out) and what versions cut off before left (versioned), kept
     /// changes older than their days (mirror). A failure is logged; the
     /// next run tries again.
     async fn retain(
@@ -388,12 +390,14 @@ impl Backups {
         let mut names: Vec<String> = Vec::new();
         match task.settings.mode {
             Mode::Versioned { keep_last, keep_days } => {
-                names.extend(
-                    beyond_retention(&state.versions, keep_last, keep_days, now)
-                        .into_iter()
-                        .map(version_name),
-                );
-                names.extend(state.incomplete.iter().cloned());
+                for version in beyond_retention(&state.versions, &state.partial, keep_last, keep_days, now) {
+                    names.extend(state.names_of(version));
+                }
+                // The copy this run left under the incomplete name stays: on
+                // a server it is kept when the copy under the version's name
+                // missed files, for the next run to link from.
+                let own = format!("{}{INCOMPLETE}", plan.stamp);
+                names.extend(state.incomplete.iter().filter(|name| **name != own).cloned());
             }
             Mode::Mirror { keep_changed_days: Some(days) } => {
                 let removed = self.kept_changes(task, &plan.target, secrets, context).await;

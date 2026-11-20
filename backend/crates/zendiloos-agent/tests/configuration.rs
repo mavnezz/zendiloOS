@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use zendiloos_agent::config::Tools;
 use zendiloos_agent::{
-    AccountFiles, ConfigurationPlaces, Erasable, ErasePolicy, NetworkPaths, Operations, Paths, SshPaths,
-    TimePaths, WebPaths, WebServerPaths,
+    AccountFiles, ConfigurationPlaces, Erasable, ErasePolicy, HostPaths, NetworkPaths, Operations, Paths,
+    SshPaths, TimePaths, WebPaths, WebServerPaths,
 };
 use zendiloos_agent_proto::{
     ConfigurationFile, ConfigurationPath, ErrorCode, GroupName, Request, Response, RestoredGroup,
@@ -118,6 +118,7 @@ impl Host {
                 samba_passwords: at("samba/private/passdb.tdb"),
                 host_id: at("hostid"),
             },
+            host: HostPaths { volume_backup_keys: at("volume-backup-keys"), ..HostPaths::default() },
             ..Paths::default()
         };
         let agent =
@@ -216,6 +217,35 @@ async fn a_restore_writes_the_certificates_nginx_takes_and_samba_passwords_while
             "systemctl start smbd.service"
         ]
     );
+}
+
+#[tokio::test]
+async fn the_keys_volume_backups_are_signed_with_are_backed_up_and_restored_beside_those_there() {
+    let host = Host::new();
+    let ours = format!("{}\n", "a1".repeat(32));
+    let theirs = format!("{}\n{}\n", "b2".repeat(32), "a1".repeat(32));
+    fs::write(host.at("volume-backup-keys"), &ours).unwrap();
+    let Response::Configuration { files, .. } = host.agent.execute(&Request::ReadConfiguration {}).await
+    else {
+        panic!("not read")
+    };
+    let keys = files.iter().find(|file| file.path == ConfigurationPath::VolumeBackupKeys).unwrap();
+    assert_eq!(keys.content.as_bytes(), ours.as_bytes());
+
+    // The old machine's keys verify here too; this one's signs on.
+    let files = vec![file(ConfigurationPath::VolumeBackupKeys, theirs.as_bytes())];
+    assert_eq!(host.agent.execute(&Request::RestoreConfiguration { files }).await, Response::Done);
+    assert_eq!(host.text("volume-backup-keys"), format!("{}\n{}\n", "a1".repeat(32), "b2".repeat(32)));
+    assert_eq!(mode(&host.at("volume-backup-keys")), 0o600);
+    // None here yet: the restored ones.
+    fs::remove_file(host.at("volume-backup-keys")).unwrap();
+    let files = vec![file(ConfigurationPath::VolumeBackupKeys, theirs.as_bytes())];
+    assert_eq!(host.agent.execute(&Request::RestoreConfiguration { files }).await, Response::Done);
+    assert_eq!(host.text("volume-backup-keys"), theirs);
+    // What is no key is refused.
+    let files = vec![file(ConfigurationPath::VolumeBackupKeys, b"not a key\n")];
+    let refused = host.agent.execute(&Request::RestoreConfiguration { files }).await;
+    assert!(matches!(refused, Response::Error { code: ErrorCode::Forbidden, .. }), "{refused:?}");
 }
 
 #[tokio::test]

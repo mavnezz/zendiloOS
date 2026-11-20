@@ -61,7 +61,7 @@ pub use accounts::AccountFiles;
 pub use acme::AcmePaths;
 pub use app_shares::{pin_project, pin_shares, unpin_project, unpin_shares};
 pub use backup::BackupPaths;
-pub use backup_unit::run_backup_unit;
+pub use backup_unit::{note_backup_unit_stopped, run_backup_unit};
 pub use boot::choose_boot_kernel;
 pub use configuration::ConfigurationPlaces;
 pub use files::lower_file_overrides;

@@ -32,6 +32,11 @@ pub struct Imported {
     pub refused: Vec<(String, String)>,
 }
 
+/// Why a backup that is not this NAS's is not recorded unless asked.
+const UNSIGNED: &str = "its manifest carries no signature of this NAS's: an earlier version of zendiloOS or \
+                        another machine made it, or someone who may write the folder made or changed it; \
+                        import it as unverified only if you trust them all";
+
 impl Containers {
     /// Every volume with recorded backups or a plan, by name, also those
     /// gone, with their backups.
@@ -114,13 +119,17 @@ impl Containers {
 
     /// Records the backups found in `folder` of share `share_id`, a share
     /// `actor` may write, in a job: archive and manifest pairs only root
-    /// may write, the archive's SHA-256 the manifest's. Those recorded
-    /// already are passed over; what is refused is listed with why on the
-    /// job. They belong to no plan, and retention never removes them.
+    /// may write, the archive's SHA-256 the manifest's, the manifest signed
+    /// by this NAS, or with `unverified` also those it did not sign (made by
+    /// an earlier version of zendiloOS or on another machine; or made, or
+    /// changed, by anyone who may write the folder). Those recorded already
+    /// are passed over; what is refused is listed with why on the job. They
+    /// belong to no plan, and retention never removes them.
     pub async fn import_backups(
         &self,
         share_id: i64,
         folder: &str,
+        unverified: bool,
         actor: &Actor,
         context: &RequestContext,
     ) -> Result<Job, ContainersError> {
@@ -145,7 +154,7 @@ impl Containers {
                 Some(actor),
                 move |progress| async move {
                     let steps = JobSteps::new(progress);
-                    let done = this.import_now(share_id, &place, &folder, &steps, &context).await;
+                    let done = this.import_now(share_id, &place, &folder, unverified, &steps, &context).await;
                     if let Ok(imported) = &done {
                         for path in &imported.recorded {
                             steps.note(&format!("Recorded {path}"));
@@ -174,6 +183,7 @@ impl Containers {
         share_id: i64,
         place: &super::ports::SharePlace,
         folder: &str,
+        unverified: bool,
         steps: &dyn Steps,
         context: &RequestContext,
     ) -> Result<Imported, ContainersError> {
@@ -194,6 +204,10 @@ impl Containers {
         let scanned = self.ports.archiver.scan(place, folder, &known, steps, context).await?;
         let mut imported = Imported { known: known.len(), refused: scanned.refused, ..Imported::default() };
         for found in scanned.found {
+            if !found.signed && !unverified {
+                imported.refused.push((found.written.archive.path, UNSIGNED.to_owned()));
+                continue;
+            }
             // Recorded meanwhile (by a backup into the folder, or another
             // import): passed over too.
             if !self.ports.backups.import(share_id, &found).await? {

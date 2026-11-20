@@ -226,6 +226,12 @@ pub struct FoundBackup {
     /// Unix seconds, as the manifest says.
     pub backed_up_at: i64,
     pub manifest_json: String,
+    /// Its manifest carries this NAS's signature: zendiloOS made it here
+    /// (or on the machine whose configuration was restored), and nobody
+    /// changed it since. Root owning the files proves nothing, as smbd
+    /// writes shares as root.
+    #[serde(default)]
+    pub verified: bool,
 }
 
 /// A file that looked like a backup's archive and is not recorded, and why.

@@ -14,6 +14,10 @@ use zendiloos_agent_proto::{
     ErrorCode, FoundBackup, RefusedBackupFile, Request, Response, ShareLocation, SharePath, WrittenFile,
 };
 
+/// What the simulator signs its backups' manifests with: as zendiloOS
+/// does, but no real signature.
+const SIMULATED_MAC: &str = "simulated";
+
 #[derive(Debug, Clone)]
 pub(crate) struct SimVolume {
     name: String,
@@ -134,6 +138,7 @@ pub(crate) fn handle(
                 "format": 1, "volume": found.name, "driver": "local", "labels": found.labels,
                 "size_bytes": 37 * 1024 * 1024, "created": found.created, "backed_up_at": now,
                 "zendiloos_version": env!("CARGO_PKG_VERSION"), "archive": archive_path.file_name(), "sha256": sha256,
+                "mac": SIMULATED_MAC,
             }))
             .unwrap_or_default();
             let (archive, manifest) = match share_folder(files, share) {
@@ -280,6 +285,9 @@ fn scan(root: &Path, folder: &SharePath, known: &[SharePath]) -> (Vec<FoundBacku
                         data_bytes: value["size_bytes"].as_u64().unwrap_or(0),
                         entries: value["entries"].as_u64(),
                         backed_up_at: value["backed_up_at"].as_i64().unwrap_or(0),
+                        // The simulator's own backups say "mac"; others
+                        // put into its shares are no simulated NAS's.
+                        verified: value["mac"].as_str() == Some(SIMULATED_MAC),
                         manifest_json,
                     });
                 }

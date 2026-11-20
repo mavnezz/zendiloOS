@@ -568,6 +568,7 @@ mod tests {
             volume: "db".into(),
             backed_up_at: Timestamp::from_unix_seconds(1_762_570_800),
             written: written(7),
+            signed: true,
         };
         assert!(store.import(3, &found).await.unwrap());
         assert!(!store.import(3, &found).await.unwrap(), "recorded already");

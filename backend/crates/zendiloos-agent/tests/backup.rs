@@ -69,8 +69,8 @@ fn host(installed: bool) -> Host {
         &format!(
             "cat > {root}/stdin\n\
              case \"$*\" in\n\
-             *ssh-keyscan*) echo '# nas2.lan:22 SSH-2.0-OpenSSH_10.0'; echo 'nas2.lan ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' ;;\n\
-             *ssh-keygen*) eval last=\\${{$#}}; echo 'private' > \"$last\"; echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGv1zDdNJ6P8b8HFqUvNiOXIdk9JKLy6vJwDGP1vbTqL zendiloos-backup' > \"$last.pub\" ;;\n\
+             *ssh-keyscan\\ -T*) echo '# nas2.lan:22 SSH-2.0-OpenSSH_10.0'; echo 'nas2.lan ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' ;;\n\
+             *ssh-keygen\\ -q*) eval last=\\${{$#}}; printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\\nprivate\\n' > \"$last\"; echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGv1zDdNJ6P8b8HFqUvNiOXIdk9JKLy6vJwDGP1vbTqL zendiloos-backup' > \"$last.pub\" ;;\n\
              *backup-unit*) cat {root}/answer ;;\n\
              esac",
             root = root.display()
@@ -100,8 +100,8 @@ fn host(installed: bool) -> Host {
         },
         backup: BackupPaths {
             state: root.join("state"),
-            credentials: PathBuf::from("/run/credentials"),
             transient: root.join("transient"),
+            root: root.clone(),
         },
         ..Paths::default()
     };
@@ -228,7 +228,8 @@ async fn a_local_run_sees_only_its_roots_and_writes_only_its_target() {
         run: run(share(1, "photos", "albums"), share(2, "backups", "")),
         secrets: BackupSecrets::default(),
     };
-    let Response::BackupRan { files, transfers, listing, .. } = host.run(request).await else { panic!() };
+    let ran = host.run(request).await;
+    let Response::BackupRan { files, transfers, listing, .. } = ran else { panic!("{ran:?}") };
     assert_eq!((files, transfers.len()), (3, 1));
     assert!(listing.contains("2026-11-11_030000Z"));
     let call = unit_call(&host);
@@ -243,14 +244,37 @@ async fn a_local_run_sees_only_its_roots_and_writes_only_its_target() {
         "--property=RestrictAddressFamilies=AF_UNIX ",
         "--property=NoNewPrivileges=yes",
         "--property=ProtectSystem=strict",
-        "--property=InaccessiblePaths=-/etc/shadow",
-        "-/var/lib/zendiloos ",
+        "--property=PrivatePIDs=yes",
+        // Of /proc its processes, not /sys's firmware, serial numbers and
+        // kernel, none of the host's shared memory, and nothing mounted
+        // after it started.
+        "--property=ProcSubset=pid",
+        "--property=TemporaryFileSystem=/sys/firmware:ro /sys/kernel:ro /sys/class/dmi:ro /sys/devices/virtual/dmi:ro",
+        "--property=InaccessiblePaths=-/dev/shm -/dev/mqueue -/dev/hugepages",
+        "--property=MountFlags=private",
+        // Stopped with SIGTERM, which rsync gets too; killed after ten
+        // seconds.
+        "--property=TimeoutStopSec=10 ",
+        // The rest of the system's top as read-only tmpfs, its files
+        // hidden, of /etc only what the tools need.
+        "--property=TemporaryFileSystem=/state:ro",
+        "--property=TemporaryFileSystem=/units:ro",
+        "--property=InaccessiblePaths=-/answer -/rclone -/rsync ",
+        // The tools are bound back where they lie outside /usr.
+        "--property=BindReadOnlyPaths=-/rsync -/rclone -/ssh ",
+        "--property=BindReadOnlyPaths=-/etc/passwd -/etc/group -/etc/nsswitch.conf -/etc/hosts ",
+        "-/etc/resolv.conf -/etc/ld.so.cache -/etc/ssl/certs ",
         "--property=CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE",
         "backup-unit ",
     ] {
-        assert!(call.contains(expected), "{expected}: {call}");
+        assert!(call.contains(expected), "{expected} is not among the unit's properties");
     }
-    assert!(!call.contains("LoadCredential"), "no key without a server: {call}");
+    assert!(!call.contains("KillSignal="), "the unit is stopped with SIGTERM");
+    // The volumes' places once only, and nothing of the secrets' places.
+    assert_eq!(call.matches("TemporaryFileSystem=/volume1:ro").count(), 1, "{call}");
+    assert!(!call.contains("TemporaryFileSystem=/removable/") && !call.contains("/etc/shadow"), "{call}");
+    assert!(!call.contains("LoadCredential") && !call.contains("/run/credentials"), "{call}");
+    assert!(host.input().trim().is_empty(), "no secrets, no key: {}", host.input());
 }
 
 #[tokio::test]
@@ -269,7 +293,7 @@ async fn a_password_comes_on_stdin_and_never_on_a_command_line() {
     let Response::BackupListing { missing, .. } = host.run(request).await else { panic!() };
     assert!(missing);
     assert!(host.calls().iter().all(|call| !call.contains("s3cret")));
-    assert_eq!(host.input().trim(), r#"{"password":"s3cret","crypt":null,"cloud":null}"#);
+    assert_eq!(host.input().trim(), r#"{"secrets":{"password":"s3cret","crypt":null,"cloud":null}}"#);
     let call = unit_call(&host);
     for expected in ["--property=PrivateNetwork=no", "AF_INET AF_INET6", "--property=CapabilityBoundingSet= "]
     {
@@ -313,7 +337,14 @@ async fn ssh_needs_the_key_and_a_changed_host_key_is_refused_as_such() {
     assert_eq!(code, ErrorCode::Forbidden);
     assert!(message.contains("the server's host key changed: Host key verification failed."), "{message}");
     let call = unit_call(&host);
-    assert!(call.contains("--property=LoadCredential=backup-key:/state/id_ed25519"), "{call}");
+    // The key comes on stdin, as the other secrets: at no place another
+    // unit could name.
+    assert!(!call.contains("LoadCredential") && !call.contains("id_ed25519"), "{call}");
+    assert!(
+        host.input().contains(r#""key":"-----BEGIN OPENSSH PRIVATE KEY-----\nprivate\n""#),
+        "{}",
+        host.input()
+    );
 }
 
 #[tokio::test]

@@ -1267,7 +1267,10 @@ const en = {
         hint: 'Records the backups of volumes kept in a folder, for instance after zendiloOS was set up anew, so that they can be restored here.',
         folder: 'Folder',
         rules:
-          'Taken are archives named <volume>-YYYYMMDD-HHMMSS.tar.zst with their manifest (.json) beside them, in this folder and the folders in it: only if nobody but root may change them, and only if the archive is the one its manifest names. Backups recorded already are passed over.',
+          'Taken are archives named <volume>-YYYYMMDD-HHMMSS.tar.zst with their manifest (.json) beside them, in this folder and the folders in it: only if nobody but root may change them, only if the archive is the one its manifest names, and only if this NAS signed the manifest (after a restore of its configuration, also what the machine before it signed). Backups recorded already are passed over.',
+        unverified: 'Also import backups this NAS did not sign',
+        unverifiedHint:
+          'Backups that an earlier version of zendiloOS or another machine made carry no signature of this NAS. Anyone who may write this folder could have made or changed such a file, and what it holds would land in the volume when restored: tick this only if you trust all of them.',
         noPlan:
           'Imported backups belong to no backup plan, so none deletes them. Delete them here once you no longer need them.',
         start: 'Import',

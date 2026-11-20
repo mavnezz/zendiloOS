@@ -32,6 +32,17 @@
 #      two versions listed and browsed decrypted; the older one restored
 #      with the same bytes as the source then, into the share's group; the
 #      password cannot be changed afterwards
+#   9. links swapped in while a run reads: a folder of the source keeps being
+#      exchanged with a link to a folder outside the shares while rsync and
+#      rclone (an encrypted task) back it up; nothing of what the link leads
+#      to reaches a version. Looked at from inside a running unit (its mount
+#      namespace): it cannot connect to systemd's, D-Bus', Docker's,
+#      libvirt's or the agent's socket, sees none of /etc/shadow, /etc/zendiloos,
+#      /var/lib, the shares pinned for apps, /sys's serial numbers and
+#      firmware tables, and only its own few processes; the files agent's
+#      system calls are an allow-list without connect()
+#  10. a restore stopped while rsync writes a large file fails, and leaves no
+#      part of the file behind
 #
 # Google Drive and OneDrive themselves are not reached here: their
 # sign-in and rclone's backends are tested against fakes only.
@@ -134,6 +145,48 @@ sums() {
 # The names in the folder $1 of the VM, one per line.
 names() { vm "sudo ls -1A \"$1\" 2>/dev/null" || true; }
 
+# What the unit $1 reaches, looked at from its own mount namespace once it
+# runs (waited for up to $2 seconds): each socket it could connect to
+# ("connects to …"), each place it could read ("reaches …"), and how many
+# processes it sees ("processes N"); "unseen" if it never ran.
+reach_of() {
+    vm "sudo python3 - '$1' ${2:-60}" <<'PY'
+import os, subprocess, sys, time
+unit, seconds = sys.argv[1], int(sys.argv[2])
+for _ in range(seconds * 20):
+    pid = subprocess.run(["systemctl", "show", "-p", "MainPID", "--value", unit],
+                         capture_output=True, text=True).stdout.strip()
+    # Once its main process is the agent: before, systemd still sets the
+    # unit up, in the host's namespaces.
+    if pid and pid != "0" and os.path.realpath("/proc/%s/exe" % pid).endswith("/zendiloos-agent"):
+        break
+    time.sleep(0.05)
+else:
+    print("unseen")
+    sys.exit(0)
+probe = """
+import os, socket
+for path in ["/run/systemd/private", "/run/dbus/system_bus_socket", "/run/docker.sock",
+             "/run/containerd/containerd.sock", "/run/libvirt/libvirt-sock", "/run/zendiloos/agent.sock",
+             "/run/samba/winbindd/pipe"]:
+    s = socket.socket(socket.AF_UNIX)
+    try:
+        s.connect(path)
+        print("connects to " + path)
+    except OSError:
+        pass
+for path in ["/etc/shadow", "/etc/zendiloos", "/etc/ssh", "/var/lib/zendiloos", "/var/lib/ztest-swap-secret",
+             "/run/zendiloos-app-shares", "/run/credentials", "/var/lib/zendiloos-backup",
+             "/sys/class/dmi/id", "/sys/devices/virtual/dmi/id", "/sys/firmware/acpi", "/sys/kernel/mm"]:
+    if os.path.exists(path):
+        print("reaches " + path)
+print("processes %d" % sum(1 for name in os.listdir("/proc") if name.isdigit()))
+"""
+done = subprocess.run(["nsenter", "-t", pid, "-m", "--", "python3", "-c", probe], capture_output=True, text=True)
+print(done.stdout.strip() or "cannot look: " + done.stderr.strip())
+PY
+}
+
 share_path() { call GET /shares | jq -r --arg s "$1" '.[] | select(.name == $s) | .path'; }
 share_id() { call GET /shares | jq -r --arg s "$1" '.[] | select(.name == $s) | .id'; }
 
@@ -157,6 +210,8 @@ clean_vm() {
         [ -f /run/ztest-rsyncd.pid ] && kill \$(cat /run/ztest-rsyncd.pid) 2>/dev/null
         rm -f /run/ztest-rsyncd.pid /etc/ztest-rsyncd.conf /etc/ztest-rsyncd.secrets /root/ztest-backup-secret
         rm -rf /srv/ztest-rsync
+        touch /run/ztest-swap-stop; sleep 1
+        rm -rf /var/lib/ztest-swap-secret /root/ztest-exchange.py /run/ztest-swap-stop
         id $server_user >/dev/null 2>&1 && userdel -r $server_user 2>/dev/null
         true'" || true
 }
@@ -531,5 +586,109 @@ again=$(jq --arg pw "another-password" '{name, source, target, server, mode, sch
     bwlimit_kib, notify_success, encrypted, crypt_password: $pw}' <<<"$shown")
 [[ $(status PUT "/backup/tasks/$encrypted" "$again") == 422 ]] || fail "the crypt's password changed: $(cat "$work/last")"
 ok "the crypt's password cannot be changed afterwards"
+
+say "9. Links swapped in while a run reads; what a unit reaches"
+# The source's files as long as those behind the link, as whoever swaps
+# would make them: rclone's check of the size then sees nothing amiss.
+swap_secret="ZTEST-SWAP-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+swap_plain=$(printf '%*s' "${#swap_secret}" '' | tr ' ' p)
+vm "sudo sh -c '
+    set -e
+    mkdir -p /var/lib/ztest-swap-secret \"$src/swaptest/swap\"
+    for i in \$(seq 1 50); do
+        echo $swap_secret > /var/lib/ztest-swap-secret/s\$i.txt
+        echo $swap_plain > \"$src/swaptest/swap/s\$i.txt\"
+    done
+    chmod 600 /var/lib/ztest-swap-secret/*
+    for i in \$(seq 1 3000); do echo \$i > \"$src/swaptest/f\$i\"; done
+    head -c 3M /dev/urandom > \"$src/swaptest/zz-large.raw\"
+    ln -s /var/lib/ztest-swap-secret \"$src/swaptest/swap.l\"
+    rm -f /run/ztest-swap-stop'"
+# The folder and the link exchanged without end (RENAME_EXCHANGE), as a
+# share's writer can over SMB, until told to stop.
+vm "sudo tee /root/ztest-exchange.py >/dev/null" <<'PY'
+import ctypes, os, sys
+libc = ctypes.CDLL(None, use_errno=True)
+folder, link, stop = (name.encode() for name in sys.argv[1:4])
+while not os.path.exists(stop):
+    libc.renameat2(-100, folder, -100, link, 2)
+PY
+vm "sudo sh -c 'nohup python3 /root/ztest-exchange.py \"$src/swaptest/swap\" \"$src/swaptest/swap.l\" /run/ztest-swap-stop >/dev/null 2>&1 &'"
+sleep 1
+[[ -n $(vm "pgrep -f '[z]test-exchange.py' || true") ]] || fail "the folder and the link are not being exchanged"
+swap_task() {
+    make_task "$(jq -n --arg n "$1" --argjson s "$src_id" --argjson d "$dst_id" --argjson crypt "$2" --arg pw "$crypt_password" '{
+        name: $n, source: {kind: "share", share_id: $s, path: "swaptest"},
+        target: {kind: "share", share_id: $d, path: ""},
+        mode: {kind: "versioned", keep_last: 10, keep_days: null}, excludes: [], hidden: true, bwlimit_kib: 300}
+        + (if $crypt then {encrypted: true, crypt_password: $pw} else {} end)')"
+}
+swap_rsync=$(swap_task "ztest swap rsync" false)
+swap_crypt=$(swap_task "ztest swap rclone" true)
+looked=0
+for task in "$swap_rsync" "$swap_crypt" "$swap_crypt" "$swap_crypt" "$swap_crypt"; do
+    looked=$((looked + 1))
+    reach_of "zendiloos-backup-run-$task.service" 60 >"$work/reach-$looked" &
+    looking=$!
+    state=$(run_task "$task")
+    wait "$looking"
+    [[ $state == succeeded* ]] || note "a run with the folder swapped: $state"
+done
+vm "sudo touch /run/ztest-swap-stop"
+vm "sudo grep -rqsF '$swap_secret' \"$dst/ztest swap rsync\"" && fail "rsync read through the swapped link"
+ok "rsync took nothing from behind the swapped link"
+versions=$(call GET "/backup/tasks/$swap_crypt/versions" | jq -r '.versions[]')
+[[ -n $versions ]] || fail "the encrypted task made no version"
+[[ $(wc -l <<<"$versions") == 4 ]] || note "of four runs, $(wc -l <<<"$versions") made a version"
+n=0
+for version in $versions; do
+    n=$((n + 1))
+    restore=$(jq -n --argjson v "$version" --argjson d "$dst_id" --arg p "swap-restored-$n" '{version: $v, paths: [],
+        existing: "replace", to: {kind: "share", share_id: $d, path: $p}}')
+    job_succeeded "$(call POST "/backup/tasks/$swap_crypt/restore" "$restore" | jq -r .id)"
+    vm "sudo grep -rqsF '$swap_secret' \"$dst/swap-restored-$n\"" && fail "rclone read through the swapped link (version $n)"
+done
+ok "rclone took nothing from behind the swapped link ($n versions restored and looked at)"
+for look in $(seq 1 "$looked"); do
+    reach=$(cat "$work/reach-$look")
+    [[ $reach != unseen && $reach != "cannot look"* ]] || fail "run $look's unit was not looked into: $reach"
+    grep -E '^(connects|reaches)' <<<"$reach" && fail "run $look's unit reaches what it must not: $reach"
+    processes=$(sed -n 's/^processes //p' <<<"$reach")
+    (( processes > 0 && processes < 10 )) || fail "run $look's unit sees $processes processes"
+done
+ok "the units reached no socket, no secret and no other process (the last saw $processes)"
+# The files agent, started by a download, may not connect() at all: the
+# filter systemd applies to it is the allow-list, connect() not in it. (A
+# look into its mount namespace from outside, not under that filter, could
+# connect to a socket made anew after it started, such as docker.sock once
+# Docker restarted: which is why connect() is taken away.)
+[[ $(status GET "/files/shares/$src_id/download?path=docs/notes.txt") == 200 ]] || fail "a download: $(cat "$work/last")"
+filter=$(vm "systemctl show -p SystemCallFilter --value zendiloos-files.service")
+[[ -n $filter && $filter != "~"* ]] || fail "the files agent's system calls are not an allow-list"
+grep -qw connect <<<"$filter" && fail "the files agent may connect()"
+ok "the files agent's system calls are an allow-list without connect()"
+
+say "10. A restore stopped while rsync writes a large file"
+vm "sudo sh -c 'mkdir -p \"$src/large\" && head -c 300M /dev/urandom > \"$src/large/large.raw\"'"
+large=$(make_task "$(jq -n --argjson s "$src_id" --argjson d "$dst_id" '{
+    name: "ztest large", source: {kind: "share", share_id: $s, path: "large"},
+    target: {kind: "share", share_id: $d, path: ""},
+    mode: {kind: "versioned", keep_last: 2, keep_days: null}, excludes: [], hidden: true}')")
+run_succeeds "$large"
+version=$(call GET "/backup/tasks/$large/versions" | jq -r '.versions[0]')
+restore=$(jq -n --argjson v "$version" --argjson d "$dst_id" '{version: $v, paths: [], existing: "replace",
+    to: {kind: "share", share_id: $d, path: "large-restored"}}')
+[[ $(status POST "/backup/tasks/$large/restore" "$restore") == 202 ]] || fail "restore: $(cat "$work/last")"
+cut=$(jq -r .id "$work/last")
+# Stopped as soon as rsync writes the file, from outside, as a person or a
+# shutdown would.
+unit=zendiloos-backup-restore-$large.service
+vm "for i in \$(seq 1 1200); do sudo ls -A '$dst/large-restored' 2>/dev/null | grep -q '^\.large\.raw\.' && exec sudo systemctl stop $unit; sleep 0.05; done; exit 1" \
+    || fail "the restore never wrote the file"
+state=$(job_end "$cut")
+[[ $state != succeeded* ]] || fail "a restore stopped midway succeeded"
+left=$(vm "sudo find '$dst/large-restored' -name '.large.raw.*'")
+[[ -z $left ]] || fail "the stopped restore left a part of the file behind"
+ok "a restore stopped while rsync wrote fails, and leaves no part of the file"
 
 say "All backup checks passed"

@@ -112,6 +112,27 @@ async fn a_task_is_made_with_its_folder_and_names_are_unique() {
         backups.create(same_folder, None, None, &alice(), &context()).await,
         Err(BackupError::FolderTaken(_))
     ));
+    // A target within the other task's folder (its mirror would delete
+    // what this one writes), or a folder the other's target lies in.
+    let mut inside = local("Inside");
+    inside.target = share(2, "Albums nightly/current");
+    assert!(matches!(
+        backups.create(inside, None, None, &alice(), &context()).await,
+        Err(BackupError::FolderTaken(name)) if name == "Albums nightly"
+    ));
+    let mut deep = local("Deep");
+    deep.target = share(2, "Outer");
+    backups.create(deep, None, None, &alice(), &context()).await.unwrap();
+    let mut around = local("Outer");
+    around.target = share(2, "");
+    assert!(matches!(
+        backups.create(around, None, None, &alice(), &context()).await,
+        Err(BackupError::FolderTaken(name)) if name == "Deep"
+    ));
+    // Beside the others' folders: no matter.
+    let mut beside = local("Beside");
+    beside.target = share(2, "Other");
+    backups.create(beside, None, None, &alice(), &context()).await.unwrap();
     let mut gone = local("gone");
     gone.target = share(9, "");
     assert!(matches!(
@@ -265,6 +286,68 @@ async fn failures_and_partial_runs_are_told_and_success_when_asked() {
     let outcomes: Vec<Outcome> = fakes.runs.all().iter().map(|run| run.outcome).collect();
     assert_eq!(outcomes, [Outcome::Failed, Outcome::Partial, Outcome::Succeeded]);
     assert!(fakes.runs.all()[0].error.as_deref().unwrap().contains("host key changed"));
+}
+
+#[tokio::test]
+async fn retention_keeps_complete_versions_over_partial_ones_and_removes_unfinished_ones() {
+    let (backups, fakes) = backups();
+    let id = backups.create(local("albums"), None, None, &alice(), &context()).await.unwrap().task.id;
+    let folder_at = Location::Share { volume: 2, share: "backups".into(), path: "albums".into() };
+    let day = 24 * 3600;
+    let at = |seconds: i64| version_name(Timestamp::from_unix_seconds(NOW - seconds));
+    let mark = |name: String| crate::domain::Entry {
+        name,
+        kind: crate::domain::EntryKind::File,
+        bytes: 0,
+        modified: None,
+    };
+    // Two complete versions, then three runs that could not copy every
+    // file, then one a server was still given when it was cut off; and a
+    // mark whose version never got its name.
+    fakes.host.put(
+        &folder_at,
+        vec![
+            folder(&at(5 * day)),
+            folder(&at(4 * day)),
+            folder(&at(3 * day)),
+            mark(format!("{}.partial", at(3 * day))),
+            folder(&at(2 * day)),
+            mark(format!("{}.partial", at(2 * day))),
+            folder(&at(day)),
+            mark(format!("{}.partial", at(day))),
+            folder(&at(3600)),
+            mark(format!("{}.finishing", at(3600))),
+            folder(&format!("{}.incomplete", at(3600))),
+            mark(format!("{}.partial", at(7200))),
+            // What this run keeps on a server when its copy under the
+            // version's name missed files.
+            folder(&format!("{}.incomplete", at(0))),
+        ],
+    );
+    let job = backups.run_now(id, &alice(), &context()).await.unwrap();
+    assert_eq!(finished(&fakes, &job).await.state, JobState::Succeeded);
+    let pruned = fakes.host.calls().into_iter().find_map(|call| match call {
+        HostCall::Prune(_, names) => Some(names),
+        _ => None,
+    });
+    // Keep two: of the complete versions the new one and the one before;
+    // of the partial ones the newest, one of the newest two of all.
+    assert_eq!(
+        pruned.unwrap(),
+        [
+            at(5 * day),
+            at(3 * day),
+            format!("{}.partial", at(3 * day)),
+            at(2 * day),
+            format!("{}.partial", at(2 * day)),
+            format!("{}.partial", at(7200)),
+            at(3600),
+            format!("{}.finishing", at(3600)),
+            format!("{}.incomplete", at(3600)),
+        ]
+    );
+    let versions = backups.versions(id, &context()).await.unwrap();
+    assert_eq!(versions.versions.len(), 3, "the new one, the one partial and the complete one before");
 }
 
 #[tokio::test]
@@ -578,6 +661,17 @@ async fn an_encrypted_cloud_task_hands_its_secrets_to_the_run_and_keeps_a_refres
         Some(r#"{"access_token":"new"}"#),
         "the refreshed token is kept"
     );
+    // So is one a restore refreshed.
+    fakes.host.refresh_token(r#"{"access_token":"restored"}"#);
+    let request = RestoreRequest {
+        version: crate::domain::parse_version(&plan.stamp),
+        paths: vec![],
+        to: None,
+        existing: Existing::Skip,
+    };
+    let job = backups.restore(made.task.id, request, &alice(), &context()).await.unwrap();
+    assert_eq!(finished(&fakes, &job).await.state, JobState::Succeeded);
+    assert_eq!(fakes.accounts.token(account.id).as_deref(), Some(r#"{"access_token":"restored"}"#));
     // Changed without its password: it stays; another is refused; not
     // encrypted any more: it goes.
     backups.update(made.task.id, settings.clone(), None, None, &alice(), &context()).await.unwrap();

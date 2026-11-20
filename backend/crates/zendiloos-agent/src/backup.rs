@@ -4,18 +4,34 @@
 //! `backup-unit`, see [`crate::backup_unit`]), outside its own sandbox,
 //! which can neither write the volumes nor reach the network.
 //!
-//! Each unit has a sandbox of its own, as the volumes' backups do: the
-//! system read-only, no new privileges, its own `/tmp`, devices, IPC and
-//! process view; of the volumes and drives it sees only the roots it works
-//! on (each volume and the drives' place a read-only tmpfs, the roots bound
-//! back in: the one it writes writable, the others read-only); the
-//! system's secrets hidden (`/etc/shadow`, SSH's host keys, zendiloOS's
-//! database and state); the network only when a server is involved; and
-//! only the capabilities its work needs: reading whatever the source holds,
-//! and on the NAS writing owners, modes, ACLs and attributes as copied.
-//! The NAS's SSH key reaches a unit as its credential (`LoadCredential=`),
-//! the other secrets (a daemon's password, the crypt's, a cloud's token) on
-//! its standard input; none on a command line. rclone, for clouds and
+//! Each unit has a sandbox of its own: no new privileges, its own `/tmp`,
+//! devices, IPC and processes (a PID namespace: no other process of the
+//! machine to see, signal or reach through `/proc/<pid>/root`); the network
+//! only when a server is involved; and only the capabilities its work
+//! needs: reading whatever the source holds, and on the NAS writing owners,
+//! modes, ACLs and attributes as copied.
+//!
+//! Its view of the file system is an allow-list, so that a link a share's
+//! writer swaps in below a folder (rclone follows such links, rsync 3.5
+//! does not) leads to nothing worth having: every folder at the top of the
+//! system is a read-only tmpfs but the programs and their libraries
+//! (`/usr`), the kernel's (`/proc`, `/sys`), its own `/dev` and `/tmp`, and
+//! `/home` and `/root`, which are hidden; files at the top are hidden too.
+//! Of `/etc` only what rsync, ssh and rclone read is bound back read-only
+//! ([`ETC`]: accounts, name resolution, the dynamic linker's cache, the
+//! certificate authorities). Of the volumes and drives it sees only the
+//! roots it works on (each volume and the drives' place a read-only tmpfs,
+//! the roots bound back in: the one it writes writable, the others
+//! read-only). So `/run`, with every control socket of the machine
+//! (systemd's, D-Bus, Docker's, libvirt's, zendiloOS's), the other shares'
+//! folders pinned for apps, the containers' file systems and the system's
+//! secrets are not there at all.
+//!
+//! The secrets (a daemon's password, the crypt's, a cloud's token, and the
+//! NAS's SSH key) reach a unit on its standard input, none on a command
+//! line nor at a place another could name: the unit writes those its tools
+//! read from a file into a folder of its own with a random name in its
+//! private `/tmp`, which rclone never copies. rclone, for clouds and
 //! encrypted tasks, runs in the same units as rsync.
 
 use std::path::{Path, PathBuf};
@@ -28,7 +44,9 @@ use zendiloos_agent_proto::{
 };
 use zendiloos_exec::{ExecError, Limits, Program, Surroundings};
 
-use crate::backup_unit::{End, FailKind, Report, RestoreJob, RunJob, UnitJob, UnitSays, Work};
+use crate::backup_unit::{
+    End, FailKind, Report, RestoreJob, RunJob, UnitInput, UnitJob, UnitKey, UnitSays, Work,
+};
 use crate::operations::OperationError;
 use crate::pools::HostPaths;
 use crate::volume_archive::encode;
@@ -47,25 +65,45 @@ const READ_CAPABILITIES: &str = "CAP_DAC_READ_SEARCH";
 /// attributes, also in folders nobody but their owner may write.
 const WRITE_CAPABILITIES: &str =
     "CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_FSETID CAP_SETFCAP";
-/// What a unit never sees.
-const HIDDEN: [&str; 14] = [
-    "-/etc/shadow",
-    "-/etc/gshadow",
-    "-/etc/ssh",
-    "-/etc/samba",
-    "-/etc/zendiloos",
-    "-/etc/libvirt",
-    "-/var/lib/zendiloos",
-    "-/var/lib/zendiloos-acme",
-    "-/var/lib/zendiloos-backup",
-    "-/var/lib/zendiloos-packages",
-    "-/var/lib/samba",
-    "-/var/lib/docker",
-    "-/var/lib/libvirt",
-    "-/run/zendiloos-acme",
+/// What a unit keeps at the top of the system: the programs and their
+/// libraries, the kernel's file systems, its own `/dev` and `/tmp`;
+/// `/home` and `/root`, which `ProtectHome=` hides. Every other folder
+/// there is a read-only tmpfs in the unit.
+const KEPT: [&str; 13] =
+    ["usr", "bin", "sbin", "lib", "lib32", "lib64", "libx32", "proc", "sys", "dev", "tmp", "home", "root"];
+/// What of `/etc` a unit sees, read-only: the accounts (ssh insists on its
+/// own), name resolution, the dynamic linker's cache, the certificate
+/// authorities rclone checks clouds with, OpenSSL's settings ssh loads.
+const ETC: [&str; 10] = [
+    "-/etc/passwd",
+    "-/etc/group",
+    "-/etc/nsswitch.conf",
+    "-/etc/hosts",
+    "-/etc/host.conf",
+    "-/etc/gai.conf",
+    "-/etc/resolv.conf",
+    "-/etc/ld.so.cache",
+    "-/etc/ssl/certs",
+    "-/etc/ssl/openssl.cnf",
 ];
+/// The NAS's SSH key, at most: an ed25519 key takes some 400 bytes.
+const KEY_BYTES: u64 = 16 * 1024;
 /// The sandbox every unit has.
-const SANDBOX: [&str; 21] = [
+///
+/// Beside the view of the file system ([`Backups::unit_args`]): of `/proc`
+/// only the processes (its own, in its PID namespace), of `/sys` neither
+/// the firmware's tables (ACPI, DMI), the machine's serial numbers nor the
+/// kernel's own (systemd mounts `/sys` anew for the PID namespace, so a
+/// tmpfs over all of it would not hold), none of the host's shared memory,
+/// message queues or huge pages in its `/dev`, and nothing mounted after it
+/// started (`MountFlags=private`: a pool imported meanwhile stays out).
+///
+/// Stopped, all its processes get SIGTERM: rsync and rclone end and remove
+/// what they were writing; the unit's own process, the first of its PID
+/// namespace, starts nothing more and answers that it was stopped
+/// ([`crate::backup_unit`]). A SIGTERM that comes before it handles one is
+/// lost; SIGKILL follows after [`STOP_FOR`].
+const SANDBOX: [&str; 26] = [
     "--property=NoNewPrivileges=yes",
     "--property=ProtectSystem=strict",
     "--property=ProtectHome=yes",
@@ -84,10 +122,17 @@ const SANDBOX: [&str; 21] = [
     "--property=SystemCallArchitectures=native",
     "--property=SystemCallFilter=@system-service",
     "--property=ProtectProc=invisible",
+    "--property=ProcSubset=pid",
     "--property=PrivateIPC=yes",
+    "--property=PrivatePIDs=yes",
+    "--property=TemporaryFileSystem=/sys/firmware:ro /sys/kernel:ro /sys/class/dmi:ro /sys/devices/virtual/dmi:ro",
+    "--property=InaccessiblePaths=-/dev/shm -/dev/mqueue -/dev/hugepages",
+    "--property=MountFlags=private",
     "--property=LimitNOFILE=65536",
     "--property=MemoryMax=2G",
 ];
+/// What a unit stopped has to end in before it is killed.
+const STOP_FOR: Duration = Duration::from_secs(10);
 
 /// Where the backup plugin's things are; other than the real places only
 /// in tests.
@@ -95,18 +140,18 @@ const SANDBOX: [&str; 21] = [
 pub struct BackupPaths {
     /// The NAS's key pair: [`BACKUP_STATE`].
     pub state: PathBuf,
-    /// Where systemd puts a unit's credentials, `/run/credentials`.
-    pub credentials: PathBuf,
     /// Where systemd keeps transient units' files, `/run/systemd/transient`.
     pub transient: PathBuf,
+    /// The system's root, `/`: what is at its top a unit sees only in part.
+    pub root: PathBuf,
 }
 
 impl Default for BackupPaths {
     fn default() -> Self {
         Self {
             state: PathBuf::from(BACKUP_STATE),
-            credentials: PathBuf::from("/run/credentials"),
             transient: PathBuf::from("/run/systemd/transient"),
+            root: PathBuf::from("/"),
         }
     }
 }
@@ -525,8 +570,8 @@ impl Backups {
         description: &str,
         places: &Places,
         runtime: Duration,
-        hex: &str,
-    ) -> Vec<String> {
+        job: &UnitJob,
+    ) -> Result<Vec<String>, OperationError> {
         let mut args: Vec<String> = [
             format!("--unit={unit}"),
             "--wait".into(),
@@ -539,8 +584,28 @@ impl Backups {
         args.extend(SANDBOX.iter().map(|p| (*p).to_owned()));
         args.extend(network_properties(places.network));
         // Of the volumes and drives, only the roots it works on.
-        for hidden in self.volume_places() {
+        let volume_places = self.volume_places();
+        for hidden in &volume_places {
             args.push(format!("--property=TemporaryFileSystem={}:ro", hidden.display()));
+        }
+        // Of the rest of the system, only what its tools need.
+        let (folders, files) = self.top_of_system(&volume_places)?;
+        for folder in folders {
+            args.push(format!("--property=TemporaryFileSystem={}:ro", folder.display()));
+        }
+        if !files.is_empty() {
+            let files: Vec<String> = files.iter().map(|file| format!("-{}", file.display())).collect();
+            args.push(format!("--property=InaccessiblePaths={}", files.join(" ")));
+        }
+        args.push(format!("--property=BindReadOnlyPaths={}", ETC.join(" ")));
+        // The tools themselves, should they lie elsewhere than in /usr.
+        let tools: Vec<String> = [&job.rsync, &job.rclone, &job.ssh, &self.host.agent]
+            .into_iter()
+            .filter(|tool| self.hides(tool, &volume_places))
+            .map(|tool| format!("-{}", tool.display()))
+            .collect();
+        if !tools.is_empty() {
+            args.push(format!("--property=BindReadOnlyPaths={}", tools.join(" ")));
         }
         for read in &places.read {
             if places.write.as_ref() != Some(read) {
@@ -550,19 +615,70 @@ impl Backups {
         if let Some(write) = &places.write {
             args.push(format!("--property=BindPaths={}", write.display()));
         }
-        args.push(format!("--property=InaccessiblePaths={}", HIDDEN.join(" ")));
-        if places.ssh {
-            args.push(format!("--property=LoadCredential=backup-key:{}", self.key_file().display()));
-        }
         args.extend([
             format!("--property=CapabilityBoundingSet={}", places.capabilities()),
             format!("--property=RuntimeMaxSec={}", runtime.as_secs()),
-            "--property=TimeoutStopSec=60".into(),
+            format!("--property=TimeoutStopSec={}", STOP_FOR.as_secs()),
             self.host.agent.display().to_string(),
             "backup-unit".into(),
-            hex.into(),
+            encode(job),
         ]);
-        args
+        Ok(args)
+    }
+
+    /// Whether a unit's view leaves `path` out: it lies outside the folders
+    /// kept at the top of the system.
+    fn hides(&self, path: &Path, volume_places: &[PathBuf]) -> bool {
+        let Ok(below) = path.strip_prefix(&self.paths.root) else { return false };
+        let top = below.components().next().and_then(|c| c.as_os_str().to_str());
+        top.is_some_and(|top| !KEPT.contains(&top))
+            && !volume_places.iter().any(|place| path.starts_with(place))
+    }
+
+    /// The folders and files at the top of the system a unit does not see:
+    /// all but [`KEPT`] and the volumes' places (`hidden` already). Only
+    /// names of letters, digits and `._-+@` are passed to systemd; root
+    /// alone makes others there.
+    fn top_of_system(&self, hidden: &[PathBuf]) -> Result<(Vec<PathBuf>, Vec<PathBuf>), OperationError> {
+        let root = &self.paths.root;
+        let entries = std::fs::read_dir(root).map_err(|e| {
+            OperationError::Failed(format!("{} cannot be listed for a backup's sandbox: {e}", root.display()))
+        })?;
+        let (mut folders, mut files) = (Vec::new(), Vec::new());
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let path = entry.path();
+            if KEPT.contains(&name) || hidden.contains(&path) {
+                continue;
+            }
+            if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-+@".contains(&b)) {
+                tracing::warn!(name, "a backup's unit sees this at the top of the system: its name is odd");
+                continue;
+            }
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => folders.push(path),
+                Ok(kind) if kind.is_file() => files.push(path),
+                _ => {}
+            }
+        }
+        folders.sort();
+        files.sort();
+        Ok((folders, files))
+    }
+
+    /// The NAS's SSH key, for a unit that reaches a server over SSH.
+    fn read_key(&self) -> Result<UnitKey, OperationError> {
+        let path = self.key_file();
+        let file = std::fs::File::open(&path)
+            .map_err(|e| OperationError::Setup(format!("the NAS's SSH key cannot be read: {e}")))?;
+        let mut key = String::new();
+        std::io::Read::read_to_string(&mut std::io::Read::take(file, KEY_BYTES + 1), &mut key)
+            .map_err(|e| OperationError::Setup(format!("the NAS's SSH key cannot be read: {e}")))?;
+        if key.len() as u64 > KEY_BYTES || !key.starts_with("-----BEGIN ") {
+            return Err(OperationError::Setup("the NAS's SSH key is no key".into()));
+        }
+        Ok(UnitKey::new(key))
     }
 
     /// Every volume's folder (`/volume<N>`) and the drives' place: each a
@@ -605,13 +721,14 @@ impl Backups {
         } else {
             (self.require(&self.tools.rsync, "rsync")?.path().to_owned(), self.tools.rclone.clone())
         };
-        let key = self.paths.credentials.join(unit).join("backup-key");
-        let job = UnitJob { work, rsync, rclone, ssh: self.tools.ssh.clone(), key };
-        let args = self.unit_args(unit, description, places, runtime, &encode(&job));
-        let secrets = if *secrets == BackupSecrets::default() {
+        let job = UnitJob { work, rsync, rclone, ssh: self.tools.ssh.clone() };
+        let args = self.unit_args(unit, description, places, runtime, &job)?;
+        let key = if places.ssh { Some(self.read_key()?) } else { None };
+        let input = UnitInput { secrets: secrets.clone(), key };
+        let secrets = if input == UnitInput::default() {
             String::new()
         } else {
-            serde_json::to_string(secrets).map_err(|e| OperationError::Failed(e.to_string()))?
+            serde_json::to_string(&input).map_err(|e| OperationError::Failed(e.to_string()))?
         };
         let until = Instant::now() + runtime + Duration::from_secs(120);
         let mut said: Option<UnitSays> = None;

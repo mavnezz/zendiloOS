@@ -9,14 +9,18 @@
 //! when it refreshes it: it is read back after every call, and the newest
 //! goes back to zendiloosd. The crypt's password and salt are obscured as
 //! rclone keeps them, by `rclone obscure -` reading them on standard
-//! input. None of it reaches a command line.
+//! input, and go into the config file too. None of it reaches a command
+//! line.
 //!
 //! `base` is the place: a cloud's folder, an SFTP server's; a folder of
 //! the NAS is opened beneath its root, as for rsync, and rclone is given
 //! `/proc/self/fd/<n>`. With a crypt, `dest` is rclone's crypt over the
 //! task's folder there: the names and contents of everything in it, the
 //! versions' names too, are encrypted. rclone copies no links: it leaves
-//! them out (`--skip-links`).
+//! them out (`--skip-links`). It does follow a folder swapped for a link
+//! while it runs (it opens paths by name): what the unit's view holds is
+//! all such a link can reach (see [`crate::backup`]), and the unit's own
+//! folder is left out by its name; no secret is in rclone's environment.
 //!
 //! Versions are complete copies, as rclone has no hard links: in a cloud
 //! the newest is first copied on the server, so only what changed is
@@ -313,7 +317,7 @@ impl RcloneHeard {
 
 /// rclone as a unit's work calls it: its remotes, its config file, the
 /// folder worked on.
-struct Rclone {
+struct Rclone<'a> {
     program: Program,
     config: PathBuf,
     cache: PathBuf,
@@ -328,6 +332,8 @@ struct Rclone {
     /// A cloud's token as given, and as rclone wrote it last.
     given: Option<String>,
     token: Option<String>,
+    /// The unit was asked to stop.
+    stopped: &'a AtomicBool,
 }
 
 fn base(option: &str, value: impl Into<String>) -> (String, String) {
@@ -338,9 +344,9 @@ fn crypt(option: &str, value: impl Into<String>) -> (String, String) {
     (format!("RCLONE_CONFIG_DEST_{option}"), value.into())
 }
 
-impl Rclone {
+impl<'a> Rclone<'a> {
     /// rclone for the folder `at` (a folder of the NAS already `opened`).
-    async fn new(unit: &Unit<'_>, at: &End, opened: Option<&Opened>) -> Result<Self, Fail> {
+    async fn new(unit: &Unit<'a>, at: &End, opened: Option<&Opened>) -> Result<Self, Fail> {
         let program = Program::new(&unit.job.rclone).map_err(|e| failed(format!("rclone: {e}")))?;
         let home = unit.scratch.0.display().to_string();
         let mut variables = vec![("HOME".to_owned(), home), ("TZ".to_owned(), "UTC".to_owned())];
@@ -365,20 +371,23 @@ impl Rclone {
                     }
                     BackupCloud::OneDrive => variables.push(base("TYPE", "onedrive")),
                 }
-                if let Some(id) = &access.client_id {
-                    variables.push(base("CLIENT_ID", id.as_str()));
-                }
-                if let Some(secret) = &access.client_secret {
-                    variables.push(base("CLIENT_SECRET", secret.expose()));
-                }
                 if let Some(id) = &access.drive_id {
                     variables.push(base("DRIVE_ID", id.as_str()));
                 }
                 if let Some(kind) = &access.drive_type {
                     variables.push(base("DRIVE_TYPE", kind.as_str()));
                 }
+                // The token and the OAuth client in the config file, not
+                // the environment, which a folder swapped for a link to
+                // /proc/self would have rclone copy.
                 let token = access.token.expose().to_owned();
                 config = format!("[{BASE}]\ntoken = {token}\n");
+                if let Some(id) = &access.client_id {
+                    config.push_str(&format!("client_id = {}\n", id.as_str()));
+                }
+                if let Some(secret) = &access.client_secret {
+                    config.push_str(&format!("client_secret = {}\n", secret.expose()));
+                }
                 given = Some(token);
                 format!("{BASE}:{}", path.as_str())
             }
@@ -389,7 +398,7 @@ impl Rclone {
                     base("HOST", host.as_str()),
                     base("PORT", port.to_string()),
                     base("USER", user.as_str()),
-                    base("KEY_FILE", unit.job.key.display().to_string()),
+                    base("KEY_FILE", unit.key()?.display().to_string()),
                     base("KNOWN_HOSTS_FILE", known.display().to_string()),
                     // No commands of its own on the server: only SFTP.
                     base("SHELL_TYPE", "none"),
@@ -405,8 +414,6 @@ impl Rclone {
                 ));
             }
         };
-        let config = unit.scratch.once("rclone.conf", &config)?;
-        let cache = unit.scratch.folder("rclone-cache")?;
         let (root, encrypted) = match &unit.secrets.crypt {
             Some(secrets) => {
                 variables.extend([
@@ -414,15 +421,25 @@ impl Rclone {
                     crypt("REMOTE", plain.clone()),
                     crypt("FILENAME_ENCRYPTION", "standard"),
                     crypt("DIRECTORY_NAME_ENCRYPTION", "true"),
-                    crypt("PASSWORD", obscure(&program, secrets.password.expose(), &variables).await?),
                 ]);
+                // In the config file, not the environment: a folder swapped
+                // for a link to /proc/self would have rclone copy its own.
+                config.push_str(&format!(
+                    "[{CRYPT}]\npassword = {}\n",
+                    obscure(&program, secrets.password.expose(), &variables).await?
+                ));
                 if let Some(salt) = &secrets.salt {
-                    variables.push(crypt("PASSWORD2", obscure(&program, salt.expose(), &variables).await?));
+                    config.push_str(&format!(
+                        "password2 = {}\n",
+                        obscure(&program, salt.expose(), &variables).await?
+                    ));
                 }
                 (format!("{CRYPT}:"), true)
             }
             None => (plain.clone(), false),
         };
+        let config = unit.scratch.once("rclone.conf", &config)?;
+        let cache = unit.scratch.folder("rclone-cache")?;
         let cloud = given.is_some();
         Ok(Self {
             program,
@@ -435,6 +452,7 @@ impl Rclone {
             cloud,
             token: given.clone(),
             given,
+            stopped: unit.stopped,
         })
     }
 
@@ -453,6 +471,9 @@ impl Rclone {
         out: &mut (dyn Write + Send),
         step: &str,
     ) -> Result<Ended, Fail> {
+        if self.stopped.load(Ordering::SeqCst) {
+            return Err(failed("the unit was stopped"));
+        }
         let mut all = args.to_vec();
         all.extend([
             format!("--config={}", self.config.display()),
@@ -609,9 +630,22 @@ fn filters(run: &RunJob) -> Vec<String> {
     args
 }
 
-/// What every copy of rclone's is told.
-fn copying() -> Vec<String> {
-    ["--log-level=INFO", "--stats=2s", "--create-empty-src-dirs", "--skip-links"].map(str::to_owned).into()
+/// What every copy of rclone's is told: links left out, and the unit's
+/// own folder (`scratch`, its secrets) never entered, should a folder
+/// swapped for a link lead there. rclone has no `--one-file-system` here:
+/// it takes the device of its root `/proc/self/fd/<n>` without following
+/// it, and would leave out every folder.
+fn copying(scratch: &Scratch) -> Vec<String> {
+    let mut args: Vec<String> = ["--log-level=INFO", "--stats=2s", "--create-empty-src-dirs", "--skip-links"]
+        .map(str::to_owned)
+        .into();
+    if let Some(name) = scratch.0.file_name().and_then(|name| name.to_str()) {
+        args.extend([
+            format!("--exclude={}/**", glob_escaped(name)),
+            format!("--exclude={}", glob_escaped(name)),
+        ]);
+    }
+    args
 }
 
 /// Opens a folder of the NAS for rclone (`Some(None)` for a place
@@ -714,7 +748,7 @@ impl Unit<'_> {
                 args.push(rclone.at(&incomplete));
             }
         }
-        args.extend(copying());
+        args.extend(copying(self.scratch));
         args.push("--delete-excluded".into());
         args.extend(filters(run));
         let mut heard = RcloneHeard::default();
@@ -787,7 +821,7 @@ impl Unit<'_> {
             rclone.at(restore.within.as_str()),
             to.arg("").trim_end_matches('/').to_owned(),
         ];
-        args.extend(copying());
+        args.extend(copying(self.scratch));
         if restore.existing == BackupExisting::Skip {
             args.push("--ignore-existing".into());
         }

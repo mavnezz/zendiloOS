@@ -102,6 +102,7 @@ exit 0
         let tools = Tools { docker, systemd_run, systemctl, ..Tools::default() };
         let host = HostPaths {
             volumes: root.clone(),
+            volume_backup_keys: root.join("volume-backup-keys"),
             agent: PathBuf::from(env!("CARGO_BIN_EXE_zendiloos-agent")),
             share_mounts,
             ..HostPaths::default()

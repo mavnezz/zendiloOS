@@ -556,14 +556,20 @@ pub struct ImportBackupsRequest {
     /// too.
     #[serde(default)]
     pub folder: String,
+    /// Also record backups whose manifest this NAS did not sign: made by an
+    /// earlier version of zendiloOS or on another machine, or made or
+    /// changed by anyone who may write the folder. Off, they are refused.
+    #[serde(default)]
+    pub unverified: bool,
 }
 
 /// Records the backups found in a folder of a share, in a job: each
 /// `<volume>-YYYYMMDD-HHMMSS.tar.zst` with its manifest beside it, both
 /// root's and writable by nobody else, the archive's SHA-256 the one its
-/// manifest names. Those recorded already are passed over; those refused
-/// are listed with why in the job's output. They belong to no plan, and
-/// no plan removes them. Needs `containers.manage`.
+/// manifest names, the manifest signed by this NAS (or, with `unverified`,
+/// not). Those recorded already are passed over; those refused are listed
+/// with why in the job's output. They belong to no plan, and no plan
+/// removes them. Needs `containers.manage`.
 #[utoipa::path(post, path = "/docker/backups/import", tag = "docker", security(("session" = [])),
     request_body = ImportBackupsRequest,
     responses((status = ACCEPTED, body = Job), (status = FORBIDDEN, body = Problem, description = "`forbidden`, `csrf_rejected`; `share_denied`: a share the administrator may not write"),
@@ -576,7 +582,9 @@ async fn import_backups(
     ApiJson(request): ApiJson<ImportBackupsRequest>,
 ) -> Result<(StatusCode, Json<Job>), ApiError> {
     manage(&auth)?;
-    let job =
-        state.containers.import_backups(request.share_id, &request.folder, &auth.0.actor(), &client).await?;
+    let job = state
+        .containers
+        .import_backups(request.share_id, &request.folder, request.unverified, &auth.0.actor(), &client)
+        .await?;
     Ok((StatusCode::ACCEPTED, Json(job.into())))
 }

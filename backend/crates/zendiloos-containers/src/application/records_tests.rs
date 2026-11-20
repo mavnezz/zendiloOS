@@ -230,7 +230,43 @@ fn found(volume: &str, name: &str, inode: u64) -> FoundArchive {
             manifest_json:
                 r#"{"volume":"lost","driver":"local","labels":{"com.docker.compose.project":"lost"}}"#.into(),
         },
+        signed: true,
     }
+}
+
+#[tokio::test]
+async fn backups_this_nas_did_not_sign_are_recorded_only_when_asked() {
+    let (t, audit, _) = setup();
+    let unsigned = FoundArchive { signed: false, ..found("lost", "lost-20261104-030000", 100) };
+    *t.archiver.found.lock().unwrap() = ScannedArchives {
+        found: vec![unsigned, found("lost", "lost-20261105-030000", 200)],
+        refused: vec![],
+    };
+    let job = t.containers.import_backups(1, "old", false, &alice(), &context()).await.unwrap();
+    let job = finished(&t, job.id).await;
+    assert!(
+        job.output.iter().any(|line| line.starts_with(
+            "Refused old/lost/lost-20261104-030000.tar.zst: its manifest carries no signature of this NAS's"
+        )),
+        "{:?}",
+        job.output
+    );
+    assert!(
+        job.output.last().unwrap().starts_with("1 recorded, 0 recorded before, 1 refused"),
+        "{:?}",
+        job.output
+    );
+    assert_eq!(t.containers.backups("lost").await.unwrap().len(), 1);
+    // Asked for: recorded too.
+    let job = t.containers.import_backups(1, "old", true, &alice(), &context()).await.unwrap();
+    let job = finished(&t, job.id).await;
+    assert!(
+        job.output.contains(&"Recorded old/lost/lost-20261104-030000.tar.zst".to_owned()),
+        "{:?}",
+        job.output
+    );
+    assert_eq!(t.containers.backups("lost").await.unwrap().len(), 2);
+    assert!(audit.has("containers.volume_backup_import", Outcome::Success));
 }
 
 #[tokio::test]
@@ -247,7 +283,7 @@ async fn backups_found_again_in_a_folder_are_recorded_once_and_never_retained() 
         )],
     };
 
-    let job = t.containers.import_backups(1, "/old/", &alice(), &context()).await.unwrap();
+    let job = t.containers.import_backups(1, "/old/", false, &alice(), &context()).await.unwrap();
     let job = finished(&t, job.id).await;
     assert_eq!((job.kind.as_str(), job.state), ("containers.volume_import", JobState::Succeeded));
     assert!(
@@ -278,7 +314,7 @@ async fn backups_found_again_in_a_folder_are_recorded_once_and_never_retained() 
     assert!(groups.iter().any(|g| g.volume == "lost" && !g.exists && g.plan.is_none()));
 
     // Again: what is recorded is passed over.
-    let job = t.containers.import_backups(1, "old", &alice(), &context()).await.unwrap();
+    let job = t.containers.import_backups(1, "old", false, &alice(), &context()).await.unwrap();
     let job = finished(&t, job.id).await;
     assert!(job.output.last().unwrap().starts_with("0 recorded, 2 recorded before"), "{:?}", job.output);
     assert!(t.archiver.calls().contains(&"scan docker/old knowing 2".to_owned()));
@@ -297,11 +333,11 @@ async fn backups_found_again_in_a_folder_are_recorded_once_and_never_retained() 
 
     let bob = Actor { account_id: 2, name: "bob".into() };
     assert!(matches!(
-        t.containers.import_backups(1, "old", &bob, &context()).await,
+        t.containers.import_backups(1, "old", false, &bob, &context()).await,
         Err(ContainersError::Denied)
     ));
     assert!(matches!(
-        t.containers.import_backups(1, "a/../b", &alice(), &context()).await,
+        t.containers.import_backups(1, "a/../b", false, &alice(), &context()).await,
         Err(ContainersError::Invalid(_))
     ));
 }

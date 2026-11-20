@@ -338,6 +338,7 @@ async fn backups_found_again_in_a_folder_are_imported_in_a_job() {
                 entries: Some(2),
                 manifest_json: r#"{"volume":"lost","driver":"local","labels":{}}"#.into(),
             },
+            signed: false,
         }],
         refused: vec![(
             "old/lost/lost-20261026-030000.tar.zst".into(),
@@ -346,11 +347,26 @@ async fn backups_found_again_in_a_folder_are_imported_in_a_job() {
     };
     let import = |body: Value| h.send(json(with_csrf(post("/api/v1/docker/backups/import"), &admin), body));
 
+    // Not signed by this NAS: refused unless asked for.
     let started = import(json!({ "share_id": 1, "folder": "old" })).await;
+    assert_eq!(started.status, StatusCode::ACCEPTED, "{:?}", started.body);
+    let job = ended(&h, &started.body["id"]).await;
+    assert!(
+        job.output.iter().any(|line| line
+            .starts_with("Refused old/lost/lost-20261027-030000.tar.zst: its manifest carries no signature")),
+        "{:?}",
+        job.output
+    );
+    let started = import(json!({ "share_id": 1, "folder": "old", "unverified": true })).await;
     assert_eq!(started.status, StatusCode::ACCEPTED, "{:?}", started.body);
     assert_eq!(started.body["kind"], "containers.volume_import");
     let job = ended(&h, &started.body["id"]).await;
     assert_eq!(job.state, zendiloos_jobs::JobState::Succeeded);
+    assert!(
+        job.output.contains(&"Recorded old/lost/lost-20261027-030000.tar.zst".to_owned()),
+        "{:?}",
+        job.output
+    );
     assert!(
         job.output.contains(
             &"Refused old/lost/lost-20261026-030000.tar.zst: the archive: writable by others".to_owned()
