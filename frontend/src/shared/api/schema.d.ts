@@ -7193,6 +7193,11 @@ export interface components {
             id: string;
             name: string;
             /**
+             * @description A pool here or one the configuration names has its name: adopted,
+             *     it is imported under a name of its own (`rename`).
+             */
+            name_taken: boolean;
+            /**
              * @description Another machine used it last and did not export it: ZFS imports it
              *     only by force (`zpool import -f`). A configuration backup restored
              *     brings back this machine's host id, so a pool of the machine backed
@@ -7330,6 +7335,11 @@ export interface components {
             /** @description The pool's numeric identifier, as listed. */
             id: string;
             name: string;
+            /**
+             * @description For a pool the configuration does not name: the name it is imported
+             *     under; needed where its own is taken (`name_taken`), and free.
+             */
+            rename?: string | null;
             /**
              * Format: int32
              * @description For a pool the configuration does not name: the volume number it
@@ -19758,7 +19768,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description `other_host`: another machine used it last, `volume_taken`, `no_volume_number`, `refused`: ZFS cannot import it */
+            /** @description `other_host`: another machine used it last, `volume_taken`, `no_volume_number`, `name_taken`: a pool adopted needs a name of its own (`rename`), `refused`: ZFS cannot import it */
             409: {
                 headers: {
                     [name: string]: unknown;

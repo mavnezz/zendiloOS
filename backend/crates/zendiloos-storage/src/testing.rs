@@ -378,12 +378,13 @@ impl PoolAdmin for FakeStorage {
     ) -> Result<(), AdminError> {
         steps.step("importing_pool", None);
         self.record(format!(
-            "import {} {} {} adopt={} force={}",
+            "import {} {} {} adopt={} force={}{}",
             pool.name,
             pool.id,
             pool.volume.get(),
             pool.adopt,
-            pool.force
+            pool.force,
+            pool.rename.as_ref().map(|name| format!(" as {name}")).unwrap_or_default()
         ));
         self.importable.lock().unwrap().retain(|found| found.id != pool.id);
         if pool.name.as_str() == "tank" {

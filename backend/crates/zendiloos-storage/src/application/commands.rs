@@ -116,8 +116,14 @@ impl Context {
     ) -> Result<PoolPlan, StorageError> {
         let (devices, pools) = inventory(self.devices.as_ref(), self.zfs.as_ref(), request).await?;
         let disks_now = domain::disks(&devices, &pools);
-        // A volume the configuration names stays its pool's, imported or not.
-        let reserved: Vec<_> = self.known.known().await?.into_iter().map(|pool| pool.volume).collect();
+        // A volume the configuration names stays its pool's, imported or
+        // not, and so does its name: a new pool of it would be taken for
+        // that one.
+        let known = self.known.known().await?;
+        if known.iter().any(|pool| pool.name == name) {
+            return Err(StorageError::Plan(domain::PlanError::NameTaken));
+        }
+        let reserved: Vec<_> = known.into_iter().map(|pool| pool.volume).collect();
         Ok(domain::plan_pool(name, layout, disks, &disks_now, &pools, &reserved)?)
     }
 

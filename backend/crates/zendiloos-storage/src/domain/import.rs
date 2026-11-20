@@ -61,6 +61,11 @@ pub struct AbsentPools {
     pub foreign: Vec<ImportablePool>,
     /// The lowest volume number free to adopt one with.
     pub free_volume: Option<VolumeNumber>,
+    /// The names of the pools imported here and of those the configuration
+    /// names: a pool found under one of them is adopted only under a name
+    /// of its own (`zpool import <id> <name>`). Under the configuration's,
+    /// it would be taken for the configuration's pool.
+    pub names_taken: Vec<String>,
 }
 
 /// What of `known` is not among the pools `imported`, found among those
@@ -92,6 +97,13 @@ pub fn absent_pools(known: &[KnownPool], imported: &[Pool], found: &[ImportableP
         .cloned()
         .collect();
     absent.free_volume = VolumeNumber::first_free(used_volumes(known, imported));
+    absent.names_taken = imported
+        .iter()
+        .map(|pool| pool.name.clone())
+        .chain(known.iter().map(|pool| pool.name.clone()))
+        .collect();
+    absent.names_taken.sort_unstable();
+    absent.names_taken.dedup();
     absent
 }
 
@@ -208,7 +220,14 @@ mod tests {
     #[test]
     fn nothing_is_absent_once_everything_is_imported() {
         let absent = absent_pools(&[known("tank", 1)], &[imported("tank", Some(1))], &[]);
-        assert_eq!(absent, AbsentPools { free_volume: Some(volume(2)), ..AbsentPools::default() });
+        assert_eq!(
+            absent,
+            AbsentPools {
+                free_volume: Some(volume(2)),
+                names_taken: vec!["tank".into()],
+                ..AbsentPools::default()
+            }
+        );
     }
 
     #[test]

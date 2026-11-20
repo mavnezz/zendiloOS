@@ -65,6 +65,7 @@ async fn administrators_see_the_pools_to_import_and_import_them() {
                 "can_import": true, "status": "The pool was last accessed by another system.",
                 "action": "The pool can be imported using its name or numeric identifier.",
                 "devices": [{ "name": "ata-TEST_HDD_T3-part1", "state": "ONLINE" }],
+                "name_taken": false,
             },
         }])
     );
@@ -119,6 +120,31 @@ async fn administrators_see_the_pools_to_import_and_import_them() {
         .map(|entry| entry.target)
         .collect();
     assert_eq!(imported, [Some("tank".to_owned()), Some("stray".to_owned())]);
+}
+
+/// Another pool called as the configuration's: adopted only under a name
+/// of its own, or it would be taken for the configuration's pool.
+#[tokio::test]
+async fn a_pool_named_as_the_configurations_is_adopted_under_another_name() {
+    let h = Harness::new();
+    restored(&h);
+    h.storage.known.lock().unwrap()[0].guid = Some(9_846_106_214_133_009_000);
+    h.storage.importable.lock().unwrap().push(found("tank", 66, false));
+    let admin = h.sign_in("alice", Role::Admin).await;
+    let absent = h.send(empty(with_cookie(get("/api/v1/storage/pools/absent"), &admin))).await;
+    let foreign = absent.body["foreign"].as_array().unwrap();
+    let other = foreign.iter().find(|pool| pool["id"] == "66").unwrap();
+    assert_eq!(other["name_taken"], true);
+    assert_eq!(foreign.iter().find(|pool| pool["id"] == "42").unwrap()["name_taken"], false);
+
+    let import = |body: Value| h.send(json(with_csrf(post("/api/v1/storage/pools/import"), &admin), body));
+    assert_problem(&import(json!({ "name": "tank", "id": "66" })).await, StatusCode::CONFLICT, "name_taken");
+    let taken = import(json!({ "name": "tank", "id": "66", "rename": "cold" })).await;
+    assert_problem(&taken, StatusCode::CONFLICT, "name_taken");
+    let renamed = import(json!({ "name": "tank", "id": "66", "rename": "tank2" })).await;
+    assert_eq!(renamed.status, StatusCode::ACCEPTED);
+    job_done(&h, renamed.body["id"].as_i64().unwrap()).await;
+    assert_eq!(h.storage.calls()[0], "import tank 66 3 adopt=true force=false as tank2");
 }
 
 #[tokio::test]

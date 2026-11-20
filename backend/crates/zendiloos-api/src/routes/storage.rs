@@ -1282,6 +1282,9 @@ pub struct FoundPool {
     /// What ZFS says can be done, in its words.
     pub action: Option<String>,
     pub devices: Vec<FoundDevice>,
+    /// A pool here or one the configuration names has its name: adopted,
+    /// it is imported under a name of its own (`rename`).
+    pub name_taken: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1301,6 +1304,7 @@ impl From<storage::ImportablePool> for FoundPool {
             status: pool.status,
             action: pool.action,
             devices: pool.devices.into_iter().map(|(name, state)| FoundDevice { name, state }).collect(),
+            name_taken: false,
         }
     }
 }
@@ -1376,7 +1380,14 @@ async fn absent_pools(
             .map(|known| KnownFoundPool { pool: known.known.into(), found: known.found.into() })
             .collect(),
         missing: absent.missing.into_iter().map(NamedPool::from).collect(),
-        foreign: absent.foreign.into_iter().map(FoundPool::from).collect(),
+        foreign: absent
+            .foreign
+            .into_iter()
+            .map(|found| {
+                let name_taken = absent.names_taken.contains(&found.name);
+                FoundPool { name_taken, ..FoundPool::from(found) }
+            })
+            .collect(),
         free_volume: absent.free_volume.map(storage::VolumeNumber::get),
     }))
 }
@@ -1397,6 +1408,10 @@ pub struct ImportPoolRequest {
     /// The pool's name, typed again, when forced.
     #[serde(default)]
     pub confirm: Option<String>,
+    /// For a pool the configuration does not name: the name it is imported
+    /// under; needed where its own is taken (`name_taken`), and free.
+    #[serde(default)]
+    pub rename: Option<String>,
 }
 
 /// Imports a pool zendiloOS made, as a job, and mounts it: one the
@@ -1414,7 +1429,7 @@ pub struct ImportPoolRequest {
     responses(
         (status = ACCEPTED, body = Job),
         (status = NOT_FOUND, body = Problem, description = "`not_found`: no such pool to import"),
-        (status = CONFLICT, body = Problem, description = "`other_host`: another machine used it last, `volume_taken`, `no_volume_number`, `refused`: ZFS cannot import it"),
+        (status = CONFLICT, body = Problem, description = "`other_host`: another machine used it last, `volume_taken`, `no_volume_number`, `name_taken`: a pool adopted needs a name of its own (`rename`), `refused`: ZFS cannot import it"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`invalid_input`, `confirmation_mismatch`"),
     )
 )]
@@ -1432,6 +1447,7 @@ async fn import_pool(
         volume: request.volume,
         force: request.force,
         confirm: request.confirm,
+        rename: request.rename,
     };
     let job = state.storage.imports.import(asked, &auth.0.actor(), &client).await?;
     Ok((StatusCode::ACCEPTED, Json(job.into())))

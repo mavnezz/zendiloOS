@@ -360,6 +360,7 @@ impl PoolAdmin for AgentStorage {
             volume: volume(pool.volume)?,
             adopt: pool.adopt,
             force: pool.force,
+            rename: pool.rename.as_ref().map(pool_name).transpose()?,
         };
         self.reporting(request, steps, context).await
     }

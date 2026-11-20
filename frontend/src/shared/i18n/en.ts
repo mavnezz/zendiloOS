@@ -2225,6 +2225,9 @@ const en = {
         otherHost:
           'ZFS says another machine used this pool last and did not export it. Import it only if that machine is switched off for good: a pool two machines use at once is damaged beyond repair.',
         confirm: 'Type {name} to import it anyway',
+        nameTaken:
+          'A pool here or one the configuration names is called {name}: adopted under that name, this one would be taken for that pool. It is imported under a name of its own.',
+        rename: 'Import it as',
         volume: 'Volume number',
         submit: 'Import',
         force: 'Import anyway',

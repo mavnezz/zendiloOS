@@ -1054,12 +1054,15 @@ impl Pools {
     /// [`Request::ImportPool`]: zendiloos_agent_proto::Request::ImportPool
     pub(crate) async fn import(
         &self,
-        name: &PoolName,
+        listed: &PoolName,
         id: u64,
         volume: VolumeNumber,
         adopt: bool,
         force: bool,
+        rename: Option<&PoolName>,
     ) -> Result<Response, OperationError> {
+        // The name it is imported under: its own, or the one asked for.
+        let name = rename.unwrap_or(listed);
         let _serial = crate::waiting::lock(&self.serial).await?;
         if self.pool_names().await?.iter().any(|imported| imported == name.as_str()) {
             return Err(OperationError::Conflict);
@@ -1076,10 +1079,10 @@ impl Pools {
         let Response::ImportablePools { zpool_import } = self.importable().await? else {
             return Err(OperationError::Failed("zpool import lists nothing".into()));
         };
-        if !listed_pools(&zpool_import).iter().any(|(pool, listed)| pool == name.as_str() && *listed == id) {
+        if !listed_pools(&zpool_import).iter().any(|(pool, found)| pool == listed.as_str() && *found == id) {
             return Err(refused(format!(
                 "there is no pool {} with this identifier to import",
-                name.as_str()
+                listed.as_str()
             )));
         }
         let by_id = self.paths.by_id.to_string_lossy().into_owned();
@@ -1092,6 +1095,9 @@ impl Pools {
             args.push("-f");
         }
         args.push(&id_text);
+        if let Some(rename) = rename {
+            args.push(rename.as_str());
+        }
         crate::progress::step("importing_pool", None);
         match zendiloos_exec::run(&self.zpool, &args, LIMITS).await?.success(&self.zpool) {
             Ok(_) => {}

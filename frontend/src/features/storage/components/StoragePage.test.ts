@@ -413,6 +413,7 @@ describe('pools to import', () => {
     status: other_host ? 'The pool was last accessed by another system.' : null,
     action: null,
     devices: [{ name: 'ata-QEMU_HARDDISK_QM00007-part1', state: 'ONLINE' }],
+    name_taken: false,
   })
   const job = { id: 7, kind: 'storage.import_pool', state: 'running', created_at: 0, updated_at: 0 }
 
@@ -489,6 +490,35 @@ describe('pools to import', () => {
       force: false,
     })
     expect(page()).toContain(t('errors.volume_taken'))
+  })
+
+  it('adopts a pool called as the configuration’s only under a name of its own', async () => {
+    on('GET', '/api/v1/storage/pools/absent', {
+      known: [],
+      missing: [{ name: 'media', volume: 3, mount_point: '/volume3', shares: [] }],
+      foreign: [{ ...found('media', '66'), name_taken: true }],
+      free_volume: 6,
+    })
+    await open('pools')
+    await click(new RegExp(t('storage.imports.adopt')))
+    expect(page()).toContain(t('storage.imports.dialog.nameTaken', { name: 'media' }))
+    const adopt = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(
+      (button) => button.textContent?.includes(t('storage.imports.dialog.adoptSubmit')),
+    )!
+    expect(adopt.disabled).toBe(true)
+    await type('#import-rename', 'media')
+    expect(adopt.disabled).toBe(true)
+    await type('#import-rename', 'media2')
+    expect(adopt.disabled).toBe(false)
+    await submit('[role="dialog"] form')
+    expect(called('POST', '/api/v1/storage/pools/import')[0]?.body).toEqual({
+      name: 'media',
+      id: '66',
+      volume: 6,
+      force: false,
+      confirm: null,
+      rename: 'media2',
+    })
   })
 
   it('is not shown to those who may not manage storage', async () => {

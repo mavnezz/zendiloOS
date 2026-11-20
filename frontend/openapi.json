@@ -13076,7 +13076,7 @@
             }
           },
           "409": {
-            "description": "`other_host`: another machine used it last, `volume_taken`, `no_volume_number`, `refused`: ZFS cannot import it",
+            "description": "`other_host`: another machine used it last, `volume_taken`, `no_volume_number`, `name_taken`: a pool adopted needs a name of its own (`rename`), `refused`: ZFS cannot import it",
             "content": {
               "application/json": {
                 "schema": {
@@ -22302,7 +22302,8 @@
           "state",
           "other_host",
           "can_import",
-          "devices"
+          "devices",
+          "name_taken"
         ],
         "properties": {
           "action": {
@@ -22328,6 +22329,10 @@
           },
           "name": {
             "type": "string"
+          },
+          "name_taken": {
+            "type": "boolean",
+            "description": "A pool here or one the configuration names has its name: adopted,\nit is imported under a name of its own (`rename`)."
           },
           "other_host": {
             "type": "boolean",
@@ -22686,6 +22691,13 @@
           },
           "name": {
             "type": "string"
+          },
+          "rename": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For a pool the configuration does not name: the name it is imported\nunder; needed where its own is taken (`name_taken`), and free."
           },
           "volume": {
             "type": [

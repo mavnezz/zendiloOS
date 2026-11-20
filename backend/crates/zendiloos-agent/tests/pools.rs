@@ -1138,6 +1138,7 @@ fn import(name: &str, id: u64, volume: u16, adopt: bool, force: bool) -> Request
         volume: VolumeNumber::new(volume).unwrap(),
         adopt,
         force,
+        rename: None,
     }
 }
 
@@ -1218,6 +1219,57 @@ async fn a_pool_imported_neither_mounts_nor_shares_nor_runs_anything_by_itself()
         ],
         "what is inherited follows its dataset's parent; `none` mounts nothing"
     );
+}
+
+/// A pool whose name another has here, or the configuration, is imported
+/// under a name of its own; everything after is done under that name.
+#[tokio::test]
+async fn a_pool_is_imported_under_another_name_if_asked() {
+    let host = host(Erasable::Policy(ErasePolicy::None));
+    importing(&host, 0, "");
+    program(
+        &host,
+        "zfs",
+        "case \"$*\" in\n\
+         *'-s local -d 0'*) echo 1 ;;\n\
+         'get -H -o value zendiloos:volume media2') echo 3 ;;\n\
+         'get -r -H -t filesystem '*' media2') printf 'media2\\tmountpoint\\tlegacy\\tlocal\\n' ;;\n\
+         *) ;;\n\
+         esac",
+    );
+    let renamed = Request::ImportPool {
+        name: PoolName::parse("media").unwrap(),
+        id: 43,
+        volume: VolumeNumber::new(2).unwrap(),
+        adopt: true,
+        force: false,
+        rename: Some(PoolName::parse("media2").unwrap()),
+    };
+    assert_eq!(host.run(renamed).await, Response::Done);
+    let calls = host.calls();
+    let import = calls
+        .iter()
+        .position(|call| call == "zpool import -N -o cachefile=none -d /dev/disk/by-id 43 media2");
+    let import = import.expect("imported as media2");
+    assert_eq!(
+        &calls[import + 1..],
+        [
+            "zfs get -H -o value zendiloos:volume media2",
+            "zfs set zendiloos:volume=2 media2",
+            "zfs get -r -H -t filesystem -o name,property,value,source mountpoint,sharenfs,sharesmb,setuid,devices media2",
+            "zpool set cachefile= media2",
+        ]
+    );
+    // Under a name a pool here has: a conflict.
+    let taken = Request::ImportPool {
+        name: PoolName::parse("media").unwrap(),
+        id: 43,
+        volume: VolumeNumber::new(2).unwrap(),
+        adopt: true,
+        force: false,
+        rename: Some(PoolName::parse("tank").unwrap()),
+    };
+    assert_refused(host.run(taken).await, ErrorCode::Conflict, "");
 }
 
 #[tokio::test]

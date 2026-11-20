@@ -31,6 +31,10 @@ pub struct ImportRequest {
     pub force: bool,
     /// The pool's name, typed again when forced.
     pub confirm: Option<String>,
+    /// For a pool the configuration does not name: the name it is imported
+    /// under, which must be free; asked for where its own is taken
+    /// ([`AbsentPools::names_taken`]).
+    pub rename: Option<String>,
 }
 
 /// What the start found and did.
@@ -83,6 +87,11 @@ impl PoolImports {
         let absent = self.absent(request).await?;
         let known = absent.known.iter().find(|k| k.found.name == asked.name && k.found.id == asked.id);
         let (found, volume, adopt, shares) = match known {
+            Some(_) if asked.rename.is_some() => {
+                return Err(StorageError::Refused(
+                    "the configuration's pool is imported under its own name".into(),
+                ));
+            }
             Some(known) => (known.found.clone(), known.known.volume, false, known.known.shares.clone()),
             None => {
                 let found = absent
@@ -123,7 +132,30 @@ impl PoolImports {
         let name = PoolName::parse(&found.name).map_err(|_| {
             StorageError::Refused(format!("{} is not a name zendiloOS gives pools", found.name))
         })?;
-        let import = PoolImport { name: name.clone(), id: found.id, volume, adopt, force: found.other_host };
+        // Adopted under a name taken, it would be taken for that pool (the
+        // configuration's GUID kept anew, its shares on another pool).
+        let rename = match asked.rename.as_deref().map(str::trim) {
+            Some(rename) => {
+                let rename = PoolName::parse(rename).map_err(domain::PlanError::from)?;
+                if absent.names_taken.iter().any(|taken| taken == rename.as_str()) {
+                    return Err(StorageError::Plan(domain::PlanError::NameTaken));
+                }
+                Some(rename)
+            }
+            None if adopt && absent.names_taken.contains(&found.name) => {
+                return Err(StorageError::Plan(domain::PlanError::NameTaken));
+            }
+            None => None,
+        };
+        let import = PoolImport {
+            name: name.clone(),
+            id: found.id,
+            volume,
+            adopt,
+            force: found.other_host,
+            rename: rename.clone(),
+        };
+        let name = rename.unwrap_or(name);
         let observer = Arc::clone(&self.observer);
         let known = Arc::clone(&self.known);
         self.context
@@ -224,9 +256,24 @@ impl PoolImports {
     }
 }
 
-/// Keeps a pool's GUID; a failure is only logged: the pool is matched by
-/// its name alone until it is kept.
+/// Keeps a pool's GUID, never in place of another the configuration knows
+/// for that name (its pool is that one, not this); a failure is only
+/// logged: the pool is matched by its name alone until it is kept.
 pub(crate) async fn remember(known: &dyn KnownPools, name: &str, guid: u64) {
+    let kept = match known.known().await {
+        Ok(pools) => pools.into_iter().find(|pool| pool.name == name).and_then(|pool| pool.guid),
+        Err(error) => {
+            tracing::warn!(pool = name, %error, "storage: cannot keep the pool's GUID");
+            return;
+        }
+    };
+    if kept.is_some_and(|kept| kept != guid) {
+        tracing::warn!(
+            pool = name,
+            "storage: the configuration knows another pool of the name; its GUID is kept"
+        );
+        return;
+    }
     if let Err(error) = known.remember_guid(name, guid).await {
         tracing::warn!(pool = name, %error, "storage: cannot keep the pool's GUID");
     }
@@ -241,7 +288,7 @@ mod tests {
 
     use super::*;
     use crate::application::StorageUseCases;
-    use crate::domain::{ImportablePool, KnownPool};
+    use crate::domain::{ImportablePool, KnownPool, PlanError};
     use crate::testing::{FakeStorage, RecordingAudit};
 
     struct Setup {
@@ -297,7 +344,7 @@ mod tests {
     }
 
     fn ask(name: &str, id: u64) -> ImportRequest {
-        ImportRequest { name: name.into(), id, volume: None, force: false, confirm: None }
+        ImportRequest { name: name.into(), id, volume: None, force: false, confirm: None, rename: None }
     }
 
     #[tokio::test]
@@ -440,13 +487,50 @@ mod tests {
         let absent = s.storage.imports.absent(&request).await.unwrap();
         assert_eq!(absent.known.iter().map(|k| k.found.id).collect::<Vec<_>>(), [77]);
         assert_eq!(absent.foreign, [found("tank", 66, false)]);
-        let job = s.storage.imports.import(ask("tank", 66), &alice(), &request).await.unwrap();
+        assert!(absent.names_taken.contains(&"tank".to_owned()), "the other one needs a name of its own");
+
+        // Under the configuration's name it would take that pool's GUID,
+        // and the configuration's pool would be foreign for good.
+        let same = s.storage.imports.import(ask("tank", 66), &alice(), &request).await;
+        assert!(matches!(same, Err(StorageError::Plan(PlanError::NameTaken))), "{same:?}");
+        for taken in ["tank", "-x"] {
+            let renamed = ImportRequest { rename: Some(taken.into()), ..ask("tank", 66) };
+            let refused = s.storage.imports.import(renamed, &alice(), &request).await;
+            assert!(refused.is_err(), "{taken}: {refused:?}");
+        }
+        assert!(s.fake.calls().is_empty());
+
+        let renamed = ImportRequest { rename: Some("tank2".into()), ..ask("tank", 66) };
+        let job = s.storage.imports.import(renamed, &alice(), &request).await.unwrap();
         assert_eq!(finished(&s.jobs, job).await.state, JobState::Succeeded);
         assert_eq!(
-            s.fake.calls()[0],
-            "import tank 66 2 adopt=true force=false",
-            "the other one only adopted, as another volume"
+            s.fake.calls(),
+            ["import tank 66 2 adopt=true force=false as tank2", "mount tank2 2 "],
+            "adopted under a name of its own, as another volume"
         );
+        assert_eq!(*s.fake.guids.lock().unwrap(), [("tank2".to_owned(), Some(66))]);
+        assert_eq!(s.fake.known.lock().unwrap()[0].guid, Some(77), "the configuration's pool stays its own");
+    }
+
+    /// A new pool never takes the name of one the configuration names that
+    /// is not imported: the configuration's would be another pool's then.
+    #[tokio::test]
+    async fn a_new_pool_never_takes_the_name_of_a_pool_not_imported() {
+        let s = setup();
+        let request = RequestContext::default();
+        s.fake.known.lock().unwrap().push(KnownPool { guid: Some(77), ..known("cold", 2, &[]) });
+        let planned = s
+            .storage
+            .plan_pool
+            .execute(
+                "cold",
+                crate::domain::PoolLayout::Mirror,
+                vec!["sdd".into(), "sde".into()],
+                &alice(),
+                &request,
+            )
+            .await;
+        assert!(matches!(planned, Err(StorageError::Plan(PlanError::NameTaken))), "{planned:?}");
     }
 
     #[tokio::test]

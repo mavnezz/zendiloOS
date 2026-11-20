@@ -1305,9 +1305,14 @@ impl AgentTransport for SimulatedAgent {
             Request::ImportablePools {} => {
                 Response::ImportablePools { zpool_import: self.host().zpool_import() }
             }
-            Request::ImportPool { name, id, volume, adopt, force } => {
-                changed(self.host().import(name.as_str(), *id, volume.get(), *adopt, *force))
-            }
+            Request::ImportPool { name, id, volume, adopt, force, rename } => changed(self.host().import(
+                name.as_str(),
+                *id,
+                volume.get(),
+                *adopt,
+                *force,
+                rename.as_ref().map(zendiloos_agent_proto::PoolName::as_str),
+            )),
             Request::MountVolume { pool, volume, shares } => {
                 let names: Vec<&str> = shares.iter().map(|share| share.as_str()).collect();
                 match self.host().mount_volume(pool.as_str(), volume.get(), &names) {
@@ -1759,6 +1764,7 @@ mod tests {
             volume: VolumeNumber::new(volume).unwrap(),
             adopt,
             force,
+            rename: None,
         };
         refused(&agent.call(import("tank", 7, 1, false, false), None).await.unwrap(), ErrorCode::Forbidden);
         refused(

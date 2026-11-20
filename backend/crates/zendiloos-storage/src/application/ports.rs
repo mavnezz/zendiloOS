@@ -118,6 +118,8 @@ pub struct PoolImport {
     pub volume: VolumeNumber,
     pub adopt: bool,
     pub force: bool,
+    /// The name it is imported under, if not its own.
+    pub rename: Option<PoolName>,
 }
 
 /// What making sure of a volume's mounts did.

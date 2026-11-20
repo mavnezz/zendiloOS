@@ -2273,6 +2273,9 @@ const de: Messages = {
         otherHost:
           'ZFS meldet, dass ein anderes Gerät diesen Pool zuletzt benutzt und nicht exportiert hat. Importieren Sie ihn nur, wenn dieses Gerät endgültig ausgeschaltet ist: Ein Pool, den zwei Geräte zugleich benutzen, wird unrettbar beschädigt.',
         confirm: 'Geben Sie {name} ein, um ihn trotzdem zu importieren',
+        nameTaken:
+          'Ein Pool hier oder einer, den die Konfiguration nennt, heißt {name}: Unter diesem Namen übernommen, würde dieser für jenen gehalten. Er wird unter einem eigenen Namen importiert.',
+        rename: 'Importieren als',
         volume: 'Volume-Nummer',
         submit: 'Importieren',
         force: 'Trotzdem importieren',
