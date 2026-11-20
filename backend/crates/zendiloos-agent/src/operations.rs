@@ -130,7 +130,11 @@ impl Operations {
             network: paths.network.directory.clone(),
         };
         Ok(Self {
-            configuration: Configuration::new(Program::new(&tools.systemctl)?, configuration),
+            configuration: Configuration::new(
+                Program::new(&tools.systemctl)?,
+                Program::new(&tools.zpool)?,
+                configuration,
+            ),
             systemctl: Program::new(&tools.systemctl)?,
             lsblk: Program::new(&tools.lsblk)?,
             udevadm: Program::new(&tools.udevadm)?,

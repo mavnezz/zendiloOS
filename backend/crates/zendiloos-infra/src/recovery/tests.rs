@@ -175,6 +175,74 @@ async fn a_restore_the_host_refuses_stages_nothing() {
     assert!(fs::read_dir(fresh.path().join("restore")).unwrap().next().is_none());
 }
 
+/// The agent keeps the host id while pools are imported: said as a
+/// warning of its own, the other files put back all the same.
+#[tokio::test]
+async fn a_host_id_the_agent_keeps_is_told_and_the_other_files_come_back() {
+    use std::sync::Mutex;
+
+    use zendiloos_agent_proto::{ErrorCode, RequestId, Response, TransportError};
+
+    #[derive(Default)]
+    struct KeepingHostId {
+        agent: SimulatedAgent,
+        restored: Mutex<Vec<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl AgentTransport for KeepingHostId {
+        async fn call(&self, request: Request, id: Option<RequestId>) -> Result<Response, TransportError> {
+            match request {
+                Request::RestoreConfiguration { files } => {
+                    self.restored
+                        .lock()
+                        .unwrap()
+                        .push(files.iter().map(|file| file.path.as_path()).collect());
+                    if files.iter().any(|file| file.path == ConfigurationPath::HostId) {
+                        return Ok(Response::Error {
+                            code: ErrorCode::Forbidden,
+                            message: "refused: /etc/hostid: kept as it is, as pools are imported here (data)"
+                                .into(),
+                        });
+                    }
+                    Ok(Response::Done)
+                }
+                other => self.agent.call(other, id).await,
+            }
+        }
+    }
+
+    let (_dir, db) = temporary_database().await;
+    let state = tempfile::tempdir().unwrap();
+    let source: Arc<dyn AgentTransport> = Arc::new(SimulatedAgent::new());
+    let snapshots =
+        ConfigurationSnapshots::new(db, source, state.path().to_owned(), "0.1.0", Arc::new(SystemClock));
+    let archive = snapshots.create(&passphrase(), &RequestContext::default()).await.unwrap();
+
+    let agent = Arc::new(KeepingHostId::default());
+    let fresh = tempfile::tempdir().unwrap();
+    let restored = ConfigurationRestorer::new(agent.clone(), fresh.path().to_owned())
+        .restore(archive.bytes, &passphrase(), audit(), &RequestContext::default())
+        .await
+        .unwrap();
+
+    let requests = agent.restored.lock().unwrap().clone();
+    assert_eq!(requests.last().unwrap(), &["/etc/hostid"], "alone, last: {requests:?}");
+    assert!(
+        requests[..requests.len() - 1]
+            .iter()
+            .flatten()
+            .any(|path| path == "/var/lib/samba/private/passdb.tdb")
+    );
+    assert_eq!(restored.warnings.len(), 1, "{:?}", restored.warnings);
+    assert!(
+        restored.warnings[0].starts_with("not put back: /etc/hostid (")
+            && restored.warnings[0].contains("data"),
+        "{:?}",
+        restored.warnings
+    );
+}
+
 #[tokio::test]
 async fn backups_are_written_into_a_share_and_listed_and_removed() {
     let (_dir, db) = temporary_database().await;

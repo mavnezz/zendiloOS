@@ -69,6 +69,11 @@ impl Host {
             useradd: script("useradd", &add("passwd", "990::/nonexistent:/usr/sbin/nologin")),
             groupadd: script("groupadd", &add("group", "")),
             gpasswd: script("gpasswd", ""),
+            // The pools imported: those `pools` names.
+            zpool: script(
+                "zpool",
+                &format!("[ -f {pools} ] && cat {pools}; exit 0", pools = at("pools").display()),
+            ),
             ..Tools::default()
         };
         fs::write(at("passwd"), PASSWD).unwrap();
@@ -217,6 +222,37 @@ async fn a_restore_writes_the_certificates_nginx_takes_and_samba_passwords_while
             "systemctl start smbd.service"
         ]
     );
+}
+
+/// A pool imported here carries this machine's host id in its labels: the
+/// backup's would make it another machine's at the next boot, and ZFS's
+/// units would not import it. The host id stays, and the whole request is
+/// refused before anything is written.
+#[tokio::test]
+async fn the_host_id_stays_while_pools_are_imported_that_carry_this_machines() {
+    let host = Host::new();
+    fs::write(host.at("pools"), "data\n").unwrap();
+    let files = vec![
+        file(ConfigurationPath::SambaPasswords, b"restored TDB"),
+        file(ConfigurationPath::HostId, &[1, 2, 3, 4]),
+    ];
+
+    let response = host.agent.execute(&Request::RestoreConfiguration { files }).await;
+
+    let Response::Error { code, message } = response else { panic!("restored anyway: {response:?}") };
+    assert_eq!(code, ErrorCode::Forbidden);
+    assert!(message.contains("/etc/hostid") && message.contains("data"), "{message}");
+    assert_eq!(fs::read(host.at("hostid")).unwrap(), [0xa1, 0xb2, 0xc3, 0xd4]);
+    assert_eq!(fs::read(host.at("samba/private/passdb.tdb")).unwrap(), b"TDB file\0\x01");
+
+    // The same host id changes nothing for them.
+    let same = vec![file(ConfigurationPath::HostId, &[0xa1, 0xb2, 0xc3, 0xd4])];
+    assert_eq!(host.agent.execute(&Request::RestoreConfiguration { files: same }).await, Response::Done);
+    // Without a pool imported, it is written.
+    fs::remove_file(host.at("pools")).unwrap();
+    let files = vec![file(ConfigurationPath::HostId, &[1, 2, 3, 4])];
+    assert_eq!(host.agent.execute(&Request::RestoreConfiguration { files }).await, Response::Done);
+    assert_eq!(fs::read(host.at("hostid")).unwrap(), [1, 2, 3, 4]);
 }
 
 #[tokio::test]

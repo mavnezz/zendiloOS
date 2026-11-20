@@ -1427,8 +1427,10 @@ TLS is rustls with ring and the system's certificate authorities
   network not at all. What it writes as it is: certificates and keys
   (PEM, checked by `nginx -t` before they stay), Samba's password database
   (as `SetSmbPassword` could set any managed account's), ZFS's host id
-  (four bytes) and the IDs handed out (which only rise); users and groups
-  only with managed IDs, refused when a name or ID is another's.
+  (four bytes; refused, alone, while pools are imported here that carry
+  this machine's, 4.15) and the IDs handed out (which only rise); users
+  and groups only with managed IDs, refused when a name or ID is
+  another's.
 - `Secret` has a redacted `Debug`/`Display` and is never logged.
 - Every operation is logged to the journal with request ID, peer UID/PID and
   result.
@@ -3852,7 +3854,14 @@ names the pools (those its shares, installed apps, personal folders, the
 virtual machines' storage and their disks are on, each with its volume
 number), and the restored `/etc/hostid` makes them this machine's: ZFS
 imports a pool without `-f` only if the machine that used it last has the
-host id this one has now (or the pool was exported). They are not imported
+host id this one has now (or the pool was exported). The host id comes
+back only while no pool is imported here, or if it is this machine's
+already: a pool imported (made or imported before the restore) carries
+this machine's in its labels, and with the backup's ZFS's units would
+take it for another machine's at the next boot and leave it out. The
+agent then keeps it (its own request, so the other files come back), the
+restore says so among its warnings, and the backup's pools are imported
+by force, their names typed. They are not imported
 by themselves: importing a pool another machine still uses would corrupt
 it. At every start zendiloosd compares (section 5, *Pools of another
 installation*): a pool the configuration names that is imported gets its

@@ -3,6 +3,11 @@
 //! and the restorable ones written back from one. Each is a place of the
 //! agent's own; a file is read only if it is a plain file there, never
 //! through a link, and no larger than its place allows.
+//!
+//! The host id is written back only while no pool is imported, or if it is
+//! this machine's already: a pool imported carries this machine's host id
+//! in its labels, and with another one ZFS's units would take it for
+//! another machine's at the next boot and leave it out.
 
 use std::fs;
 use std::io::{self, Read as _};
@@ -81,12 +86,13 @@ impl ConfigurationPaths {
 #[derive(Debug)]
 pub(crate) struct Configuration {
     systemctl: Program,
+    zpool: Program,
     paths: ConfigurationPaths,
 }
 
 impl Configuration {
-    pub(crate) fn new(systemctl: Program, paths: ConfigurationPaths) -> Self {
-        Self { systemctl, paths }
+    pub(crate) fn new(systemctl: Program, zpool: Program, paths: ConfigurationPaths) -> Self {
+        Self { systemctl, zpool, paths }
     }
 
     /// Every file of the configuration that is there, and the accounts.
@@ -138,6 +144,9 @@ impl Configuration {
         for file in files {
             check(file)?;
         }
+        if let Some(file) = files.iter().find(|file| file.path == ConfigurationPath::HostId) {
+            self.check_host_id(file.content.as_bytes()).await?;
+        }
         let mut pairs = Vec::new();
         for file in files {
             let (place, bytes) = (self.paths.place(&file.path), file.content.as_bytes());
@@ -185,6 +194,32 @@ impl Configuration {
         }
         tracing::info!(files = files.len(), "the configuration's files were restored");
         Ok(Response::Done)
+    }
+
+    /// Refuses a host id other than this machine's while pools are
+    /// imported: they carry this one in their labels.
+    async fn check_host_id(&self, restored: &[u8]) -> Result<(), OperationError> {
+        let place = &self.paths.host_id;
+        if read_plain(place, ConfigurationPath::HostId.max_bytes())?.as_deref() == Some(restored) {
+            return Ok(());
+        }
+        let listed = zendiloos_exec::run(&self.zpool, ["list", "-H", "-o", "name"], LIMITS).await?;
+        let listed = listed.success(&self.zpool)?;
+        let pools: Vec<String> = String::from_utf8_lossy(&listed.stdout)
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if pools.is_empty() {
+            return Ok(());
+        }
+        Err(OperationError::Refused(format!(
+            "{}: kept as it is, as pools are imported here ({}) whose labels carry this machine's: \
+             with the backup's, ZFS would take them for another machine's at the next boot and not import \
+             them; the backup's pools are imported by force instead",
+            ConfigurationPath::HostId.as_path(),
+            pools.join(", ")
+        )))
     }
 
     /// Samba's passwords, with Samba stopped meanwhile (it keeps the
