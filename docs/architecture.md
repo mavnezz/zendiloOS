@@ -2619,7 +2619,17 @@ checks the file in a transient unit, and `zendiloos-firewall.service`
 `nftables.service`, and again when that restarts or reloads, as its
 `/etc/nftables.conf` flushes everything) loads it, reloaded after each
 change. Off, the file only
-removes the table; removing the package removes it too.
+removes the table. Removing the package (`apt remove`) leaves the table
+in force, as the services it guards (Samba, NFS, NUT's server, SSH) and
+the VMs run on: nothing loads it again, so it goes at the next start;
+purging the package removes it at once, and with it the secrets zendiloOS
+made (the NAS's SSH key for backups, acme.sh's accounts, the issued
+certificates' keys with the web server's settings, NUT's files with the
+accounts' passwords, those it found there put back) and the units that pin
+shares' folders for apps and projects, which run the agent. The database,
+the Compose files of apps and projects, the pools' mount units and the
+shares' Samba and NFS configuration stay, by which the data stays
+reachable.
 
 **Docker and the machine's own bridges: the one place zendiloOS touches
 Docker's tables.** Debian 13's `docker.io` (26.1.5) loads `br_netfilter`
