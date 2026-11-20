@@ -393,7 +393,7 @@ impl SimVms {
                     Response::Done
                 }
             },
-            Request::BackUpVm { id, folder, stem, .. } => {
+            Request::BackUpVm { id, folder, stem, disks, .. } => {
                 if !self.domains.contains_key(id) {
                     return Some(missing(id));
                 }
@@ -409,7 +409,8 @@ impl SimVms {
                     .iter()
                     .filter_map(|(zvol, size)| {
                         let slot = zvol.rsplit_once(&format!("{}-disk", id.as_str()))?.1.parse().ok()?;
-                        let part = VmBackupPart::Disk { slot: VmDiskSlot::new(slot).ok()?, volsize: *size };
+                        let slot = VmDiskSlot::new(slot).ok().filter(|slot| disks.contains(slot))?;
+                        let part = VmBackupPart::Disk { slot, volsize: *size };
                         Some(VmBackupFile { part, bytes: size / 8, sha256: sim_digest(&part.file_name()) })
                     })
                     .collect();
@@ -904,7 +905,7 @@ mod tests {
 
         let root = serde_json::json!({"kind": "share", "location": {"volume": 1, "share": "backups"}});
         let backup = serde_json::json!({"op": "back_up_vm", "id": id, "root": root, "folder": "vm-backups",
-            "stem": "20261112-030000", "label": "zdl-2026-11-12_05.00.00", "settings": "{\"name\":\"win\"}"});
+            "stem": "20261112-030000", "label": "zdl-2026-11-12_05.00.00", "settings": "{\"name\":\"win\"}", "disks": [0]});
         let Response::VmBackedUp { folder, files, manifest, consistency } = answer(&mut vms, backup.clone())
         else {
             panic!("not backed up")
@@ -949,7 +950,7 @@ mod tests {
             answer(
                 &mut vms,
                 serde_json::json!({"op": "back_up_vm", "id": "0a1b2c3d4e61", "root": root, "folder": "", "stem": "20261112-030000",
-            "label": "zdl-2026-11-12_05.00.00", "settings": "{}"}),
+            "label": "zdl-2026-11-12_05.00.00", "settings": "{}", "disks": [0]}),
             ),
             "no virtual machine",
         );
@@ -1083,7 +1084,7 @@ mod tests {
         let Response::VmBackedUp { consistency, .. } = answer(
             &mut vms,
             serde_json::json!({"op": "back_up_vm", "id": id, "root": root,
-            "folder": "", "stem": "20261112-030000", "label": "zdl-2026-11-12_05.00.00", "settings": "{}"}),
+            "folder": "", "stem": "20261112-030000", "label": "zdl-2026-11-12_05.00.00", "settings": "{}", "disks": [0]}),
         ) else {
             panic!("not backed up")
         };

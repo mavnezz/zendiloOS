@@ -586,8 +586,8 @@ impl Steps for JobSteps {
     }
 }
 
-/// A VM being deleted, changed, backed up or restored: no second such
-/// work on it meanwhile.
+/// A VM being made, deleted, changed, backed up or restored: no second
+/// such work on it meanwhile, and no start.
 struct Busy {
     busy: Arc<Mutex<BTreeMap<String, &'static str>>>,
     id: String,
@@ -606,7 +606,7 @@ type Work = Arc<Mutex<BTreeMap<String, Arc<tokio::sync::Notify>>>>;
 pub struct Vms {
     ports: Arc<VmsPorts>,
     consoles: Arc<OpenConsoles>,
-    /// VMs being deleted, changed, backed up or restored, and which.
+    /// VMs being made, deleted, changed, backed up or restored, and which.
     busy: Arc<Mutex<BTreeMap<String, &'static str>>>,
     /// Backups and restores under way.
     work: Work,
@@ -656,6 +656,19 @@ impl Vms {
             )));
         }
         Ok(id)
+    }
+
+    /// Refused while the VM is backed up, restored, rolled back, changed,
+    /// made or deleted: a start would have QEMU open disks that work is on.
+    /// A snapshot on schedule is short, and the host lets the start wait
+    /// for it.
+    fn not_working(&self, id: &str) -> Result<(), VmsError> {
+        match self.busy.lock().unwrap_or_else(PoisonError::into_inner).get(id) {
+            Some(doing) if *doing != "snapshotted" => {
+                Err(VmsError::Refused(format!("the virtual machine is being {doing}")))
+            }
+            _ => Ok(()),
+        }
     }
 
     fn take_busy(&self, id: &str, what: &'static str) -> Result<Busy, VmsError> {
@@ -852,12 +865,16 @@ impl Vms {
             return Err(VmsError::NameTaken);
         }
         tracing::info!(id = vm.id, cards = %cards(&vm.settings.nics), "vms: recorded");
+        // Its job holds it: a VM not made yet that nothing holds is one whose
+        // making was cut off, and may be deleted.
+        let busy = self.take_busy(&vm.id, "created")?;
         let this = self.clone();
         let (who, context_owned, made) = (actor.clone(), context.clone(), vm.clone());
         let started = self
             .ports
             .jobs
             .start("vms.create", Some(vm.settings.name.clone()), Some(actor), move |progress| async move {
+                let _busy = busy;
                 let done = this.make(&made, library.volume, &progress, &context_owned).await;
                 match &done {
                     Ok(()) => {
@@ -892,13 +909,42 @@ impl Vms {
     }
 
     /// What a failed creation left goes: on the host and in the records.
+    /// Should the host not let go of it, its record stays (not made), so
+    /// that it is not left on the host unseen: it can be deleted by hand,
+    /// and goes at zendiloosd's next start.
     async fn undo(&self, vm: &Vm, context: &RequestContext) {
         if let Err(error) = self.ports.host.remove(vm, context).await {
-            tracing::warn!(%error, id = vm.id, "vms: cannot remove what a failed creation left");
+            tracing::warn!(%error, id = vm.id, "vms: what a failed creation left stays; delete it by hand");
+            return;
         }
         if let Err(error) = self.ports.repository.delete(&vm.id).await {
             tracing::error!(%error, id = vm.id, "vms: cannot forget a virtual machine that was not made");
         }
+    }
+
+    /// VMs whose making, or restore as a new VM, was cut off when zendiloosd
+    /// stopped go, with what of them is on the host: no job makes them any
+    /// more. What still works on one on the host (a restore's unit) is
+    /// ended first. One the host does not let go of stays, to be deleted by
+    /// hand or at the next start. Says how many went.
+    pub async fn discard_unfinished_vms(&self, context: &RequestContext) -> Result<usize, VmsError> {
+        let mut removed = 0;
+        for vm in self.ports.repository.list().await?.into_iter().filter(|vm| !vm.ready) {
+            let Ok(_busy) = self.take_busy(&vm.id, "deleted") else { continue };
+            if let Err(error) = self.ports.host.end_work(&vm.id, context).await {
+                tracing::warn!(%error, id = vm.id, "vms: what works on an unfinished virtual machine may still run");
+            }
+            match self.ports.host.remove(&vm, context).await {
+                Ok(()) => {
+                    self.ports.repository.delete(&vm.id).await?;
+                    removed += 1;
+                }
+                Err(error) => {
+                    tracing::warn!(%error, id = vm.id, "vms: what an unfinished VM left stays; delete it by hand");
+                }
+            }
+        }
+        Ok(removed)
     }
 
     async fn ready(&self, id: &str) -> Result<Vm, VmsError> {
@@ -1002,12 +1048,19 @@ impl Vms {
         let (attach, detach) = settings.usb_changes(&vm.settings);
         let removed = settings.removed_disks(&vm.settings);
         let media = settings.changed_media(&vm.settings);
-        if hardware {
-            let states = self.ports.host.states(context).await?;
-            if states.get(&vm.id) != Some(&PowerState::ShutOff) {
-                return Err(VmsError::Running);
-            }
+        let state = match self.ports.host.states(context).await {
+            Ok(states) => states.get(&vm.id).copied(),
+            Err(error) if hardware => return Err(error.into()),
+            // Its name or autostart changes all the same.
+            Err(_) => None,
+        };
+        if hardware && state != Some(PowerState::ShutOff) {
+            return Err(VmsError::Running);
         }
+        // Saved while it is off, its domain is defined anew from its
+        // settings even if they did not change, so that it holds what they
+        // say (a domain that came apart from them is put right this way).
+        let redefine = hardware || state == Some(PowerState::ShutOff);
         if !removed.is_empty()
             && check_name(confirm.unwrap_or_default()).ok().as_deref() != Some(vm.settings.name.as_str())
         {
@@ -1015,7 +1068,7 @@ impl Vms {
         }
         let changed = Vm { settings, ..vm.clone() };
         let done = async {
-            if hardware {
+            if redefine {
                 self.ports.host.update(&changed, library.volume, &removed, context).await?;
             } else {
                 for drive in &media {
@@ -1054,6 +1107,9 @@ impl Vms {
         context: &RequestContext,
     ) -> Result<VmView, VmsError> {
         let vm = self.ready(id).await?;
+        if action == VmAction::Start {
+            self.not_working(&vm.id)?;
+        }
         let done = self.ports.host.control(&vm.id, action, context).await;
         self.audit(action.audit(), outcome(&done), &vm.settings.name, actor, context).await;
         done?;
@@ -1077,7 +1133,9 @@ impl Vms {
     }
 
     /// Removes the VM with its disks; `confirm` must be its name, typed
-    /// again. The images it had stay in the library.
+    /// again. The images it had stay in the library. A VM not made yet goes
+    /// too once no job makes it any more (its making was cut off, or what
+    /// a failed one left would not go).
     pub async fn delete(
         &self,
         id: &str,
@@ -1085,7 +1143,7 @@ impl Vms {
         actor: &Actor,
         context: &RequestContext,
     ) -> Result<(), VmsError> {
-        let vm = self.ready(id).await?;
+        let vm = self.find(id).await?;
         if check_name(confirm).ok().as_deref() != Some(vm.settings.name.as_str()) {
             return Err(VmsError::ConfirmMismatch);
         }

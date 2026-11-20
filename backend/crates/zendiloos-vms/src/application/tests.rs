@@ -215,6 +215,95 @@ async fn a_failed_creation_leaves_nothing_behind() {
 }
 
 #[tokio::test]
+async fn a_failed_creation_whose_leftovers_stay_keeps_its_record_to_remove_them_later() {
+    let test = TestVms::new(FakeVmHost::ready());
+    *test.host.fail_define.lock().unwrap() = Some("virsh: no such firmware".into());
+    *test.host.fail_remove.lock().unwrap() = Some("a disk is busy".into());
+    let (view, job) = test.vms.create(small("broken"), &alice(), &context()).await.unwrap();
+    assert_eq!(finished(&test, &job).await.state, JobState::Failed);
+    let kept = test.repository.find(&view.vm.id).await.unwrap().expect("kept while its leftovers are");
+    assert!(!kept.ready);
+    // No job makes it any more: it goes by hand, with what is left of it.
+    test.vms.delete(&view.vm.id, "broken", &alice(), &context()).await.unwrap();
+    assert!(test.repository.find(&view.vm.id).await.unwrap().is_none());
+    assert_eq!(test.host.calls().iter().filter(|call| call.starts_with("remove ")).count(), 2);
+}
+
+#[tokio::test]
+async fn a_vm_whose_making_was_cut_off_can_be_deleted_and_one_being_made_cannot() {
+    let test = TestVms::new(FakeVmHost::ready());
+    // As a restart of zendiloosd leaves it: not ready, and no job makes it.
+    let cut = Vm {
+        id: "0000000000aa".into(),
+        settings: small("cut").settings,
+        created_at: Timestamp::from_unix_seconds(0),
+        ready: false,
+    };
+    assert!(test.repository.create(&cut).await.unwrap());
+    test.host.set_state(&cut.id, PowerState::ShutOff);
+    test.vms.delete(&cut.id, "cut", &alice(), &context()).await.unwrap();
+    assert!(test.repository.find(&cut.id).await.unwrap().is_none());
+    assert!(test.host.calls().contains(&format!("remove {}", cut.id)));
+    // While its job makes it: refused.
+    let held = std::sync::Arc::new(tokio::sync::Notify::new());
+    *test.host.hold_define.lock().unwrap() = Some(held.clone());
+    let (view, job) = test.vms.create(small("box"), &alice(), &context()).await.unwrap();
+    let refused = test.vms.delete(&view.vm.id, "box", &alice(), &context()).await;
+    assert!(matches!(&refused, Err(VmsError::Refused(why)) if why.contains("being created")), "{refused:?}");
+    held.notify_one();
+    assert_eq!(finished(&test, &job).await.state, JobState::Succeeded);
+}
+
+#[tokio::test]
+async fn vms_cut_off_while_being_made_go_when_zendiloosd_starts_again() {
+    let test = TestVms::new(FakeVmHost::ready());
+    let ready = made(&test, small("kept")).await;
+    let cut = Vm {
+        id: "0000000000aa".into(),
+        settings: small("cut").settings,
+        created_at: Timestamp::from_unix_seconds(0),
+        ready: false,
+    };
+    let stuck = Vm { id: "0000000000ab".into(), settings: small("stuck").settings, ..cut.clone() };
+    for vm in [&cut, &stuck] {
+        assert!(test.repository.create(vm).await.unwrap());
+        test.host.set_state(&vm.id, PowerState::ShutOff);
+    }
+    // The host does not let go of the first yet: it stays, for the next try.
+    *test.host.fail_remove.lock().unwrap() = Some("a disk is busy".into());
+    let before = test.host.calls().len();
+    assert_eq!(test.vms.discard_unfinished_vms(&context()).await.unwrap(), 1);
+    assert_eq!(
+        test.host.calls().split_off(before),
+        [
+            format!("end_work {}", cut.id),
+            format!("remove {}", cut.id),
+            format!("end_work {}", stuck.id),
+            format!("remove {}", stuck.id)
+        ],
+        "each ended on the host first"
+    );
+    assert!(test.repository.find(&cut.id).await.unwrap().is_some());
+    assert_eq!(test.vms.discard_unfinished_vms(&context()).await.unwrap(), 1);
+    let left: Vec<String> = test.repository.list().await.unwrap().into_iter().map(|vm| vm.id).collect();
+    assert_eq!(left, [ready]);
+}
+
+#[tokio::test]
+async fn saved_while_it_is_off_a_vm_is_defined_anew_even_unchanged() {
+    let test = TestVms::new(FakeVmHost::ready());
+    let id = made(&test, small("box")).await;
+    let vm = test.vms.get(&id, &context()).await.unwrap().vm;
+    test.vms.update(&id, change_of(&vm), None, &alice(), &context()).await.unwrap();
+    assert!(test.host.calls().contains(&format!("update {id} 1 []")), "{:?}", test.host.calls());
+    // Running, an unchanged save asks the host for nothing.
+    test.host.set_state(&id, PowerState::Running);
+    let before = test.host.calls().len();
+    test.vms.update(&id, change_of(&vm), None, &alice(), &context()).await.unwrap();
+    assert_eq!(test.host.calls().len(), before);
+}
+
+#[tokio::test]
 async fn vms_run_and_stop_and_say_so() {
     let test = TestVms::new(FakeVmHost::ready());
     let id = made(&test, small("box")).await;

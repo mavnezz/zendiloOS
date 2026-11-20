@@ -35,13 +35,16 @@ import {
 
 /**
  * One VM; `load`: what it uses now, while it runs and is looked at;
- * `work`: the backup or restore it is in, if one runs.
+ * `work`: the backup or restore it is in, if one runs, which keeps it from
+ * starting; `cutOff`: not made yet, and no job makes it any more, so it
+ * can only be deleted.
  */
 const props = defineProps<{
   vm: VirtualMachine
   load?: VmLoad | null
   busy?: boolean
   work?: Job | null
+  cutOff?: boolean
 }>()
 const emit = defineEmits<{
   console: []
@@ -81,7 +84,7 @@ const more = computed<Action[]>(() => [
     label: t('vms.delete'),
     icon: Trash2,
     destructive: true,
-    disabled: creating.value,
+    disabled: creating.value && !props.cutOff,
   },
 ])
 
@@ -233,7 +236,7 @@ const counted = computed(
         v-else
         size="sm"
         variant="outline"
-        :disabled="busy || creating"
+        :disabled="busy || creating || Boolean(work)"
         @click="emit('start')"
       >
         <Play />

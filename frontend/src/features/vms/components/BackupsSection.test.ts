@@ -219,6 +219,47 @@ describe('backups and snapshots of VMs', () => {
     })
   })
 
+  it('does not start a VM while its backup or restore runs', async () => {
+    await mountVms()
+    const start = () =>
+      [...document.querySelectorAll<HTMLButtonElement>(`[data-vm="${ID}"] button`)].find(
+        (candidate) => candidate.textContent?.trim() === t('vms.start'),
+      )!
+    expect(start().disabled).toBe(false)
+    for (const kind of ['vms.backup', 'vms.restore']) {
+      useJobsStore().update(job({ kind }))
+      await settle()
+      expect(start().disabled).toBe(true)
+      useJobsStore().update(job({ kind, state: 'succeeded' }))
+      await settle()
+      expect(start().disabled).toBe(false)
+    }
+  })
+
+  it('deletes a VM whose making was cut off, but not one being made', async () => {
+    on('GET', '/api/v1/vms', [vm({ state: 'creating' })])
+    await mountVms()
+    const deletable = async () => {
+      const trigger = document.querySelector(
+        `button[aria-label="${t('vms.more', { name: 'office' })}"]`,
+      )!
+      for (const kind of ['pointerdown', 'pointerup', 'click'])
+        trigger.dispatchEvent(new MouseEvent(kind, { bubbles: true, button: 0 }))
+      await settle()
+      const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+        (element) => element.textContent?.includes(t('vms.delete')),
+      )!
+      const enabled = !item.hasAttribute('data-disabled')
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      await settle()
+      return enabled
+    }
+    expect(await deletable()).toBe(true)
+    useJobsStore().update(job({ id: 12, kind: 'vms.create', step: 'defining' }))
+    await settle()
+    expect(await deletable()).toBe(false)
+  })
+
   it('shows a backup running on the card, and cancels it', async () => {
     await mountVms()
     useJobsStore().update(job())

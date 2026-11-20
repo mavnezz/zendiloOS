@@ -163,7 +163,7 @@ const invalid = (size: number, slot: number) =>
         size="sm"
         variant="outline"
         :disabled="disabled || form.disks.length >= DISKS_MAX"
-        @click="form = addDisk(form)"
+        @click="form = addDisk(form, before?.disks)"
       >
         <Plus />
         {{ t('vms.devices.addDisk') }}

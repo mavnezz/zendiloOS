@@ -18,6 +18,8 @@ export const SNAPSHOT_NAME_MAX = 64
 export const DEFAULT_FOLDER = 'vm-backups'
 /** The jobs a VM's backup or restore runs in. */
 export const WORK_KINDS = ['vms.backup', 'vms.restore']
+/** The jobs a VM is made in: made, or restored as a new one. */
+export const MAKING_KINDS = ['vms.create', 'vms.restore']
 
 /** The labels of the snapshots taken after `label`, which a rollback to it destroys. */
 export function newerThan(snapshots: readonly VmSnapshot[], label: string): string[] {
@@ -104,5 +106,12 @@ export function backupTarget(
 export function workOf(jobs: readonly Job[], name: string): Job | undefined {
   return jobs.find(
     (job) => job.state === 'running' && WORK_KINDS.includes(job.kind) && job.target === name,
+  )
+}
+
+/** Whether a job still makes the VM named `name`. */
+export function beingMade(jobs: readonly Job[], name: string): boolean {
+  return jobs.some(
+    (job) => job.state === 'running' && MAKING_KINDS.includes(job.kind) && job.target === name,
   )
 }

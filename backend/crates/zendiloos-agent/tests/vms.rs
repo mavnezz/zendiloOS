@@ -103,15 +103,18 @@ fn host(installed: bool) -> Host {
         &format!(
             "state={state}\nshift 2\n\
              case \"$1\" in\n\
-             domstate) test -f \"$state/$2\" && cat \"$state/$2\" ;;\n\
-             define) name=$(sed -n 's/.*<name>\\(.*\\)<\\/name>.*/\\1/p' \"$3\"); \
+             domstate) if [ -f \"$state/$2\" ]; then cat \"$state/$2\"; else \
+                       echo \"error: failed to get domain '$2'\" >&2; exit 1; fi ;;\n\
+             dumpxml) eval last=\\${{$#}}; cat \"$state/xml.$last\" ;;\n\
+             define) name=$(sed -n 's/.*<name>\\(.*\\)<\\/name>.*/\\1/p' \"$3\"); cp \"$3\" \"$state/xml.$name\"; \
                      uuid=$(sed -n 's/.*<uuid>\\(.*\\)<\\/uuid>.*/\\1/p' \"$3\"); \
                      if [ -f \"$state/$name\" ]; then [ \"$uuid\" = \"$(cat \"$state/uuid.$name\")\" ] || \
                        {{ echo \"error: operation failed: domain '$name' already exists with uuid $(cat \"$state/uuid.$name\")\" >&2; exit 1; }}; \
                      else echo 'shut off' > \"$state/$name\"; echo 8b45cec4-586f-4885-973a-9e24c63b82fe > \"$state/uuid.$name\"; fi ;;\n\
              domuuid) cat \"$state/uuid.$2\" ;;\n\
              undefine) eval last=\\${{$#}}; rm \"$state/$last\" \"$state/uuid.$last\" ;;\n\
-             list) printf ' Id   Name                     State\\n----------------------------------------\\n'\n\
+             list) if [ \"$3\" = --name ]; then for f in \"$state\"/zendiloos-*; do [ -e \"$f\" ] && basename \"$f\"; done; exit 0; fi\n\
+                   printf ' Id   Name                     State\\n----------------------------------------\\n'\n\
                    for f in \"$state\"/zendiloos-*; do [ -e \"$f\" ] && printf ' -    %s   %s\\n' \"$(basename \"$f\")\" \"$(cat \"$f\")\"; done\n\
                    printf ' 3    win10                    running\\n' ;;\n\
              start) grep -q running \"$state/$2\" && {{ echo 'error: Requested operation is not valid: domain is already active' >&2; exit 1; }}; echo running > \"$state/$2\" ;;\n\
@@ -129,18 +132,20 @@ fn host(installed: bool) -> Host {
         "zfs",
         &format!(
             "state={state}\neval last=\\${{$#}}\nzv=\"$state/zvols/$(echo \"$last\" | tr / +)\"\n\
+             missing() {{ echo \"cannot open '$last': dataset does not exist\" >&2; exit 1; }}\n\
              case \"$*\" in\n\
              *'-s local -d 0'*) echo 1 ;;\n\
              'get -H -o value zendiloos:volume tank') echo 1 ;;\n\
              'get -H -o value zendiloos:volume cold') echo 2 ;;\n\
+             'list -H -o name tank'|'list -H -o name cold') exit 0 ;;\n\
              'list -H -o name -d 1 '*) echo \"$last\"; if [ -f \"$state/vms.$last\" ]; then echo \"$last/zendiloos.vms\"; fi ;;\n\
              'list -H -o name -t volume -r '*) for f in \"$state/zvols/${{last%%/*}}+\"*; do [ -e \"$f\" ] && basename \"$f\" | tr + /; done; true ;;\n\
-             'list -H -o name '*/zendiloos.vms) test -f \"$state/vms.${{last%%/*}}\" ;;\n\
-             'list -H -o name '*/zendiloos.vms/*) test -f \"$zv\" ;;\n\
+             'list -H -o name '*/zendiloos.vms) test -f \"$state/vms.${{last%%/*}}\" || missing ;;\n\
+             'list -H -o name '*/zendiloos.vms/*) test -f \"$zv\" || missing ;;\n\
              'list -H -p -r -t filesystem,volume '*) for d in \"$@\"; do case \"$d\" in */zendiloos.vms) \
                  printf '%s\\tfilesystem\\t4096\\t1024\\t1024\\t1000000\\t-\\n' \"$d\"; \
                  for f in \"$state/zvols/${{d%%/*}}+\"*; do [ -e \"$f\" ] && printf '%s\\tvolume\\t2048\\t2048\\t2048\\t1000000\\t%s\\n' \"$(basename \"$f\" | tr + /)\" \"$(cat \"$f\")\"; done ;; esac; done ;;\n\
-             'get -H -p -o value volsize '*) cat \"$zv\" ;;\n\
+             'get -H -p -o value volsize '*) if [ -f \"$zv\" ]; then cat \"$zv\"; else missing; fi ;;\n\
              'create -s -V '*) echo $(( ${{4%G}} * 1073741824 )) > \"$zv\" ;;\n\
              create*zendiloos.vms) touch \"$state/vms.${{last%%/*}}\" ;;\n\
              'set volsize='*) v=${{2#volsize=}}; echo $(( ${{v%G}} * 1073741824 )) > \"$zv\" ;;\n\
@@ -1061,7 +1066,7 @@ async fn a_card_goes_directly_only_on_a_wired_card_or_bond() {
     let xml = fs::read_to_string(host.path(&format!("domains/zendiloos-{ID}.xml"))).unwrap();
     assert!(
         xml.contains(
-            "<interface type='direct'>\n      <mac address='52:54:00:00:00:00'/>\n      \
+            "<interface type='direct'>\n      <!-- card 0 -->\n      <mac address='52:54:00:00:00:00'/>\n      \
              <source dev='enp1s0' mode='bridge'/>\n      <model type='virtio'/>\n    </interface>"
         ),
         "{xml}"
@@ -1118,7 +1123,10 @@ async fn a_card_goes_on_an_internal_network_only_while_the_nas_is_kept_off_it() 
         Response::Done
     );
     let xml = fs::read_to_string(host.path(&format!("domains/zendiloos-{ID}.xml"))).unwrap();
-    assert!(xml.contains("<interface type='bridge'>\n      <mac address='52:54:00:00:00:00'/>\n      <source bridge='vmnet0'/>"), "{xml}");
+    assert!(
+        xml.contains("<interface type='bridge'>\n      <!-- card 0 -->\n      <mac address='52:54:00:00:00:00'/>\n      <source bridge='vmnet0'/>"),
+        "the card is on the internal network's bridge"
+    );
     assert!(
         host.calls().contains(&"systemctl is-active --quiet zendiloos-internal-networks.service".to_owned())
     );

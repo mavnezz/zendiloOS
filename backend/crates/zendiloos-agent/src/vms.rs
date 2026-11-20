@@ -219,8 +219,12 @@ pub(crate) struct Vms {
     paths: VmPaths,
     host: HostPaths,
     /// One change of a VM at a time: two deletes of one VM, or a define
-    /// beside its delete, must not interleave.
+    /// beside its delete, must not interleave; a start comes between none.
     serial: tokio::sync::Mutex<()>,
+    /// The VMs a restore is under way for. A restore does not hold
+    /// [`Vms::serial`] while its unit writes, so other VMs may be changed
+    /// meanwhile; these are neither started, changed nor deleted.
+    restoring: Mutex<BTreeSet<VmId>>,
     uploads: Mutex<BTreeMap<VmImageId, Upload>>,
 }
 
@@ -283,9 +287,26 @@ enum DiskPlan {
     Grow,
 }
 
+/// What a definition does with the domain's autostart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Autostart {
+    /// As its spec says.
+    Spec,
+    /// As it is: a restore turns it off before it writes and back on once
+    /// it is done.
+    Leave,
+}
+
 impl Vms {
     pub(crate) fn new(tools: VmTools, paths: VmPaths, host: HostPaths) -> Self {
-        Self { tools, paths, host, serial: tokio::sync::Mutex::new(()), uploads: Mutex::default() }
+        Self {
+            tools,
+            paths,
+            host,
+            serial: tokio::sync::Mutex::new(()),
+            restoring: Mutex::default(),
+            uploads: Mutex::default(),
+        }
     }
 
     fn installed(&self) -> bool {
@@ -839,14 +860,28 @@ impl Vms {
     }
 
     /// What libvirt says the domain does (`running`, `shut off`, …); none
-    /// if it is not defined.
+    /// if it is not defined. Any other failure of libvirt's (its daemon
+    /// restarting, its socket hanging) is one: a domain libvirt cannot be
+    /// asked about is never taken for one that is not there. virsh says
+    /// "failed to get domain" of both, so the list of all domains tells.
     async fn domain_state(&self, id: &VmId) -> Result<Option<String>, OperationError> {
         let domain = id.domain();
         let output = zendiloos_exec::run(&self.tools.virsh, virsh(&["domstate", &domain]), QUICK).await?;
-        if !output.status.success() {
-            return Ok(None);
+        if output.status.success() {
+            return Ok(Some(String::from_utf8_lossy(&output.stdout).trim().to_owned()));
         }
-        Ok(Some(String::from_utf8_lossy(&output.stdout).trim().to_owned()))
+        let complaint = output.stderr.trim().trim_start_matches("error: ").replace('\n', " ");
+        let cannot =
+            |why: &str| OperationError::Failed(format!("libvirt does not say what {domain} does: {why}"));
+        let listed =
+            zendiloos_exec::run(&self.tools.virsh, virsh(&["list", "--all", "--name"]), QUICK).await?;
+        if !listed.status.success() {
+            return Err(cannot(&listed.stderr.trim().trim_start_matches("error: ").replace('\n', " ")));
+        }
+        if String::from_utf8_lossy(&listed.stdout).lines().any(|name| name.trim() == domain) {
+            return Err(cannot(&complaint));
+        }
+        Ok(None)
     }
 
     async fn defined(&self, id: &VmId) -> Result<bool, OperationError> {
@@ -866,7 +901,8 @@ impl Vms {
         Ok(uuid)
     }
 
-    /// The zvol's size in bytes; none if there is no such zvol.
+    /// The zvol's size in bytes; none if there is no such zvol. That ZFS
+    /// could not be asked is no such answer (see [`Vms::exists`]).
     async fn volsize(&self, dataset: &str) -> Result<Option<u64>, OperationError> {
         let output = zendiloos_exec::run(
             &self.tools.zfs,
@@ -874,16 +910,75 @@ impl Vms {
             QUICK,
         )
         .await?;
-        if !output.status.success() {
-            return Ok(None);
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).trim().parse().ok());
         }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().parse().ok())
+        self.missing(dataset, &output.stderr).await.map(|()| None)
     }
 
+    /// Whether the dataset is there. Only ZFS's "dataset does not exist",
+    /// with the dataset's pool there, says it is not: a pool that is not
+    /// imported says the same of every dataset of it, and anything else is
+    /// no answer. A disk taken for gone that is not would be left out of an
+    /// undo, or made anew over itself.
     async fn exists(&self, dataset: &str) -> Result<bool, OperationError> {
         let output =
             zendiloos_exec::run(&self.tools.zfs, ["list", "-H", "-o", "name", dataset], QUICK).await?;
-        Ok(output.status.success())
+        if output.status.success() {
+            return Ok(true);
+        }
+        self.missing(dataset, &output.stderr).await.map(|()| false)
+    }
+
+    /// Fine if ZFS's `complaint` about `dataset` is that it does not exist
+    /// and its pool is imported; else what ZFS said.
+    async fn missing(&self, dataset: &str, complaint: &str) -> Result<(), OperationError> {
+        let said = || {
+            let complaint = complaint.trim().replace('\n', " ");
+            OperationError::Failed(format!("ZFS does not say whether {dataset} is there: {complaint}"))
+        };
+        let pool = dataset.split('/').next().unwrap_or(dataset);
+        if !complaint.contains("dataset does not exist") || pool == dataset {
+            return Err(said());
+        }
+        let imported =
+            zendiloos_exec::run(&self.tools.zfs, ["list", "-H", "-o", "name", pool], QUICK).await?;
+        if imported.status.success() { Ok(()) } else { Err(said()) }
+    }
+
+    /// The zvols of the VM's disks in `spec` that its domain, as libvirt
+    /// has it, does not use: left from a disk removed before whose zvol
+    /// did not go, or on another location than the disk now. A disk of
+    /// `spec` in such a slot is a new one, so they go first; one that does
+    /// not refuses the change, and a new disk is never an old one with its
+    /// data.
+    async fn clear_leftovers(&self, spec: &VmSpec) -> Result<(), OperationError> {
+        let domain = spec.id.domain();
+        let defined =
+            zendiloos_exec::run(&self.tools.virsh, virsh(&["dumpxml", "--inactive", &domain]), QUICK)
+                .await?
+                .success(&self.tools.virsh)?;
+        let defined = String::from_utf8_lossy(&defined.stdout).into_owned();
+        for disk in spec.disks() {
+            for zvol in self.zvols_in(&spec.id, disk.slot).await? {
+                let device = self.paths.zvols.join(&zvol);
+                if defined.contains(&format!("dev='{}'", device.display())) {
+                    continue;
+                }
+                tracing::warn!(
+                    vm = spec.id.as_str(),
+                    zvol,
+                    "vms: a zvol left from a disk removed before goes"
+                );
+                run(&self.tools.zfs, &["destroy", "-r", &zvol], SLOW).await.map_err(|error| {
+                    refused(format!(
+                        "disk {} would be {zvol}, left from a disk removed before, which does not go: {error}",
+                        disk.slot.get()
+                    ))
+                })?;
+            }
+        }
+        Ok(())
     }
 
     /// The images the drives hold are in the library, the bridges the cards
@@ -996,7 +1091,7 @@ impl Vms {
             }
             made.push(zvol);
         }
-        if let Err(error) = self.define_domain(spec, false).await {
+        if let Err(error) = self.define_domain(spec, false, Autostart::Spec).await {
             self.destroy_disks(&made).await;
             return Err(error);
         }
@@ -1014,7 +1109,7 @@ impl Vms {
         let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_installed()?;
         self.locations_of(spec).await?;
-        self.not_busy(&spec.id).await?;
+        self.settled(&spec.id).await?;
         match self.domain_state(&spec.id).await? {
             None => return Err(refused(format!("there is no virtual machine {}", spec.id.as_str()))),
             Some(state) if state != "shut off" => {
@@ -1028,6 +1123,7 @@ impl Vms {
             return Err(refused(format!("disk {} is both kept and removed", slot.get())));
         }
         self.check_devices(spec).await?;
+        self.clear_leftovers(spec).await?;
         let mut plan = Vec::new();
         for disk in spec.disks() {
             let zvol = Self::disk_zvol(spec, disk);
@@ -1071,16 +1167,34 @@ impl Vms {
                 return Err(error);
             }
         }
-        if let Err(error) = self.define_domain(spec, true).await {
+        if let Err(error) = self.define_domain(spec, true, Autostart::Spec).await {
             self.destroy_disks(&made).await;
             return Err(error);
         }
+        // The VM is as `spec` says now, whatever comes of its old disks.
+        self.destroy_removed(&spec.id, remove).await;
+        Ok(Response::Done)
+    }
+
+    /// Destroys the disks in `remove` (with their snapshots) once the
+    /// domain no longer names them. One that does not go stays where it is
+    /// and is said: the change holds all the same, so zendiloosd records
+    /// what the domain is now.
+    async fn destroy_removed(&self, id: &VmId, remove: &[VmDiskSlot]) {
         for slot in remove {
-            for zvol in self.zvols_in(&spec.id, *slot).await? {
-                run(&self.tools.zfs, &["destroy", "-r", &zvol], SLOW).await?;
+            let zvols = match self.zvols_in(id, *slot).await {
+                Ok(zvols) => zvols,
+                Err(error) => {
+                    tracing::warn!(%error, vm = id.as_str(), slot = slot.get(), "vms: a removed disk may stay");
+                    continue;
+                }
+            };
+            for zvol in zvols {
+                if let Err(error) = run(&self.tools.zfs, &["destroy", "-r", &zvol], SLOW).await {
+                    tracing::warn!(%error, vm = id.as_str(), zvol, "vms: a removed disk stays");
+                }
             }
         }
-        Ok(Response::Done)
     }
 
     /// Puts the image `spec` has in drive `slot` into it, or ejects it: the
@@ -1093,12 +1207,13 @@ impl Vms {
         let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_installed()?;
         self.locations_of(spec).await?;
+        self.not_restoring(&spec.id).await?;
         let Some(state) = self.domain_state(&spec.id).await? else {
             return Err(refused(format!("there is no virtual machine {}", spec.id.as_str())));
         };
         let drive = spec.drive(slot).ok_or_else(|| refused(format!("there is no drive {}", slot.get())))?;
         self.check_devices(spec).await?;
-        self.define_domain(spec, true).await?;
+        self.define_domain(spec, true, Autostart::Spec).await?;
         if !ON.contains(&state.as_str()) {
             return Ok(Response::Done);
         }
@@ -1135,6 +1250,7 @@ impl Vms {
         let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_installed()?;
         self.locations_of(spec).await?;
+        self.not_restoring(&spec.id).await?;
         let Some(state) = self.domain_state(&spec.id).await? else {
             return Err(refused(format!("there is no virtual machine {}", spec.id.as_str())));
         };
@@ -1155,7 +1271,7 @@ impl Vms {
             }
         }
         self.check_devices(spec).await?;
-        self.define_domain(spec, true).await?;
+        self.define_domain(spec, true, Autostart::Spec).await?;
         if !running {
             return Ok(Response::Done);
         }
@@ -1190,8 +1306,16 @@ impl Vms {
 
     /// Writes the domain's XML and defines it; the file kept is libvirt's
     /// definition, also when libvirt refuses the new one. `existing`: the
-    /// domain is defined already, and autostart follows `spec` either way.
-    async fn define_domain(&self, spec: &VmSpec, existing: bool) -> Result<(), OperationError> {
+    /// domain is defined already. Fails only while libvirt has not taken
+    /// the definition: once it has, the disks it names are the VM's, and
+    /// what follows (the file kept, the UEFI variables' marker, autostart)
+    /// only warns should it fail, so no caller undoes them under it.
+    async fn define_domain(
+        &self,
+        spec: &VmSpec,
+        existing: bool,
+        autostart: Autostart,
+    ) -> Result<(), OperationError> {
         let console = self.paths.consoles.join(format!("{}.vnc", spec.id.as_str()));
         let uuid = if existing { Some(self.domain_uuid(&spec.id).await?) } else { None };
         let places = Places {
@@ -1223,7 +1347,8 @@ impl Vms {
         // Another firmware, or Secure Boot switched: the UEFI variables
         // start afresh from the new firmware's template at the next start.
         let before = fs::read_to_string(&file).ok();
-        let fresh_nvram = existing && before.is_some_and(|before| os_section(&before) != os_section(&xml));
+        let fresh_nvram =
+            existing && before.as_deref().is_some_and(|before| os_section(before) != os_section(&xml));
         let new = file.with_extension("xml.new");
         crate::durable::replace(&new, xml.as_bytes())?;
         let path = new.to_string_lossy().into_owned();
@@ -1231,15 +1356,29 @@ impl Vms {
             let _ = fs::remove_file(&new);
             return Err(error);
         }
-        fs::rename(&new, &file).map_err(|e| OperationError::Write(file.clone(), e))?;
-        if fresh_nvram {
-            crate::durable::replace(&self.reset_marker(&spec.id), b"")?;
+        let vm = spec.id.as_str();
+        if existing && let Some(before) = &before {
+            // Issue #71: where a card's address came from when it changes.
+            for (slot, was, now) in changed_macs(before, &xml) {
+                tracing::warn!(vm, slot, before = was, after = now, "vms: a card's MAC address changed");
+            }
+        }
+        if let Err(error) = fs::rename(&new, &file) {
+            tracing::error!(%error, vm, "vms: libvirt took the definition, but it is not kept");
+        }
+        if fresh_nvram && let Err(error) = crate::durable::replace(&self.reset_marker(&spec.id), b"") {
+            tracing::error!(%error, vm, "vms: the UEFI variables will not start afresh at the next start");
         }
         let domain = spec.id.domain();
-        if spec.autostart {
-            run(&self.tools.virsh, &virsh(&["autostart", &domain]), QUICK).await?;
-        } else if existing {
-            run(&self.tools.virsh, &virsh(&["autostart", "--disable", &domain]), QUICK).await?;
+        let args: Option<Vec<&str>> = match autostart {
+            Autostart::Spec if spec.autostart => Some(vec!["autostart", domain.as_str()]),
+            Autostart::Spec if existing => Some(vec!["autostart", "--disable", domain.as_str()]),
+            Autostart::Spec | Autostart::Leave => None,
+        };
+        if let Some(args) = args
+            && let Err(error) = run(&self.tools.virsh, &virsh(&args), QUICK).await
+        {
+            tracing::warn!(%error, vm, autostart = spec.autostart, "vms: the VM's autostart did not change");
         }
         Ok(())
     }
@@ -1247,6 +1386,8 @@ impl Vms {
     pub(crate) async fn set_autostart(&self, id: &VmId, autostart: bool) -> Result<Response, OperationError> {
         let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_defined(id).await?;
+        // A VM being restored starts with the machine only once it is.
+        self.not_restoring(id).await?;
         let domain = id.domain();
         let args: &[&str] =
             if autostart { &["autostart", &domain] } else { &["autostart", "--disable", &domain] };
@@ -1263,12 +1404,21 @@ impl Vms {
         }
     }
 
+    /// Starts, shuts down, restarts or powers off the VM. A start is one of
+    /// the VM's changes: it waits for one under way (a rollback, a change
+    /// of its hardware) and is refused while its disks are being restored
+    /// or backed up, so QEMU never opens a disk something else writes.
     pub(crate) async fn control(&self, id: &VmId, action: VmAction) -> Result<Response, OperationError> {
+        let _serial = match action {
+            VmAction::Start => Some(crate::waiting::lock(&self.serial).await?),
+            VmAction::Shutdown | VmAction::ForceOff | VmAction::Reboot => None,
+        };
         self.require_defined(id).await?;
         let domain = id.domain();
         let reset = self.reset_marker(id);
         let args: Vec<&str> = match action {
             VmAction::Start => {
+                self.settled(id).await?;
                 self.check_handed_over(id).await?;
                 // Gone after a restart until systemd-tmpfiles made it again.
                 self.make_consoles().await?;
@@ -1292,13 +1442,23 @@ impl Vms {
 
     /// Powers the VM off, undefines it, destroys its disks on every location
     /// and removes its XML; the library's images stay. What is gone already
-    /// is no failure, so a VM whose creation failed halfway goes too.
+    /// is no failure, so a VM whose creation failed halfway goes too, and
+    /// one whose restore was cut off.
     pub(crate) async fn delete(&self, id: &VmId) -> Result<Response, OperationError> {
         let _serial = crate::waiting::lock(&self.serial).await?;
         self.not_busy(id).await?;
         if vms_locations(&self.host).is_empty() {
             return Err(refused("the virtual machines' storage is not set up"));
         }
+        self.remove_vm(id).await?;
+        // A restore cut off is not undone any more: the VM is gone. Should
+        // the removal fail, it still is, before the VM is next used.
+        self.forget_restore(id)?;
+        Ok(Response::Done)
+    }
+
+    /// What [`Vms::delete`] does, with the lock held.
+    pub(super) async fn remove_vm(&self, id: &VmId) -> Result<(), OperationError> {
         let domain = id.domain();
         if self.installed() && self.defined(id).await? {
             // Not running is fine; anything else shows in undefine.
@@ -1313,16 +1473,11 @@ impl Vms {
                 run(&self.tools.zfs, &["destroy", "-r", &zvol], SLOW).await?;
             }
         }
-        for file in
-            [self.domain_file(id), self.domain_file(id).with_extension("xml.new"), self.reset_marker(id)]
-        {
-            match fs::remove_file(&file) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(OperationError::Write(file, error)),
-            }
+        let file = self.domain_file(id);
+        for file in [file.with_extension("xml.new"), self.reset_marker(id), file] {
+            remove_if_there(&file)?;
         }
-        Ok(Response::Done)
+        Ok(())
     }
 
     /// `virsh list --all`, for zendiloosd to read.
@@ -1499,6 +1654,15 @@ async fn run(program: &Program, args: &[&str], limits: Limits) -> Result<(), Ope
     Err(OperationError::Failed(format!("{name} failed: {complaint}")))
 }
 
+/// Removes `file`; one that is not there is no failure.
+fn remove_if_there(file: &Path) -> Result<(), OperationError> {
+    match fs::remove_file(file) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(OperationError::Write(file.to_owned(), error)),
+    }
+}
+
 /// Writes one of zendiloOS's files for libvirt, unless an administrator
 /// wrote that file.
 fn write_own(path: &Path, content: &str) -> Result<(), OperationError> {
@@ -1601,6 +1765,45 @@ fn usb_hostdev(device: VmUsbDevice, indent: &str) -> String {
     )
 }
 
+/// The MAC address of each card of a domain's XML as zendiloOS writes it,
+/// by the card's slot; cards of a file without slots (written before they
+/// were noted) are left out.
+fn card_macs(xml: &str) -> BTreeMap<u8, String> {
+    let mut found = BTreeMap::new();
+    let mut rest = xml;
+    while let Some(start) = rest.find("<interface ") {
+        let card = &rest[start..];
+        let end = card.find("</interface>").map_or(card.len(), |end| end + "</interface>".len());
+        let (card, after) = card.split_at(end);
+        let slot = card
+            .split_once("<!-- card ")
+            .and_then(|(_, rest)| rest.split_once(" -->"))
+            .and_then(|(slot, _)| slot.parse().ok());
+        let mac = card
+            .split_once("<mac address='")
+            .and_then(|(_, rest)| rest.split_once('\''))
+            .map(|(mac, _)| mac.to_owned());
+        if let (Some(slot), Some(mac)) = (slot, mac) {
+            found.insert(slot, mac);
+        }
+        rest = after;
+    }
+    found
+}
+
+/// The cards whose slot has another MAC address in `after` than in
+/// `before`: the slot, the address before, the address after.
+fn changed_macs(before: &str, after: &str) -> Vec<(u8, String, String)> {
+    let before = card_macs(before);
+    card_macs(after)
+        .into_iter()
+        .filter_map(|(slot, now)| match before.get(&slot) {
+            Some(was) if *was != now => Some((slot, was.clone(), now)),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The `<os>` element of a domain's XML: another one means another firmware.
 fn os_section(xml: &str) -> &str {
     let start = xml.find("<os").unwrap_or(0);
@@ -1696,25 +1899,28 @@ pub(crate) fn domain_xml(spec: &VmSpec, places: &Places) -> String {
             VmNicModel::Virtio => "virtio",
             VmNicModel::E1000e => "e1000e",
         };
-        let mac = escape(nic.mac.as_str());
+        // The card's slot, for the file kept alone (libvirt drops comments):
+        // a change says when a slot's address changes (issue #71).
+        let mac =
+            format!("<!-- card {} -->\n      <mac address='{}'/>", nic.slot.get(), escape(nic.mac.as_str()));
         devices.push_str(&match &nic.network {
             // passt: the VM's traffic leaves from the NAS's own address; no
             // bridge, no NAT rules, nothing reaches the VM.
             VmNetwork::User => format!(
-                "    <interface type='user'>\n      <mac address='{mac}'/>\n      <backend type='passt'/>\n      \
+                "    <interface type='user'>\n      {mac}\n      <backend type='passt'/>\n      \
                  <model type='{model}'/>\n    </interface>\n"
             ),
             // A bridge of the host's, or an internal network: libvirt puts
             // the VM's tap on it.
             VmNetwork::Bridge { bridge } | VmNetwork::Internal { bridge } => format!(
-                "    <interface type='bridge'>\n      <mac address='{mac}'/>\n      <source bridge='{}'/>\n      \
+                "    <interface type='bridge'>\n      {mac}\n      <source bridge='{}'/>\n      \
                  <model type='{model}'/>\n    </interface>\n",
                 escape(bridge.as_str())
             ),
             // macvtap on the card, in bridge mode: on the card's LAN
             // without a bridge; the NAS and the VM do not reach each other.
             VmNetwork::Direct { card } => format!(
-                "    <interface type='direct'>\n      <mac address='{mac}'/>\n      \
+                "    <interface type='direct'>\n      {mac}\n      \
                  <source dev='{}' mode='bridge'/>\n      <model type='{model}'/>\n    </interface>\n",
                 escape(card.as_str())
             ),
@@ -1850,6 +2056,31 @@ mod tests {
     }
 
     #[test]
+    fn a_card_whose_slot_gets_another_address_is_found() {
+        let on = |slot: u8, mac: &str| VmNic {
+            mac: MacAddress::parse(mac).unwrap(),
+            ..nic(slot, VmNicModel::Virtio, VmNetwork::User)
+        };
+        let with =
+            |nics: Vec<VmNic>| xml(&spec(VmOs::Linux, VmFirmware::Uefi, VmDevices { nics, ..linux() }));
+        let before = with(vec![on(0, "52:54:00:00:00:0a"), on(2, "52:54:00:00:00:0c")]);
+        assert_eq!(
+            card_macs(&before).into_iter().collect::<Vec<_>>(),
+            [(0, "52:54:00:00:00:0a".to_owned()), (2, "52:54:00:00:00:0c".to_owned())]
+        );
+        // Slot 2 gets another address, slot 1 is new, slot 0 stays.
+        let after =
+            with(vec![on(0, "52:54:00:00:00:0a"), on(1, "52:54:00:00:00:0b"), on(2, "52:54:00:00:00:0d")]);
+        assert_eq!(
+            changed_macs(&before, &after),
+            [(2, "52:54:00:00:00:0c".to_owned(), "52:54:00:00:00:0d".to_owned())]
+        );
+        // A file written before the slots were noted says nothing.
+        let old = before.replace("<!-- card 0 -->", "").replace("<!-- card 2 -->", "");
+        assert!(changed_macs(&old, &after).is_empty());
+    }
+
+    #[test]
     fn a_domain_defined_again_keeps_its_uuid() {
         let spec = spec(VmOs::Linux, VmFirmware::Uefi, linux());
         let mut places = Places {
@@ -1884,7 +2115,7 @@ mod tests {
             "<feature enabled='no' name='secure-boot'/>",
             "<source dev='/dev/zvol/tank/zendiloos.vms/0a1b2c3d4e5f-disk0'/>\n      <target dev='vda' bus='virtio'/>\n      <boot order='2'/>",
             "<source file='/volume1/@vms/isos/00000000000a.iso'/>\n      <target dev='sdi' bus='sata'/>\n      <readonly/>\n      <boot order='1'/>",
-            "<interface type='user'>\n      <mac address='52:54:00:00:00:00'/>\n      <backend type='passt'/>\n      <model type='virtio'/>",
+            "<interface type='user'>\n      <!-- card 0 -->\n      <mac address='52:54:00:00:00:00'/>\n      <backend type='passt'/>\n      <model type='virtio'/>",
             "<listen type='socket' socket='/run/zendiloos-vms/0a1b2c3d4e5f.vnc'/>",
             "<clock offset='utc'/>",
             "<stats period='5'/>",
@@ -1920,12 +2151,12 @@ mod tests {
         };
         let xml = xml(&spec(VmOs::Linux, VmFirmware::Uefi, devices));
         assert!(xml.contains(
-            "<interface type='bridge'>\n      <mac address='52:54:00:00:00:00'/>\n      <source bridge='vmnet0'/>\n      \
+            "<interface type='bridge'>\n      <!-- card 0 -->\n      <mac address='52:54:00:00:00:00'/>\n      <source bridge='vmnet0'/>\n      \
              <model type='virtio'/>\n    </interface>"
         ), "{xml}");
         assert!(
             xml.contains(
-                "<interface type='direct'>\n      <mac address='52:54:00:00:00:01'/>\n      \
+                "<interface type='direct'>\n      <!-- card 1 -->\n      <mac address='52:54:00:00:00:01'/>\n      \
              <source dev='enp2s0' mode='bridge'/>\n      <model type='e1000e'/>\n    </interface>"
             ),
             "{xml}"
@@ -1996,7 +2227,7 @@ mod tests {
         assert_eq!(xml.matches("<boot order=").count(), 2, "only what is in the boot order boots");
         assert!(at("52:54:00:00:00:00") < at("52:54:00:00:00:01"), "cards by slot");
         assert!(xml.contains(
-            "<interface type='bridge'>\n      <mac address='52:54:00:00:00:01'/>\n      <source bridge='br0'/>\n      <model type='e1000e'/>"
+            "<interface type='bridge'>\n      <!-- card 1 -->\n      <mac address='52:54:00:00:00:01'/>\n      <source bridge='br0'/>\n      <model type='e1000e'/>"
         ));
         assert_eq!(xml.matches("<interface ").count(), 2);
         assert_eq!(xml.matches("<disk ").count(), 5);

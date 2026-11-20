@@ -795,7 +795,7 @@ async fn control(
     responses(
         (status = OK, body = VirtualMachine),
         (status = NOT_FOUND, body = Problem, description = "`not_found`"),
-        (status = CONFLICT, body = Problem, description = "`vm_creating`; `refused`: libvirt's reason, such as it runs already"),
+        (status = CONFLICT, body = Problem, description = "`vm_creating`; `refused`: libvirt's reason, such as it runs already, or it is being backed up, restored, rolled back, changed or deleted"),
     )
 )]
 async fn start_vm(
@@ -912,7 +912,8 @@ pub struct DeleteVmRequest {
 }
 
 /// Removes the VM: powered off, undefined, its disks destroyed; the images
-/// it had stay in the library. Needs `vms.manage`.
+/// it had stay in the library. A VM not made yet goes too once no job makes
+/// it any more (its making cut off by a restart). Needs `vms.manage`.
 #[utoipa::path(
     post,
     path = "/vms/{id}/delete",
@@ -923,7 +924,7 @@ pub struct DeleteVmRequest {
     responses(
         (status = NO_CONTENT),
         (status = NOT_FOUND, body = Problem, description = "`not_found`"),
-        (status = CONFLICT, body = Problem, description = "`vm_creating`; `refused`"),
+        (status = CONFLICT, body = Problem, description = "`refused`: it is being made, backed up, restored or changed; one not made yet goes once no job makes it any more"),
         (status = UNPROCESSABLE_ENTITY, body = Problem, description = "`confirmation_mismatch`"),
     )
 )]

@@ -6,12 +6,15 @@
 //!
 //! `zfs snapshot` takes all snapshots it is given in one transaction, but
 //! only within one pool. A running VM's file systems are frozen first by
-//! the QEMU guest agent if the guest runs it (`virsh domfsfreeze`); without
-//! it the snapshot is crash-consistent, and a VM whose disks are on more
-//! than one pool is paused meanwhile, so that its disks' snapshots are of
-//! one moment. A rollback is only for a VM that is shut off.
+//! the QEMU guest agent if the guest runs it (`virsh domfsfreeze`, thawed
+//! after every freeze asked for, also one that failed); without it the
+//! snapshot is crash-consistent, and a VM whose disks are on more than one
+//! pool is paused meanwhile, so that its disks' snapshots are of one
+//! moment, or not snapshotted if it cannot be. A rollback is only for a VM
+//! that is shut off, and nothing starts it meanwhile.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use zendiloos_agent_proto::{
     Response, SnapshotFrequency, SnapshotLabel, SnapshotNote, VmConsistency, VmDiskSlot, VmId,
@@ -23,6 +26,10 @@ use crate::pools::{NOTE_PROPERTY, SCHEDULE_PROPERTY};
 
 /// How consistent a snapshot is, as a ZFS property.
 pub(crate) const CONSISTENCY_PROPERTY: &str = "zendiloos:consistency";
+/// How often a thaw or a resume is asked for before it is given up.
+const TRIES: usize = 3;
+/// How long the guest is given between two of them.
+const TRY_AGAIN: Duration = Duration::from_secs(2);
 
 impl Vms {
     /// The VM's zvols there are, on every location: the slot and the zvol.
@@ -56,6 +63,7 @@ impl Vms {
     ) -> Result<Response, OperationError> {
         let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_defined(id).await?;
+        self.not_restoring(id).await?;
         let consistency = self.take_snapshot(id, label, schedules, note).await?;
         Ok(Response::VmSnapshotTaken { consistency })
     }
@@ -87,16 +95,37 @@ impl Vms {
         // QEMU runs: paused, its disks are as at a power cut too.
         let on = ON.contains(&state.as_str());
         let running = on && state != "paused";
-        let frozen = running
-            && zendiloos_exec::run(&self.tools.virsh, virsh(&["domfsfreeze", &domain]), QUICK)
-                .await
-                .is_ok_and(|output| output.status.success());
+        let froze = if running {
+            Some(zendiloos_exec::run(&self.tools.virsh, virsh(&["domfsfreeze", &domain]), QUICK).await)
+        } else {
+            None
+        };
+        let frozen = froze.as_ref().is_some_and(|froze| froze.as_ref().is_ok_and(|out| out.status.success()));
+        // A guest without an agent has nothing frozen; any other failure of
+        // the freeze (libvirt or virsh gave up waiting) may have frozen it
+        // after all.
+        let thaw = froze.is_some_and(|froze| match froze {
+            Ok(out) => {
+                out.status.success()
+                    || !(out.stderr.contains("not connected") || out.stderr.contains("not configured"))
+            }
+            Err(_) => true,
+        });
         let paused = running
             && !frozen
             && pools.len() > 1
             && zendiloos_exec::run(&self.tools.virsh, virsh(&["suspend", &domain]), QUICK)
                 .await
                 .is_ok_and(|output| output.status.success());
+        if running && !frozen && pools.len() > 1 && !paused {
+            if thaw {
+                self.thaw(&domain, frozen).await;
+            }
+            return Err(refused(
+                "the virtual machine's disks lie on more than one pool, and it could neither be frozen nor \
+                 paused: their snapshots would not be of one moment",
+            ));
+        }
         let consistency = match (on, frozen) {
             (false, _) => VmConsistency::Off,
             (true, true) => VmConsistency::Frozen,
@@ -124,17 +153,11 @@ impl Vms {
             taken.extend(snapshots.iter().cloned());
         }
         // Whatever came of it, the guest goes on.
-        if frozen {
-            let thawed = zendiloos_exec::run(&self.tools.virsh, virsh(&["domfsthaw", &domain]), QUICK).await;
-            if !thawed.is_ok_and(|output| output.status.success()) {
-                tracing::warn!(domain, "vms: the guest's file systems may still be frozen");
-            }
+        if thaw {
+            self.thaw(&domain, frozen).await;
         }
-        if paused {
-            let resumed = zendiloos_exec::run(&self.tools.virsh, virsh(&["resume", &domain]), QUICK).await;
-            if !resumed.is_ok_and(|output| output.status.success()) {
-                tracing::warn!(domain, "vms: the virtual machine paused for its snapshot did not resume");
-            }
+        if paused && !self.again(&["resume", &domain]).await {
+            tracing::error!(domain, "vms: the virtual machine paused for its snapshot did not resume");
         }
         if let Err(error) = done {
             // Of one moment, or none: those of other pools go again.
@@ -144,6 +167,30 @@ impl Vms {
             return Err(error);
         }
         Ok(consistency)
+    }
+
+    /// Thaws the guest's file systems after a freeze was asked for:
+    /// `frozen`, it said so; else it failed, but may have frozen them after
+    /// libvirt stopped waiting, and nothing else would thaw them. A thaw of
+    /// file systems that are not frozen does nothing.
+    async fn thaw(&self, domain: &str, frozen: bool) {
+        if !self.again(&["domfsthaw", domain]).await {
+            tracing::warn!(domain, frozen, "vms: the guest's file systems may still be frozen");
+        }
+    }
+
+    /// Asks libvirt for `args` until it did, a few times; whether it did.
+    async fn again(&self, args: &[&str]) -> bool {
+        for attempt in 0..TRIES {
+            if attempt > 0 {
+                tokio::time::sleep(TRY_AGAIN).await;
+            }
+            let done = zendiloos_exec::run(&self.tools.virsh, virsh(args), QUICK).await;
+            if done.is_ok_and(|output| output.status.success()) {
+                return true;
+            }
+        }
+        false
     }
 
     /// The snapshots of every location's zvols, for zendiloosd to read.
@@ -170,6 +217,8 @@ impl Vms {
         label: &SnapshotLabel,
     ) -> Result<Response, OperationError> {
         let _serial = crate::waiting::lock(&self.serial).await?;
+        // Not the one a restore returns to.
+        self.not_restoring(id).await?;
         self.destroy_snapshots(id, label).await?;
         Ok(Response::Done)
     }
@@ -201,7 +250,7 @@ impl Vms {
     ) -> Result<Response, OperationError> {
         let _serial = crate::waiting::lock(&self.serial).await?;
         self.require_shut_off(id).await?;
-        self.not_busy(id).await?;
+        self.settled(id).await?;
         let zvols = self.vm_zvols(id).await?;
         let mut with = Vec::new();
         for (_, zvol) in zvols {

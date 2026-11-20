@@ -193,17 +193,32 @@ export function withFirmware(form: VmForm, firmware: VmFirmware): VmForm {
   return { ...form, firmware, secureBoot: firmware === 'uefi' && form.secureBoot }
 }
 
-/** The lowest slot below `max` none of `taken` has. */
-function freeSlot(taken: { slot: number }[], max: number): number | null {
-  for (let slot = 0; slot < max; slot++) if (!taken.some((item) => item.slot === slot)) return slot
+/**
+ * The lowest slot below `max` none of `taken` has; one a device of the VM
+ * as it is saved (`before`) had only once there is no other: a disk added
+ * there would be the removed disk's zvol, a card would get the removed
+ * card's MAC address.
+ */
+function freeSlot(
+  taken: readonly { slot: number }[],
+  max: number,
+  before: readonly { slot: number }[] = [],
+): number | null {
+  const free = (slot: number) => !taken.some((item) => item.slot === slot)
+  for (let slot = 0; slot < max; slot++)
+    if (free(slot) && !before.some((item) => item.slot === slot)) return slot
+  for (let slot = 0; slot < max; slot++) if (free(slot)) return slot
   return null
 }
 
 const sameEntry = (a: BootEntry, b: BootEntry) => a.kind === b.kind && a.slot === b.slot
 
-/** A disk more, of the preset's bus; it boots only if put in the boot order. */
-export function addDisk(form: VmForm): VmForm {
-  const slot = freeSlot(form.disks, DISKS_MAX)
+/**
+ * A disk more, of the preset's bus; it boots only if put in the boot order.
+ * `before`: the disks the VM has saved, whose slots a new one avoids.
+ */
+export function addDisk(form: VmForm, before: readonly { slot: number }[] = []): VmForm {
+  const slot = freeSlot(form.disks, DISKS_MAX, before)
   if (slot === null) return form
   const bus = form.disks[0]?.bus ?? PRESETS[form.os].bus
   return { ...form, disks: [...form.disks, { slot, sizeGib: NEW_DISK_GIB, bus, pool: null }] }
@@ -217,8 +232,9 @@ export function removeDisk(form: VmForm, slot: number): VmForm {
   })
 }
 
-export function addNic(form: VmForm): VmForm {
-  const slot = freeSlot(form.nics, NICS_MAX)
+/** A card more; `before`: the cards the VM has saved, whose slots it avoids. */
+export function addNic(form: VmForm, before: readonly { slot: number }[] = []): VmForm {
+  const slot = freeSlot(form.nics, NICS_MAX, before)
   if (slot === null) return form
   return {
     ...form,

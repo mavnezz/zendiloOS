@@ -448,15 +448,25 @@ fn restore_disk(
     Ok(())
 }
 
-/// Writes a small file of the backup to `target`, root's alone, under a
-/// hidden name first; refused unless it is the file recorded.
-fn restore_small(
+/// A small file of the backup, written and checked beside its place under
+/// a hidden name: put in place only once all of them are.
+struct Staged {
+    hidden: PathBuf,
+    target: PathBuf,
+    /// The folders made for it: the TPM's `<uuid>/tpm2`.
+    made: Vec<PathBuf>,
+    owner: Option<(u32, u32)>,
+}
+
+/// Writes a small file of the backup beside `target`, root's alone, under
+/// a hidden name; refused unless it is the file recorded.
+fn stage_small(
     folder: std::os::fd::BorrowedFd<'_>,
     folder_path: &SharePath,
     file: &VmBackupFile,
     target: &std::path::Path,
     owner: Option<(u32, u32)>,
-) -> Result<(), ArchiveError> {
+) -> Result<Staged, ArchiveError> {
     let path =
         folder_path.join(&file.part.file_name()).map_err(|_| refused("the folder's path is too long"))?;
     let (archive, bytes) = open_archive(folder, &path)?;
@@ -472,7 +482,6 @@ fn restore_small(
         )));
     }
     let parent = target.parent().ok_or_else(|| refused("no folder"))?;
-    // The folders made for it: the TPM's `<uuid>/tpm2`.
     let made: Vec<PathBuf> =
         parent.ancestors().take(2).filter(|folder| !folder.exists()).map(std::path::Path::to_owned).collect();
     std::fs::create_dir_all(parent).map_err(|e| failed(parent.display(), e))?;
@@ -480,6 +489,7 @@ fn restore_small(
         ".{}.restore",
         target.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
     ));
+    let _ = std::fs::remove_file(&hidden);
     let written = (|| {
         let mut out = std::fs::OpenOptions::new()
             .write(true)
@@ -489,15 +499,24 @@ fn restore_small(
             .open(&hidden)?;
         out.write_all(&content)?;
         out.sync_all()?;
-        std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o600))?;
-        std::fs::rename(&hidden, target)
+        std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o600))
     })();
     if let Err(error) = written {
         let _ = std::fs::remove_file(&hidden);
         return Err(failed(target.display(), error));
     }
-    if let Some((uid, gid)) = owner {
-        for path in made.iter().map(PathBuf::as_path).chain([target]) {
+    Ok(Staged { hidden, target: target.to_owned(), made, owner })
+}
+
+/// Puts a staged file in place, and gives it (and the folders made for it)
+/// to its account.
+fn place_small(staged: &Staged) -> Result<(), ArchiveError> {
+    if let Err(error) = std::fs::rename(&staged.hidden, &staged.target) {
+        let _ = std::fs::remove_file(&staged.hidden);
+        return Err(failed(staged.target.display(), error));
+    }
+    if let Some((uid, gid)) = staged.owner {
+        for path in staged.made.iter().map(PathBuf::as_path).chain([staged.target.as_path()]) {
             if let Err(error) = std::os::unix::fs::chown(path, Some(uid), Some(gid)) {
                 tracing::warn!(%error, path = %path.display(), "cannot give the restored file to its account");
             }
@@ -507,7 +526,10 @@ fn restore_small(
 }
 
 /// Restores a VM's files as `job` says: the disks first, then the small
-/// files, each checked against what the backup recorded.
+/// files, each checked against what the backup recorded. The UEFI
+/// variables and the TPM's state are put in place only once both are
+/// written and checked, so a restore that fails, and is undone, leaves
+/// them as they were.
 pub(crate) fn restore(
     job: &VmRestoreJob,
     report: &mut dyn FnMut(u8),
@@ -527,8 +549,25 @@ pub(crate) fn restore(
     for file in job.files.iter().filter(|file| matches!(file.file.part, VmBackupPart::Disk { .. })) {
         restore_disk(folder.as_fd(), &job.folder, &file.file, &file.target, &mut progress)?;
     }
+    let mut staged: Vec<Staged> = Vec::new();
     for file in job.files.iter().filter(|file| !matches!(file.file.part, VmBackupPart::Disk { .. })) {
-        restore_small(folder.as_fd(), &job.folder, &file.file, &file.target, file.owner)?;
+        match stage_small(folder.as_fd(), &job.folder, &file.file, &file.target, file.owner) {
+            Ok(file) => staged.push(file),
+            Err(error) => {
+                for file in &staged {
+                    let _ = std::fs::remove_file(&file.hidden);
+                }
+                return Err(error);
+            }
+        }
+    }
+    for (at, file) in staged.iter().enumerate() {
+        if let Err(error) = place_small(file) {
+            for later in &staged[at + 1..] {
+                let _ = std::fs::remove_file(&later.hidden);
+            }
+            return Err(error);
+        }
     }
     Ok(serde_json::json!({ "restored": job.files.len() }))
 }

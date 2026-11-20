@@ -332,8 +332,8 @@ impl Operations {
             Request::RollbackVmSnapshot { id, label, newer } => {
                 self.vms.rollback_snapshot(id, label, *newer).await
             }
-            Request::BackUpVm { id, root, folder, stem, label, settings } => {
-                self.vms.back_up(id, root, folder, stem, label, settings).await
+            Request::BackUpVm { id, root, folder, stem, label, settings, disks } => {
+                self.vms.back_up(id, root, folder, stem, label, settings, disks).await
             }
             Request::RestoreVm { spec, root, folder, files, over, remove, label } => {
                 self.vms.restore(spec, root, folder, files, *over, remove, label).await

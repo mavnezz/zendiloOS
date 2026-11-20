@@ -901,6 +901,7 @@ impl VmHost for AgentVms {
             stem: BackupStem::parse(stem).map_err(|_| invalid("backup's name"))?,
             label: label(name)?,
             settings: VmBackupSettings::parse(&settings).map_err(|_| invalid("VM's settings"))?,
+            disks: vm.settings.disks.iter().map(|disk| disk_slot(disk.slot)).collect::<Result<_, _>>()?,
         };
         match call_raw_reporting(self.transport(), request, &Forward(steps), context).await? {
             Response::VmBackedUp { folder, files, consistency: taken, .. } => Ok(BackupWritten {
