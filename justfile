@@ -353,3 +353,9 @@ vm-network-bridge-test:
 [positional-arguments]
 vm-upgrade-test *args:
     scripts/vm-upgrade-test.sh "$@"
+
+# A group of the VM tests in VMs made afresh for it, as the nightly workflow
+# runs them: `just vm-ci list` names the groups (see scripts/vm-ci.sh)
+[positional-arguments]
+vm-ci *args:
+    scripts/vm-ci.sh "$@"

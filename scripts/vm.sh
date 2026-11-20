@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # A Debian 13 test VM for zendiloOS, with spare disks for storage work.
 #
+#   scripts/vm.sh image     download and verify the cloud image, if it is not there yet
 #   scripts/vm.sh create    download and verify the cloud image, create the disks
 #   scripts/vm.sh start     boot in the background (console in dev/vm/console.log)
 #   scripts/vm.sh install [deb]  install a package; the newest dist/zendiloos_*.deb by default
@@ -276,6 +277,7 @@ destroy() {
 }
 
 case ${1:-} in
+    image) mkdir -p "$image_dir"; [[ -f $image_dir/$image ]] || download ;;
     create) create ;;
     start) start ;;
     install) install_package "${2:-}" ;;
