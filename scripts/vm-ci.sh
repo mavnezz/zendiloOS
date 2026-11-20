@@ -20,7 +20,7 @@
 #
 # dev/vm-ci/<group>/ holds each test's output, summary.md with the times
 # and, after a failure, each VM's console and the journals of zendiloosd
-# and zendiloos-agent from inside it.
+# and zendiloos-agent from inside it, and the whole journal of its boot.
 #
 # The packages:
 #   ZENDILOOS_DEB          the one to test; the newest dist/zendiloos_*_amd64.deb
@@ -228,6 +228,9 @@ nfs_on() {
 # it. The cloud kernel goes: of one version, dpkg orders it after
 # Debian's, and GRUB starts the newest kernel with ZFS. Then the VM starts
 # anew with it.
+# Whether VM $1 answers with another boot's id than $2.
+booted_anew() { local now; now=$(on "$1" 'cat /proc/sys/kernel/random/boot_id') && [[ -n $now && $now != "$2" ]]; }
+
 usb_kernel() {
     local vm=$1 kernel boot
     on "$vm" 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq linux-image-amd64 linux-headers-amd64 >/dev/null'
@@ -239,7 +242,7 @@ usb_kernel() {
         sudo DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq \$(dpkg-query -W -f '\${Package}\n' | grep -- '-cloud-amd64\$') >/dev/null"
     boot=$(on "$vm" 'cat /proc/sys/kernel/random/boot_id')
     on "$vm" 'sudo systemctl reboot' || true
-    wait_for "VM $vm to start anew" "[[ \$(on $vm 'cat /proc/sys/kernel/random/boot_id') != $boot ]]" 600
+    wait_for "VM $vm to start anew" "booted_anew $vm $boot" 600
     [[ $(on "$vm" 'uname -r') == "$kernel" ]] || fail "VM $vm started $(on "$vm" 'uname -r'), not $kernel"
     on "$vm" 'test -e /sys/bus/usb/devices/usb1' || fail "VM $vm sees no USB controller"
     wait_for "zendiloosd on VM $vm" "curl -sfk $(base "$vm")/api/v1/health" 180
@@ -380,6 +383,10 @@ look_into() {
             timeout 120 env ZENDILOOS_VM="$vm" "$vmsh" ssh \
                 "sudo journalctl -u $unit --no-pager -o short-iso-precise" >"$out/vm$vm-$unit.log" 2>&1 || true
         done
+        # Everything else since the boot, for what the units zendiloOS runs
+        # (smbd, sshd, docker, libvirtd …) said.
+        timeout 120 env ZENDILOOS_VM="$vm" "$vmsh" ssh \
+            "sudo journalctl -b --no-pager -o short-iso-precise" >"$out/vm$vm-journal.log" 2>&1 || true
     done
     echo "The VMs keep running: ${made[*]/#/VM }. Afterwards: ZENDILOOS_VM=<n> scripts/vm.sh destroy" >&2
 }
