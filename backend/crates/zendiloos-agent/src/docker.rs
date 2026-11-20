@@ -70,6 +70,12 @@ fn text(stdout: Vec<u8>) -> Result<String, OperationError> {
     String::from_utf8(stdout).map_err(|_| OperationError::NotUtf8)
 }
 
+/// Docker is optional. Read-only listings may be empty before it is
+/// installed; other failures (including an unreadable path) still surface.
+pub(crate) fn installed(docker: &Program) -> Result<bool, OperationError> {
+    docker.path().try_exists().map_err(|error| OperationError::Read(docker.path().to_owned(), error))
+}
+
 #[derive(Debug)]
 pub(crate) struct Docker {
     docker: Program,
@@ -130,6 +136,9 @@ impl Docker {
     /// `docker <object> inspect` of every ID `docker <object> ls --quiet`
     /// lists: a JSON array, empty if there is nothing.
     async fn inspect_all(&self, list: &[&str], inspect: &[&str]) -> Result<Response, OperationError> {
+        if !installed(&self.docker)? {
+            return Ok(Self::output("[]".to_owned()));
+        }
         let ids = self.printed(list, QUICK).await?;
         let ids: Vec<&str> = ids.split_whitespace().collect();
         if ids.is_empty() {
@@ -144,11 +153,17 @@ impl Docker {
     }
 
     pub(crate) async fn stats(&self) -> Result<Response, OperationError> {
+        if !installed(&self.docker)? {
+            return Ok(Self::output(String::new()));
+        }
         let args = ["stats", "--all", "--no-stream", "--no-trunc", "--format", "json"];
         Ok(Self::output(self.printed(&args, QUICK).await?))
     }
 
     pub(crate) async fn images(&self) -> Result<Response, OperationError> {
+        if !installed(&self.docker)? {
+            return Ok(Self::output(String::new()));
+        }
         let args = ["image", "ls", "--digests", "--no-trunc", "--format", "json"];
         Ok(Self::output(self.printed(&args, QUICK).await?))
     }
@@ -158,6 +173,9 @@ impl Docker {
     }
 
     pub(crate) async fn disk_usage(&self) -> Result<Response, OperationError> {
+        if !installed(&self.docker)? {
+            return Ok(Self::output(String::new()));
+        }
         Ok(Self::output(self.printed(&["system", "df", "--format", "json"], QUICK).await?))
     }
 

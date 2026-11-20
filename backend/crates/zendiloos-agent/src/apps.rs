@@ -208,6 +208,9 @@ impl Apps {
     /// reports them; zendiloosd picks the apps' (their file is in
     /// `/etc/zendiloos/apps`).
     pub(crate) async fn status(&self) -> Result<Response, OperationError> {
+        if !crate::docker::installed(&self.docker)? {
+            return Ok(Response::Apps { compose_ls: "[]".to_owned() });
+        }
         let surroundings = Surroundings {
             variables: DOCKER_ENVIRONMENT.iter().map(|(n, v)| ((*n).to_owned(), (*v).to_owned())).collect(),
             directory: None,

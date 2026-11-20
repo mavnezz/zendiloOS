@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { defineComponent, h } from 'vue'
 
-import { mountApp } from '@/shared/test-support/mount'
+import { mountApp, settle } from '@/shared/test-support/mount'
 import { called, on, reset } from '@/shared/test-support/server'
 
 import {
@@ -10,15 +10,70 @@ import {
   fillTemplate,
   listFolders,
   makeFolder,
+  useCatalog,
   useInstallActions,
   useShareList,
+  useSources,
 } from './api'
 
 vi.mock('@/shared/api/client', async (original) =>
   (await import('@/shared/test-support/server')).routed(await original()),
 )
 
+function hookHost(setup: () => void) {
+  return defineComponent({
+    setup() {
+      setup()
+      return () => h('div')
+    },
+  })
+}
+
 describe('the App Center’s requests', () => {
+  it('picks up a recovered catalog without a click and stops polling after success', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      reset()
+      const source = {
+        id: 1,
+        address: 'https://apps.example.org/index.json',
+        official: true,
+        added_at: 0,
+        refreshed_at: null,
+        refresh_error: 'Temporary failure in name resolution',
+        skipped: 0,
+      }
+      on('GET', '/api/v1/apps/catalog', [])
+      on('GET', '/api/v1/apps/sources', [source])
+      let catalog: ReturnType<typeof useCatalog> | undefined
+      let sources: ReturnType<typeof useSources> | undefined
+      const Host = hookHost(() => {
+        catalog = useCatalog()
+        sources = useSources()
+      })
+      const { wrapper } = await mountApp(Host)
+      expect(catalog!.data.value).toEqual([])
+      expect(sources!.data.value?.[0]?.refresh_error).toContain('name resolution')
+
+      // The background worker has now fetched the index successfully.
+      on('GET', '/api/v1/apps/catalog', [{ id: 'jellyfin', name: 'Jellyfin' }])
+      on('GET', '/api/v1/apps/sources', [{ ...source, refreshed_at: 1000, refresh_error: null }])
+      await vi.advanceTimersByTimeAsync(30_000)
+      await settle()
+      expect(catalog!.data.value?.[0]?.id).toBe('jellyfin')
+      expect(sources!.data.value?.[0]?.refresh_error).toBeNull()
+      const catalogsRead = called('GET', '/api/v1/apps/catalog').length
+      const sourcesRead = called('GET', '/api/v1/apps/sources').length
+      await vi.advanceTimersByTimeAsync(60_000)
+      await settle()
+      expect(called('GET', '/api/v1/apps/catalog')).toHaveLength(catalogsRead)
+      expect(called('GET', '/api/v1/apps/sources')).toHaveLength(sourcesRead)
+      wrapper.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('list a share’s folders, sorted, and make one', async () => {
     reset()
     on('GET', '/api/v1/files/shares/3/folder', {
@@ -49,12 +104,9 @@ describe('the App Center’s requests', () => {
     on('POST', '/api/v1/apps/installed/jellyfin/stop', null)
     let shares: ReturnType<typeof useShareList> | undefined
     let actions: ReturnType<typeof useInstallActions> | undefined
-    const Host = defineComponent({
-      setup() {
-        shares = useShareList()
-        actions = useInstallActions()
-        return () => h('div')
-      },
+    const Host = hookHost(() => {
+      shares = useShareList()
+      actions = useInstallActions()
     })
     await mountApp(Host)
 

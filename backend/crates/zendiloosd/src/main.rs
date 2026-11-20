@@ -888,14 +888,16 @@ fn spawn_network_look(network: ConfigureNetwork) -> JoinHandle<()> {
     })
 }
 
-/// Reads the app catalogs at startup and every six hours; a catalog that
-/// cannot be reached keeps the apps read before.
+/// Reads due app catalogs at startup and every thirty seconds: successful
+/// fetches wait six hours; failures retry with bounded backoff, keeping the
+/// apps read before while the network is unavailable.
 fn spawn_catalog_refresh(apps: Catalogs) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut every_six_hours = tokio::time::interval(Duration::from_secs(6 * 3600));
+        let mut every = tokio::time::interval(zendiloos_apps::application::CATALOG_REFRESH_TICK);
+        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            every_six_hours.tick().await;
-            if let Err(error) = apps.refresh().await {
+            every.tick().await;
+            if let Err(error) = apps.refresh_due().await {
                 tracing::warn!(%error, "apps: cannot read the catalogs");
             }
         }

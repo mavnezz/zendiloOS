@@ -1,11 +1,22 @@
 //! The catalogs: which sources there are, and the apps they offer.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use zendiloos_kernel::{Actor, AuditEntry, AuditLog, Clock, Outcome, PortError, RequestContext};
 
 use super::ports::{CatalogError, CatalogReader, PolicyError, SourceRepository};
 use crate::domain::{CatalogApp, InvalidSource, Refresh, Source, index_address};
+
+/// Look for due catalogs twice a minute, including ones that failed while
+/// the network was still starting. Healthy sources are fetched six-hourly.
+pub const CATALOG_REFRESH_TICK: Duration = Duration::from_secs(30);
+const REFRESH_EVERY: Duration = Duration::from_secs(6 * 3600);
+
+fn retry_after(failures: u32) -> Duration {
+    Duration::from_secs((30 * (1u64 << failures.saturating_sub(1).min(4))).min(300))
+}
 
 /// An app with the source that offers it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +110,9 @@ pub struct Catalogs {
     clock: Arc<dyn Clock>,
     /// Debian's name of the NAS's architecture, which apps must run on.
     architecture: String,
+    /// Serialize scheduled and manual refreshes; count consecutive failed
+    /// attempts per source for backoff. A successful manual fetch resets it.
+    refreshing: Arc<tokio::sync::Mutex<BTreeMap<i64, u32>>>,
 }
 
 impl Catalogs {
@@ -109,7 +123,14 @@ impl Catalogs {
         clock: Arc<dyn Clock>,
         architecture: &str,
     ) -> Self {
-        Self { sources, reader, audit, clock, architecture: architecture.to_owned() }
+        Self {
+            sources,
+            reader,
+            audit,
+            clock,
+            architecture: architecture.to_owned(),
+            refreshing: Arc::default(),
+        }
     }
 
     /// Debian's name of the NAS's architecture.
@@ -186,7 +207,34 @@ impl Catalogs {
     /// Reads every source's index again. A source that fails keeps its
     /// apps from before; the failure is recorded with it.
     pub async fn refresh(&self) -> Result<Vec<Source>, AppsError> {
-        for source in self.sources.list().await? {
+        self.refresh_sources(true).await
+    }
+
+    /// Refresh only sources whose successful fetch is six hours old, or
+    /// whose retry is due: 30s, 1m, 2m, 4m, then at most once per 5m.
+    /// Failed sources keep their cached index; healthy ones are left alone.
+    pub async fn refresh_due(&self) -> Result<Vec<Source>, AppsError> {
+        self.refresh_sources(false).await
+    }
+
+    async fn refresh_sources(&self, force: bool) -> Result<Vec<Source>, AppsError> {
+        let mut failures = self.refreshing.lock().await;
+        let sources = self.sources.list().await?;
+        failures.retain(|id, _| sources.iter().any(|source| source.id == *id));
+        for source in sources {
+            let now = self.clock.now();
+            if !force && let Some(refresh) = &source.refreshed {
+                let delay = if refresh.error.is_some() {
+                    retry_after(failures.get(&source.id).copied().unwrap_or(1))
+                } else {
+                    REFRESH_EVERY
+                };
+                // A clock corrected backwards must not postpone the next
+                // attempt until an old, future timestamp catches up.
+                if refresh.at <= now && now.duration_since(refresh.at) < delay {
+                    continue;
+                }
+            }
             let fetched = match self.reader.fetch(&source.index).await {
                 Ok(text) => self.reader.read(&text).map(|read| (text, read)),
                 Err(error) => Err(error),
@@ -194,6 +242,7 @@ impl Catalogs {
             let at = self.clock.now();
             let recorded = match &fetched {
                 Ok((text, read)) => {
+                    failures.remove(&source.id);
                     for skipped in &read.skipped {
                         tracing::warn!(
                             source = source.index,
@@ -206,6 +255,8 @@ impl Catalogs {
                     self.sources.refreshed(source.id, &refresh, Some(text)).await
                 }
                 Err(error) => {
+                    let attempts = failures.entry(source.id).or_default();
+                    *attempts = attempts.saturating_add(1);
                     tracing::warn!(source = source.index, %error, "apps: cannot read the catalog");
                     let refresh = Refresh { at, error: Some(error.to_string()), skipped: 0 };
                     self.sources.refreshed(source.id, &refresh, None).await
@@ -302,6 +353,106 @@ mod tests {
             "amd64",
         );
         (catalogs, reader, audit)
+    }
+
+    struct MovingClock(Mutex<Timestamp>);
+
+    impl Clock for MovingClock {
+        fn now(&self) -> Timestamp {
+            *self.0.lock().unwrap()
+        }
+    }
+
+    impl MovingClock {
+        fn advance(&self, seconds: u64) {
+            let mut now = self.0.lock().unwrap();
+            *now = now.saturating_add(Duration::from_secs(seconds));
+        }
+    }
+
+    fn scheduled() -> (Catalogs, Arc<FakeReader>, Arc<MovingClock>) {
+        let (mut catalogs, reader, _) = setup();
+        let clock = Arc::new(MovingClock(Mutex::new(Timestamp::from_unix_seconds(1000))));
+        catalogs.clock = clock.clone();
+        (catalogs, reader, clock)
+    }
+
+    #[tokio::test]
+    async fn a_catalog_unreachable_at_start_is_fetched_when_the_network_returns() {
+        let (catalogs, reader, clock) = scheduled();
+        reader.stop(OFFICIAL_INDEX);
+        catalogs.refresh_due().await.unwrap();
+        assert!(catalogs.apps().await.unwrap().is_empty());
+        assert_eq!(reader.fetched().len(), 1);
+
+        reader.serve(OFFICIAL_INDEX, vec![app("jellyfin", "Jellyfin")]);
+        clock.advance(29);
+        catalogs.refresh_due().await.unwrap();
+        assert_eq!(reader.fetched().len(), 1, "not before the retry is due");
+        clock.advance(1);
+        let sources = catalogs.refresh_due().await.unwrap();
+        assert!(sources[0].refreshed.as_ref().unwrap().error.is_none());
+        assert_eq!(catalogs.apps().await.unwrap().len(), 1);
+        assert_eq!(reader.fetched().len(), 2);
+
+        clock.advance(6 * 3600 - 1);
+        catalogs.refresh_due().await.unwrap();
+        assert_eq!(reader.fetched().len(), 2, "a successful source waits six hours");
+        clock.advance(1);
+        catalogs.refresh_due().await.unwrap();
+        assert_eq!(reader.fetched().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn only_failed_catalogs_retry_with_bounded_backoff_and_manual_refresh_resets_it() {
+        let (catalogs, reader, clock) = scheduled();
+        let other = "https://friend.github.io/nas-apps/v1/index.json";
+        reader.serve(other, vec![app("paperless", "Paperless")]);
+        catalogs.add_source(other, &alice(), &RequestContext::default()).await.unwrap();
+        catalogs.refresh_due().await.unwrap();
+        reader.stop(OFFICIAL_INDEX);
+        clock.advance(6 * 3600);
+        catalogs.refresh_due().await.unwrap();
+        let healthy_fetches = reader.fetched().iter().filter(|url| *url == other).count();
+
+        for delay in [30, 60, 120, 240, 300, 300] {
+            let before = reader.fetched().len();
+            clock.advance(delay - 1);
+            catalogs.refresh_due().await.unwrap();
+            assert_eq!(reader.fetched().len(), before, "retry after {delay}s");
+            clock.advance(1);
+            catalogs.refresh_due().await.unwrap();
+            assert_eq!(reader.fetched().len(), before + 1);
+            assert_eq!(reader.fetched().last().unwrap(), OFFICIAL_INDEX);
+            assert_eq!(catalogs.apps().await.unwrap().len(), 3, "cached apps stay available");
+        }
+        assert_eq!(reader.fetched().iter().filter(|url| *url == other).count(), healthy_fetches);
+        assert_eq!(retry_after(u32::MAX), Duration::from_secs(300));
+
+        // A click on Refresh bypasses backoff; after success a later
+        // failure starts with thirty seconds again, not five minutes.
+        reader.serve(OFFICIAL_INDEX, vec![app("jellyfin", "Jellyfin")]);
+        let sources = catalogs.refresh().await.unwrap();
+        assert!(sources.iter().all(|s| s.refreshed.as_ref().unwrap().error.is_none()));
+        reader.stop(OFFICIAL_INDEX);
+        catalogs.refresh().await.unwrap();
+        let before = reader.fetched().len();
+        clock.advance(29);
+        catalogs.refresh_due().await.unwrap();
+        assert_eq!(reader.fetched().len(), before);
+        clock.advance(1);
+        catalogs.refresh_due().await.unwrap();
+        assert_eq!(reader.fetched().len(), before + 1);
+    }
+
+    #[tokio::test]
+    async fn a_clock_corrected_backwards_does_not_postpone_catalog_fetches() {
+        let (catalogs, reader, clock) = scheduled();
+        catalogs.refresh_due().await.unwrap();
+        *clock.0.lock().unwrap() = Timestamp::from_unix_seconds(900);
+        catalogs.refresh_due().await.unwrap();
+        assert_eq!(reader.fetched().len(), 2);
+        assert_eq!(catalogs.sources().await.unwrap()[0].refreshed.as_ref().unwrap().at, clock.now());
     }
 
     #[tokio::test]
