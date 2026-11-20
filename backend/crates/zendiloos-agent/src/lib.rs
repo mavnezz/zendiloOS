@@ -50,6 +50,7 @@ mod ups;
 mod vm_backup_unit;
 mod vm_iso;
 mod vm_upload;
+mod vm_user_network;
 mod vms;
 mod volume_archive;
 mod volumes;

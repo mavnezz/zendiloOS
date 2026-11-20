@@ -2600,7 +2600,9 @@ with their host bits zero, port ranges) and writes as
 `/etc/zendiloos/firewall/zendiloos.nft`: the table `inet zendiloos_firewall`
 created, deleted and made anew in one transaction, so nothing else (Docker's
 tables, Debian's) is touched. Its `input` chain accepts answers, the
-loopback, Docker's bridges (containers reach the NAS; `docker0` and the
+loopback (but VMs' connections through passt, which come in on it as the
+NAS's own and which `inet zendiloos_vms` marks in conntrack, 4.13: they
+meet the rules as the LAN's do), Docker's bridges (containers reach the NAS; `docker0` and the
 `br-` bridges the network context finds, each by its exact name, so a bridge
 of the machine's own such as `br-lan` meets the rules), what IPv6 needs and
 DHCP's answers, then the rules, then the fallback. Its `forward` chain lets
@@ -2620,7 +2622,13 @@ once `br_netfilter` is loaded, with the bridge as both interfaces: they
 pass, as neither the accept for other bridges nor the drop matches a
 bridge listed as the machine's own, and one not listed yet (made since)
 meets that accept first. A drop there is final; an accept never overrides
-Docker's own drops. The agent has no network of its own (`PrivateNetwork`): `nft -c`
+Docker's own drops. Its `output` chain lets the NAS's own traffic pass and
+sends what VMs' cards through passt send to a container's published port
+(Docker forwards nothing there: it rewrites the NAS's own connection, which
+then goes out by the container's bridge) through the same rules as the
+`forward` chain, so a VM reaches the NAS's published ports as a LAN client
+does; rules naming a connection match neither, as those connections come
+in on none (the Firewall tab says so). The agent has no network of its own (`PrivateNetwork`): `nft -c`
 checks the file in a transient unit, and `zendiloos-firewall.service`
 (`nft -f`, early at boot before `network-pre.target`, after Debian's
 `nftables.service`, and again when that restarts or reloads, as its
@@ -2784,8 +2792,9 @@ package runner too, so QEMU for x86 never comes onto an arm64 NAS.
 confined by an AppArmor profile it makes for each VM (`virt-aa-helper`:
 only that VM's disks, the images in its drives and its console socket), hands the files it attaches
 to that account while the VM runs and gives them back after, starts passt,
-picks the OVMF build from the firmware QEMU describes, shuts a guest down
-through ACPI and starts VMs with the machine. zendiloOS talks to its system
+picks the OVMF build from the firmware QEMU describes and shuts a guest
+down through ACPI; VMs start with the machine through the agent, not
+libvirt's autostart (below). zendiloOS talks to its system
 instance (`qemu:///system`) through `virsh`, with fixed arguments, and names
 only domains `zendiloos-<id>`, the id twelve hexadecimal digits zendiloosd
 draws at random: the agent never lists into its answers, changes or removes
@@ -2911,6 +2920,31 @@ exported as CSV in the browser (every field quoted, none starting with
 what a spreadsheet takes for a formula); the control panel's audit log
 has the same table. Nothing of its own is stored for it.
 
+**Starting with the machine.** libvirt's own autostart would start a VM
+past every check the agent makes before a start (the host's devices it is
+given, below; a restore cut off), so it is never on for zendiloOS's
+domains. The agent keeps its own marker,
+`/etc/zendiloos/vms/zendiloos-<id>.autostart`, which a change, the
+autostart switch and a restore set, and turns libvirt's off wherever it
+finds it on (its link in `/etc/libvirt/qemu/autostart`; as the agent
+starts, a domain of an older version's that libvirt started with the
+machine is taken over so). Once a boot, as the agent first starts in it
+(zendiloosd asks it at its own start, so at every boot), after restores
+cut off are undone, it starts each VM marked then as any start, in the
+background, and says in its journal why one did not start. The boot's id
+is recorded in its state directory with the VMs still to start
+(`/var/lib/zendiloos-agent/vms-started-boot`), each taken off once tried,
+so a restart of the agent within the boot goes on with the rest, starts
+none twice and none marked only since. It is recorded also while the
+plugin is not installed, so a VM made after the plugin came starts at the
+next boot. Only right after libvirt's own autostart was taken over (the
+first start after the update), which started the VMs in this boot
+already, does none start until the next boot. Debian 13's
+`libvirt-guests` (in `libvirt-daemon-common`, enabled) starts no guest at
+boot: its script sets `ON_BOOT=ignore` and `ON_SHUTDOWN=shutdown`, which
+`/etc/default/libvirt-guests` leaves as they are, so it goes round none of
+these checks unless an administrator sets `ON_BOOT=start` there.
+
 **Changing a VM.** Everything but its system can be changed after it is
 made (`PUT /vms/{id}`, the whole settings, `vms.change`), and the domain is
 always defined anew from the stored settings by the agent, never edited as
@@ -2967,9 +3001,70 @@ to the new one: `vms: a card's MAC address changed`.)
 Networks page lists with the VMs on each and what each means in one line.
 Each card goes through passt by default, user-mode
 networking: the VM's connections leave from the NAS's own address as the
-NAS's sockets, through
-its firewall's rules for what goes out; nothing reaches the VM (no ports
-are forwarded). Or a Linux bridge of the machine's own (not Docker's
+NAS's sockets; nothing reaches the VM (no ports are forwarded). Being the
+NAS's own sockets (passt runs as QEMU's account, `libvirt-qemu`), they
+would reach whatever the NAS reaches: the containers' networks on Docker's
+bridges (the host routes there, and what it sends meets no forward
+chain), the NAS's services past the firewall (local traffic comes in on
+the loopback, which it trusts), and what listens on the loopback alone:
+Debian 13's libvirt (11.3) starts passt with `--one-off --socket --pid`
+alone, so passt maps the guest's gateway to the host's loopback (its
+`--map-host-loopback` defaults to the gateway), and the web interface
+would take the guest for the machine itself, which its blocking of
+addresses never blocks. That mapping is also the only way the guest
+reaches the NAS: passt gives it the NAS's own address, which is the
+guest's own in there. So two tables of zendiloOS's hold what QEMU's
+account sends to what a client on the LAN gets, `inet zendiloos_vms`
+before the firewall's chains (priority `filter - 10`) and `bridge
+zendiloos_vms`: DNS to the loopback passes as it is (port 53: passt hands
+the guest's queries to the host's resolver, systemd-resolved's
+127.0.0.53 once zendiloOS runs the network); IPv6's loopback is refused;
+what goes to IPv4's loopback leaves from the NAS's own address
+(`masquerade`, which for the loopback takes the first address of the
+machine's cards, the LAN's), not as 127.0.0.1, and reaches only a socket
+that listens on every address (`socket wildcard`), never one on the
+loopback alone (NUT's server unless shared, the mail server's, a port
+published to 127.0.0.1); every connection is marked in conntrack, so the
+firewall's `input` chain sends what reaches the NAS through its rules as
+it does the LAN's (with the firewall off the VM reaches what the LAN
+reaches: Samba's shares, the web interface), and its `output` chain what
+goes to a container's published port (4.12); and what goes out of a
+bridge's port that is a container's (`veth…`) is dropped unless it is
+such a published port's (marked on its packets once Docker rewrote it),
+whatever the bridge is called; a port published to 127.0.0.1 alone stays
+the loopback's also where Docker runs without its proxy and rewrites the
+NAS's connection to it itself (`ct original ip daddr 127.0.0.0/8 ct status
+dnat` is refused; there, ports published on every address are reached
+through the NAS's other addresses, not its loopback). Anywhere else a
+connection leaves only by the cards of the host's default routes, as a
+LAN client gets there through its router: none goes into another network
+the NAS reaches, a tunnel (WireGuard, Tailscale, OpenVPN) or a second
+card on a storage or management network, which the LAN cannot reach
+through the NAS either (Docker's FORWARD policy drops it). The cards are
+read from the host's routes (`/proc/1/net/route` and `ipv6_route`; the
+agent's own network is another), named in the rules (`oifname != { … }`)
+and in a comment line of the file; while there is no default route (at
+boot, before DHCP), the cards in force stay, and the agent looks again
+every half minute and writes the rules anew when the cards changed (a
+bridge made over the LAN's card). A tunnel that takes the NAS's whole
+traffic by policy routing (a full WireGuard tunnel, a Tailscale exit
+node) keeps the main table's default route elsewhere, so the VMs' traffic
+it would take is refused: they reach the LAN and the internet only as
+they leave by the default route's card. Rules of the firewall that name
+a network connection never match what passt sends to the NAS: it comes in
+on the loopback, so for VMs through the NAS only rules for any connection
+count, which the Firewall tab says. QEMU itself opens no network socket for
+these domains, so the rules meet passt alone. The agent writes them to
+`/etc/zendiloos/network/passt.nft` (both tables replaced in one
+transaction, removed while there is no QEMU account) when the storage is
+set up and as it starts; `zendiloos-passt.service` loads it
+early at boot, before the network and libvirtd, after Debian's
+`nftables.service` and again whenever that restarts or reloads, as the
+firewall's unit does; a VM with a card through passt starts only while
+the rules in force are these (the agent loads them again otherwise).
+Removing the package leaves them in force, as the firewall's table (4.12):
+the VMs run on, and nothing loads them again, so they go at the next
+start; purging it removes them at once. Or a Linux bridge of the machine's own (not Docker's
 `docker0` or `br-<id>`, not libvirt's `virbr…`), on which libvirt puts the
 VM's tap: the VM is on the LAN as a machine of its own and gets its address
 from the LAN's DHCP server. Such a bridge is made on the Network page (6),
@@ -3129,8 +3224,13 @@ sockets QEMU makes there (umask 002) are writable by root's group, which
 lets the agent, root without `CAP_DAC_OVERRIDE`, connect; an AppArmor rule
 of zendiloOS's in `/etc/apparmor.d/abstractions/libvirt-qemu.d/` (the
 abstraction's own folder: Debian's QEMU driver clears
-`local/abstractions/libvirt-qemu` as obsolete) lets QEMU use it, besides
-the socket's path that `virt-aa-helper` puts in each VM's profile. The agent
+`local/abstractions/libvirt-qemu` as obsolete; written as the storage is
+set up and as the agent starts, so an update brings it as it is now) lets
+QEMU look into the
+folder, and nothing more: the socket's own path is in each VM's profile
+(`virt-aa-helper`), so a QEMU taken over by its guest neither connects to
+another VM's console nor puts a socket in its place (all QEMUs are the
+same account, so the folder's permissions cannot keep them apart). The agent
 opens the socket with `O_PATH | O_NOFOLLOW`, takes only a socket, connects
 through its descriptor (`/proc/self/fd/N`), so a link QEMU's account put
 there never leads it to another socket (Docker's) that zendiloosd would
@@ -3245,15 +3345,55 @@ the whole group and adds it at once, and zendiloosd and the agent refuse a
 device without the rest of its group (PCI-to-PCI bridges aside, which stay
 with the host as VFIO allows). Never handed over, nor any device of its
 group: a bridge of the bus, the graphics card the firmware set up for the
-console (`boot_vga`), a controller with a disk in use below it (a holder,
-mounted, swap, or claimed as ZFS's pools claim theirs: an `O_EXCL` open
-fails), and a network card systemd-networkd says the host uses (its link's
-`Path` names the device and its `OperationalState` is `routable`,
-`degraded`, `enslaved` or `degraded-carrier`), every network card where
-systemd-networkd does not answer. Before each start the agent checks again
-that every device the domain names is there, a USB device exactly once,
-and the PCI devices may still go, and refuses with a clear reason
-otherwise. The interface warns that a PCI device leaves the host while the
+console (`boot_vga`), a controller with a disk in use below it, a network
+card or controller systemd-networkd says the host's network is on (its
+link's `Path` names the device or one below it, as a USB adapter on a
+controller, `pci-0000:00:14.0-usb-0:2:1.0`, and its `OperationalState` is
+`routable`, `degraded`, `enslaved` or `degraded-carrier`), every network
+card where systemd-networkd does not answer, and a USB controller with a
+USB device below it the host needs. A disk is in use when it or a
+partition of it holds another device, is mounted or swap, or cannot be
+opened exclusively (`O_EXCL`), for whatever reason: claimed as ZFS's pools
+claim theirs, or refused otherwise, which counts as in use, so the check
+fails closed; only a drive without a medium holds nothing. Optical drives
+and SD/eMMC cards the agent's sandbox opens read only for this alone
+(`DeviceAllow=block-sr r`, `block-mmc r`): denied, an empty one would
+count as in use. An NVMe namespace
+with native multipath lies below its subsystem in sysfs: it counts for
+each controller its paths (`multipath/`) are below, and the hidden paths
+themselves are not looked at. A USB device the host needs is not handed
+over either: one with a disk in use below it (the boot stick, a pool's
+disk, a drive mounted for a backup), the host's network on it, or the UPS
+it follows (a section of `/etc/nut/ups.conf` on USB, `port = auto`, by its
+vendor, product and serial number); where systemd-networkd does not
+answer, every USB network adapter (an interface of the communications or
+wireless class, or bound to `r8152`, `ax88179_178a`, `asix`, `aqc111` or
+`lan78xx`); a network card's link is told by udev's path of its device
+and, on USB, by the vendor and product udev records for it
+(`/run/udev/data/n<index>`), as the path does not tell a controller's
+USB 2 bus from its USB 3 bus. zendiloosd shows why and refuses a new one;
+the agent refuses one new to the VM when it is defined or changed, or
+given it while it runs, and checks every one before each start: a device
+the VM has already is not checked at a change, as the NAS may use it while
+the VM is off. Nor does the NAS mount a removable drive on a USB device,
+or below a PCI controller, that a VM is given (by vendor and product and
+the serial number or port recorded): the agent refuses to mount it, and
+the drive shows why (`failed`, "the virtual machine … is given"), so a VM
+with a USB disk or a whole USB controller starts with it after it ran,
+and at boot. Which device it was is recorded when the VM is given it
+(`/etc/zendiloos/vms/zendiloos-<id>.devices`): a PCI device's vendor,
+device, subsystem and class at its address, a USB device's serial number
+or, a disk or network adapter without one, its port; devices of a VM
+given them before are recorded at its next start. A change of the VM
+keeps what was recorded of the devices it keeps, whatever sits at their
+places since; only a device taken away and given again is recorded anew. Before each start, also
+with the machine, the agent checks again that every device the domain
+names is there, a USB device exactly once, none the host needs, the PCI
+devices with their whole groups, and each the one recorded, and refuses
+with a clear reason otherwise: after the PCI bus was numbered anew (a card
+added or moved, a setting of the firmware), the host's controller or card
+at the address a VM had never goes to it, nor does another stick of the
+same make. The interface warns that a PCI device leaves the host while the
 VM runs.
 
 **Snapshots.** A VM's snapshot is a ZFS snapshot of every disk of it,
@@ -3309,11 +3449,17 @@ failed) is left out. The agent makes the snapshots' devices show for the time of
 backup (`snapdev=visible`, then inherited again) and runs the work in a
 transient unit of its own (this binary as `back-up-vm`,
 `zendiloos-vm-backup-<id>.service`), outside its sandbox: the system read
-only but the share or drive, no device but zvols, read only
-(`DeviceAllow=block-zvol r`), `CAP_DAC_READ_SEARCH` and `CAP_DAC_OVERRIDE`.
+only but the share or drive, no device but the snapshots' of the VM's
+zvols, read only (`DeviceAllow=/dev/zdN r` for each), `CAP_DAC_READ_SEARCH`
+and `CAP_DAC_OVERRIDE`, in the volumes' units' sandbox (no `connect()`, an
+empty `/run`, its own processes, 4.9).
 Its files are written under hidden names and made writable by root only,
 the manifest put in place last, as Docker's volumes' are (4.9); whoever may
-read the share may read the VM's disks, which the interface says. Once
+read the share may read the VM's disks, and its TPM's state and UEFI
+variables, with which disks the guest encrypts with its TPM alone
+(BitLocker without a PIN) open anywhere, which the interface says. File
+modes would not keep them from the share's readers: Samba works on the
+files as root (4.4). Once
 written, the backup is recorded (`vm_backups`, migration 0062) and stays
 recorded when its VM goes. A backup or restore can be canceled (`POST
 /vms/{id}/backups/cancel`): zendiloosd ends its request, the agent stops
@@ -3330,26 +3476,33 @@ have, a disk the backup has not destroyed, its cards' MAC addresses as
 they were). Images no longer in the library leave their drives empty, a
 card on a network the machine no longer has goes through the NAS, and the
 host's USB and PCI devices are not given again. Before it writes, the
-agent turns the VM's autostart off (what it was it reads from libvirt,
-`virsh dominfo`), so libvirt never starts half-restored disks with the
-machine, and then writes down what undoes the restore
-(`zendiloos-<id>.restoring` beside the domain's XML, over an old VM with
-its definition from before); zvols in the backup's slots the old domain
-does not use are destroyed first, as on a change. It defines a new VM first; over an old one it
+agent turns the VM's autostart off (what it was it reads from the host:
+the agent's marker, or libvirt's own autostart an older version left on),
+so nothing starts half-restored disks with the machine, and then writes
+down what undoes the restore (`zendiloos-<id>.restoring` beside the
+domain's XML, over an old VM with its definition from before); zvols in
+the backup's slots the old domain does not use are destroyed first, as on
+a change. It defines a new VM first; over an old one it
 snapshots its disks first, makes or grows them and defines the domain
 anew from the backup's settings, so what libvirt refuses writes nothing;
 it waits for the devices of the zvols it made. While the unit writes, the
 agent does not hold the lock of the VMs' changes (other VMs are changed,
 snapshotted and backed up meanwhile), but the VM itself is neither
 started, changed, snapshotted nor deleted. The unit
-(`restore-vm`, `DeviceAllow=block-zvol rw`, writable libvirt's folders of
-the UEFI variables and the TPM states) opens each file beneath the share's
+(`restore-vm`, `DeviceAllow=/dev/zdN rw` for the VM's zvols alone, no
+socket, writable libvirt's folders of the UEFI variables and the TPM
+states) opens each file beneath the share's
 root without following a link, refuses one others may write, and checks
 its SHA-256 and size against the record while it reads; it writes runs of
 zeros as holes (`fallocate` punching them, which a zvol frees) and punches
 what lies after the image, so a disk stays sparse; the UEFI variables
 and the TPM's state are written beside their places and put there only
-once both are checked. Should anything fail before the unit is done, a
+once both are checked. swtpm's account owns the TPM's folder, so nothing
+there is done by a name: the folder is opened without following a link
+anywhere in its path, the file made there (`O_EXCL`, no link followed),
+written, given mode 0600 and its owner through its descriptor, and renamed
+into place; folders missing are made as libvirt makes them, `<uuid>`
+root's and 0711, `tpm2` swtpm's and 0700. Should anything fail before the unit is done, a
 new VM goes again with its disks (the agent removes it itself), and an
 old one's disks return to the snapshot from before, with its definition
 and autostart from before. A restore cut off by a restart of the agent or
@@ -4191,7 +4344,7 @@ the interface and the agent deal with a single tool chain (`zpool`, `zfs`).
 | Snapshots | per share (child dataset), by hand or on schedules (hourly, daily, weekly, monthly, each keeping 1 to 100). Named after their UTC time, `zdl-YYYY-MM-DD_HH.MM.SS`, the form Samba's `vfs_shadow_copy2` reads, so Windows offers every snapshot as "Previous Versions" (`shadow:snapdir = .zfs/snapshot`); the schedules a snapshot was taken for and a note are ZFS user properties (`zendiloos:schedule`, `zendiloos:note`), the schedules themselves live in the database. `zendiloosd` looks every five minutes: a schedule that never took one, or missed its time while the machine was off, takes one at once; when several are due, one snapshot counts for all of them. Each schedule keeps its newest; a snapshot goes only when every schedule it was taken for lets it go, never one taken by hand or of a removed schedule. A failing schedule becomes one notification until it works again. The agent takes and destroys snapshots only of a share dataset on a pool zendiloos created, and the label's shape rules out ZFS's ranges and lists. The file manager looks into a snapshot as it was: the files agent opens `.zfs/snapshot/<label>` of the mounted share as a root of its own (the label's shape checked; opening it for reading makes ZFS mount it, which `RESOLVE_NO_XDEV` from the share would refuse), read only, and refuses every change in it; folders list, files download and preview, folders download as archives from it, and entries are copied back into the share, into the folder they were in and beside a name that is taken, so nothing is replaced (a job). A share can be rolled back to one of its snapshots (`zfs rollback -r`, the agent only on its own share datasets): what changed since is lost and so are the later snapshots, which the interface lists, so the share's name must be typed to confirm; the files get the permissions recorded now again, not those of the snapshot (4.4) |
 | Monitoring | `zpool status` (health, resilver and scrub progress, errors per device) every minute, SMART of disks holding data every six hours; changes become notifications (degraded or recovered pool, finished resilver or scrub, volume 80 or 90 % full, a disk's SMART getting worse); scrub monthly (second Sunday) by the cron job of `zfsutils-linux`, and on demand; a running scrub can be stopped (`zpool scrub -s`), a resilver cannot; while a scan runs, its speed and the time left are estimated as `zpool status` does (bytes issued in the current pass over its time minus pauses); the package depends on a cron daemon, which Debian's cloud image lacks. The concerns, when there are any, are listed above the Pools and Disks pages under one verdict, the worst first: pool unavailable or degraded, unrepairable files, device errors, volume 80 or 90 % full, a disk's SMART verdict, no redundancy, no check for 40 days; a disk is named there as the pages name it, by its kernel name with its slot (where the enclosure places it) and its model or serial number, also a device of a pool, whose `/dev/disk/by-id` or `by-path` link (`wwn-…`, `ata-…_<serial>`, with or without `-part<N>`) or kernel name ZFS reports is matched to the disk it is on, by the link lsblk reports, the WWN, a serial number only one disk reports or the port; one no disk matches keeps the name ZFS gives it, which the concern keeps besides (`device`), and a disk's SMART notification names its slot too; SMART verdicts are the monitor's last, so asking reads no disk; an eMMC device (a system disk on many small boards), which has no SMART, reports in its place what eMMC 5.0 and later keep in EXT_CSD: two estimates of the life used, in steps of ten percent, for its two kinds of memory, and how far its reserved blocks are used (normal, 80 %, 90 %); 80 % of its life or more, or its reserve at 80 %, is a warning (earlier than NVMe's 90 %, since eMMC is soldered to the board and the system has to move first), past its life or its reserve at 90 % failing, and it is told as a disk's SMART is; an older eMMC and an SD card report nothing; a disk can test itself (short or long SMART self-test, `smartctl --test`), its report shows the progress and the drive's own estimate of how long each test takes, and a running test can be stopped; a disk that sleeps, reports no SMART or cannot test itself is refused rather than woken. Self-tests also run on a schedule: one plan per kind (the long test weekly or monthly), the disks by serial number or all that can, starting from a local hour (the host's time zone, read with `jiff`) within four hours, so a NAS switched on late still tests the same night; the long test goes first, a disk already testing is left alone, a sleeping one is woken because the plan asked for it, and a failed test reaches the owner through the monitor's SMART notifications |
 | Existing storage | mdadm arrays found on the system are shown read-only on the Pools page; other filesystems (Btrfs, ext4, XFS) only through `GET /storage/volumes`. zendiloos does not create or change them |
-| Removable drives | USB sticks and disks, memory cards, for administrators only (`storage.manage`), never shared: a file system that passes the checks of 4.7 is named by its UUID and mounted at **`/run/zendiloos-removable/<id>`**, root's, outside the volumes (so no share, Samba or NFS export reaches it) and on a tmpfs (so nothing of it outlives a restart). `nosuid,nodev,noexec,noatime`; FAT (`utf8,shortname=mixed,flush`), exFAT and NTFS (the kernel's `ntfs3`, `windows_names`) have no owners of their own, so everything on them belongs to root and the group `zendiloos-users` (`uid=0,gid=…,fmask=0117,dmask=0007`): readable and writable by the accounts the files agent acts as, by nobody else, executable by nobody; ext4 keeps its owners and permissions, which the files agent overrides there with root's access to files, on threads of their own (4.4), so a drive formatted elsewhere is fully usable; what it writes there belongs to root. A drive that cannot be written (write-protected, NTFS that Windows left hibernated) is mounted read-only. Mounting happens in the host's namespace: the agent asks systemd for a transient mount unit (`systemd-mount --collect --fsck=no`), gone at the next boot and bound to its device, so systemd unmounts it when the drive is pulled out; `umount`, removing the place (`rmdir`) and powering off run in transient services (`systemd-run`), outside the agent's sandbox, which keeps `/run` read-only and only sees the mounts. `zendiloosd` mounts a drive when it sees it, as Windows does: whenever the drives are listed (the file explorer asks while it is open) and once a minute besides; the agent and `zendiloosd` speak `AF_UNIX` only, so no udev or netlink hook is needed. Ejecting unmounts (refused while files on it are open, `drive_in_use`), removes the place and, by default, takes the disk off the bus (this binary as `power-off-drive <disk>`: the SCSI device is deleted, which writes its cache out and stops it, then its USB device is removed, which powers the port off where the hub can), so it can be pulled out; without powering off, the drive stays plugged in and unmounted until it is pulled out or mounted by hand, e.g. to make a pool of it. That it was ejected is kept in the database (`removable_ejected`, migration `0047`) with the plugging in of its disk, the boot's id and when udev set the disk up (`USEC_INITIALIZED`, which it sets anew whenever the disk is added and keeps through its change events; the kernel's `DISKSEQ` is no such mark, since a removable disk gets another at every media change the kernel assumes, as when another disk is plugged into the same bus), so a restart of `zendiloosd` or the agent does not mount it again; it holds until the drive is pulled out or seen plugged in anew, also while nobody looked, and a restart of the NAS counts as plugging in anew. Until it is known which drives were ejected, none is mounted by itself. A drive pulled out while mounted becomes a notification (`removable_pulled`), and what is left of it is let go of lazily (`umount --lazy` once its device is gone) and its place removed; so are empty places from before a restart. The API: `GET /storage/removable` (id, label, file system, device and disk, model, size, state `mounted`, `ejected`, `failed` with the agent's reason, or `unmounted`, `read_only`, `path`, space while mounted), `POST /storage/removable/{id}/mount` and `…/eject` (`power_off`, true by default). The simulation offers a USB stick (`1A2B-3C4D`, FAT) |
+| Removable drives | USB sticks and disks, memory cards, for administrators only (`storage.manage`), never shared: a file system that passes the checks of 4.7 is named by its UUID and mounted at **`/run/zendiloos-removable/<id>`**, root's, outside the volumes (so no share, Samba or NFS export reaches it) and on a tmpfs (so nothing of it outlives a restart). `nosuid,nodev,noexec,noatime`; FAT (`utf8,shortname=mixed,flush`), exFAT and NTFS (the kernel's `ntfs3`, `windows_names`) have no owners of their own, so everything on them belongs to root and the group `zendiloos-users` (`uid=0,gid=…,fmask=0117,dmask=0007`): readable and writable by the accounts the files agent acts as, by nobody else, executable by nobody; ext4 keeps its owners and permissions, which the files agent overrides there with root's access to files, on threads of their own (4.4), so a drive formatted elsewhere is fully usable; what it writes there belongs to root. A drive that cannot be written (write-protected, NTFS that Windows left hibernated) is mounted read-only. Mounting happens in the host's namespace: the agent asks systemd for a transient mount unit (`systemd-mount --collect --fsck=no`), gone at the next boot and bound to its device, so systemd unmounts it when the drive is pulled out; `umount`, removing the place (`rmdir`) and powering off run in transient services (`systemd-run`), outside the agent's sandbox, which keeps `/run` read-only and only sees the mounts. `zendiloosd` mounts a drive when it sees it, as Windows does: whenever the drives are listed (the file explorer asks while it is open) and once a minute besides; the agent and `zendiloosd` speak `AF_UNIX` only, so no udev or netlink hook is needed. Ejecting unmounts (refused while files on it are open, `drive_in_use`), removes the place and, by default, takes the disk off the bus (this binary as `power-off-drive <disk>`: the SCSI device is deleted, which writes its cache out and stops it, then its USB device is removed, which powers the port off where the hub can), so it can be pulled out; without powering off, the drive stays plugged in and unmounted until it is pulled out or mounted by hand, e.g. to make a pool of it. That it was ejected is kept in the database (`removable_ejected`, migration `0047`) with the plugging in of its disk, the boot's id and when udev set the disk up (`USEC_INITIALIZED`, which it sets anew whenever the disk is added and keeps through its change events; the kernel's `DISKSEQ` is no such mark, since a removable disk gets another at every media change the kernel assumes, as when another disk is plugged into the same bus), so a restart of `zendiloosd` or the agent does not mount it again; a drive on a USB device or below a PCI controller a VM is given is never mounted (the agent refuses, 4.13); it holds until the drive is pulled out or seen plugged in anew, also while nobody looked, and a restart of the NAS counts as plugging in anew. Until it is known which drives were ejected, none is mounted by itself. A drive pulled out while mounted becomes a notification (`removable_pulled`), and what is left of it is let go of lazily (`umount --lazy` once its device is gone) and its place removed; so are empty places from before a restart. The API: `GET /storage/removable` (id, label, file system, device and disk, model, size, state `mounted`, `ejected`, `failed` with the agent's reason, or `unmounted`, `read_only`, `path`, space while mounted), `POST /storage/removable/{id}/mount` and `…/eject` (`power_off`, true by default). The simulation offers a USB stick (`1A2B-3C4D`, FAT) |
 | Enclosure | where each disk sits: drawn above the list of disks, as a schematic in the interface's own colours (no vendor pictures), each slot in the colour of its disk's health. An enclosure is up to 16 groups of slots, each with rows and columns (60 slots at most), bays upright side by side (a tower's front) or lying stacked (a rack, a cage of 2.5" bays), a form (3.5", 2.5", M.2) and a numbering direction; a slot has a label (up to 32 characters, names up to 64) and is bound to a port or a serial number. A port is udev's `ID_PATH` of the whole disk, its `/dev/disk/by-path` name without `-partN` (`pci-0000:05:00.0-ata-1`; `…-ata-1` and `…-ata-1.0`, as systemd 253 and newer write it, are the same port), so a disk replaced in that slot shows up there by itself; a serial number serves ports that are not stable (USB, some HBAs). Disks are placed by port first, then by serial number; a slot without a disk is empty, one whose disk bound by serial number is not there is missing, and the disks in no slot are listed as not placed. A serial number two disks present report (the disks of some USB docks report their bridge's) names neither, so one never takes the other's slot: those are bound by port, and the inventory and the monitor keep them apart as `SERIAL@ID_PATH`. Such a serial number is noted as shared the first time two disks report it at once (migration `0046_disk_shared_serials`, which also learnt the ones the inventory had kept apart before and dropped their records by the serial number alone where nothing was noted on them), and from then on its disks keep that key also while one of them is there alone, so a disk's record and verdict never change with which others are present. Placement comes at once: the slots show the SMART verdicts the monitor has read so far and never wait for a pass of it reading the disks, the rest follows when read. A catalog of NAS models is built in: a TOML file each (`zendiloos-infra/src/enclosure/`), embedded in the binary and checked when it is read, each recognised by DMI's `sys_vendor` and `product_name` (trimmed, whatever the case), with its case for the drawing (tower, rack or plain; a front panel on the left or right with its power button and lights), its slots bound to ports, whether someone checked it on the real machine, and notes. The first is the UGREEN DXP4800 Plus, from the owner's machine running UGOS: four 3.5" bays at the front (`pci-0000:05:00.0-ata-1` to `-4`, agreeing with miskcoo/ugreen_leds_controller's ataN to diskN), two M.2 slots underneath (`0000:01:00.0`, `0000:02:00.0`) and the system SSD inside (`0000:04:00.0`); the order of bays 1–4 and which slot is printed "M.2 1" are still to be confirmed. While a model is not checked on a real machine, every place that names one of its slots says that its bay order is not confirmed yet: the one-click offer, the schematic, a disk's slot and the bay of a disk being replaced; a slot bound by hand is named as it is. Kept in the database (migration `0036_enclosure`): a model with other bindings for some of its slots, or a layout of one's own, which may start from a model; while nothing is chosen, the model the machine was recognised as is offered in one click; a machine recognised as none starts the setup with a layout of its own, not with a model of the catalog. A slot of a model is bound otherwise once at most (else `invalid_input`). A choice saved is answered as saved also while the disks cannot be read back, with none placed. **Locating** a disk makes its activity light blink so it can be found: zendiloosd has the agent read from it in bursts of 0.7 seconds with pauses of 0.7 seconds (4.6), for 60 seconds or up to 300, one session per disk, which can be stopped, a burst under way too; a burst that takes longer than 5 seconds (a disk or the agent hanging) ends the session; until when it blinks is in the API. NVMe M.2 slots mostly have no light of their own. **[Later]** the enclosure's own lights: `ledctl` (ledmon) for backplanes that have them, UGREEN's front lights over I²C. The **inventory** keeps every disk seen, by serial number: model and size as last seen, first and last seen (the last up to an hour behind, so a look every minute does not write every minute, and never going back, not for a clock set back either), and what the owner notes: the purchase date, until when the warranty holds, the vendor or shop, a note. A disk no longer present stays listed as stored until it is removed. Reading needs `storage.view`, changing `storage.manage`; changes are audited (`storage.enclosure_update`, `storage.locate`, `storage.locate_stop`, `storage.inventory_update`, `storage.inventory_remove`), those refused (no such disk kept, the disk still present) or failed as failures. Noting details is answered as kept also while the disks cannot be read, without whether the disk is present. The API: `GET`, `PUT` and `DELETE /storage/enclosure`, `GET /storage/enclosure/models`, `GET /storage/locate`, `POST` and `DELETE /storage/disks/{name}/locate`, `GET /storage/inventory`, `PUT` and `DELETE /storage/inventory/{serial}`; disks carry `id_path`. The simulation is a DXP4800 Plus with its disks in the bays; tested in the VM with `just vm-enclosure-test` |
 | Kernel module | `zfs-dkms` and `zfsutils-linux` from Debian contrib, built for the installed kernel with its headers |
 

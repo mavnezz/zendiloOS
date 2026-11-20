@@ -68,6 +68,8 @@ function needsText(needs: VmHostNeeds): string {
       return needs.interface
         ? t('vms.hostDevices.needs.network', { interface: needs.interface })
         : t('vms.hostDevices.needs.networkUnknown')
+    case 'ups':
+      return t('vms.hostDevices.needs.ups')
     default:
       return t('vms.hostDevices.needs.bridge')
   }
@@ -83,6 +85,11 @@ function blockedText(group: PciGroup): string | null {
 
 function usbTaken(id: string): boolean {
   return form.value.usb.length >= USB_MAX && !form.value.usb.includes(id)
+}
+
+/** A device the NAS needs is not given; one the VM has can still be taken away. */
+function usbHeld(choice: { id: string; needed: VmHostNeeds | null }): boolean {
+  return choice.needed !== null && !form.value.usb.includes(choice.id)
 }
 
 function groupTaken(group: PciGroup): boolean {
@@ -112,12 +119,15 @@ const kind = (device: VmHostPci) => t(`vms.hostDevices.kinds.${pciKind(device.cl
       </p>
       <ul class="grid gap-2">
         <li v-for="choice in usb" :key="choice.id" :data-usb="choice.id">
-          <label class="flex items-start gap-3 rounded-lg border p-3 text-sm">
+          <label
+            class="flex items-start gap-3 rounded-lg border p-3 text-sm"
+            :class="choice.needed ? 'opacity-70' : ''"
+          >
             <input
               type="checkbox"
               class="mt-0.5 size-4 accent-primary"
               :checked="form.usb.includes(choice.id)"
-              :disabled="usbTaken(choice.id)"
+              :disabled="usbTaken(choice.id) || usbHeld(choice)"
               @change="setUsb(choice.id, ($event.target as HTMLInputElement).checked)"
             />
             <span class="grid min-w-0 flex-1 gap-0.5">
@@ -134,6 +144,12 @@ const kind = (device: VmHostPci) => t(`vms.hostDevices.kinds.${pciKind(device.cl
               <span v-if="choice.twins" class="text-xs text-amber-700 dark:text-amber-300">{{
                 t('vms.hostDevices.twins')
               }}</span>
+              <span
+                v-if="choice.needed"
+                class="text-xs text-amber-700 dark:text-amber-300"
+                data-testid="vm-usb-needed"
+                >{{ needsText(choice.needed) }}</span
+              >
             </span>
           </label>
         </li>

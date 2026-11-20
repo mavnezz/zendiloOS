@@ -33,6 +33,11 @@
 #      ZENDILOOS_VM_USB=1 and a kernel with USB; the cloud kernel has none),
 #      one is given to a VM by vendor and product and pulled out while it
 #      runs; otherwise skipped with a note
+#   7. a USB stick (QEMU's usb-storage) is mounted by the NAS as it is
+#      plugged in, and refused for a VM while it is; ejected, a VM is given
+#      it; plugged in again it is not mounted (the VM has it, the problem
+#      says so), the VM starts with it, and again after it ran; also only
+#      with USB, and mkfs.vfat on this machine
 #
 # Needs the VM running with the package installed and set up, a pool
 # zendiloOS made (ZENDILOOS_VMS_POOL picks it for the storage if it is not
@@ -51,6 +56,7 @@ secure="ztest secure"
 disks="ztest disks"
 copy="ztest copy"
 usb_name="ztest usb"
+stick_name="ztest stick"
 share="ztestvmbak"
 work=$(mktemp -d)
 
@@ -134,6 +140,8 @@ clean() {
     delete_vm "$disks"
     delete_vm "$copy"
     delete_vm "$usb_name"
+    delete_vm "$stick_name"
+    "$root/scripts/vm.sh" usb-detach ztstick >/dev/null 2>&1 || true
     delete_backups
     delete_share
     "$root/scripts/vm.sh" usb-detach ztestusb >/dev/null 2>&1 || true
@@ -433,6 +441,53 @@ else
         fail "$usb is still in the running VM"
     fi
     note "$usb given by vendor and product, pulled out while it ran"
+fi
+
+say "7. A USB stick a VM is given is not mounted by the NAS"
+stick_id=46f4:0001
+removable() { call GET /storage/removable | jq -c '.[] | select(.label == "ZTSTICK")'; }
+mkfs=$(command -v mkfs.vfat || true)
+[[ -z $mkfs && -x /usr/sbin/mkfs.vfat ]] && mkfs=/usr/sbin/mkfs.vfat
+if [[ -z $usb || -z $mkfs ]]; then
+    note "skipped: no USB in the test VM, or no mkfs.vfat here"
+else
+    truncate -s 64M "$work/stick.img"
+    "$mkfs" -n ZTSTICK "$work/stick.img" >/dev/null
+    "$root/scripts/vm.sh" usb-stick-attach "$work/stick.img" ztstick ZTSTICK0001 || fail "the stick is not plugged in"
+    wait_for "the stick mounted by the NAS" "removable | jq -e '.state == \"mounted\"'" 90
+    drive_id=$(removable | jq -er .id)
+    call GET /vms/devices | jq -e --arg u "$stick_id" '[.usb[] | select(.id == $u and .needed.kind == "disk")] | length == 1' \
+        >/dev/null || fail "the mounted stick is not one the host needs: $(call GET /vms/devices | jq -c .usb)"
+    body=$(jq -n --arg n "$stick_name" --arg u "$stick_id" '{name: $n, os: "linux", cpus: 1, memory_mib: 256,
+        firmware: "uefi", disks: [{slot: 0, size_gib: 1, bus: "virtio"}], nics: [], drives: [],
+        boot: [{kind: "disk", slot: 0}], usb: [$u]}')
+    [[ $(status POST /vms "$body") != 202 ]] || fail "a VM was given the stick the NAS has mounted"
+    [[ $(status POST "/storage/removable/$drive_id/eject" '{"power_off":false}') =~ ^20 ]] \
+        || fail "eject the stick: $(cat "$work/last")"
+    [[ $(status POST /vms "$body") == 202 ]] || fail "a VM with the stick: $(cat "$work/last")"
+    sid=$(jq -er .vm.id "$work/last")
+    job_succeeded "$(jq -r .job.id "$work/last")" 300
+    # Plugged in again, as after the VM gave it back: the NAS leaves it be.
+    "$root/scripts/vm.sh" usb-detach ztstick >/dev/null
+    wait_for "the stick gone" "[[ -z \$(removable) ]]" 60
+    "$root/scripts/vm.sh" usb-stick-attach "$work/stick.img" ztstick ZTSTICK0001 || fail "the stick is not plugged in again"
+    wait_for "the stick seen again" "[[ -n \$(removable) ]]" 90
+    for _ in 1 2 3; do
+        [[ $(removable | jq -r .state) != mounted ]] || fail "the NAS mounted the stick the VM is given"
+        sleep 5
+    done
+    removable | jq -e '.problem | test("virtual machine")' >/dev/null || fail "the drive does not say why: $(removable)"
+    [[ $(status POST "/vms/$sid/start") == 200 ]] || fail "start with the stick: $(cat "$work/last")"
+    xml=$(vm "sudo virsh -c qemu:///system dumpxml zendiloos-$sid")
+    grep -q "<vendor id='0x46f4'/>" <<<"$xml" || fail "no hostdev of the stick"
+    [[ $(status POST "/vms/$sid/force-off") == 200 ]] || fail "force off: $(cat "$work/last")"
+    wait_for "the VM off" "[[ \$(call GET /vms/$sid | jq -r .state) == shut_off ]]" 60
+    # Back with the NAS after the VM ran, not mounted, and the VM starts again.
+    wait_for "the stick back with the NAS" "[[ -n \$(removable) ]]" 90
+    sleep 5
+    [[ $(removable | jq -r .state) != mounted ]] || fail "the NAS mounted the stick after the VM ran"
+    [[ $(status POST "/vms/$sid/start") == 200 ]] || fail "a second start with the stick: $(cat "$work/last")"
+    note "mounted while nothing had it; not mounted once a VM is given it, which starts with it"
 fi
 
 say "Done: all checks passed"

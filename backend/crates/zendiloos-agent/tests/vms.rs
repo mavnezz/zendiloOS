@@ -207,13 +207,26 @@ fn host(installed: bool) -> Host {
     .unwrap();
     fs::write(root.join("network/05-zendiloos-br0.netdev"), "[NetDev]\nName=br0\nKind=bridge\n").unwrap();
     fs::write(root.join("network/05-zendiloos-enp1s0.network"), "[Network]\nBridge=br0\n").unwrap();
+    let _ = (virsh, busctl, zfs, systemd_run, script(&root, "zpool", ""), script(&root, "systemctl", ""));
+    if installed {
+        for name in ["libvirtd", "qemu-system-x86_64", "swtpm"] {
+            fs::write(root.join(name), "").unwrap();
+        }
+    }
+    let operations = operations_at(&root, installed);
+    Host { _dir: dir, root, operations }
+}
+
+/// The agent on the fake host at `root`: another one, as after a restart.
+fn operations_at(root: &Path, installed: bool) -> Operations {
+    let root = root.to_path_buf();
     let mut tools = Tools {
-        virsh,
-        busctl,
-        zfs,
-        zpool: script(&root, "zpool", ""),
-        systemctl: script(&root, "systemctl", ""),
-        systemd_run,
+        virsh: root.join("virsh"),
+        busctl: root.join("busctl"),
+        zfs: root.join("zfs"),
+        zpool: root.join("zpool"),
+        systemctl: root.join("systemctl"),
+        systemd_run: root.join("systemd-run"),
         libvirtd: root.join("libvirtd"),
         qemu: root.join("qemu-system-x86_64"),
         swtpm: root.join("swtpm"),
@@ -222,11 +235,7 @@ fn host(installed: bool) -> Host {
         rm: PathBuf::from("/bin/rm"),
         ..Tools::default()
     };
-    if installed {
-        fs::write(&tools.libvirtd, "").unwrap();
-        fs::write(&tools.qemu, "").unwrap();
-        fs::write(&tools.swtpm, "").unwrap();
-    } else {
+    if !installed {
         tools.virsh = root.join("no-virsh");
     }
     let paths = Paths {
@@ -247,6 +256,8 @@ fn host(installed: bool) -> Host {
                 iommu_groups: root.join("iommu"),
                 cmdline: root.join("cmdline"),
                 pci_ids: root.join("pci.ids"),
+                ups_conf: root.join("ups.conf"),
+                udev: root.join("udev"),
             },
             firmware: root.join("firmware"),
             own_firmware: root.join("etc-firmware"),
@@ -263,12 +274,16 @@ fn host(installed: bool) -> Host {
             zvols: PathBuf::from("/dev/zvol"),
             network: root.join("network"),
             internal: root.join("internal-networks.nft"),
+            user_network: root.join("passt.nft"),
+            routes: root.join("route"),
+            routes6: root.join("ipv6_route"),
+            libvirt_autostart: root.join("libvirt-autostart"),
+            boot_id: root.join("boot_id"),
+            started: root.join("started"),
         },
         ..Paths::default()
     };
-    let operations =
-        Operations::with_paths(Role::System, &tools, Erasable::Policy(ErasePolicy::None), paths).unwrap();
-    Host { _dir: dir, root, operations }
+    Operations::with_paths(Role::System, &tools, Erasable::Policy(ErasePolicy::None), paths).unwrap()
 }
 
 fn pool() -> PoolName {
@@ -440,7 +455,14 @@ async fn the_storage_goes_on_a_pool_and_libvirt_follows_it() {
     assert!(tmpfiles.contains("consoles 2770 libvirt-qemu root -"), "{tmpfiles}");
     let apparmor =
         fs::read_to_string(host.path("apparmor/abstractions/libvirt-qemu.d/zendiloos-consoles")).unwrap();
-    assert!(apparmor.contains("/consoles/*.vnc rw,"), "{apparmor}");
+    assert!(apparmor.contains("/consoles/ r,"), "no leave to look into the consoles' folder");
+    // Each VM's profile names its own socket: no QEMU uses another's console.
+    assert!(!apparmor.contains(".vnc"), "every QEMU may use every console");
+    // What cards through passt reach is in force before any VM runs.
+    assert!(host.path("passt.nft").exists());
+    assert!(
+        at("systemctl reload-or-restart zendiloos-passt.service") < at("systemctl restart libvirtd.service")
+    );
     // No network of libvirt's is ever started or defined.
     assert!(!calls.iter().any(|call| call.contains("net-") || call.contains("nwfilter")), "{calls:?}");
 
@@ -596,7 +618,9 @@ async fn a_vm_gets_its_sparse_zvols_and_a_domain_of_its_own() {
     ] {
         assert!(calls.contains(&wanted), "{wanted}: {calls:?}");
     }
-    assert_eq!(calls.last().unwrap(), &format!("virsh --connect qemu:///system autostart zendiloos-{ID}"));
+    // It starts with the machine through the agent, never libvirt's own autostart.
+    assert!(host.path(&format!("domains/zendiloos-{ID}.autostart")).exists());
+    assert!(!calls.iter().any(|call| call.contains(" autostart ")), "libvirt's own autostart was asked for");
     assert_eq!(
         host.zvols(),
         [format!("tank/zendiloos.vms/{ID}-disk0"), format!("tank/zendiloos.vms/{ID}-disk1")]
@@ -616,6 +640,12 @@ async fn a_vm_gets_its_sparse_zvols_and_a_domain_of_its_own() {
     refused(host.run(define(spec())).await, ErrorCode::Conflict, "taken");
 
     assert_eq!(host.run(Request::SetVmAutostart { id: id(), autostart: false }).await, Response::Done);
+    assert!(!host.path(&format!("domains/zendiloos-{ID}.autostart")).exists());
+    // libvirt's own autostart, as an older version left it on, goes off.
+    fs::create_dir_all(host.path("libvirt-autostart")).unwrap();
+    fs::write(host.path(&format!("libvirt-autostart/zendiloos-{ID}.xml")), "").unwrap();
+    assert_eq!(host.run(Request::SetVmAutostart { id: id(), autostart: true }).await, Response::Done);
+    assert!(host.path(&format!("domains/zendiloos-{ID}.autostart")).exists());
     assert_eq!(
         host.calls().last().unwrap(),
         &format!("virsh --connect qemu:///system autostart --disable zendiloos-{ID}")
@@ -651,9 +681,9 @@ async fn a_vm_that_is_off_changes_its_hardware_and_disks_only_grow() {
     let made = at(&format!("zfs create -s -V 5G -o volmode=dev tank/zendiloos.vms/{ID}-disk2"));
     let defined =
         at(&format!("virsh --connect qemu:///system define --validate /domains/zendiloos-{ID}.xml.new"));
-    let disabled = at(&format!("virsh --connect qemu:///system autostart --disable zendiloos-{ID}"));
     let removed = at(&format!("zfs destroy -r tank/zendiloos.vms/{ID}-disk1"));
-    assert!(grown < defined && made < defined && defined < disabled && disabled < removed, "{calls:?}");
+    assert!(grown < defined && made < defined && defined < removed, "not in this order");
+    assert!(!host.path(&format!("domains/zendiloos-{ID}.autostart")).exists());
     assert_eq!(
         host.zvols(),
         [format!("tank/zendiloos.vms/{ID}-disk0"), format!("tank/zendiloos.vms/{ID}-disk2")]
@@ -1138,4 +1168,150 @@ async fn a_card_goes_on_an_internal_network_only_while_the_nas_is_kept_off_it() 
         ErrorCode::Forbidden,
         "no internal network",
     );
+}
+
+/// Waits a little for `done`, which the agent does in the background.
+async fn eventually(done: impl Fn() -> bool) -> bool {
+    for _ in 0..100 {
+        if done() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    done()
+}
+
+/// What the agent recorded of this boot's starts with the machine: the boot
+/// and the VMs still to start.
+fn started(host: &Host) -> Option<(String, Vec<String>)> {
+    let record: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(host.path("started")).ok()?).ok()?;
+    let pending =
+        record["pending"].as_array()?.iter().filter_map(|id| id.as_str().map(str::to_owned)).collect();
+    Some((record["boot"].as_str()?.to_owned(), pending))
+}
+
+/// libvirt's own autostart would start a VM past the checks of a start; the
+/// agent starts those that start with the machine itself, once a boot.
+#[tokio::test]
+async fn vms_start_with_the_machine_through_the_agent_once_a_boot() {
+    let host = host(true);
+    set_up(&host).await;
+    assert_eq!(host.run(Request::DefineVm { spec: spec_with(devices(), true) }).await, Response::Done);
+    // An older version had libvirt start it with the machine.
+    fs::create_dir_all(host.path("libvirt-autostart")).unwrap();
+    fs::write(host.path(&format!("libvirt-autostart/zendiloos-{ID}.xml")), "").unwrap();
+    fs::remove_file(host.path(&format!("domains/zendiloos-{ID}.autostart"))).unwrap();
+
+    // The agent's first start after the update: libvirt's autostart is
+    // taken over, which started the VM in this boot already.
+    fs::write(host.path("boot_id"), "first-boot\n").unwrap();
+    host.operations.recover().await;
+    assert!(eventually(|| started(&host).is_some()).await);
+    assert_eq!(started(&host), Some(("first-boot".to_owned(), vec![])));
+    assert!(host.path(&format!("domains/zendiloos-{ID}.autostart")).exists(), "taken over");
+    assert!(
+        host.calls().contains(&format!("virsh --connect qemu:///system autostart --disable zendiloos-{ID}"))
+    );
+    assert_eq!(host.state(), "shut off");
+
+    // The next boot: started, checked as any start.
+    fs::remove_file(host.path(&format!("libvirt-autostart/zendiloos-{ID}.xml"))).unwrap();
+    fs::write(host.path("boot_id"), "second-boot\n").unwrap();
+    let agent = operations_at(&host.root, true);
+    agent.recover().await;
+    assert!(eventually(|| host.state() == "running").await, "started with the machine");
+    assert!(eventually(|| started(&host) == Some(("second-boot".to_owned(), vec![]))).await);
+
+    // The agent restarted in the same boot starts nothing again.
+    fs::write(host.path(&format!("state/zendiloos-{ID}")), "shut off\n").unwrap();
+    let from = host.calls().len();
+    let again = operations_at(&host.root, true);
+    again.recover().await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(!host.calls_since(from).iter().any(|call| call.ends_with(&format!(" start zendiloos-{ID}"))));
+
+    // Cut off before it got to the VM: started once the agent is back.
+    fs::write(host.path("started"), format!("{{\"boot\":\"second-boot\",\"pending\":[\"{ID}\"]}}")).unwrap();
+    operations_at(&host.root, true).recover().await;
+    assert!(eventually(|| host.state() == "running").await, "the rest started after a restart");
+    assert!(eventually(|| started(&host) == Some(("second-boot".to_owned(), vec![]))).await);
+
+    // Without the marker it stays off at the next boot too.
+    fs::write(host.path(&format!("state/zendiloos-{ID}")), "shut off\n").unwrap();
+    assert_eq!(host.run(Request::SetVmAutostart { id: id(), autostart: false }).await, Response::Done);
+    fs::write(host.path("boot_id"), "third-boot\n").unwrap();
+    let from = host.calls().len();
+    operations_at(&host.root, true).recover().await;
+    assert!(eventually(|| started(&host).is_some_and(|(boot, _)| boot == "third-boot")).await);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(!host.calls_since(from).iter().any(|call| call.ends_with(&format!(" start zendiloos-{ID}"))));
+    assert_eq!(host.state(), "shut off");
+    // Deleting the VM takes its marker and its devices' record.
+    assert_eq!(host.run(Request::SetVmAutostart { id: id(), autostart: true }).await, Response::Done);
+    assert_eq!(host.run(Request::DeleteVm { id: id() }).await, Response::Done);
+    assert!(!host.path(&format!("domains/zendiloos-{ID}.autostart")).exists());
+}
+
+/// The boot is recorded also before the plugin is installed: a VM made
+/// since starts with the machine at the next boot.
+#[tokio::test]
+async fn vms_start_at_the_first_boot_after_the_plugin_came() {
+    let host = host(false);
+    fs::write(host.path("boot_id"), "before-the-plugin\n").unwrap();
+    host.operations.recover().await;
+    assert!(eventually(|| started(&host) == Some(("before-the-plugin".to_owned(), vec![]))).await);
+    // The plugin comes, a VM that starts with the machine is made.
+    for name in ["libvirtd", "qemu-system-x86_64", "swtpm"] {
+        fs::write(host.path(name), "").unwrap();
+    }
+    let host = Host { operations: operations_at(&host.root, true), ..host };
+    set_up(&host).await;
+    assert_eq!(host.run(Request::DefineVm { spec: spec_with(devices(), true) }).await, Response::Done);
+    fs::write(host.path("boot_id"), "with-the-plugin\n").unwrap();
+    operations_at(&host.root, true).recover().await;
+    assert!(eventually(|| host.state() == "running").await, "the first boot with the plugin starts it");
+}
+
+/// A card through passt makes its connections as QEMU's account: the VM
+/// starts only while the rules that hold that account are in force.
+#[tokio::test]
+async fn a_vm_through_passt_starts_only_with_the_rules_of_what_passt_reaches_in_force() {
+    let host = host(true);
+    set_up(&host).await;
+    assert_eq!(host.run(Request::DefineVm { spec: spec() }).await, Response::Done);
+    // The plugin brings QEMU's account.
+    fs::write(
+        host.path("passwd"),
+        "root:x:0:0::/root:/bin/sh\nlibvirt-qemu:x:64055:108::/var/lib/libvirt:/bin/false\n",
+    )
+    .unwrap();
+    let from = host.calls().len();
+    let start = Request::ControlVm { id: id(), action: VmAction::Start };
+    assert_eq!(host.run(start.clone()).await, Response::Done);
+    let calls = host.calls_since(from);
+    let at = |wanted: &str| {
+        calls.iter().position(|call| call == wanted).unwrap_or_else(|| panic!("{wanted} was not called"))
+    };
+    assert!(
+        at("systemctl reload-or-restart zendiloos-passt.service")
+            < at(&format!("virsh --connect qemu:///system start zendiloos-{ID}"))
+    );
+    let rules = fs::read_to_string(host.path("passt.nft")).unwrap();
+    assert!(rules.contains("meta skuid 64055 jump passt"), "the rules are not for QEMU's account");
+
+    // Rules that cannot be put in force keep it off.
+    assert_eq!(host.run(Request::ControlVm { id: id(), action: VmAction::ForceOff }).await, Response::Done);
+    fs::write(host.path("passwd"), "libvirt-qemu:x:64056:108::/var/lib/libvirt:/bin/false\n").unwrap();
+    let systemctl = host.path("systemctl");
+    fs::write(
+        &systemctl,
+        format!(
+            "#!/bin/sh\necho systemctl \"$@\" >> {}\ncase \"$1\" in reload-or-restart|is-active) exit 1 ;; esac\n",
+            host.path("calls.log").display()
+        ),
+    )
+    .unwrap();
+    refused(host.run(start).await, ErrorCode::Forbidden, "card through passt");
+    assert_eq!(host.state(), "shut off");
 }

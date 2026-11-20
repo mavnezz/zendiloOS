@@ -1,8 +1,8 @@
 //! The host's USB and PCI devices a VM is given: USB by vendor and product,
-//! which stays when a device is plugged in elsewhere or again; PCI by its
-//! address, only where the IOMMU is on, never one the host needs, and
-//! always with every other device of its IOMMU group, as they go to a VM
-//! together.
+//! which stays when a device is plugged in elsewhere or again, never one
+//! the host needs; PCI by its address, only where the IOMMU is on, never
+//! one the host needs, and always with every other device of its IOMMU
+//! group, as they go to a VM together.
 
 use std::collections::BTreeSet;
 
@@ -59,9 +59,11 @@ pub struct HostUsb {
     pub port: String,
     pub manufacturer: Option<String>,
     pub name: Option<String>,
+    /// Why the host keeps it: a disk on it in use, its network, its UPS.
+    pub needed: Option<HostNeeds>,
 }
 
-/// Why the host keeps a PCI device.
+/// Why the host keeps a PCI or USB device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostNeeds {
     /// A disk on it is in use (a pool, the system).
@@ -72,6 +74,8 @@ pub enum HostNeeds {
     Network(Option<String>),
     /// A bridge of the PCI bus.
     Bridge,
+    /// The UPS the NAS follows, or the USB controller it is on.
+    Ups,
 }
 
 /// A PCI function of the host's.
@@ -149,6 +153,9 @@ impl HostDevices {
             if !self.usb.iter().any(|found| found.device == *device) {
                 return Err(invalid(format!("the USB device {} is not plugged in", device.id())));
             }
+            if self.usb.iter().any(|found| found.device == *device && found.needed.is_some()) {
+                return Err(invalid(format!("the USB device {} is one the host needs", device.id())));
+            }
         }
         let unique_pci: BTreeSet<&String> = pci.iter().collect();
         if pci.len() > PCI_MAX || unique_pci.len() != pci.len() || !pci.iter().all(|a| is_pci_address(a)) {
@@ -209,12 +216,22 @@ mod tests {
     fn host() -> HostDevices {
         HostDevices {
             iommu: Iommu { on: true, ..Iommu::default() },
-            usb: vec![HostUsb {
-                device: UsbDevice { vendor: 0x046d, product: 0xc31c },
-                port: "1-2".into(),
-                manufacturer: None,
-                name: None,
-            }],
+            usb: vec![
+                HostUsb {
+                    device: UsbDevice { vendor: 0x046d, product: 0xc31c },
+                    port: "1-2".into(),
+                    manufacturer: None,
+                    name: None,
+                    needed: None,
+                },
+                HostUsb {
+                    device: UsbDevice { vendor: 0x0463, product: 0xffff },
+                    port: "1-3".into(),
+                    manufacturer: Some("EATON".into()),
+                    name: None,
+                    needed: Some(HostNeeds::Ups),
+                },
+            ],
             pci: vec![
                 pci("0000:00:01.0", 0x060400, 1, Some(HostNeeds::Bridge)),
                 pci("0000:01:00.0", 0x030000, 1, None),
@@ -241,6 +258,11 @@ mod tests {
         assert!(host().check(&[stick], &[], &[stick], &[]).is_ok(), "one it had may be unplugged now");
         assert!(host().check(&[keyboard, keyboard], &[], &[], &[]).is_err());
         assert!(host().check(&[keyboard; 9], &[], &[keyboard], &[]).is_err());
+        // The UPS the NAS follows goes to no VM; one a VM had stays as it was.
+        let ups = UsbDevice { vendor: 0x0463, product: 0xffff };
+        let error = host().check(&[keyboard, ups], &[], &[], &[]).unwrap_err();
+        assert!(error.0.contains("0463:ffff is one the host needs"), "{error}");
+        assert!(host().check(&[ups], &[], &[ups], &[]).is_ok());
     }
 
     #[test]

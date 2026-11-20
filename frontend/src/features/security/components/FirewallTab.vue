@@ -342,6 +342,9 @@ function servicePorts(service: FirewallService): string {
             {{ t('firewall.add') }}
           </Button>
           <p class="text-xs text-muted-foreground">{{ t('firewall.rulesHint') }}</p>
+          <p class="text-xs text-muted-foreground" data-testid="firewall-vms-hint">
+            {{ t('firewall.vmsHint') }}
+          </p>
         </div>
         <div class="overflow-x-auto rounded-lg border">
           <Table>

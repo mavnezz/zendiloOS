@@ -66,8 +66,9 @@ beforeEach(() => {
   on('GET', '/api/v1/vms/devices', {
     iommu: { on: true, cmdline: [], cpu_vendor: null },
     usb: [
-      { id: '0781:5583', port: '1-3', manufacturer: null, name: null },
-      { id: '0781:5583', port: '1-4', manufacturer: null, name: null },
+      { id: '0781:5583', port: '1-3', manufacturer: null, name: null, needed: null },
+      { id: '0781:5583', port: '1-4', manufacturer: null, name: null, needed: null },
+      { id: '0463:ffff', port: '1-5', manufacturer: 'EATON', name: null, needed: { kind: 'ups' } },
     ],
     pci: [
       pci('0000:00:02.0', '030000', 1, { needed: { kind: 'console' } }),
@@ -96,7 +97,17 @@ describe('the NAS’s devices for a VM', () => {
     expect(page()).toContain(t('vms.hostDevices.driver', { driver: 'igb' }))
     // Two sticks of one kind cannot be told apart.
     expect(page()).toContain(t('vms.hostDevices.twins'))
-    expect(document.querySelectorAll('[data-usb]')).toHaveLength(1)
+    expect(document.querySelectorAll('[data-usb]')).toHaveLength(2)
+    // The UPS the NAS follows is not given.
+    expect(document.querySelector('[data-testid="vm-usb-needed"]')!.textContent).toBe(
+      t('vms.hostDevices.needs.ups'),
+    )
+    expect(document.querySelector<HTMLInputElement>('[data-usb="0463:ffff"] input')!.disabled).toBe(
+      true,
+    )
+    expect(document.querySelector<HTMLInputElement>('[data-usb="0781:5583"] input')!.disabled).toBe(
+      false,
+    )
     document.querySelector<HTMLInputElement>('[data-group="6"] input')!.click()
     await settle()
     expect(form.value.pci).toEqual(['0000:06:00.0'])

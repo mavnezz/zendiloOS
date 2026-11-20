@@ -53,6 +53,8 @@ pub(crate) struct Removable {
     umount: PathBuf,
     rmdir: PathBuf,
     paths: HostPaths,
+    /// The VMs' devices: a drive on one a VM is given is never mounted.
+    vms: crate::vms::VmPaths,
     group: PathBuf,
     /// One change of drives at a time.
     serial: tokio::sync::Mutex<()>,
@@ -245,6 +247,7 @@ impl Removable {
     pub(crate) fn new(
         tools: &Tools,
         paths: HostPaths,
+        vms: crate::vms::VmPaths,
         accounts: &AccountFiles,
     ) -> Result<Self, zendiloos_exec::ExecError> {
         Ok(Self {
@@ -254,6 +257,7 @@ impl Removable {
             umount: tools.umount.clone(),
             rmdir: tools.rmdir.clone(),
             paths,
+            vms,
             group: accounts.group.clone(),
             serial: tokio::sync::Mutex::new(()),
         })
@@ -286,6 +290,15 @@ impl Removable {
         if let Some(options) = mounted(&self.mountinfo()?, &place_text) {
             let read_only = options.split(',').any(|option| option == "ro");
             return Ok(Response::RemovableMounted { read_only });
+        }
+        // A drive on a USB device or controller a VM is given is the VM's:
+        // mounted, it would keep the VM from starting with it.
+        let place_in_sysfs = fs::canonicalize(self.paths.sys_block.join(&drive.device)).ok();
+        if let Some(vm) = place_in_sysfs.as_deref().and_then(|real| crate::vms::vm_given(&self.vms, real)) {
+            return Err(refused(format!(
+                "the drive is on a device the virtual machine {} is given; it is not mounted",
+                vm.as_str()
+            )));
         }
         let group =
             fs::read_to_string(&self.group).map_err(|e| OperationError::Read(self.group.clone(), e))?;

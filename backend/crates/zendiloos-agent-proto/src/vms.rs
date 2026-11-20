@@ -345,8 +345,11 @@ pub enum VmNicModel {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VmNetwork {
     /// User-mode networking through passt: the VM reaches the LAN and the
-    /// internet from the NAS's address, nothing reaches the VM. No bridge,
-    /// no NAT rules, no DHCP server of libvirt's.
+    /// internet from the NAS's address, and the NAS itself as the LAN does
+    /// (by the firewall's rules), but neither what listens on the NAS's
+    /// loopback nor the containers' networks other than through their
+    /// published ports; nothing reaches the VM. No bridge, no NAT rules,
+    /// no DHCP server of libvirt's.
     User,
     /// A Linux bridge the machine has (`br0`): the VM is on the LAN as a
     /// machine of its own. The agent checks it is a bridge.
@@ -406,7 +409,9 @@ pub enum VmBoot {
 /// that stays when it is plugged in elsewhere or again, where its bus
 /// and device number change. Two devices of the same vendor and product
 /// plugged in at once cannot be told apart that way; libvirt then refuses
-/// to start the VM, and the agent says so first.
+/// to start the VM, and the agent says so first. The agent records the
+/// device's serial number (a disk or network adapter without one: its
+/// port) and refuses a start with another one plugged in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VmUsbDevice {
@@ -485,9 +490,14 @@ pub struct HostUsbDevice {
     /// What the device calls its maker and itself, if it says.
     pub manufacturer: Option<String>,
     pub name: Option<String>,
+    /// Why the host keeps it, if it does: a disk on it in use, the host's
+    /// network on it, or the UPS it follows. Such a device is never handed
+    /// over.
+    #[serde(default)]
+    pub needed: Option<HostNeeds>,
 }
 
-/// Why the host keeps a PCI device for itself.
+/// Why the host keeps a PCI or USB device for itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostNeeds {
@@ -502,6 +512,9 @@ pub enum HostNeeds {
     /// over, and it does not keep the other devices of its group from a
     /// VM, as VFIO lets bridges be.
     Bridge,
+    /// The UPS the NAS follows over USB (Network UPS Tools' driver), or the
+    /// USB controller it is plugged into.
+    Ups,
 }
 
 /// A PCI function of the host's, as sysfs describes it.

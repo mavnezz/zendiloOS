@@ -30507,9 +30507,24 @@
                 ]
               }
             }
+          },
+          {
+            "type": "object",
+            "description": "The UPS the NAS follows, or the USB controller it is on.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "ups"
+                ]
+              }
+            }
           }
         ],
-        "description": "Why the host keeps a PCI device."
+        "description": "Why the host keeps a PCI or USB device."
       },
       "VmHostPci": {
         "type": "object",
@@ -30598,6 +30613,17 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "needed": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/VmHostNeeds",
+                "description": "Why the host keeps it; such a device is not handed over."
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "port": {

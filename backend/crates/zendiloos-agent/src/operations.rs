@@ -98,7 +98,7 @@ pub struct Operations {
     removable: Removable,
     enclosure: Enclosure,
     emmc: Emmc,
-    vms: Vms,
+    vms: std::sync::Arc<Vms>,
     backups: Backups,
     console_issue: std::path::PathBuf,
     role: Role,
@@ -171,10 +171,10 @@ impl Operations {
                 Program::new(&tools.systemctl)?,
                 paths.host.clone(),
             ),
-            removable: Removable::new(tools, paths.host.clone(), &paths.accounts)?,
+            removable: Removable::new(tools, paths.host.clone(), paths.vms.clone(), &paths.accounts)?,
             enclosure: Enclosure::new(&paths.host),
             emmc: Emmc::new(&paths.host),
-            vms: Vms::new(
+            vms: std::sync::Arc::new(Vms::new(
                 VmTools {
                     virsh: Program::new(&tools.virsh)?,
                     zfs: Program::new(&tools.zfs)?,
@@ -191,7 +191,7 @@ impl Operations {
                 },
                 paths.vms.clone(),
                 paths.host.clone(),
-            ),
+            )),
             backups: Backups::new(
                 BackupTools {
                     systemd_run: Program::new(&tools.systemd_run)?,
@@ -237,6 +237,13 @@ impl Operations {
             self.volumes.recover().await;
             self.backups.recover().await;
             self.vms.recover().await;
+            // In the background: the VMs that start with the machine, once
+            // a boot, each checked as any start (they wait for the lock of
+            // the VMs' changes, not the agent's first answers).
+            let vms = std::sync::Arc::clone(&self.vms);
+            tokio::spawn(async move { vms.start_with_machine().await });
+            let vms = std::sync::Arc::clone(&self.vms);
+            tokio::spawn(async move { vms.keep_passt_rules().await });
         }
     }
 

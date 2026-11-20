@@ -46,9 +46,9 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use zendiloos_agent_proto::{
-    InterfaceName, PoolName, Response, VM_CONSOLES, VM_IMAGE_UPLOAD_MAX, VM_IMAGES_DIRECTORY, VMS_DATASET,
-    VMS_DIRECTORY, VmAction, VmBoot, VmDisk, VmDiskBus, VmDiskSlot, VmDriveSlot, VmFirmware, VmId,
-    VmImageFile, VmImageId, VmIsoSource, VmNetwork, VmNicModel, VmOs, VmSpec, VmStorage, VmUsbDevice,
+    InterfaceName, PciAddress, PoolName, Response, VM_CONSOLES, VM_IMAGE_UPLOAD_MAX, VM_IMAGES_DIRECTORY,
+    VMS_DATASET, VMS_DIRECTORY, VmAction, VmBoot, VmDisk, VmDiskBus, VmDiskSlot, VmDriveSlot, VmFirmware,
+    VmId, VmImageFile, VmImageId, VmIsoSource, VmNetwork, VmNicModel, VmOs, VmSpec, VmStorage, VmUsbDevice,
     VolumeNumber,
 };
 use zendiloos_exec::{ExecError, Limits, Program, Surroundings};
@@ -147,6 +147,21 @@ pub struct VmPaths {
     /// The rules that keep the NAS off them, as the network's changes
     /// write them ([`crate::internal_networks`]).
     pub internal: PathBuf,
+    /// What VMs reach through passt ([`crate::vm_user_network`]).
+    pub user_network: PathBuf,
+    /// The host's routes, `/proc/1/net/route` and `/proc/1/net/ipv6_route`
+    /// (the agent's own network is another): the cards of its default
+    /// routes are where passt's connections may leave.
+    pub routes: PathBuf,
+    pub routes6: PathBuf,
+    /// libvirt's own autostart, a link per domain: never on for
+    /// zendiloOS's, which start with the machine through the agent.
+    pub libvirt_autostart: PathBuf,
+    /// This boot's id, `/proc/sys/kernel/random/boot_id`.
+    pub boot_id: PathBuf,
+    /// The boot the VMs last started with the machine in, in the agent's
+    /// state directory.
+    pub started: PathBuf,
 }
 
 impl Default for VmPaths {
@@ -171,6 +186,12 @@ impl Default for VmPaths {
             zvols: PathBuf::from("/dev/zvol"),
             network: PathBuf::from("/etc/systemd/network"),
             internal: PathBuf::from(crate::network::INTERNAL_NETWORKS),
+            user_network: PathBuf::from(crate::vm_user_network::FILE),
+            routes: PathBuf::from("/proc/1/net/route"),
+            routes6: PathBuf::from("/proc/1/net/ipv6_route"),
+            libvirt_autostart: PathBuf::from("/etc/libvirt/qemu/autostart"),
+            boot_id: PathBuf::from("/proc/sys/kernel/random/boot_id"),
+            started: PathBuf::from("/var/lib/zendiloos-agent/vms-started-boot"),
         }
     }
 }
@@ -197,6 +218,15 @@ pub(crate) struct VmTools {
     /// Run in transient units.
     pub tmpfiles: PathBuf,
     pub rm: PathBuf,
+}
+
+/// The boot the VMs started with the machine in, and those of them still to
+/// start: `vms-started-boot` in the agent's state directory.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Started {
+    boot: String,
+    pending: Vec<VmId>,
 }
 
 /// How an upload's unit ended.
@@ -226,6 +256,9 @@ pub(crate) struct Vms {
     /// meanwhile; these are neither started, changed nor deleted.
     restoring: Mutex<BTreeSet<VmId>>,
     uploads: Mutex<BTreeMap<VmImageId, Upload>>,
+    /// libvirt's own autostart of a VM was taken over as the agent started:
+    /// libvirt started them in this boot already.
+    took_over: std::sync::atomic::AtomicBool,
 }
 
 fn refused(reason: impl Into<String>) -> OperationError {
@@ -306,6 +339,7 @@ impl Vms {
             serial: tokio::sync::Mutex::new(()),
             restoring: Mutex::default(),
             uploads: Mutex::default(),
+            took_over: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -454,7 +488,7 @@ impl Vms {
         }
         Ok(Response::VmHostDevices {
             iommu: devices::iommu(&self.paths.devices, &cpuinfo),
-            usb: devices::usb_devices(&self.paths.devices),
+            usb: devices::usb_devices(&self.paths.devices, &self.host, &self.tools.busctl).await,
             pci: devices::pci_devices(&self.paths.devices, &self.host, &self.tools.busctl).await,
         })
     }
@@ -464,6 +498,35 @@ impl Vms {
     /// enabled and running.
     pub(crate) async fn prepare_libvirt(&self) -> Result<Response, OperationError> {
         self.require_installed()?;
+        self.write_local_files()?;
+        self.make_consoles().await?;
+        // Before any VM runs: what a card through passt reaches.
+        crate::vm_user_network::sync(&self.tools.systemctl, &self.passt_places()).await?;
+        run(&self.tools.systemctl, &["daemon-reload"], QUICK).await?;
+        // QEMU's output goes through virtlogd; without libvirt-daemon-system
+        // nothing else enables its socket before the next boot.
+        run(&self.tools.systemctl, &["enable", "--now", "virtlogd.socket"], QUICK).await?;
+        run(&self.tools.systemctl, &["enable", "--now", "libvirtd.socket"], QUICK).await?;
+        run(&self.tools.systemctl, &["enable", "libvirtd.service"], QUICK).await?;
+        run(&self.tools.systemctl, &["restart", "libvirtd.service"], SLOW).await?;
+        Ok(Response::Done)
+    }
+
+    /// Where the rules of what passt reaches come from and go.
+    pub(super) fn passt_places(&self) -> crate::vm_user_network::Places<'_> {
+        crate::vm_user_network::Places {
+            file: &self.paths.user_network,
+            passwd: &self.paths.passwd,
+            routes: &self.paths.routes,
+            routes6: &self.paths.routes6,
+        }
+    }
+
+    /// zendiloOS's files for libvirt in `/etc`: the consoles' folder made at
+    /// every boot, and AppArmor's leave for QEMU to look into it. Written
+    /// as the VMs are set up and as the agent starts, so an update brings
+    /// them as this version has them.
+    pub(super) fn write_local_files(&self) -> Result<(), OperationError> {
         let consoles = self.paths.consoles.display();
         // `libvirt-qemu`'s, so QEMU makes its sockets there; the group root
         // and the set-group-ID bit give them root's group, so the agent
@@ -473,24 +536,16 @@ impl Vms {
              d {consoles} 2770 libvirt-qemu root -\n"
         );
         write_own(&self.paths.tmpfiles, &tmpfiles)?;
+        // The folder alone: each VM's profile names its own socket
+        // (virt-aa-helper), so no QEMU uses another VM's console.
         let apparmor = format!(
-            "{MARKER}: QEMU may use its console's socket (docs/architecture.md, 4.13).\n\
-             {consoles}/ r,\n\
-             {consoles}/*.vnc rw,\n"
+            "{MARKER}: QEMU may look into its consoles' folder (docs/architecture.md, 4.13).\n\
+             {consoles}/ r,\n"
         );
         if let Err(error) = write_own(&self.paths.apparmor, &apparmor) {
-            // The socket's own path is in each VM's profile anyway.
             tracing::warn!(%error, "vms: cannot write AppArmor's local rules for the consoles");
         }
-        self.make_consoles().await?;
-        run(&self.tools.systemctl, &["daemon-reload"], QUICK).await?;
-        // QEMU's output goes through virtlogd; without libvirt-daemon-system
-        // nothing else enables its socket before the next boot.
-        run(&self.tools.systemctl, &["enable", "--now", "virtlogd.socket"], QUICK).await?;
-        run(&self.tools.systemctl, &["enable", "--now", "libvirtd.socket"], QUICK).await?;
-        run(&self.tools.systemctl, &["enable", "libvirtd.service"], QUICK).await?;
-        run(&self.tools.systemctl, &["restart", "libvirtd.service"], SLOW).await?;
-        Ok(Response::Done)
+        Ok(())
     }
 
     /// The consoles' folder, made by systemd-tmpfiles outside this sandbox
@@ -1018,21 +1073,73 @@ impl Vms {
                 "there is no OVMF with Microsoft's keys enrolled for Secure Boot: install Debian's ovmf",
             ));
         }
-        if !spec.pci().is_empty() {
+        // A USB device the VM has already is checked at its start, not at
+        // every change: the NAS may use it while the VM is off.
+        let had = fs::read_to_string(self.domain_file(&spec.id))
+            .map(|xml| devices::handed_over(&xml).0)
+            .unwrap_or_default();
+        let new: Vec<VmUsbDevice> =
+            spec.usb().iter().filter(|device| !had.contains(device)).copied().collect();
+        self.check_host_devices(&new, spec.pci()).await
+    }
+
+    /// No USB device plugged in nor PCI device is one the host needs, and
+    /// each PCI device goes with its whole IOMMU group.
+    async fn check_host_devices(
+        &self,
+        usb: &[VmUsbDevice],
+        pci: &[PciAddress],
+    ) -> Result<(), OperationError> {
+        if !usb.is_empty() {
+            let found = devices::usb_devices(&self.paths.devices, &self.host, &self.tools.busctl).await;
+            devices::check_usb(usb, &found)?;
+        }
+        if !pci.is_empty() {
             let iommu = devices::iommu(&self.paths.devices, "").on;
             let found = devices::pci_devices(&self.paths.devices, &self.host, &self.tools.busctl).await;
-            devices::check_pci(spec.pci(), &found, iommu)?;
+            devices::check_pci(pci, &found, iommu)?;
         }
         Ok(())
     }
 
-    /// Before a start: the host's devices the domain is given are there,
-    /// each USB device once (libvirt could not tell two apart), and the
-    /// PCI devices may still go to it.
+    /// `zendiloos-<id>.devices`: what the host's devices the VM is given
+    /// were when it was given them ([`devices::Identity`]).
+    fn identity_file(&self, id: &VmId) -> PathBuf {
+        self.paths.domains.join(format!("{}.devices", id.domain()))
+    }
+
+    fn recorded_identity(&self, id: &VmId) -> devices::Identity {
+        recorded_identity(&self.paths.domains, id)
+    }
+
+    /// Records what the devices the VM is given are: those it had stay as
+    /// they were recorded, those new to it are recorded as they are now.
+    fn record_identity(
+        &self,
+        id: &VmId,
+        usb: &[VmUsbDevice],
+        pci: &[PciAddress],
+    ) -> Result<(), OperationError> {
+        let file = self.identity_file(id);
+        if usb.is_empty() && pci.is_empty() {
+            return remove_if_there(&file);
+        }
+        let identity = devices::identify(&self.paths.devices, usb, pci, &self.recorded_identity(id));
+        let json = serde_json::to_vec_pretty(&identity)
+            .map_err(|e| OperationError::Failed(format!("the devices' record: {e}")))?;
+        crate::durable::replace(&file, &json)
+    }
+
+    /// Before every start, also with the machine: the host's devices the
+    /// domain is given are there, each USB device once (libvirt could not
+    /// tell two apart), none the host needs, the PCI devices each with its
+    /// whole group, and each the device the VM was given ([`devices::Identity`]).
+    /// Devices of a VM given them before they were recorded are recorded
+    /// now.
     async fn check_handed_over(&self, id: &VmId) -> Result<(), OperationError> {
         let Ok(xml) = fs::read_to_string(self.domain_file(id)) else { return Ok(()) };
         let (usb, pci) = devices::handed_over(&xml);
-        for device in usb {
+        for device in usb.iter().copied() {
             match devices::usb_count(&self.paths.devices, device) {
                 1 => {}
                 0 => {
@@ -1050,10 +1157,13 @@ impl Vms {
                 }
             }
         }
-        if !pci.is_empty() {
-            let iommu = devices::iommu(&self.paths.devices, "").on;
-            let found = devices::pci_devices(&self.paths.devices, &self.host, &self.tools.busctl).await;
-            devices::check_pci(&pci, &found, iommu)?;
+        self.check_host_devices(&usb, &pci).await?;
+        let recorded = self.recorded_identity(id);
+        devices::check_identity(&self.paths.devices, &usb, &pci, &recorded)?;
+        let unrecorded = pci.iter().any(|address| !recorded.pci.contains_key(address.as_str()))
+            || usb.iter().any(|device| !recorded.usb.contains_key(&device.id()));
+        if unrecorded && let Err(error) = self.record_identity(id, &usb, &pci) {
+            tracing::warn!(%error, vm = id.as_str(), "vms: what the VM's devices are is not recorded");
         }
         Ok(())
     }
@@ -1369,14 +1479,11 @@ impl Vms {
         if fresh_nvram && let Err(error) = crate::durable::replace(&self.reset_marker(&spec.id), b"") {
             tracing::error!(%error, vm, "vms: the UEFI variables will not start afresh at the next start");
         }
-        let domain = spec.id.domain();
-        let args: Option<Vec<&str>> = match autostart {
-            Autostart::Spec if spec.autostart => Some(vec!["autostart", domain.as_str()]),
-            Autostart::Spec if existing => Some(vec!["autostart", "--disable", domain.as_str()]),
-            Autostart::Spec | Autostart::Leave => None,
-        };
-        if let Some(args) = args
-            && let Err(error) = run(&self.tools.virsh, &virsh(&args), QUICK).await
+        if let Err(error) = self.record_identity(&spec.id, spec.usb(), spec.pci()) {
+            tracing::error!(%error, vm, "vms: what the VM's devices are is not recorded");
+        }
+        if autostart == Autostart::Spec
+            && let Err(error) = self.mark_autostart(&spec.id, spec.autostart).await
         {
             tracing::warn!(%error, vm, autostart = spec.autostart, "vms: the VM's autostart did not change");
         }
@@ -1388,11 +1495,167 @@ impl Vms {
         self.require_defined(id).await?;
         // A VM being restored starts with the machine only once it is.
         self.not_restoring(id).await?;
-        let domain = id.domain();
-        let args: &[&str] =
-            if autostart { &["autostart", &domain] } else { &["autostart", "--disable", &domain] };
-        run(&self.tools.virsh, &virsh(args), QUICK).await?;
+        self.mark_autostart(id, autostart).await?;
         Ok(Response::Done)
+    }
+
+    /// `zendiloos-<id>.autostart`: the VM starts with the machine, through
+    /// the agent ([`Vms::start_with_machine`]).
+    fn autostart_marker(&self, id: &VmId) -> PathBuf {
+        self.paths.domains.join(format!("{}.autostart", id.domain()))
+    }
+
+    /// Whether the VM starts with the machine, by the agent's marker;
+    /// libvirt's own autostart goes off, so nothing starts the VM past the
+    /// checks of a start.
+    pub(super) async fn mark_autostart(&self, id: &VmId, on: bool) -> Result<(), OperationError> {
+        let marker = self.autostart_marker(id);
+        if on {
+            fs::create_dir_all(&self.paths.domains)
+                .map_err(|e| OperationError::Write(self.paths.domains.clone(), e))?;
+            crate::durable::replace(&marker, b"")?;
+        } else {
+            remove_if_there(&marker)?;
+        }
+        self.libvirt_autostart_off(id).await
+    }
+
+    /// libvirt's autostart of the domain off, if it is on.
+    async fn libvirt_autostart_off(&self, id: &VmId) -> Result<(), OperationError> {
+        let domain = id.domain();
+        if fs::symlink_metadata(self.paths.libvirt_autostart.join(format!("{domain}.xml"))).is_ok() {
+            run(&self.tools.virsh, &virsh(&["autostart", "--disable", &domain]), QUICK).await?;
+        }
+        Ok(())
+    }
+
+    /// As the agent starts: domains of zendiloOS's that libvirt starts with
+    /// the machine itself (as before the agent did), which would skip the
+    /// checks of a start, start through the agent instead.
+    pub(super) async fn take_over_autostart(&self) {
+        let Ok(entries) = fs::read_dir(&self.paths.libvirt_autostart) else { return };
+        let ids: Vec<VmId> = entries
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                VmId::of_domain(name.strip_suffix(".xml")?)
+            })
+            .filter(|id| self.domain_file(id).exists())
+            .collect();
+        for id in ids {
+            self.took_over.store(true, std::sync::atomic::Ordering::SeqCst);
+            match self.mark_autostart(&id, true).await {
+                Ok(()) => tracing::info!(
+                    vm = id.as_str(),
+                    "vms: the VM starts with the machine through the agent now"
+                ),
+                Err(error) => {
+                    tracing::error!(%error, vm = id.as_str(), "vms: libvirt's autostart of the VM is not taken over")
+                }
+            }
+        }
+    }
+
+    /// Once a boot, as the agent first starts in it: every VM marked to
+    /// start with the machine then is started as any start is, so the
+    /// host's devices it is given are checked first (and a restore cut off
+    /// is undone). One that is refused is said in the journal.
+    ///
+    /// The boot is recorded with the VMs still to start, each taken off
+    /// once tried: a restart of the agent within the boot goes on with the
+    /// rest and starts none twice, nor one marked only since. It is
+    /// recorded also where the plugin is not installed, so VMs made later
+    /// start from the next boot on. Only right after libvirt's own
+    /// autostart was taken over (an update), which started them in this
+    /// boot already, does none start.
+    pub(crate) async fn start_with_machine(&self) {
+        let Ok(boot) = fs::read_to_string(&self.paths.boot_id) else { return };
+        let boot = boot.trim().to_owned();
+        let last: Option<Started> =
+            fs::read(&self.paths.started).ok().and_then(|text| serde_json::from_slice(&text).ok());
+        let mut started = match last {
+            Some(started) if started.boot == boot => started,
+            _ => {
+                let pending = if !self.installed() {
+                    Vec::new()
+                } else if self.took_over.load(std::sync::atomic::Ordering::SeqCst) {
+                    tracing::info!(
+                        "vms: libvirt started the VMs in this boot; from the next one on the agent does"
+                    );
+                    Vec::new()
+                } else {
+                    self.marked_to_start()
+                };
+                Started { boot, pending }
+            }
+        };
+        if !self.record_started(&started) {
+            return;
+        }
+        while let Some(id) = started.pending.first().cloned() {
+            match self.control(&id, VmAction::Start).await {
+                Ok(_) => tracing::info!(vm = id.as_str(), "vms: the VM started with the machine"),
+                Err(error) => {
+                    tracing::error!(%error, vm = id.as_str(), "vms: a VM that starts with the machine did not start")
+                }
+            }
+            started.pending.remove(0);
+            if !self.record_started(&started) {
+                return;
+            }
+        }
+    }
+
+    /// While the agent runs, every half minute: the rules of what passt
+    /// reaches are written anew when the cards of the host's default routes
+    /// changed (a bridge made over the LAN's card, DHCP done after the
+    /// boot), so a running VM's card leaves by the cards there are.
+    pub(crate) async fn keep_passt_rules(&self) {
+        let mut every = tokio::time::interval(Duration::from_secs(30));
+        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            every.tick().await;
+            if !self.installed() || crate::vm_user_network::written(&self.passt_places()) {
+                continue;
+            }
+            match crate::vm_user_network::sync(&self.tools.systemctl, &self.passt_places()).await {
+                Ok(()) => {
+                    tracing::info!("vms: what cards through passt reach follows the default routes' cards")
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "vms: what cards through passt reach is not written anew")
+                }
+            }
+        }
+    }
+
+    /// The VMs marked to start with the machine, by id.
+    fn marked_to_start(&self) -> Vec<VmId> {
+        let mut ids: Vec<VmId> = fs::read_dir(&self.paths.domains)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter_map(|entry| {
+                        let name = entry.file_name().to_string_lossy().into_owned();
+                        VmId::of_domain(name.strip_suffix(".autostart")?)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        ids.sort();
+        ids
+    }
+
+    /// Writes what is left to start in this boot; whether it could.
+    fn record_started(&self, started: &Started) -> bool {
+        let written = serde_json::to_vec(started)
+            .map_err(|e| OperationError::Failed(e.to_string()))
+            .and_then(|json| crate::durable::replace(&self.paths.started, &json));
+        if let Err(error) = written {
+            tracing::error!(%error, "vms: the boot is not recorded; no VM starts with the machine");
+            return false;
+        }
+        true
     }
 
     async fn require_defined(&self, id: &VmId) -> Result<(), OperationError> {
@@ -1420,6 +1683,7 @@ impl Vms {
             VmAction::Start => {
                 self.settled(id).await?;
                 self.check_handed_over(id).await?;
+                self.user_network_in_force(id).await?;
                 // Gone after a restart until systemd-tmpfiles made it again.
                 self.make_consoles().await?;
                 if reset.exists() { vec!["start", "--reset-nvram", &domain] } else { vec!["start", &domain] }
@@ -1474,10 +1738,36 @@ impl Vms {
             }
         }
         let file = self.domain_file(id);
-        for file in [file.with_extension("xml.new"), self.reset_marker(id), file] {
+        for file in [
+            file.with_extension("xml.new"),
+            self.reset_marker(id),
+            self.autostart_marker(id),
+            self.identity_file(id),
+            file,
+        ] {
             remove_if_there(&file)?;
         }
         Ok(())
+    }
+
+    /// A VM with a card through passt starts only while the rules of what
+    /// passt reaches are in force: put in force again should they not be
+    /// (Debian's nftables.service flushed them, an older version wrote
+    /// none).
+    async fn user_network_in_force(&self, id: &VmId) -> Result<(), OperationError> {
+        let Ok(xml) = fs::read_to_string(self.domain_file(id)) else { return Ok(()) };
+        if !xml.contains("<interface type='user'>") {
+            return Ok(());
+        }
+        let places = self.passt_places();
+        if crate::vm_user_network::in_force(&self.tools.systemctl, &places).await {
+            return Ok(());
+        }
+        crate::vm_user_network::sync(&self.tools.systemctl, &places).await.map_err(|error| {
+            refused(format!(
+                "the rules that hold what a card through passt reaches are not in force: {error}"
+            ))
+        })
     }
 
     /// `virsh list --all`, for zendiloosd to read.
@@ -1562,6 +1852,39 @@ impl Vms {
         stream.set_nonblocking(false).map_err(|e| OperationError::Failed(format!("the console: {e}")))?;
         Ok((Response::VmConsole {}, OwnedFd::from(stream)))
     }
+}
+
+/// What `domains` recorded of the host's devices the VM is given.
+fn recorded_identity(domains: &Path, id: &VmId) -> devices::Identity {
+    fs::read(domains.join(format!("{}.devices", id.domain())))
+        .ok()
+        .and_then(|text| serde_json::from_slice(&text).ok())
+        .unwrap_or_default()
+}
+
+/// The VM a block device (by its place in sysfs) is below a device of,
+/// one of the host's that VM is given: a USB device by its vendor and
+/// product and the serial number or port recorded, a PCI device by its
+/// address. The NAS mounts no such drive of its own accord, so the VM
+/// still starts with it.
+pub(crate) fn vm_given(paths: &VmPaths, below: &Path) -> Option<VmId> {
+    let entries = fs::read_dir(&paths.domains).ok()?;
+    let mut ids: Vec<VmId> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            VmId::of_domain(name.strip_suffix(".xml")?)
+        })
+        .collect();
+    ids.sort();
+    ids.into_iter().find(|id| {
+        let Ok(xml) = fs::read_to_string(paths.domains.join(format!("{}.xml", id.domain()))) else {
+            return false;
+        };
+        let (usb, pci) = devices::handed_over(&xml);
+        (!usb.is_empty() || !pci.is_empty())
+            && devices::below_given(&paths.devices, &usb, &pci, &recorded_identity(&paths.domains, id), below)
+    })
 }
 
 /// The unit an upload of `image` is received in.

@@ -1726,6 +1726,8 @@ const en = {
     rules: 'Rules',
     add: 'Add rule',
     rulesHint: 'Drag rules into order or use the arrows: the first rule that matches decides.',
+    vmsHint:
+      'Virtual machines with a card “Through the NAS” reach it from the NAS’s own address and on no network connection: rules for any connection apply to them, rules that name a connection do not.',
     noRules: 'No rules yet.',
     columns: {
       enabled: 'On',
@@ -3472,7 +3474,7 @@ const en = {
         internal: 'Internal network',
       },
       means: {
-        user: 'passt: the VM reaches the LAN and the internet from the NAS’s address; nothing reaches the VM.',
+        user: 'passt: the VM reaches the LAN, the internet and the NAS as a LAN client does, from the NAS’s address, and no other network the NAS reaches; nothing reaches the VM.',
         bridge:
           'The VM is on the LAN as a machine of its own and gets its address there; the NAS and the VM reach each other.',
         direct:
@@ -3666,7 +3668,7 @@ const en = {
     hostDevices: {
       usb: 'USB devices',
       usbHint:
-        'Given by vendor and product, so a device stays the VM’s when it is plugged in elsewhere or again. USB devices plug in and out while the VM runs.',
+        'Given by vendor and product, so a device stays the VM’s when it is plugged in elsewhere or again; a disk or network adapter without a serial number only on the port it was given on. Devices the NAS needs (a disk in use on it, its network, its UPS) are not given. USB devices plug in and out while the VM runs.',
       usbNone: 'No USB device is plugged into the NAS.',
       notPlugged: 'Not plugged in: the VM does not start without it.',
       twins:
@@ -3692,6 +3694,7 @@ const en = {
           'Stays with the NAS: a network card, and which cards the NAS uses is not known.',
         bridge: 'A bridge of the PCI bus: it stays with the NAS, and so does its group.',
         noGroup: 'In no IOMMU group: it cannot be handed over.',
+        ups: 'Stays with the NAS: the UPS it follows, or the controller it is plugged into.',
       },
       heldBy: 'Stays with the NAS together with {device}',
       kinds: {
@@ -3778,7 +3781,7 @@ const en = {
       noDrives: 'No USB drive is mounted and writable.',
       folderInvalid: 'A folder: names separated by /, without . or ..',
       readable:
-        'Everyone who may read this share or drive may read the VM’s disks, and what they hold.',
+        'Everyone who may read this share or drive may read the VM’s disks, and what they hold, and its TPM and UEFI variables: with them, disks the guest encrypts with its TPM alone (BitLocker without a PIN, systemd-cryptenroll) open anywhere.',
       running:
         'The VM runs: the backup is taken from a snapshot of this moment, crash-consistent unless the guest agent froze its file systems.',
       into: 'Into {path}/{id}/…',

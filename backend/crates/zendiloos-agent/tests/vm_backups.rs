@@ -14,7 +14,7 @@ use tempfile::TempDir;
 use zendiloos_agent::config::Tools;
 use zendiloos_agent::{DevicePaths, Erasable, ErasePolicy, HostPaths, Operations, Paths, VmPaths};
 use zendiloos_agent_proto::{
-    BackupRoot, BackupStem, ErrorCode, MacAddress, PciAddress, PoolName, Request, Response, Role,
+    BackupRoot, BackupStem, ErrorCode, HostNeeds, MacAddress, PciAddress, PoolName, Request, Response, Role,
     ShareLocation, ShareName, SharePath, SnapshotFrequency, SnapshotLabel, SnapshotNote, VmAction,
     VmBackupFile, VmBackupPart, VmBackupSettings, VmBoot, VmConsistency, VmCpus, VmDevices, VmDisk,
     VmDiskBus, VmDiskSize, VmDiskSlot, VmFirmware, VmId, VmMemory, VmNetwork, VmNic, VmNicModel, VmNicSlot,
@@ -58,8 +58,9 @@ impl Host {
     }
 
     /// Whether libvirt starts the domain with the machine.
+    /// Whether the VM starts with the machine: the agent's marker.
     fn autostarts(&self, id: &str) -> bool {
-        self.path(&format!("state/autostart.zendiloos-{id}")).exists()
+        self.path(&format!("domains/zendiloos-{id}.autostart")).exists()
     }
 
     /// The agent again, as after a restart.
@@ -166,10 +167,10 @@ case "$1" in
   suspend) test ! -f "$state/suspend-fails" ;;
   resume) if [ -f "$state/resume-fails" ]; then rm "$state/resume-fails"; exit 1; fi ;;
   autostart) if [ -f "$state/autostart-fails" ]; then echo 'error: cannot change autostart' >&2; exit 1; fi
-      if [ "$2" = --disable ]; then rm -f "$state/autostart.$3"
+      if [ "$2" = --disable ]; then rm -f "$state/autostart.$3" "{root}/libvirt-autostart/$3.xml"
         # Turned off only after a restore marked itself: a power cut between the two starts it at boot.
         for marker in {root}/domains/*.restoring; do if [ -e "$marker" ]; then touch "$state/disabled-after-marking"; fi; done
-      else touch "$state/autostart.$2"; fi ;;
+      else touch "$state/autostart.$2"; mkdir -p {root}/libvirt-autostart; touch "{root}/libvirt-autostart/$2.xml"; fi ;;
   dominfo) test -f "$state/$2" || { echo "error: failed to get domain '$2'" >&2; exit 1; }
       echo "Name:           $2"; echo "State:          $(cat "$state/$2")"
       if [ -f "$state/autostart.$2" ]; then echo 'Autostart:      enable'; else echo 'Autostart:      disable'; fi ;;
@@ -268,6 +269,11 @@ fn operations_at(root: &Path) -> Operations {
             volumes: root.clone(),
             agent: PathBuf::from(env!("CARGO_BIN_EXE_zendiloos-agent")),
             share_mounts: false,
+            // The host's disks, below the USB devices plugged in.
+            dev: root.join("dev"),
+            sys_block: root.join("block"),
+            mountinfo: root.join("mountinfo"),
+            swaps: root.join("swaps"),
             ..HostPaths::default()
         },
         vms: VmPaths {
@@ -280,6 +286,8 @@ fn operations_at(root: &Path) -> Operations {
                 iommu_groups: root.join("iommu"),
                 cmdline: root.join("cmdline"),
                 pci_ids: root.join("pci.ids"),
+                ups_conf: root.join("ups.conf"),
+                udev: root.join("udev"),
             },
             firmware: root.join("firmware"),
             own_firmware: root.join("etc-firmware"),
@@ -296,6 +304,12 @@ fn operations_at(root: &Path) -> Operations {
             zvols: root.join("zvol"),
             network: root.join("network"),
             internal: root.join("internal.nft"),
+            user_network: root.join("passt.nft"),
+            routes: root.join("route"),
+            routes6: root.join("ipv6_route"),
+            libvirt_autostart: root.join("libvirt-autostart"),
+            boot_id: root.join("boot_id"),
+            started: root.join("started"),
         },
         ..Paths::default()
     };
@@ -604,14 +618,17 @@ async fn a_backup_reads_the_disks_from_a_snapshot_and_restores_as_a_new_vm_or_ov
     assert!(visible < unit && unit < hidden, "{calls:?}");
     let unit = &calls[unit];
     for property in [
-        "--unit=zendiloos-vm-backup-0a1b2c3d4e5f.service",
-        "DeviceAllow=block-zvol r",
-        "PrivateDevices=no",
-        "ReadWritePaths=-/volume1/backups",
-        " back-up-vm ",
+        "--unit=zendiloos-vm-backup-0a1b2c3d4e5f.service".to_owned(),
+        // The snapshots' devices of the VM's own zvols, no other device.
+        format!("--property=DeviceAllow=/zvol/tank/zendiloos.vms/{ID}-disk0@zdl-2026-11-12_03.00.00 r "),
+        format!("--property=DeviceAllow=/zvol/tank/zendiloos.vms/{ID}-disk1@zdl-2026-11-12_03.00.00 r "),
+        "PrivateDevices=no".to_owned(),
+        "ReadWritePaths=-/volume1/backups".to_owned(),
+        " back-up-vm ".to_owned(),
     ] {
-        assert!(unit.contains(property), "{property} not in {unit}");
+        assert!(unit.contains(&property), "{property} is not among the unit's properties");
     }
+    assert!(!unit.contains("block-zvol"), "the unit may open every zvol");
     let Response::VmSnapshots { zfs_list } = host.run(Request::VmSnapshots {}).await else {
         panic!("no list")
     };
@@ -640,7 +657,17 @@ async fn a_backup_reads_the_disks_from_a_snapshot_and_restores_as_a_new_vm_or_ov
     assert_eq!(fs::metadata(&state).unwrap().permissions().mode() & 0o777, 0o600, "swtpm's alone");
     let unit =
         host.calls().into_iter().find(|c| c.starts_with("systemd-run") && c.contains("restore-vm")).unwrap();
-    assert!(unit.contains("DeviceAllow=block-zvol rw") && unit.contains("ReadWritePaths=-/nvram"), "{unit}");
+    for property in [
+        format!("--property=DeviceAllow=/zvol/tank/zendiloos.vms/{COPY}-disk0 rw "),
+        format!("--property=DeviceAllow=/zvol/tank/zendiloos.vms/{COPY}-disk1 rw "),
+        "ReadWritePaths=-/nvram".to_owned(),
+    ] {
+        assert!(unit.contains(&property), "{property} is not among the unit's properties");
+    }
+    assert!(
+        !unit.contains("block-zvol") && !unit.contains(&format!("{ID}-disk0 rw")),
+        "the unit may open zvols but the VM's"
+    );
     assert_eq!(
         host.run(restore(copy, false, files.clone(), vec![])).await.error_code(),
         Some(ErrorCode::Conflict)
@@ -871,6 +898,109 @@ async fn usb_devices_plug_in_while_it_runs_and_a_missing_one_keeps_it_from_start
     );
 }
 
+/// A USB device the host needs goes to no VM: neither when it is given,
+/// nor live, nor at a start; and a start is refused with another device of
+/// the same vendor and product than the one the VM was given.
+#[tokio::test]
+async fn a_usb_device_the_host_needs_or_another_one_does_not_go_to_a_vm() {
+    let host = host();
+    let plug = |name: &str, vendor: &str, product: &str, serial: Option<&str>, class: &str| {
+        let place = host.path(&format!("usb/{name}"));
+        fs::create_dir_all(place.join(format!("{name}:1.0"))).unwrap();
+        for (file, value) in [("idVendor", vendor), ("idProduct", product), ("bDeviceClass", "00")] {
+            fs::write(place.join(file), format!("{value}\n")).unwrap();
+        }
+        if let Some(serial) = serial {
+            fs::write(place.join("serial"), format!("{serial}\n")).unwrap();
+        }
+        fs::write(place.join(format!("{name}:1.0/bInterfaceClass")), format!("{class}\n")).unwrap();
+        place
+    };
+    // The UPS NUT drives.
+    plug("1-4", "0463", "ffff", Some("000000000"), "03");
+    fs::write(
+        host.path("ups.conf"),
+        "[ups]\n    driver = usbhid-ups\n    port = auto\n    vendorid = 0463\n",
+    )
+    .unwrap();
+    let ups = VmUsbDevice { vendor: 0x0463, product: 0xffff };
+    refused(
+        &host
+            .run(Request::DefineVm {
+                spec: spec_of(ID, VmFirmware::Uefi, VmDevices { usb: vec![ups], ..devices() }),
+            })
+            .await,
+        "0463:ffff on 1-4 is one the host needs (the UPS the NAS follows)",
+    );
+    // A stick whose partition is mounted (a backup's drive).
+    let stick_place = plug("1-2", "0781", "5583", Some("A1"), "08");
+    let sdb = stick_place.join("1-2:1.0/host2/target2:0:0/2:0:0:0/block/sdb");
+    fs::create_dir_all(sdb.join("sdb1/holders")).unwrap();
+    fs::create_dir_all(sdb.join("holders")).unwrap();
+    fs::write(sdb.join("dev"), "8:16\n").unwrap();
+    fs::write(sdb.join("sdb1/dev"), "8:17\n").unwrap();
+    fs::write(sdb.join("sdb1/partition"), "1\n").unwrap();
+    fs::create_dir_all(host.path("block")).unwrap();
+    fs::create_dir_all(host.path("dev")).unwrap();
+    std::os::unix::fs::symlink(&sdb, host.path("block/sdb")).unwrap();
+    std::os::unix::fs::symlink(sdb.join("sdb1"), host.path("block/sdb1")).unwrap();
+    for name in ["sdb", "sdb1"] {
+        fs::write(host.path(&format!("dev/{name}")), "").unwrap();
+    }
+    let mounted = "90 22 8:17 / /run/zendiloos-removable/x rw - exfat /dev/sdb1 rw\n";
+    fs::write(host.path("mountinfo"), mounted).unwrap();
+    let stick = VmUsbDevice { vendor: 0x0781, product: 0x5583 };
+    let with = spec_of(ID, VmFirmware::Uefi, VmDevices { usb: vec![stick], ..devices() });
+    refused(&host.run(Request::DefineVm { spec: with.clone() }).await, "the disk sdb on it is in use");
+    let Response::VmHostDevices { usb, .. } = host.run(Request::VmHostDevices {}).await else {
+        panic!("no devices")
+    };
+    let needs: Vec<_> = usb.iter().map(|device| (device.port.as_str(), device.needed.clone())).collect();
+    assert_eq!(needs, [("1-2", Some(HostNeeds::Disk { disk: "sdb".into() })), ("1-4", Some(HostNeeds::Ups))]);
+
+    // Ejected, it goes; what it is is recorded.
+    fs::write(host.path("mountinfo"), "").unwrap();
+    assert_eq!(host.run(Request::DefineVm { spec: with.clone() }).await, Response::Done);
+    let record = fs::read_to_string(host.path(&format!("domains/zendiloos-{ID}.devices"))).unwrap();
+    assert!(record.contains("\"0781:5583\"") && record.contains("\"A1\""), "the stick is not recorded");
+    let start = Request::ControlVm { id: vm(), action: VmAction::Start };
+    assert_eq!(host.run(start.clone()).await, Response::Done);
+    assert_eq!(host.run(Request::ControlVm { id: vm(), action: VmAction::ForceOff }).await, Response::Done);
+    host.set_state(ID, "shut off");
+    // Another stick of the same make; a change of the VM's memory takes it
+    // on no more than a start does.
+    fs::write(stick_place.join("serial"), "B2\n").unwrap();
+    refused(&host.run(start.clone()).await, "serial number A1, this one B2");
+    let other_memory = |spec: &VmSpec| {
+        let mut spec = spec.clone();
+        spec.memory = VmMemory::new(768).unwrap();
+        spec
+    };
+    let change = Request::UpdateVm { spec: other_memory(&with), remove: vec![] };
+    assert_eq!(host.run(change.clone()).await, Response::Done);
+    refused(&host.run(start.clone()).await, "serial number A1, this one B2");
+    fs::write(stick_place.join("serial"), "A1\n").unwrap();
+    // Mounted again by the NAS: not taken from under it at a start. A
+    // change that keeps the stick is not refused for it; the start is.
+    fs::write(host.path("mountinfo"), mounted).unwrap();
+    assert_eq!(host.run(change).await, Response::Done);
+    refused(&host.run(start.clone()).await, "the disk sdb on it is in use");
+    // Nor plugged into the running VM.
+    fs::write(host.path("mountinfo"), "").unwrap();
+    let without = spec_of(ID, VmFirmware::Uefi, devices());
+    assert_eq!(
+        host.run(Request::ChangeVmUsb { spec: without, attach: vec![], detach: vec![stick] }).await,
+        Response::Done
+    );
+    assert_eq!(host.run(start).await, Response::Done);
+    fs::write(host.path("mountinfo"), mounted).unwrap();
+    refused(
+        &host.run(Request::ChangeVmUsb { spec: with, attach: vec![stick], detach: vec![] }).await,
+        "the disk sdb on it is in use",
+    );
+    assert!(!host.calls().iter().any(|c| c.contains(&format!("attach-device zendiloos-{ID}"))));
+}
+
 #[tokio::test]
 async fn a_running_vm_on_two_pools_is_paused_for_its_snapshot_without_a_guest_agent() {
     let host = host();
@@ -1030,7 +1160,7 @@ async fn a_restore_over_a_vm_cut_off_is_undone_before_anything_starts_it() {
         autostarts = written => autostarts,
     };
     fs::remove_file(host.path("hold-unit-end")).unwrap();
-    assert!(!autostarts_meanwhile, "libvirt does not start it with the machine while its disks are written");
+    assert!(!autostarts_meanwhile, "nothing starts it with the machine while its disks are written");
     assert!(holds(&host, 0) != since, "half restored");
 
     let again = host.restarted();
@@ -1232,7 +1362,10 @@ async fn a_vm_on_two_pools_is_not_snapshotted_at_two_moments_and_resumes_after()
 async fn a_change_libvirt_took_keeps_its_disks_whatever_fails_after() {
     let host = host();
     defined(&host).await;
-    // Autostart cannot be set once libvirt took the definition with a disk more.
+    // Autostart cannot be set once libvirt took the definition with a disk
+    // more: libvirt's own, which an older version left on, does not go off.
+    fs::create_dir_all(host.path("libvirt-autostart")).unwrap();
+    fs::write(host.path(&format!("libvirt-autostart/zendiloos-{ID}.xml")), "").unwrap();
     fs::write(host.path("state/autostart-fails"), "").unwrap();
     let three = VmDevices { disks: vec![disk(0, 1), disk(1, 2), disk(2, 1)], ..devices() };
     let change = Request::UpdateVm { spec: spec_of(ID, VmFirmware::Uefi, three), remove: vec![] };
@@ -1390,15 +1523,20 @@ async fn a_restore_cut_off_is_undone_only_once_its_unit_stopped_and_its_vm_is_of
 }
 
 #[tokio::test]
-async fn a_restore_turns_autostart_off_before_it_marks_itself_and_gives_back_libvirts() {
+async fn a_restore_turns_autostart_off_before_it_marks_itself_and_gives_it_back() {
     let host = host();
-    // libvirt starts it with the machine, its record says it does not.
+    // It starts with the machine, its record says it does not; libvirt's
+    // own autostart is on too, as an older version left it.
     defined_with(&host, devices(), true).await;
+    let libvirts = host.path(&format!("libvirt-autostart/zendiloos-{ID}.xml"));
+    fs::create_dir_all(libvirts.parent().unwrap()).unwrap();
+    fs::write(&libvirts, "").unwrap();
     cut_off_restore(&host, spec_of(ID, VmFirmware::Uefi, devices())).await;
-    assert!(!host.autostarts(ID));
+    assert!(!host.autostarts(ID) && !libvirts.exists(), "neither the agent nor libvirt starts it at boot");
     assert!(!host.path("state/disabled-after-marking").exists(), "off before the restore marked itself");
     host.restarted().recover().await;
-    assert!(host.autostarts(ID), "as libvirt had it before");
+    assert!(host.autostarts(ID), "as it was before");
+    assert!(!libvirts.exists(), "through the agent");
 }
 
 #[tokio::test]

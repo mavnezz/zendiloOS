@@ -2,7 +2,7 @@
 // vendor and product, PCI devices by IOMMU group, which go to a VM
 // together. The server and the agent check the same rules again.
 
-import type { VmHostPci, VmHostUsb, VmIommu } from '@/shared/api/types'
+import type { VmHostNeeds, VmHostPci, VmHostUsb, VmIommu } from '@/shared/api/types'
 
 export const USB_MAX = 8
 export const PCI_MAX = 8
@@ -94,6 +94,8 @@ export interface UsbChoice {
   port: string | null
   /** More than one of the same vendor and product: libvirt cannot tell them apart. */
   twins: boolean
+  /** Why the NAS keeps it (a disk on it in use, its network, its UPS); none if it does not. */
+  needed: VmHostNeeds | null
 }
 
 /** The USB devices plugged in, one entry each, and those given that are not. */
@@ -107,11 +109,12 @@ export function usbChoices(plugged: readonly VmHostUsb[], given: readonly string
       label: label || device.id,
       port: device.port,
       twins: plugged.filter((other) => other.id === device.id).length > 1,
+      needed: plugged.find((other) => other.id === device.id && other.needed)?.needed ?? null,
     })
   }
   for (const id of given) {
     if (!choices.some((choice) => choice.id === id))
-      choices.push({ id, label: id, port: null, twins: false })
+      choices.push({ id, label: id, port: null, twins: false, needed: null })
   }
   return choices
 }

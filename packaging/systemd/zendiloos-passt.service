@@ -1,0 +1,37 @@
+[Unit]
+Description=zendiloOS: what VMs reach through passt
+Documentation=https://github.com/mavnezz/zendiloOS
+# passt makes the connections of a VM's card from sockets of its own on the
+# host, as QEMU's account. Two tables of zendiloOS's in nftables, `inet
+# zendiloos_vms` and `bridge zendiloos_vms`, hold them to what a client on
+# the LAN gets: through the loopback (passt's gateway) only to what listens
+# on every address and from the NAS's own address, never to what listens
+# on the loopback alone; no container but through its published ports; and
+# marked, so that the firewall's rules decide what of the NAS they reach
+# (docs/architecture.md, 4.13).
+# In force before the network and libvirt come up, as the firewall is:
+# early, after Debian's own nftables.service (whose /etc/nftables.conf
+# flushes everything) and again whenever that restarts or reloads. The
+# agent writes the file when the VMs are set up and as it starts, and has
+# it loaded again.
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target shutdown.target libvirtd.service
+After=local-fs.target nftables.service
+PartOf=nftables.service
+ReloadPropagatedFrom=nftables.service
+Conflicts=shutdown.target
+ConditionPathExists=/etc/zendiloos/network/passt.nft
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The file replaces both tables, and only them, in one transaction.
+# Stopping leaves the rules as they are; removing the package takes them.
+ExecStart=/usr/sbin/nft -f /etc/zendiloos/network/passt.nft
+ExecReload=/usr/sbin/nft -f /etc/zendiloos/network/passt.nft
+ProtectSystem=full
+ProtectHome=yes
+
+[Install]
+WantedBy=sysinit.target

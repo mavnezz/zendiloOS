@@ -21,8 +21,9 @@
 //! (`zendiloos-<id>.restoring` beside the domain's XML, with the domain's
 //! definition from before) and turns the VM's autostart off: one cut off
 //! by a restart of the agent or of the machine is undone as the agent
-//! starts again, before anything may start the VM, and libvirt never
-//! starts half-restored disks with the machine.
+//! starts again, before anything may start the VM, and nothing starts
+//! half-restored disks with the machine (which goes through the agent's
+//! start, refused until it is undone).
 
 use std::path::PathBuf;
 use std::sync::PoisonError;
@@ -121,8 +122,9 @@ struct Unit {
     name: String,
     writable: Vec<PathBuf>,
     capabilities: &'static str,
-    /// `r` or `rw` for the zvols' devices; none: no device.
-    zvols: Option<&'static str>,
+    /// `r` or `rw`, and the devices of the zvols (or their snapshots) it
+    /// may open so, no other; none: no device at all.
+    zvols: Option<(&'static str, Vec<PathBuf>)>,
     description: String,
     until: Instant,
 }
@@ -334,11 +336,10 @@ impl Vms {
         if let Err(error) = marked {
             failed.push(error.to_string());
         }
-        if marker.autostart {
-            let domain = id.domain();
-            if let Err(error) = run(&self.tools.virsh, &virsh(&["autostart", &domain]), QUICK).await {
-                failed.push(format!("its autostart is off: {error}"));
-            }
+        if marker.autostart
+            && let Err(error) = self.mark_autostart(id, true).await
+        {
+            failed.push(format!("its autostart is off: {error}"));
         }
         if !failed.is_empty() {
             // The snapshot from before stays, to return to on the next try.
@@ -372,9 +373,24 @@ impl Vms {
         }
     }
 
-    /// As the agent starts: units of backups and restores nobody waits for
-    /// any more (systemd keeps their files while they run) are stopped.
+    /// As the agent starts: domains libvirt itself starts with the machine
+    /// start through the agent instead, zendiloOS's files for libvirt are
+    /// written as this version has them, the rules of what cards through
+    /// passt reach are put in force, units of backups and restores nobody
+    /// waits for any more (systemd keeps their files while they run) are
+    /// stopped, and restores cut off are undone.
     pub(crate) async fn recover(&self) {
+        if self.installed() {
+            self.take_over_autostart().await;
+            if let Err(error) = self.write_local_files() {
+                tracing::error!(%error, "vms: the consoles' folder and AppArmor's rule for it are not written");
+            }
+            if let Err(error) =
+                crate::vm_user_network::sync(&self.tools.systemctl, &self.passt_places()).await
+            {
+                tracing::error!(%error, "vms: what cards through passt reach is not put in force");
+            }
+        }
         let units: Vec<String> = std::fs::read_dir(&self.paths.transient)
             .map(|entries| {
                 entries
@@ -469,13 +485,17 @@ impl Vms {
         ]
         .into();
         args.extend(crate::volumes::SANDBOX.iter().map(|property| (*property).to_owned()));
-        if let Some(access) = unit.zvols {
-            // The host's devices, of which it may open the zvols alone.
+        if let Some((access, devices)) = &unit.zvols {
+            // The host's devices, of which it may open the VM's zvols alone,
+            // each by its node (`/dev/zdN`).
             args.extend([
                 "--property=PrivateDevices=no".to_owned(),
                 "--property=DevicePolicy=closed".to_owned(),
-                format!("--property=DeviceAllow=block-zvol {access}"),
             ]);
+            for device in devices {
+                let node = std::fs::canonicalize(device).unwrap_or_else(|_| device.clone());
+                args.push(format!("--property=DeviceAllow={} {access}", node.display()));
+            }
         }
         for path in &unit.writable {
             args.push(format!("--property=ReadWritePaths=-{}", path.display()));
@@ -686,7 +706,7 @@ impl Vms {
                 name: unit_name(VmBackupWork::BackUp, id),
                 writable: vec![place.clone()],
                 capabilities: BACKUP_CAPABILITIES,
-                zvols: Some("r"),
+                zvols: Some(("r", job.disks.iter().map(|disk| disk.device.clone()).collect())),
                 description: format!("back up the virtual machine {}", id.as_str()),
                 until: Instant::now() + WORK_FOR,
             };
@@ -765,7 +785,14 @@ impl Vms {
             name: unit_name(VmBackupWork::Restore, &spec.id),
             writable: vec![self.paths.nvram.clone(), self.paths.swtpm.clone()],
             capabilities: RESTORE_CAPABILITIES,
-            zvols: Some("rw"),
+            zvols: Some((
+                "rw",
+                job.files
+                    .iter()
+                    .filter(|file| matches!(file.file.part, VmBackupPart::Disk { .. }))
+                    .map(|file| file.target.clone())
+                    .collect(),
+            )),
             description: format!("restore the virtual machine {}", spec.id.as_str()),
             until: Instant::now() + WORK_FOR,
         };
@@ -822,16 +849,15 @@ impl Vms {
         self.require_shut_off(&spec.id).await?;
         self.clear_leftovers(spec).await?;
         // Off before anything else: should the machine go down from here on,
-        // libvirt starts no half-restored disks at boot. What it was is
-        // libvirt's to say, not the record's.
-        let autostart = self.autostarts(&spec.id).await?;
-        let domain = spec.id.domain();
-        run(&self.tools.virsh, &virsh(&["autostart", "--disable", &domain]), QUICK).await?;
+        // nothing starts half-restored disks at boot. What it was is the
+        // host's to say, not the record's.
+        let autostart = self.autostarts(&spec.id);
+        self.mark_autostart(&spec.id, false).await?;
         let (marker, plan) = match self.mark_over(spec, label, autostart).await {
             Ok(marked) => marked,
             Err(error) => {
                 if autostart {
-                    let _ = run(&self.tools.virsh, &virsh(&["autostart", &domain]), QUICK).await;
+                    let _ = self.mark_autostart(&spec.id, true).await;
                 }
                 return Err(error);
             }
@@ -908,21 +934,12 @@ impl Vms {
         planned
     }
 
-    /// Whether libvirt starts the domain with the machine (`virsh dominfo`).
-    async fn autostarts(&self, id: &VmId) -> Result<bool, OperationError> {
-        let domain = id.domain();
-        let output = zendiloos_exec::run(&self.tools.virsh, virsh(&["dominfo", &domain]), QUICK)
-            .await?
-            .success(&self.tools.virsh)?;
-        let text = String::from_utf8_lossy(&output.stdout);
-        let said = text.lines().find_map(|line| line.strip_prefix("Autostart:")).map(str::trim);
-        match said {
-            Some("enable") => Ok(true),
-            Some("disable") => Ok(false),
-            _ => Err(OperationError::Failed(format!(
-                "libvirt does not say whether {domain} starts with the machine"
-            ))),
-        }
+    /// Whether the VM starts with the machine: the agent's marker, or
+    /// libvirt's own autostart, as an older version left it on.
+    fn autostarts(&self, id: &VmId) -> bool {
+        self.autostart_marker(id).exists()
+            || std::fs::symlink_metadata(self.paths.libvirt_autostart.join(format!("{}.xml", id.domain())))
+                .is_ok()
     }
 
     /// Before a restore as a new VM writes: what undoes it written down,
@@ -1019,11 +1036,10 @@ impl Vms {
             self.give_up_restore(&spec.id, marker).await;
             return Err(error);
         }
-        if spec.autostart {
-            let domain = spec.id.domain();
-            if let Err(error) = run(&self.tools.virsh, &virsh(&["autostart", &domain]), QUICK).await {
-                tracing::warn!(%error, vm, "vms: the restored VM does not start with the machine");
-            }
+        if spec.autostart
+            && let Err(error) = self.mark_autostart(&spec.id, true).await
+        {
+            tracing::warn!(%error, vm, "vms: the restored VM does not start with the machine");
         }
         self.destroy_removed(&spec.id, remove).await;
         if !marker.kept.is_empty()
