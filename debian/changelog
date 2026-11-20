@@ -1,3 +1,57 @@
+zendiloos (0.5.2) unstable; urgency=high
+
+  * Security: notification mails are sent with lettre 0.11.24, which fixes
+    six problems of the version before. An attacker between the NAS and
+    its mail server could make a rejected message look accepted after
+    STARTTLS, and a bare line break in a message could inject commands to
+    the mail server.
+  * Backups: their runs and restores see only what they work on, so a
+    share user can no longer make one copy files of the system or of other
+    shares by swapping a folder for a link while it runs. Cloud secrets
+    stay out of the programs' environment. A version that was cut off or
+    ended with files missing is marked so, and never pushes out complete
+    ones; the newest complete version is always kept. A stopped restore
+    leaves no half-written files behind.
+  * Docker volumes: backups are signed by this NAS. A backup found in a
+    share that it did not sign, and that it has no record of, is imported
+    only when asked to.
+  * Virtual machines:
+    - A VM cannot be started while a backup or restore of it runs, and a
+      restore cut off by a restart is undone before the VM starts again.
+      A creation that never finished is cleaned up; a new disk never takes
+      over an old one's data; a guest's file systems are always thawed
+      after a snapshot.
+    - On the "User" network, a VM reaches the NAS as a computer on the LAN
+      does, under the firewall's rules, and containers only through their
+      published ports. It no longer reaches services the NAS keeps to
+      itself, nor networks it reaches other than by its default route,
+      such as VPN tunnels.
+    - Devices handed to a VM are checked at every start, also when it
+      starts with the machine: one that is no longer what was given, and
+      USB devices the NAS needs itself (its disks, its network, the UPS),
+      are refused. VMs that start with the machine are now started by
+      zendiloOS, from the next boot on. A USB drive a VM is given is not
+      mounted by the NAS.
+  * Storage: a pool imported from elsewhere keeps none of its own mount
+    points, sharing, setuid or device settings. After a configuration
+    restore, pools are matched by their identity, not only their name, and
+    the NAS's host id is not replaced while pools are imported. Samba
+    cannot open device files, also not in snapshots.
+  * Configuration restore: names of system accounts in a backup are
+    skipped with a warning instead of refusing all accounts; Samba's
+    passwords are restored for the accounts that are restored.
+  * SSH: turning it on with a time limit no longer fails now and then.
+  * Docker and the App Center: on a NAS without the Docker plugin, their
+    pages list nothing instead of failing; a catalog that could not be
+    fetched at start is tried again within minutes.
+  * Network: the installation ISO's switch to systemd-networkd goes back
+    to the previous setup if any step fails; a failed install of
+    systemd-resolved no longer leaves the NAS without DNS.
+  * Removing the package keeps the firewall until the next boot; purging
+    it removes its secrets and keys.
+
+ -- zendiloOS <github.com@stuch.me>  Fri, 20 Nov 2026 20:44:26 +0000
+
 zendiloos (0.5.1) unstable; urgency=medium
 
   * Fix starting Windows VMs with a TPM when the local certificate
