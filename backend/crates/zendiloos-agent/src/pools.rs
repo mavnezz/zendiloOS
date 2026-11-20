@@ -220,6 +220,9 @@ fn read(path: &Path) -> Result<String, OperationError> {
 }
 
 const LIMITS: Limits = Limits { timeout: Duration::from_secs(120), max_stdout: 1024 * 1024 };
+/// `zfs get -r` of a pool imported: some 300 bytes a dataset, and a pool
+/// may have tens of thousands (an app platform's or Docker's layers).
+const LISTING_LIMITS: Limits = Limits { timeout: Duration::from_secs(600), max_stdout: 256 * 1024 * 1024 };
 
 impl Pools {
     pub(crate) fn new(
@@ -1135,22 +1138,22 @@ impl Pools {
     /// its own ([`imported_fixes`]), and then puts it in ZFS's cache file,
     /// which ZFS's units import at boot; why not, if not.
     async fn made_ours(&self, pool: &PoolName) -> Result<(), String> {
-        let listing = output(
-            &self.zfs,
-            &[
-                "get",
-                "-r",
-                "-H",
-                "-t",
-                "filesystem",
-                "-o",
-                "name,property,value,source",
-                IMPORT_CHECKED,
-                pool.as_str(),
-            ],
-        )
-        .await
-        .map_err(|error| error.to_string())?;
+        let args = [
+            "get",
+            "-r",
+            "-H",
+            "-t",
+            "filesystem",
+            "-o",
+            "name,property,value,source",
+            IMPORT_CHECKED,
+            pool.as_str(),
+        ];
+        let listing = zendiloos_exec::run(&self.zfs, args, LISTING_LIMITS)
+            .await
+            .and_then(|done| done.success(&self.zfs))
+            .map_err(|error| error.to_string())?;
+        let listing = String::from_utf8(listing.stdout).map_err(|_| OperationError::NotUtf8.to_string())?;
         for (dataset, properties) in imported_fixes(pool.as_str(), &listing)? {
             tracing::warn!(
                 dataset,
@@ -1607,8 +1610,9 @@ fn vms_unit(pool: &PoolName, volume: VolumeNumber) -> String {
 /// made the pool chose its properties, and ZFS's units would act on them
 /// from the next boot; zendiloOS's datasets have none of that:
 ///
-/// - a mount point only zendiloOS's units mount (`legacy`, or `none`), not
-///   one ZFS mounts by itself, anywhere (`/root/.ssh`);
+/// - a mount point only zendiloOS's units mount (`legacy`): not one ZFS
+///   mounts by itself, anywhere (`/root/.ssh`), nor `none`, which the units
+///   could not mount;
 /// - no share ZFS exports (`sharenfs`, `sharesmb` off);
 /// - no set-ID programs or device files (`setuid`, `devices` off).
 ///
@@ -1627,7 +1631,7 @@ pub(crate) fn imported_fixes(pool: &str, listing: &str) -> Result<Vec<(String, V
         }
         root |= dataset == pool;
         let wanted = match property {
-            "mountpoint" if value == "legacy" || value == "none" => continue,
+            "mountpoint" if value == "legacy" => continue,
             "mountpoint" => "legacy",
             "sharenfs" | "sharesmb" | "setuid" | "devices" if value == "off" => continue,
             "sharenfs" | "sharesmb" | "setuid" | "devices" => "off",

@@ -1214,11 +1214,35 @@ async fn a_pool_imported_neither_mounts_nor_shares_nor_runs_anything_by_itself()
         [
             "zfs set mountpoint=legacy setuid=off media",
             "zfs set mountpoint=legacy sharenfs=off devices=off media/keys",
-            "zfs set sharesmb=off media/photos",
+            "zfs set mountpoint=legacy sharesmb=off media/photos",
             "zpool set cachefile= media",
         ],
-        "what is inherited follows its dataset's parent; `none` mounts nothing"
+        "what is inherited follows its dataset's parent; `none` the units could not mount"
     );
+}
+
+/// `zfs get -r` says some 300 bytes of each dataset: a pool with thousands
+/// (a TrueNAS's ix-applications, Docker's or k3s's layers) is read whole.
+#[tokio::test]
+async fn a_pool_of_many_datasets_is_imported() {
+    let host = host(Erasable::Policy(ErasePolicy::None));
+    importing(&host, 0, "");
+    program(
+        &host,
+        "zfs",
+        "case \"$*\" in\n\
+         *'-s local -d 0'*) echo 1 ;;\n\
+         'get -H -o value zendiloos:volume media') echo 2 ;;\n\
+         'get -r -H -t filesystem '*) printf 'media\\tmountpoint\\tlegacy\\tlocal\\n'\n\
+           i=0; while [ $i -lt 6000 ]; do\n\
+             for p in mountpoint sharenfs sharesmb setuid devices; do\n\
+               printf 'media/apps/layers/%08d\\t%s\\tlegacy\\tinherited from media\\n' $i $p\n\
+             done; i=$((i + 1)); done ;;\n\
+         *) ;;\n\
+         esac",
+    );
+    assert_eq!(host.run(import("media", 42, 2, false, false)).await, Response::Done);
+    assert_eq!(host.calls().last().map(String::as_str), Some("zpool set cachefile= media"));
 }
 
 /// A pool whose name another has here, or the configuration, is imported
