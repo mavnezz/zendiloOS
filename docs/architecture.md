@@ -2483,7 +2483,14 @@ arguments made of checked protocol values: `--issue --force --server …
 account with acme.sh settings and key of its own. The DNS API's variables
 reach it only in an environment file in `/run/zendiloos-acme` that only
 root reads (systemd's `EnvironmentFile=`), so they appear on no command
-line and in no unit property; the file is removed when acme.sh ends. Names
+line and in no unit property; the file is removed when acme.sh ends.
+acme.sh's DNS scripts keep what they were given, for renewals of acme.sh's
+own: in the account's `account.conf` (`SAVED_<name>=`, or `<name>=`) and in
+the certificate's settings. As the unit ends, whatever acme.sh did, the
+unit itself removes those lines as acme.sh's account (`ExecStopPost=` with
+`sed`: every `SAVED_` line of the account's settings, and the order's names
+there and in the certificate's), so a provider's token, often with rights
+over a whole zone, stays nowhere on the disk. Names
 of variables that steer programs (`PATH`, `LD_*`) or acme.sh itself (`LE_*`,
 `ACME_*`) are refused while the request is read, and the script must be one
 acme.sh brings. acme.sh's lines reach the job as they come; acme.sh's own
