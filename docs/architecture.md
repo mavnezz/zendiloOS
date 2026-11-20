@@ -759,7 +759,12 @@ TLS is rustls with ring and the system's certificate authorities
   the folder it lands in (an app's folder stays the app's) and the group
   `zendiloos-files`; Windows' security dialog changes nothing. The share
   `home` of the personal folders is the exception (below): there each user
-  is themselves.
+  is themselves. As root, file permissions would keep smbd from no device
+  file a share holds; the shares are mounted `nodev`, but a snapshot's
+  automount or a pool brought in need not be. So smbd opens no device at
+  all but the pseudo ones (`DevicePolicy=closed`, a drop-in of the
+  package's for `smbd.service`, put in force for the smbd running at
+  installation with `systemctl set-property --runtime`, without a restart).
 - **Following groups and accounts.** The Sharing context hears from the
   Identity context (`GroupObserver`, `AccountObserver`, bridged in
   infrastructure) after a group's members changed, and before and after an

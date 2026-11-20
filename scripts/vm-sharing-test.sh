@@ -420,6 +420,7 @@ snapshot=$(call POST "/shares/$share_id/snapshots" '{"note":"from the test"}' | 
 gmt=$(sed -E 's/^zdl-([0-9]{4})-([0-9]{2})-([0-9]{2})_([0-9]{2})\.([0-9]{2})\.([0-9]{2})$/@GMT-\1.\2.\3-\4.\5.\6/' <<<"$snapshot")
 out=$(smb anna "$anna_pw" 'allinfo album/from-web.txt')
 grep -qF -- "$gmt" <<<"$out" || fail "the snapshot is no previous version ($gmt): $out"
+
 [[ $(call GET "/shares/$share_id/snapshots" | jq -r '.snapshots[0].note') == "from the test" ]] || fail "the snapshot's note"
 # The file manager looks into the snapshot as it was and copies back from it.
 files="/files/shares/$share_id"
@@ -447,6 +448,37 @@ vm "sudo test ! -e $path/after-the-snapshot.txt" || fail "the rollback kept a la
 vm "! sudo zfs list -H -t snapshot -o name | grep -qF '@$later'" || fail "the later snapshot is still there"
 [[ $(status_as admin POST "/shares/$share_id/snapshots/$snapshot/delete") == 204 ]] || fail "cannot delete the snapshot"
 vm "! sudo zfs list -H -t snapshot -o name | grep -qF '@$snapshot'" || fail "the snapshot is still there"
+
+say "smbd opens no device file, in a share or one of its snapshots"
+# A device file in the share, as a pool brought in may hold one (the null
+# device's numbers, harmless to read), and a snapshot of it.
+vm "sudo mknod $path/zdl-node c 1 3"
+snapshot=$(call POST "/shares/$share_id/snapshots" '{"note":"a device file"}' | jq -er .label) || fail "no snapshot"
+gmt=$(sed -E 's/^zdl-([0-9]{4})-([0-9]{2})-([0-9]{2})_([0-9]{2})\.([0-9]{2})\.([0-9]{2})$/@GMT-\1.\2.\3-\4.\5.\6/' <<<"$snapshot")
+[[ $(vm 'systemctl show -p DevicePolicy --value smbd.service') == closed ]] || fail "smbd's device policy"
+# Applied to the smbd running, not only written: a process in its cgroup
+# cannot read the system disk.
+disk=$(vm "lsblk -dno NAME,TYPE | awk '\$2 == \"disk\" { print \$1; exit }'")
+group=$(vm 'systemctl show -p ControlGroup --value smbd.service')
+if vm "sudo sh -c 'echo \$\$ > /sys/fs/cgroup$group/cgroup.procs && exec head -c 1 /dev/$disk > /dev/null'" 2>/dev/null; then
+    fail "a process in smbd's cgroup reads /dev/$disk"
+fi
+vm "sudo ls $path/.zfs/snapshot/$snapshot/ > /dev/null"
+live=$(vm "findmnt -n -o OPTIONS -T $path/")
+snapped=$(vm "findmnt -n -o OPTIONS -T $path/.zfs/snapshot/$snapshot/")
+printf '   the share is mounted %s; its snapshot %s\n' "$live" "$snapped"
+# What smbd does with a device file where mount flags alone would let it.
+vm 'sudo systemctl set-property --runtime smbd.service DevicePolicy=auto'
+unguarded=$(smb anna "$anna_pw" "open $gmt/zdl-node")
+vm 'sudo systemctl set-property --runtime smbd.service DevicePolicy=closed'
+printf '   without the device policy, opening it in the snapshot over SMB: %s\n' "$(tr '\n' ' ' <<<"$unguarded")"
+for node in zdl-node "$gmt/zdl-node"; do
+    out=$(smb anna "$anna_pw" "open $node")
+    grep -q NT_STATUS <<<"$out" || fail "smbd opened the device file $node: $out"
+done
+vm "sudo rm -f $path/zdl-node"
+[[ $(status_as admin POST "/shares/$share_id/snapshots/$snapshot/delete") == 204 ]] || fail "cannot delete the snapshot"
+printf '   ✓ %s\n' "smbd's device policy closed and in force; the device file refused live and in the snapshot"
 
 say "7. Deleting the share and the pool"
 job_succeeded "$(call POST "/shares/$share_id/delete" '{"confirm":"photos"}' | jq -r .id)"

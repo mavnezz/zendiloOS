@@ -27,6 +27,18 @@ configure_samba() {
     fi
 }
 
+# smbd opens no device file, whatever the mounts say (the drop-in in
+# /usr/lib/systemd/system/smbd.service.d): in force at once for the smbd
+# that runs, without restarting it and cutting its clients off; the
+# drop-in holds from the next start on.
+smbd_without_devices() {
+    if [ -d /run/systemd/system ]; then
+        systemctl --system daemon-reload >/dev/null 2>&1 || true
+        systemctl set-property --runtime smbd.service DevicePolicy=closed >/dev/null 2>&1 \
+            || echo "zendiloos: smbd keeps its devices until it restarts" >&2
+    fi
+}
+
 # ZFS: on a first installation zfs-dkms builds the module only after
 # zfsutils-linux tried to load it, so it is not loaded until the next boot,
 # and the agent may not load modules. Load it now, so pools can be created
@@ -151,6 +163,7 @@ case "$1" in
         if [ -L /run/issue.d/zendiloos.issue ]; then rm -f /run/issue.d/zendiloos.issue; fi
         rm -f /var/lib/zendiloos/console.issue /var/lib/zendiloos/console.tmp
         configure_samba
+        smbd_without_devices
         /usr/libexec/zendiloos/make-certificate
         web_tls_defaults
         web_server_defaults
