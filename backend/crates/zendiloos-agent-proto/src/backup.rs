@@ -156,14 +156,17 @@ checked!(
 
 checked!(
     /// What retention removes from a task's folder: a version, a version cut
-    /// off (`<stamp>.incomplete`), or a mirror's kept changes
+    /// off (`<stamp>.incomplete`), a file marking a version
+    /// (`<stamp>.partial`, `<stamp>.finishing`), or a mirror's kept changes
     /// (`removed/<stamp>`); nothing else.
     BackupPruned,
     InvalidBackupPruned,
-    "not a version, a version cut off or kept changes",
+    "not a version, a version cut off, a version's mark or kept changes",
     |name| {
         is_stamp(name)
-            || name.strip_suffix(".incomplete").is_some_and(is_stamp)
+            || [".incomplete", ".partial", ".finishing"]
+                .iter()
+                .any(|suffix| name.strip_suffix(suffix).is_some_and(is_stamp))
             || name.strip_prefix("removed/").is_some_and(is_stamp)
     }
 );
@@ -515,10 +518,24 @@ mod tests {
     fn what_retention_removes_is_named_as_versions_are() {
         assert!(BackupStamp::parse("2026-11-11_030000Z").is_ok());
         assert!(BackupStamp::parse("2026-11-11_03000Z").is_err());
-        for good in ["2026-11-11_030000Z", "2026-11-11_030000Z.incomplete", "removed/2026-11-11_030000Z"] {
+        for good in [
+            "2026-11-11_030000Z",
+            "2026-11-11_030000Z.incomplete",
+            "2026-11-11_030000Z.partial",
+            "2026-11-11_030000Z.finishing",
+            "removed/2026-11-11_030000Z",
+        ] {
             assert!(BackupPruned::parse(good).is_ok(), "{good}");
         }
-        for bad in ["current", ".zendiloos-backup", "removed", "../2026-11-11_030000Z", "removed/x", ""] {
+        for bad in [
+            "current",
+            ".zendiloos-backup",
+            "removed",
+            "../2026-11-11_030000Z",
+            "removed/x",
+            "",
+            "2026-11-11_030000Z.other",
+        ] {
             assert!(BackupPruned::parse(bad).is_err(), "{bad}");
         }
         assert!(BackupFolder::parse("Photos to tank").is_ok());

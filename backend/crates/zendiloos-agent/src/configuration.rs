@@ -14,6 +14,7 @@ use zendiloos_agent_proto::{ConfigurationFile, ConfigurationPath, Response, netw
 use zendiloos_exec::{Limits, Program};
 
 use crate::operations::OperationError;
+use crate::volume_archive::ManifestKeys;
 use crate::web_server::WebServer;
 
 const LIMITS: Limits = Limits { timeout: Duration::from_secs(60), max_stdout: 64 * 1024 };
@@ -35,6 +36,7 @@ pub struct ConfigurationPaths {
     /// `/etc/hostid`.
     pub host_id: PathBuf,
     pub id_high_water: PathBuf,
+    pub volume_backup_keys: PathBuf,
     /// `/etc/systemd/network`.
     pub network: PathBuf,
 }
@@ -70,6 +72,7 @@ impl ConfigurationPaths {
             ConfigurationPath::SambaPasswords => self.samba_passwords.clone(),
             ConfigurationPath::HostId => self.host_id.clone(),
             ConfigurationPath::IdHighWater => self.id_high_water.clone(),
+            ConfigurationPath::VolumeBackupKeys => self.volume_backup_keys.clone(),
             ConfigurationPath::Network(name) => self.network.join(name),
         }
     }
@@ -101,6 +104,7 @@ impl Configuration {
             ConfigurationPath::SambaPasswords,
             ConfigurationPath::HostId,
             ConfigurationPath::IdHighWater,
+            ConfigurationPath::VolumeBackupKeys,
         ];
         for number in numbered_folders(&self.paths.certificates)? {
             paths
@@ -160,6 +164,21 @@ impl Configuration {
                     let merged =
                         merge_high_water(&String::from_utf8_lossy(&now), &String::from_utf8_lossy(bytes));
                     crate::durable::replace_mode(&place, merged.as_bytes(), 0o644)?;
+                }
+                // The keys there sign on; the restored ones verify too, so
+                // the old machine's backups count as this one's.
+                ConfigurationPath::VolumeBackupKeys => {
+                    // Checked above: they are keys.
+                    let Some(restored) = ManifestKeys::parse(&String::from_utf8_lossy(bytes)) else {
+                        continue;
+                    };
+                    let now = read_plain(&place, file.path.max_bytes())?
+                        .and_then(|now| ManifestKeys::parse(&String::from_utf8_lossy(&now)));
+                    let merged = match now {
+                        Some(now) => now.merged(&restored),
+                        None => restored,
+                    };
+                    crate::durable::replace_mode(&place, merged.text().as_bytes(), 0o600)?;
                 }
                 _ => {}
             }
@@ -228,6 +247,10 @@ fn check(file: &ConfigurationFile) -> Result<(), OperationError> {
                 })
             });
             if lines { Ok(()) } else { refused("not the IDs handed out") }
+        }
+        ConfigurationPath::VolumeBackupKeys => {
+            let keys = std::str::from_utf8(bytes).ok().and_then(ManifestKeys::parse);
+            if keys.is_some() { Ok(()) } else { refused("not keys") }
         }
         _ => Ok(()),
     }

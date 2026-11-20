@@ -102,7 +102,17 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 #   share and restored by transient units (systemd-run, this binary as
 #   backup-volume, restore-volume or remove-volume-backup), outside this
 #   sandbox, each in a sandbox of its own that may write only the share or
-#   the volume's folder;
+#   the volume's folder, sees an empty /run (no control socket of the
+#   machine to connect to) and only its own processes (PrivatePIDs); a
+#   backup's manifest is signed with a key of this agent's in
+#   /etc/zendiloos/volume-backup-keys, made at the first backup and handed
+#   to the unit on its standard input;
+# - the backup plugin: its runs, listings, retention and restores in
+#   transient units (this binary as backup-unit; rsync, ssh, rclone) whose
+#   view of the system is an allow-list (/usr, the kernel's file systems,
+#   their own /dev and /tmp, of /etc what the tools read, the roots they
+#   work on), with their own processes only; the NAS's SSH key is read here
+#   and handed to the unit on its standard input;
 # - virtual machines: libvirt's daemon, outside this sandbox, runs QEMU
 #   and passt; the agent talks to it with virsh over its socket (AF_UNIX)
 #   and keeps each domain's XML in /etc/zendiloos/vms; a VM's disks are
@@ -130,7 +140,8 @@ ExecStart=/usr/libexec/zendiloos/zendiloos-agent
 #   restore-vm and remove-vm-backup) that may open the zvols' devices
 #   alone (DeviceAllow=block-zvol), read only for a backup, and write only
 #   the share or drive, or libvirt's folders of the UEFI variables and TPM
-#   states. The template of the UEFI variables with Microsoft's
+#   states, with the volumes' units' empty /run and own processes. The
+#   template of the UEFI variables with Microsoft's
 #   certificates of 2023 is made by virt-fw-vars in the state directory
 #   (/var/lib/zendiloos-agent), and described to QEMU's firmware selection
 #   in /etc/qemu/firmware;

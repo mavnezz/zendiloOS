@@ -128,6 +128,9 @@ pub struct HostPaths {
     pub packages: PathBuf,
     /// Docker's socket, which an app may be given.
     pub docker_socket: PathBuf,
+    /// The keys volume backups' manifests are signed with
+    /// ([`zendiloos_agent_proto::ConfigurationPath::VolumeBackupKeys`]).
+    pub volume_backup_keys: PathBuf,
     /// Where zendiloosd downloads a release of zendiloOS to.
     pub update_spool: PathBuf,
     /// The keys a release may be signed with, the first that exists counts:
@@ -163,6 +166,7 @@ impl Default for HostPaths {
             agent: PathBuf::from("/usr/libexec/zendiloos/zendiloos-agent"),
             packages: PathBuf::from("/var/lib/zendiloos-packages"),
             docker_socket: PathBuf::from("/run/docker.sock"),
+            volume_backup_keys: PathBuf::from("/etc/zendiloos/volume-backup-keys"),
             update_spool: PathBuf::from("/var/lib/zendiloos/updates"),
             release_keys: vec![
                 PathBuf::from("/etc/zendiloos/release-signing.pub"),

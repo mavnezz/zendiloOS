@@ -37,6 +37,10 @@ pub enum ConfigurationPath {
     HostId,
     /// `/etc/zendiloos/id-high-water`: the highest UID and GID handed out.
     IdHighWater,
+    /// `/etc/zendiloos/volume-backup-keys`: the keys the system agent signs
+    /// volume backups' manifests with, one per line, the signing one first;
+    /// restored, merged with those there.
+    VolumeBackupKeys,
     /// `/etc/systemd/network/05-zendiloos-<name>.network` or `.netdev`;
     /// read only: a network from elsewhere is applied with confirmation.
     Network(String),
@@ -75,6 +79,7 @@ impl ConfigurationPath {
             "/var/lib/samba/private/passdb.tdb" => Self::SambaPasswords,
             "/etc/hostid" => Self::HostId,
             "/etc/zendiloos/id-high-water" => Self::IdHighWater,
+            "/etc/zendiloos/volume-backup-keys" => Self::VolumeBackupKeys,
             _ => {
                 if let Some(rest) = path.strip_prefix(CERTIFICATES) {
                     let (number, file) = rest.split_once('/').ok_or(InvalidConfigurationPath)?;
@@ -114,6 +119,7 @@ impl ConfigurationPath {
             Self::SambaPasswords => "/var/lib/samba/private/passdb.tdb".into(),
             Self::HostId => "/etc/hostid".into(),
             Self::IdHighWater => "/etc/zendiloos/id-high-water".into(),
+            Self::VolumeBackupKeys => "/etc/zendiloos/volume-backup-keys".into(),
             Self::Network(name) => format!("{NETWORK}{name}"),
         }
     }

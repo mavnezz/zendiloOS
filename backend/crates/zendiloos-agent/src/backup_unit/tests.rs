@@ -20,19 +20,19 @@ fn local(root: &Path, path: &str) -> End {
 }
 
 fn job(work: Work, rsync: PathBuf) -> UnitJob {
-    UnitJob {
-        work,
-        rsync,
-        rclone: PathBuf::from("/usr/bin/rclone"),
-        ssh: PathBuf::from("/usr/bin/ssh"),
-        key: PathBuf::from("/run/credentials/u/backup-key"),
-    }
+    UnitJob { work, rsync, rclone: PathBuf::from("/usr/bin/rclone"), ssh: PathBuf::from("/usr/bin/ssh") }
 }
 
 /// Runs the unit: its lines, and its answer if it gave one.
 async fn unit(job: &UnitJob, secrets: &str) -> (Vec<UnitSays>, Option<Report>) {
     let mut out = Vec::new();
-    let mut input = std::io::Cursor::new(format!("{secrets}\n").into_bytes());
+    // As the agent writes it: the secrets, and the key where given.
+    let input = match secrets {
+        "" => String::new(),
+        secrets if secrets.starts_with(r#"{"secrets""#) => secrets.to_owned(),
+        secrets => format!(r#"{{"secrets":{secrets}}}"#),
+    };
+    let mut input = std::io::Cursor::new(format!("{input}\n").into_bytes());
     run_backup_unit(&encode(job), &mut input, &mut out).await;
     let said: Vec<UnitSays> =
         String::from_utf8_lossy(&out).lines().map(|line| serde_json::from_str(line).unwrap()).collect();
@@ -342,6 +342,7 @@ fn fake_rsync(dir: &Path) -> PathBuf {
     let script = format!(
         "#!/bin/sh\necho \"$@\" >> {log}\n\
          for a in \"$@\"; do case \"$a\" in --password-file=*) cat \"${{a#--password-file=}}\" >> {log}.password ;; --rsh=*) echo \"$a\" >> {log}.rsh ;; esac; done\n\
+         for a in \"$@\"; do case \"$a\" in /proc/*) ;; /*) [ -d \"$a\" ] && echo \"$(ls -A \"$a\" | tr '\\n' ' ')\" >> {log}.dirs ;; esac; done\n\
          case \"$*\" in *--list-only*) echo 'drwxr-xr-x           4096 2026/11/10 03:00:00 .'; echo '-rw-r--r--             10 2026/11/10 03:00:00 .zendiloos-backup'; echo 'drwxr-xr-x           4096 2026/11/10 03:00:00 2026-11-10_030000Z' ;; esac\n\
          case \"$*\" in *--info=progress2*) printf '        100  50%%    1.00MB/s    0:00:01 (xfr#1, to-chk=1/3)\\r'; echo '>f+++++++++ a.jpg'; echo 'Number of regular files transferred: 1'; echo 'Total transferred file size: 100 bytes' ;; esac\n\
          exit 0\n",
@@ -414,6 +415,56 @@ async fn a_push_to_a_daemon_reads_the_password_from_a_file_and_names_the_version
 }
 
 #[tokio::test]
+async fn a_version_a_server_is_given_is_marked_finishing_until_it_is_complete() {
+    let (dir, source, _) = places();
+    let rsync = fake_rsync(dir.path());
+    let push =
+        job(run(local(&source, ""), daemon("nas"), BackupMode::Versioned, "2026-11-11_030000Z"), rsync);
+    let (said, report) = unit(&push, "").await;
+    assert!(report.unwrap_or_else(|| panic!("{said:?}")).partial.is_none());
+    let calls = fs::read_to_string(dir.path().join("rsync.log")).unwrap();
+    let lines: Vec<&str> = calls.lines().collect();
+    let at =
+        |what: &dyn Fn(&str) -> bool| lines.iter().position(|l| what(l)).unwrap_or_else(|| panic!("{calls}"));
+    // The mark goes up first, then the version under its name, then the
+    // mark goes, and only then the copy under the incomplete name.
+    let marked =
+        at(&|l| !l.contains("--delete") && l.ends_with("rsync://zendi@nas2.lan:873/nas/nas/photos/"));
+    let named = at(&|l| l.ends_with("photos/2026-11-11_030000Z/"));
+    let unmarked = at(&|l| l.contains("--include=/2026-11-11_030000Z.finishing"));
+    let removed = at(&|l| l.contains("--include=/2026-11-11_030000Z.incomplete/***"));
+    assert!(marked < named && named < unmarked && unmarked < removed, "{calls}");
+    let staged = fs::read_to_string(dir.path().join("rsync.log.dirs")).unwrap();
+    assert!(staged.lines().any(|l| l.trim() == "2026-11-11_030000Z.finishing"), "{staged}");
+    assert!(!staged.contains(".partial"), "{staged}");
+}
+
+#[tokio::test]
+async fn a_second_pass_that_misses_files_is_told_and_keeps_the_full_copy() {
+    let (dir, source, _) = places();
+    let rsync = fake_rsync(dir.path());
+    // The pass under the version's name cannot copy a file.
+    let script = fs::read_to_string(&rsync).unwrap().replace(
+        "exit 0\n",
+        "case \"$*\" in *photos/2026-11-11_030000Z/) echo 'rsync: [sender] send_files failed to open \"a.jpg\": Input/output error (5)' >&2; exit 23 ;; esac\nexit 0\n",
+    );
+    fs::write(&rsync, script).unwrap();
+    let push =
+        job(run(local(&source, ""), daemon("nas"), BackupMode::Versioned, "2026-11-11_030000Z"), rsync);
+    let (said, report) = unit(&push, "").await;
+    let report = report.unwrap_or_else(|| panic!("{said:?}"));
+    assert!(report.partial.as_deref().is_some_and(|why| why.contains("Input/output error")), "{report:?}");
+    let calls = fs::read_to_string(dir.path().join("rsync.log")).unwrap();
+    assert!(!calls.contains("--include=/2026-11-11_030000Z.incomplete/"), "the full copy stays: {calls}");
+    assert!(calls.contains("--include=/2026-11-11_030000Z.finishing"), "{calls}");
+    let staged = fs::read_to_string(dir.path().join("rsync.log.dirs")).unwrap();
+    assert!(staged.contains("2026-11-11_030000Z.partial"), "{staged}");
+}
+
+/// What the agent writes for a unit that reaches a server over SSH.
+const KEY: &str = r#"{"secrets":{},"key":"-----BEGIN OPENSSH PRIVATE KEY-----\nb3Blbg==\n-----END OPENSSH PRIVATE KEY-----\n"}"#;
+
+#[tokio::test]
 async fn ssh_runs_with_the_pinned_key_only() {
     let (dir, source, _) = places();
     let rsync = fake_rsync(dir.path());
@@ -426,12 +477,17 @@ async fn ssh_runs_with_the_pinned_key_only() {
         ),
         rsync,
     );
-    let (said, report) = unit(&push, "").await;
+    let (said, _) = unit(&push, "").await;
+    assert!(failure(&said).0.contains("SSH key was not given"), "{said:?}");
+    let (said, report) = unit(&push, KEY).await;
     assert!(report.is_some(), "{said:?}");
     let rsh = fs::read_to_string(dir.path().join("rsync.log.rsh")).unwrap();
+    // The key in the unit's own folder with a random name, read by ssh.
+    let key = rsh.split(" -i ").nth(1).and_then(|rest| rest.split(' ').next()).unwrap();
+    assert!(key.starts_with(&std::env::temp_dir().join("zendiloos-backup-").display().to_string()), "{rsh}");
+    assert!(key.ends_with("/backup-key") && !Path::new(key).exists(), "removed when done: {rsh}");
     for option in [
         "-F /dev/null",
-        "-i /run/credentials/u/backup-key",
         "StrictHostKeyChecking=yes",
         "GlobalKnownHostsFile=/dev/null",
         "BatchMode=yes",
@@ -461,7 +517,7 @@ async fn host_keys_that_changed_and_servers_that_fail_are_told_apart() {
     .unwrap();
     fs::set_permissions(&rsync, fs::Permissions::from_mode(0o755)).unwrap();
     let list = job(Work::List { at: ssh(""), inside: SharePath::default() }, rsync.clone());
-    let (said, _) = unit(&list, "").await;
+    let (said, _) = unit(&list, KEY).await;
     let (message, kind) = failure(&said);
     assert_eq!(kind, FailKind::HostKey);
     assert!(message.contains("Host key verification failed"), "{message}");
@@ -497,6 +553,46 @@ async fn files_that_vanish_make_a_run_partial_not_failed() {
     assert!(report.partial.unwrap().contains("vanished"));
     assert_eq!(report.files, 2);
     assert!(target.join("photos/2026-11-11_030000Z").is_dir(), "complete but for it");
+    assert!(!target.join("photos/2026-11-11_030000Z.partial").exists(), "as complete as the source was");
+}
+
+#[tokio::test]
+async fn files_that_cannot_be_copied_mark_the_version_partial() {
+    let (dir, source, target) = places();
+    let rsync = dir.path().join("rsync");
+    fs::write(
+        &rsync,
+        "#!/bin/sh\ncase \"$*\" in *--list-only*) exit 0 ;; esac\n\
+         echo 'rsync: [sender] send_files failed to open \"/proc/self/fd/7/notes.txt\": Input/output error (5)' >&2\nexit 23\n",
+    )
+    .unwrap();
+    fs::set_permissions(&rsync, fs::Permissions::from_mode(0o755)).unwrap();
+    let run =
+        job(run(local(&source, ""), local(&target, ""), BackupMode::Versioned, "2026-11-11_030000Z"), rsync);
+    let (said, report) = unit(&run, "").await;
+    assert!(report.unwrap_or_else(|| panic!("{said:?}")).partial.is_some());
+    assert!(target.join("photos/2026-11-11_030000Z").is_dir());
+    assert!(target.join("photos/2026-11-11_030000Z.partial").is_file(), "marked beside it");
+}
+
+#[tokio::test]
+async fn a_target_that_refuses_to_take_files_fails_the_run() {
+    let (dir, source, target) = places();
+    let rsync = dir.path().join("rsync");
+    fs::write(
+        &rsync,
+        "#!/bin/sh\ncase \"$*\" in *--list-only*) exit 0 ;; esac\n\
+         echo 'rsync: [receiver] mkstemp \"/x/.notes.txt.Q2b3\" failed: Disk quota exceeded (122)' >&2\nexit 23\n",
+    )
+    .unwrap();
+    fs::set_permissions(&rsync, fs::Permissions::from_mode(0o755)).unwrap();
+    let run =
+        job(run(local(&source, ""), local(&target, ""), BackupMode::Versioned, "2026-11-11_030000Z"), rsync);
+    let (said, _) = unit(&run, "").await;
+    let (message, kind) = failure(&said);
+    assert_eq!(kind, FailKind::Failed);
+    assert!(message.contains("Disk quota exceeded"), "{message}");
+    assert!(!target.join("photos/2026-11-11_030000Z").exists(), "no version");
 }
 
 #[test]

@@ -5,20 +5,26 @@
 //!
 //! The unit's sandbox (see [`crate::backup`]) shows it the roots of the
 //! places it works on and nothing else of the volumes and drives, read-only
-//! but the one it writes, and the network only when a server is involved.
-//! Within, the folders are opened beneath their roots by descriptor
-//! (`openat2`: no `..`, no link, no other file system), and rsync is given
-//! those descriptors (`/proc/self/fd/<n>/`), so a folder swapped for a link
+//! but the one it writes, of the rest of the system only what its tools
+//! need, and the network only when a server is involved. Within, the
+//! folders are opened beneath their roots by descriptor (`openat2`: no
+//! `..`, no link, no other file system), and rsync is given those
+//! descriptors (`/proc/self/fd/<n>/`), so a folder swapped for a link
 //! between the check and the copy changes nothing. rsync copies links as
 //! links and leaves out those that point outside the copied folder or are
-//! absolute (`--safe-links`): it never reads or writes through one; it
-//! stays on the source's file system (`--one-file-system`).
+//! absolute (`--safe-links`), and stays on the source's file system
+//! (`--one-file-system`). Below the top, rsync 3.5 opens every path without
+//! following a link; rclone does not: a folder a share's writer swaps for a
+//! link while it runs is followed. That is why the unit's view is an
+//! allow-list: what such a link reaches is the source, the target, the
+//! programs and what is public anyway.
 //!
-//! Secrets come on standard input, one line of JSON, never on a command
-//! line: a daemon's password goes into a file in the unit's private `/tmp`
-//! (0600), rsync reads it there (`--password-file`); the NAS's SSH key is
-//! the unit's credential (`LoadCredential=`), which only the unit sees;
-//! what rclone needs is set for it alone ([`rclone`]).
+//! Secrets come on standard input, one line of JSON ([`UnitInput`]), never
+//! on a command line: a daemon's password and the NAS's SSH key go into
+//! files in a folder with a random name in the unit's private `/tmp`
+//! (0700, the files 0600), where rsync and ssh read them
+//! (`--password-file`, `-i`); what rclone needs is set for it alone
+//! ([`rclone`]).
 
 mod rclone;
 
@@ -47,6 +53,14 @@ const BENEATH: ResolveFlags = ResolveFlags::BENEATH
 pub(crate) const MARKER: &str = ".zendiloos-backup";
 const MARKER_TEXT: &str = "This folder holds a backup of zendiloOS's. Do not change what is in it.\n";
 const INCOMPLETE: &str = ".incomplete";
+/// A file beside a version whose run could not copy every file.
+const PARTIAL: &str = ".partial";
+const PARTIAL_TEXT: &str = "The run that made this version could not copy every file: see its log.\n";
+/// A file beside a version a server is still given under its name: until
+/// it goes, the version is not complete.
+const FINISHING: &str = ".finishing";
+const FINISHING_TEXT: &str =
+    "This version is still being written under its name: until this file goes, it is not complete.\n";
 /// Entries of the transfer list kept; the count goes on.
 pub(crate) const TRANSFERS_KEPT: usize = 5000;
 /// Lines of a listing passed on: a folder of more is listed as far.
@@ -189,9 +203,34 @@ pub(crate) struct UnitJob {
     #[serde(default)]
     pub rclone: PathBuf,
     pub ssh: PathBuf,
-    /// The NAS's SSH key as the unit's credential:
-    /// `/run/credentials/<unit>/backup-key`.
-    pub key: PathBuf,
+}
+
+/// What a unit reads on its standard input: the task's secrets and, when
+/// it reaches a server over SSH, the NAS's key.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct UnitInput {
+    #[serde(default)]
+    pub secrets: BackupSecrets,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<UnitKey>,
+}
+
+/// The NAS's SSH private key, never shown.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct UnitKey(String);
+
+impl UnitKey {
+    pub(crate) fn new(key: String) -> Self {
+        Self(key)
+    }
+}
+
+impl std::fmt::Debug for UnitKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("UnitKey(…)")
+    }
 }
 
 impl Work {
@@ -278,13 +317,17 @@ pub async fn run_backup_unit(hex: &str, input: &mut dyn BufRead, out: &mut (dyn 
         let job = decode::<UnitJob>(hex).map_err(refused)?;
         let mut line = String::new();
         let _ = std::io::Read::take(&mut *input, 64 * 1024).read_line(&mut line);
-        let secrets: BackupSecrets = if line.trim().is_empty() {
-            BackupSecrets::default()
+        let input: UnitInput = if line.trim().is_empty() {
+            UnitInput::default()
         } else {
             serde_json::from_str(&line).map_err(|e| refused(format!("the secrets cannot be read: {e}")))?
         };
         let scratch = Scratch::make()?;
-        let unit = Unit { job: &job, scratch: &scratch, secrets };
+        let key = match &input.key {
+            Some(UnitKey(key)) => Some(scratch.file("backup-key", key)?),
+            None => None,
+        };
+        let unit = Unit { job: &job, scratch: &scratch, secrets: input.secrets, key };
         let result = unit.work(out).await;
         drop(scratch);
         result
@@ -436,6 +479,20 @@ fn open_in(parent: &Opened, name: &str, make: bool) -> Result<Option<Opened>, Fa
     Ok(Some(Opened { fd: opened, plain: parent.plain }))
 }
 
+/// Marks the version beside it partial: the file `name` in the task's
+/// folder.
+fn mark_partial(task: &Opened, name: &str) -> Result<(), Fail> {
+    let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    match rustix::fs::openat(&task.fd, name, flags, Mode::from_raw_mode(0o644)) {
+        Ok(file) => {
+            rustix::io::write(&file, PARTIAL_TEXT.as_bytes()).map_err(|e| failed(format!("{name}: {e}")))?;
+            Ok(())
+        }
+        Err(Errno::EXIST) => Ok(()),
+        Err(e) => Err(failed(format!("{name}: {e}"))),
+    }
+}
+
 /// An entry of a folder, as far as the unit needs to know.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Listed {
@@ -444,14 +501,17 @@ struct Listed {
 }
 
 /// Whether an entry of a task's folder is the backup's: the marker,
-/// `current`, `removed`, versions and versions cut off.
+/// `current`, `removed`, versions, versions cut off and the files marking
+/// versions.
 fn ours(entry: &Listed) -> bool {
+    let marking = |suffix: &str| entry.name.strip_suffix(suffix).is_some_and(is_stamp);
     entry.name == MARKER
         || (entry.folder
             && (entry.name == "current"
                 || entry.name == "removed"
                 || is_stamp(&entry.name)
-                || entry.name.strip_suffix(INCOMPLETE).is_some_and(is_stamp)))
+                || marking(INCOMPLETE)))
+        || (!entry.folder && (marking(PARTIAL) || marking(FINISHING)))
 }
 
 /// The name and kind of an entry `rsync --list-only` printed: the mode's
@@ -519,7 +579,14 @@ struct Heard {
     complaints: Vec<String>,
     percent: Option<u8>,
     changed: bool,
+    /// rsync ended 23: files it could not copy, not only files that
+    /// vanished.
+    missed: bool,
 }
+
+/// The errors with which a target refuses to take files: no space, the
+/// quota, no permission (`errno` as rsync writes it).
+const REFUSALS: [&str; 3] = ["(28)", "(122)", "(13)"];
 
 /// Whether `line` is one of rsync's itemized changes: `>f+++++++++ a.jpg`,
 /// `cd+++++++++ photos/`, `*deleting   old.txt`.
@@ -613,6 +680,23 @@ impl Heard {
                 || line.contains("Host key verification failed")
         })
     }
+
+    /// What the receiving end said if it refused to take files for want of
+    /// space, of quota or of permission: then a run fails rather than
+    /// leaving a version that only looks like one.
+    fn refused_by_target(&self) -> Option<String> {
+        let said: Vec<&str> = self
+            .complaints
+            .iter()
+            .map(String::as_str)
+            .filter(|line| {
+                (line.starts_with("rsync: [receiver]") || line.starts_with("rsync: [generator]"))
+                    && REFUSALS.iter().any(|errno| line.ends_with(errno))
+            })
+            .take(3)
+            .collect();
+        (!said.is_empty()).then(|| format!("the target does not take the files: {}", said.join(" ")))
+    }
 }
 
 /// How rsync ended.
@@ -626,6 +710,14 @@ struct Unit<'a> {
     job: &'a UnitJob,
     scratch: &'a Scratch,
     secrets: BackupSecrets,
+    /// The NAS's SSH key, in the scratch folder.
+    key: Option<PathBuf>,
+}
+
+impl Unit<'_> {
+    fn key(&self) -> Result<&Path, Fail> {
+        self.key.as_deref().ok_or_else(|| refused("the NAS's SSH key was not given"))
+    }
 }
 
 impl Unit<'_> {
@@ -696,7 +788,7 @@ impl Unit<'_> {
                     "-F".into(),
                     "/dev/null".into(),
                     "-i".into(),
-                    self.job.key.display().to_string(),
+                    self.key()?.display().to_string(),
                     "-o".into(),
                     "IdentitiesOnly=yes".into(),
                     "-o".into(),
@@ -773,7 +865,10 @@ impl Unit<'_> {
         .map_err(|e| failed(e.to_string()))?;
         match output.status.code() {
             Some(0) => Ok(Ended::Done),
-            Some(23 | 24) if !listing => Ok(Ended::Partial(heard.reason())),
+            Some(code @ (23 | 24)) if !listing => {
+                heard.missed = code == 23;
+                Ok(Ended::Partial(heard.reason()))
+            }
             _ if heard.host_key_changed() => Err(Fail { message: heard.reason(), kind: FailKind::HostKey }),
             code => {
                 let reason = heard.reason();
@@ -983,10 +1078,17 @@ impl Unit<'_> {
         args.push(destination);
         say(out, &UnitSays::Progress { step: "transferring".into(), percent: 0 });
         let mut heard = Heard::default();
-        let ended = self.rsync(&args, false, &mut heard, out).await?;
+        let mut ended = self.rsync(&args, false, &mut heard, out).await?;
+        if let Some(refused) = heard.refused_by_target() {
+            return Err(failed(refused));
+        }
         if run.mode == BackupMode::Versioned {
             say(out, &UnitSays::Progress { step: "finishing".into(), percent: 100 });
-            self.complete(run, &task_end, task_folder.as_ref(), source_opened.as_ref(), &incomplete).await?;
+            let done = (task_folder.as_ref(), source_opened.as_ref());
+            let named = self.complete(run, &task_end, done, &incomplete, heard.missed).await?;
+            if let (Ended::Done, Ended::Partial(_)) = (&ended, &named) {
+                ended = named;
+            }
         }
         if let Some(task) = &task_folder {
             // A drive pulled out after "done" must not lose the backup.
@@ -1042,24 +1144,38 @@ impl Unit<'_> {
         self.rsync(&args, false, &mut Heard::default(), &mut std::io::sink()).await.map(|_| ())
     }
 
-    /// Gives a version its name once complete: renamed on the NAS; on a
-    /// server, copied once more as hard links (a server cannot rename)
-    /// and the incomplete folder removed.
+    /// Gives a version its name once complete, marked partial first if its
+    /// run could not copy every file (`missed`): renamed on the NAS; on a
+    /// server, which cannot rename, copied once more as hard links under
+    /// its name, marked finishing meanwhile, and the incomplete folder
+    /// removed only if that copy was complete. How that copy ended (on the
+    /// NAS, always done).
     async fn complete(
         &self,
         run: &RunJob,
         task_end: &End,
-        task_folder: Option<&Opened>,
-        source: Option<&Opened>,
+        (task_folder, source): (Option<&Opened>, Option<&Opened>),
         incomplete: &str,
-    ) -> Result<(), Fail> {
+        missed: bool,
+    ) -> Result<Ended, Fail> {
         let stamp = run.stamp.as_str();
+        let partial = format!("{stamp}{PARTIAL}");
         if let Some(task) = task_folder {
+            if missed {
+                mark_partial(task, &partial)?;
+            }
             rustix::fs::renameat_with(&task.fd, incomplete, &task.fd, stamp, RenameFlags::NOREPLACE)
                 .map_err(|e| failed(format!("the version cannot be named {stamp}: {e}")))?;
-            return rustix::fs::fsync(&task.fd)
-                .map_err(|e| failed(format!("the target cannot be written out: {e}")));
+            rustix::fs::fsync(&task.fd)
+                .map_err(|e| failed(format!("the target cannot be written out: {e}")))?;
+            return Ok(Ended::Done);
         }
+        let finishing = format!("{stamp}{FINISHING}");
+        let mut marks = vec![finishing.clone()];
+        if missed {
+            marks.push(partial.clone());
+        }
+        self.put_marks(task_end, &marks).await?;
         let mut args = vec!["--no-human-readable".to_owned()];
         args.extend(self.copy_args(&run.source, &run.target, false));
         args.extend(["--delete".to_owned(), "--delete-excluded".to_owned()]);
@@ -1069,9 +1185,38 @@ impl Unit<'_> {
         args.push(format!("--link-dest=../{incomplete}"));
         args.push(self.source_arg(&run.source, source));
         args.push(self.remote(task_end, stamp).unwrap_or_default());
-        self.rsync(&args, false, &mut Heard::default(), &mut std::io::sink()).await?;
-        let name = BackupPruned::parse(incomplete).map_err(|_| failed("no version cut off"))?;
-        self.prune(task_end, &[name]).await
+        let mut heard = Heard::default();
+        let ended = self.rsync(&args, false, &mut heard, &mut std::io::sink()).await?;
+        if let Some(refused) = heard.refused_by_target() {
+            return Err(failed(refused));
+        }
+        if heard.missed && !missed {
+            self.put_marks(task_end, std::slice::from_ref(&partial)).await?;
+        }
+        let pruned = |name: &str| BackupPruned::parse(name).map_err(|_| failed(format!("{name} is no mark")));
+        self.prune(task_end, &[pruned(&finishing)?]).await?;
+        if matches!(ended, Ended::Done) {
+            self.prune(task_end, &[pruned(incomplete)?]).await?;
+        }
+        Ok(ended)
+    }
+
+    /// Puts the files `names`, marks of a version, into the task's folder
+    /// `task_end` on a server.
+    async fn put_marks(&self, task_end: &End, names: &[String]) -> Result<(), Fail> {
+        let stage = self.scratch.folder(&format!("marks/{}", names.join("+")))?;
+        for name in names {
+            let text = if name.ends_with(FINISHING) { FINISHING_TEXT } else { PARTIAL_TEXT };
+            std::fs::write(stage.join(name), text).map_err(|e| failed(format!("{name}: {e}")))?;
+        }
+        let mut args = vec!["--recursive".to_owned()];
+        args.extend(self.server_args(task_end)?);
+        args.push(format!("{}/", stage.display()));
+        args.push(self.remote(task_end, "").unwrap_or_default());
+        match self.rsync(&args, false, &mut Heard::default(), &mut std::io::sink()).await? {
+            Ended::Done => Ok(()),
+            Ended::Partial(reason) => Err(failed(format!("the version cannot be marked: {reason}"))),
+        }
     }
 
     /// Removes `names` from the task's folder `at` with rsync: an empty
@@ -1095,7 +1240,10 @@ impl Unit<'_> {
         }
         let mut args = vec!["--recursive".to_owned(), "--delete".to_owned()];
         args.extend(self.server_args(at)?);
-        args.extend(names.iter().map(|name| format!("--include=/{name}/***")));
+        // A folder and all in it, or a file.
+        args.extend(
+            names.iter().flat_map(|name| [format!("--include=/{name}/***"), format!("--include=/{name}")]),
+        );
         if removed {
             args.push("--include=/removed/".into());
         }

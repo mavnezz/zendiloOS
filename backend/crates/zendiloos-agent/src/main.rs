@@ -82,6 +82,42 @@ enum Command {
     ChooseBootKernel,
 }
 
+impl Command {
+    /// Whether it is a unit's work that runs as the first process of a PID
+    /// namespace of its own (`PrivatePIDs=`): the backups' and the volumes'
+    /// units, the VMs' backups, ISOs and uploads.
+    fn in_own_pid_namespace(&self) -> bool {
+        matches!(
+            self,
+            Command::BackupVolume { .. }
+                | Command::RestoreVolume { .. }
+                | Command::SwapVolume { .. }
+                | Command::RemoveVolumeBackup { .. }
+                | Command::SweepVolumes { .. }
+                | Command::ScanVolumeBackups { .. }
+                | Command::CopyVmIso { .. }
+                | Command::ReceiveVmImage { .. }
+                | Command::BackUpVm { .. }
+                | Command::RestoreVm { .. }
+                | Command::RemoveVmBackup { .. }
+                | Command::BackupUnit { .. }
+        )
+    }
+}
+
+/// Ends the process at SIGTERM, as the signal does by default. The kernel
+/// delivers to the first process of a PID namespace only the signals it
+/// handles (its units are stopped with SIGKILL, which it always takes; a
+/// SIGTERM sent by hand ends it too).
+fn end_at_terminate() -> anyhow::Result<()> {
+    let mut terminate = signal(SignalKind::terminate()).context("cannot handle SIGTERM")?;
+    tokio::spawn(async move {
+        terminate.recv().await;
+        std::process::exit(128 + 15);
+    });
+    Ok(())
+}
+
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum RoleArg {
     System,
@@ -111,6 +147,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         return run_packages(&HostPaths::default(), id, task, release.as_deref(), channel.as_deref())
             .map_err(|error| anyhow::anyhow!("{error}"));
     }
+    if cli.command.as_ref().is_some_and(Command::in_own_pid_namespace) {
+        end_at_terminate()?;
+    }
     let volume_job = match &cli.command {
         Some(Command::BackupVolume { job }) => Some((VolumeJob::BackUp, job)),
         Some(Command::RestoreVolume { job }) => Some((VolumeJob::Restore, job)),
@@ -125,9 +164,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |since| i64::try_from(since.as_secs()).unwrap_or(0));
         let job = job.clone();
-        let done =
-            tokio::task::spawn_blocking(move || run_volume_job(kind, &job, now, &mut std::io::stdout()))
-                .await?;
+        let done = tokio::task::spawn_blocking(move || {
+            run_volume_job(kind, &job, now, &mut std::io::stdin().lock(), &mut std::io::stdout())
+        })
+        .await?;
         if !done {
             std::process::exit(1);
         }

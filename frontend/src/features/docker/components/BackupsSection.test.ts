@@ -280,10 +280,12 @@ describe('the backups page', () => {
     await type('#import-folder', 'media/old')
     expect(button(t('docker.backups.importDialog.start')).disabled).toBe(true)
     await type('#import-folder', 'backups/old')
+    expect(page()).toContain(t('docker.backups.importDialog.unverifiedHint'))
     await submit('#import-backups')
     expect(called('POST', '/api/v1/docker/backups/import')[0]?.body).toEqual({
       share_id: 1,
       folder: 'old',
+      unverified: false,
     })
     expect(page()).toContain(t('docker.backups.importDialog.waiting'))
     expect(page()).toContain(t('docker.backups.importDialog.running'))
@@ -313,10 +315,15 @@ describe('the backups page', () => {
     await open()
     await click(t('docker.backups.import'))
     await type('#import-folder', 'backups')
+    // Asked for: also what this NAS did not sign.
+    const unverified = document.body.querySelector<HTMLInputElement>('#import-unverified')
+    unverified?.click()
+    await settle()
     await submit('#import-backups')
     expect(called('POST', '/api/v1/docker/backups/import')[0]?.body).toEqual({
       share_id: 1,
       folder: '',
+      unverified: true,
     })
     expect(page()).toContain(t('errors.share_denied'))
   })

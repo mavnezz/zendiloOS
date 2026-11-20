@@ -16,10 +16,10 @@ pub use schedule::{Frequency, InvalidSchedule, Schedule};
 pub use task::{
     CloudPlace, DEFAULT_EXCLUDES, Filters, Invalid, MAX_BWLIMIT_KIB, MAX_EXCLUDES, MAX_KEEP_DAYS,
     MAX_KEEP_VERSIONS, MAX_NAME, Mode, NasPlace, Place, Provider, RemotePlace, Server, Task, TaskKind,
-    TaskSettings, Transport, folder_name, is_drive_id, is_folder_path, is_host, is_host_key, is_name,
-    is_pattern, is_remote_path, is_word,
+    TaskSettings, Transport, folder_name, folders_overlap, is_drive_id, is_folder_path, is_host, is_host_key,
+    is_name, is_pattern, is_remote_path, is_word,
 };
 pub use versions::{
-    CURRENT, Entry, EntryKind, INCOMPLETE, MARKER, REMOVED, TargetState, beyond_retention, parse_version,
-    removed_beyond, version_name,
+    CURRENT, Entry, EntryKind, FINISHING, INCOMPLETE, MARKER, PARTIAL, REMOVED, TargetState,
+    beyond_retention, parse_version, removed_beyond, version_name,
 };

@@ -122,6 +122,7 @@ impl Host {
             agent: at("agent"),
             packages: at("packages"),
             docker_socket: at("docker.sock"),
+            volume_backup_keys: at("volume-backup-keys"),
             update_spool: at("spool"),
             release_keys: vec![at("release.pub")],
             share_mounts: true,

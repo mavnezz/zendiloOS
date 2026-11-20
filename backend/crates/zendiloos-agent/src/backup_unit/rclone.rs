@@ -9,14 +9,18 @@
 //! when it refreshes it: it is read back after every call, and the newest
 //! goes back to zendiloosd. The crypt's password and salt are obscured as
 //! rclone keeps them, by `rclone obscure -` reading them on standard
-//! input. None of it reaches a command line.
+//! input, and go into the config file too. None of it reaches a command
+//! line.
 //!
 //! `base` is the place: a cloud's folder, an SFTP server's; a folder of
 //! the NAS is opened beneath its root, as for rsync, and rclone is given
 //! `/proc/self/fd/<n>`. With a crypt, `dest` is rclone's crypt over the
 //! task's folder there: the names and contents of everything in it, the
 //! versions' names too, are encrypted. rclone copies no links: it leaves
-//! them out (`--skip-links`).
+//! them out (`--skip-links`). It does follow a folder swapped for a link
+//! while it runs (it opens paths by name): what the unit's view holds is
+//! all such a link can reach (see [`crate::backup`]), and the unit's own
+//! folder is left out by its name; no secret is in rclone's environment.
 //!
 //! Versions are complete copies, as rclone has no hard links: in a cloud
 //! the newest is first copied on the server, so only what changed is
@@ -389,7 +393,7 @@ impl Rclone {
                     base("HOST", host.as_str()),
                     base("PORT", port.to_string()),
                     base("USER", user.as_str()),
-                    base("KEY_FILE", unit.job.key.display().to_string()),
+                    base("KEY_FILE", unit.key()?.display().to_string()),
                     base("KNOWN_HOSTS_FILE", known.display().to_string()),
                     // No commands of its own on the server: only SFTP.
                     base("SHELL_TYPE", "none"),
@@ -405,8 +409,6 @@ impl Rclone {
                 ));
             }
         };
-        let config = unit.scratch.once("rclone.conf", &config)?;
-        let cache = unit.scratch.folder("rclone-cache")?;
         let (root, encrypted) = match &unit.secrets.crypt {
             Some(secrets) => {
                 variables.extend([
@@ -414,15 +416,25 @@ impl Rclone {
                     crypt("REMOTE", plain.clone()),
                     crypt("FILENAME_ENCRYPTION", "standard"),
                     crypt("DIRECTORY_NAME_ENCRYPTION", "true"),
-                    crypt("PASSWORD", obscure(&program, secrets.password.expose(), &variables).await?),
                 ]);
+                // In the config file, not the environment: a folder swapped
+                // for a link to /proc/self would have rclone copy its own.
+                config.push_str(&format!(
+                    "[{CRYPT}]\npassword = {}\n",
+                    obscure(&program, secrets.password.expose(), &variables).await?
+                ));
                 if let Some(salt) = &secrets.salt {
-                    variables.push(crypt("PASSWORD2", obscure(&program, salt.expose(), &variables).await?));
+                    config.push_str(&format!(
+                        "password2 = {}\n",
+                        obscure(&program, salt.expose(), &variables).await?
+                    ));
                 }
                 (format!("{CRYPT}:"), true)
             }
             None => (plain.clone(), false),
         };
+        let config = unit.scratch.once("rclone.conf", &config)?;
+        let cache = unit.scratch.folder("rclone-cache")?;
         let cloud = given.is_some();
         Ok(Self {
             program,
@@ -609,9 +621,22 @@ fn filters(run: &RunJob) -> Vec<String> {
     args
 }
 
-/// What every copy of rclone's is told.
-fn copying() -> Vec<String> {
-    ["--log-level=INFO", "--stats=2s", "--create-empty-src-dirs", "--skip-links"].map(str::to_owned).into()
+/// What every copy of rclone's is told: links left out, and the unit's
+/// own folder (`scratch`, its secrets) never entered, should a folder
+/// swapped for a link lead there. rclone has no `--one-file-system` here:
+/// it takes the device of its root `/proc/self/fd/<n>` without following
+/// it, and would leave out every folder.
+fn copying(scratch: &Scratch) -> Vec<String> {
+    let mut args: Vec<String> = ["--log-level=INFO", "--stats=2s", "--create-empty-src-dirs", "--skip-links"]
+        .map(str::to_owned)
+        .into();
+    if let Some(name) = scratch.0.file_name().and_then(|name| name.to_str()) {
+        args.extend([
+            format!("--exclude={}/**", glob_escaped(name)),
+            format!("--exclude={}", glob_escaped(name)),
+        ]);
+    }
+    args
 }
 
 /// Opens a folder of the NAS for rclone (`Some(None)` for a place
@@ -714,7 +739,7 @@ impl Unit<'_> {
                 args.push(rclone.at(&incomplete));
             }
         }
-        args.extend(copying());
+        args.extend(copying(self.scratch));
         args.push("--delete-excluded".into());
         args.extend(filters(run));
         let mut heard = RcloneHeard::default();
@@ -787,7 +812,7 @@ impl Unit<'_> {
             rclone.at(restore.within.as_str()),
             to.arg("").trim_end_matches('/').to_owned(),
         ];
-        args.extend(copying());
+        args.extend(copying(self.scratch));
         if restore.existing == BackupExisting::Skip {
             args.push("--ignore-existing".into());
         }

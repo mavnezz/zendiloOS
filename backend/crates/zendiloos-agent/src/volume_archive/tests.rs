@@ -12,6 +12,9 @@ use tempfile::TempDir;
 
 use super::*;
 
+/// The key the tests' manifests are signed with.
+const KEY: [u8; 32] = [7; 32];
+
 /// A volume's data, a share and the volume's folder in Docker's data root.
 struct Place {
     _dir: TempDir,
@@ -108,6 +111,13 @@ fn sha256(bytes: &[u8]) -> String {
 
 fn quiet(_: u8) {}
 
+/// A backup's unit's standard input: the key.
+fn key_given() -> io::Cursor<Vec<u8>> {
+    io::Cursor::new(
+        format!("{}\n", serde_json::to_string(&SigningKey { key: key_to_hex(&KEY) }).unwrap()).into_bytes(),
+    )
+}
+
 fn quietly(_: &'static str, _: u8) {}
 
 /// A user extended attribute on `path`, if the file system takes them.
@@ -158,7 +168,7 @@ fn a_volume_is_backed_up_and_restored_as_it_was() {
     let attributes = fill(&place.path("source"));
     let mut told = Vec::new();
 
-    let done = back_up(&place.job(), 1_793_847_600, &mut |percent| told.push(percent)).unwrap();
+    let done = back_up(&place.job(), 1_793_847_600, &KEY, &mut |percent| told.push(percent)).unwrap();
 
     let folder = place.path("share/backups/docker/db");
     let archive = folder.join("db-20261108-030000.tar.zst");
@@ -246,8 +256,8 @@ fn current_umask() -> u32 {
 fn a_backup_never_replaces_a_file_and_never_follows_a_link_on_its_way() {
     let place = Place::new();
     fs::write(place.path("source/a"), "a").unwrap();
-    back_up(&place.job(), 0, &mut quiet).unwrap();
-    let again = back_up(&place.job(), 0, &mut quiet);
+    back_up(&place.job(), 0, &KEY, &mut quiet).unwrap();
+    let again = back_up(&place.job(), 0, &KEY, &mut quiet);
     assert!(matches!(&again, Err(ArchiveError::Refused(why)) if why.contains("exists already")), "{again:?}");
 
     // A folder on the way swapped for a link, by whoever may write the share.
@@ -256,7 +266,7 @@ fn a_backup_never_replaces_a_file_and_never_follows_a_link_on_its_way() {
     fs::create_dir_all(place.path("share/links")).unwrap();
     symlink(&elsewhere, place.path("share/links/docker")).unwrap();
     let job = BackupJob { folder: SharePath::parse("links/docker").unwrap(), ..place.job() };
-    let refused = back_up(&job, 0, &mut quiet);
+    let refused = back_up(&job, 0, &KEY, &mut quiet);
     assert!(matches!(&refused, Err(ArchiveError::Refused(why)) if why.contains("link")), "{refused:?}");
     assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0, "nothing written through the link");
 }
@@ -265,7 +275,7 @@ fn a_backup_never_replaces_a_file_and_never_follows_a_link_on_its_way() {
 fn a_mismatching_or_missing_archive_restores_nothing() {
     let place = Place::new();
     fs::write(place.path("source/a"), "a").unwrap();
-    let done = back_up(&place.job(), 0, &mut quiet).unwrap();
+    let done = back_up(&place.job(), 0, &KEY, &mut quiet).unwrap();
     fs::write(place.data().join("kept"), "old").unwrap();
 
     let wrong = place.restore_job(done.archive.path.as_str(), &"0".repeat(64));
@@ -444,7 +454,7 @@ fn size_below(path: &Path) -> u64 {
 /// A backup of a volume holding 4 MiB that nobody can compress.
 fn recorded(place: &Place) -> BackupDone {
     fs::write(place.path("source/table"), noise(4 << 20, 7)).unwrap();
-    back_up(&place.job(), 0, &mut |_| {}).unwrap()
+    back_up(&place.job(), 0, &KEY, &mut |_| {}).unwrap()
 }
 
 /// Root (or here, its owner) could still change a recorded archive after it
@@ -551,7 +561,7 @@ fn a_writer_of_the_share_may_not_write_the_archive() {
         eprintln!("no POSIX ACLs here; skipped");
         return;
     }
-    let done = back_up(&place.job(), 0, &mut |_| {}).unwrap();
+    let done = back_up(&place.job(), 0, &KEY, &mut |_| {}).unwrap();
     for file in [&done.archive, &done.manifest] {
         let path = share.join(file.path.as_str());
         let mut value = vec![0u8; 4096];
@@ -576,7 +586,7 @@ fn a_writer_of_the_share_may_not_write_the_archive() {
 fn an_archive_others_may_write_is_not_restored() {
     let place = Place::new();
     fs::write(place.path("source/a"), "a").unwrap();
-    let done = back_up(&place.job(), 0, &mut quiet).unwrap();
+    let done = back_up(&place.job(), 0, &KEY, &mut quiet).unwrap();
     fs::write(place.data().join("kept"), "old").unwrap();
     let archive = place.path("share").join(done.archive.path.as_str());
     fs::set_permissions(&archive, fs::Permissions::from_mode(0o664)).unwrap();
@@ -638,7 +648,7 @@ fn a_backup_that_cannot_name_its_files_writes_nothing() {
     let job = BackupJob { folder: SharePath::parse(&folder).unwrap(), ..place.job() };
     assert!(job.folder.join("db").is_ok());
 
-    let refused = back_up(&job, 0, &mut quiet);
+    let refused = back_up(&job, 0, &KEY, &mut quiet);
 
     assert!(matches!(&refused, Err(ArchiveError::Refused(why)) if why.contains("too long")), "{refused:?}");
     assert_eq!(fs::read_dir(place.path("share")).unwrap().count(), 0, "not even its folders are made");
@@ -747,7 +757,7 @@ fn entries_are_named_beneath_the_target_only() {
 fn only_the_file_a_backup_wrote_is_removed() {
     let place = Place::new();
     fs::write(place.path("source/a"), "a").unwrap();
-    let done = back_up(&place.job(), 0, &mut quiet).unwrap();
+    let done = back_up(&place.job(), 0, &KEY, &mut quiet).unwrap();
     let remove = |file: &WrittenFile| RemoveJob {
         share: place.path("share"),
         path: file.path.clone(),
@@ -884,7 +894,7 @@ fn a_tree_deeper_than_the_descriptors_allow_is_removed_whole() {
 fn what_earlier_restores_left_beside_the_data_goes_first() {
     let place = Place::new();
     fs::write(place.path("source/a"), "a").unwrap();
-    let done = back_up(&place.job(), 0, &mut quiet).unwrap();
+    let done = back_up(&place.job(), 0, &KEY, &mut quiet).unwrap();
     let left = place.path("docker/volumes/db/_data.zendiloos-restore-0123456789abcdef");
     fs::create_dir_all(left.join("deep/er")).unwrap();
     fs::write(left.join("deep/er/big"), vec![0u8; 1 << 20]).unwrap();
@@ -941,7 +951,7 @@ fn hidden_files_earlier_backups_left_go_and_nothing_else() {
     }
     fs::create_dir(folder.join(".db.json.partial-fedcba9876543210")).unwrap();
 
-    back_up(&place.job(), 0, &mut quiet).unwrap();
+    back_up(&place.job(), 0, &KEY, &mut quiet).unwrap();
 
     let mut names: Vec<String> = fs::read_dir(&folder)
         .unwrap()
@@ -966,7 +976,7 @@ fn hidden_files_earlier_backups_left_go_and_nothing_else() {
 fn a_restore_needs_room_for_the_backup_beside_the_data() {
     let place = Place::new();
     fs::write(place.path("source/a"), "a").unwrap();
-    let done = back_up(&place.job(), 0, &mut quiet).unwrap();
+    let done = back_up(&place.job(), 0, &KEY, &mut quiet).unwrap();
     let huge = RestoreJob { data_bytes: u64::MAX / 4, ..place.restore_of(&done) };
     let refused = extract_volume(&huge, &mut quietly);
     assert!(matches!(&refused, Err(ArchiveError::Refused(why)) if why.contains("free space")), "{refused:?}");
@@ -1028,16 +1038,18 @@ fn a_count_without_room_for_what_it_must_remember_says_at_least() {
 fn backups_in_a_folder_are_found_again_and_others_refused_with_why() {
     let place = Place::new();
     fs::write(place.path("source/a"), "a").unwrap();
-    let first = back_up(&place.job(), 1_793_847_600, &mut quiet).unwrap();
+    let first = back_up(&place.job(), 1_793_847_600, &KEY, &mut quiet).unwrap();
     let second = back_up(
         &BackupJob { name: BackupStem::parse("db-20261109-030000").unwrap(), ..place.job() },
         0,
+        &KEY,
         &mut quiet,
     )
     .unwrap();
     let third = back_up(
         &BackupJob { name: BackupStem::parse("db-20261110-030000").unwrap(), ..place.job() },
         0,
+        &KEY,
         &mut quiet,
     )
     .unwrap();
@@ -1101,6 +1113,71 @@ fn backups_in_a_folder_are_found_again_and_others_refused_with_why() {
     assert!(matches!(scan(&missing, &mut quiet), Err(ArchiveError::Refused(_))));
 }
 
+#[test]
+fn a_manifest_is_signed_and_one_made_or_changed_by_anyone_else_is_not_this_nass() {
+    let place = Place::new();
+    fs::write(place.path("source/a"), "a").unwrap();
+    let done = back_up(&place.job(), 0, &KEY, &mut quiet).unwrap();
+    let keys = ManifestKeys::parse(&format!("{}\n", key_to_hex(&KEY))).unwrap();
+    let found = |manifest_json: &str| FoundBackup {
+        volume: VolumeName::parse("db").unwrap(),
+        archive: done.archive.clone(),
+        manifest: done.manifest.clone(),
+        sha256: done.sha256.clone(),
+        data_bytes: done.data_bytes,
+        entries: Some(done.entries),
+        backed_up_at: 0,
+        manifest_json: manifest_json.to_owned(),
+        verified: false,
+    };
+    // The file written is the one signed.
+    let written = fs::read_to_string(place.path("share").join(done.manifest.path.as_str())).unwrap();
+    assert_eq!(written, done.manifest_json);
+    assert!(signed(&found(&written), &keys));
+    // Another machine's key: not this NAS's; the old machine's keys
+    // restored beside this one's: still.
+    let other = ManifestKeys::make().unwrap();
+    assert!(!signed(&found(&written), &other));
+    assert!(signed(&found(&written), &other.merged(&keys)));
+    assert_eq!(other.merged(&keys).signing(), other.signing(), "this NAS's own signs on");
+    // Made by hand, as a share's writer could: no signature, or one copied
+    // from another manifest.
+    let mut manifest: Manifest = serde_json::from_str(&written).unwrap();
+    let mac = manifest.mac.take();
+    assert!(mac.is_some());
+    assert!(!signed(&found(&serde_json::to_string(&manifest).unwrap()), &keys), "unsigned");
+    manifest.labels.insert("com.docker.compose.project".into(), "other".into());
+    manifest.mac = mac;
+    assert!(!signed(&found(&serde_json::to_string(&manifest).unwrap()), &keys), "changed");
+    // Signed, but not of the archive found.
+    let mut elsewhere = found(&written);
+    elsewhere.sha256 = ArchiveDigest::parse(&"0".repeat(64)).unwrap();
+    assert!(!signed(&elsewhere, &keys));
+    // A manifest of an earlier version, without a signature, still reads.
+    let earlier = r#"{"format":1,"volume":"db","driver":"local","labels":{},"size_bytes":1,"created":"","backed_up_at":0,"zendiloos_version":"0.5.1","archive":"x.tar.zst","sha256":"00"}"#;
+    assert!(serde_json::from_str::<Manifest>(earlier).unwrap().mac.is_none());
+    // Keys in their file: one per line, none or junk is no file of keys.
+    assert_eq!(ManifestKeys::parse(&keys.text()), Some(keys.clone()));
+    assert!(ManifestKeys::parse("").is_none() && ManifestKeys::parse("zz\n").is_none());
+    assert_eq!(format!("{keys:?}"), "ManifestKeys(1 keys)");
+}
+
+/// A backup's unit is given its key on standard input, and refuses to run
+/// without.
+#[test]
+fn a_backup_unit_signs_with_the_key_it_is_given() {
+    let place = Place::new();
+    fs::write(place.path("source/a"), "a").unwrap();
+    let hex = encode(&place.job());
+    let mut out = Vec::new();
+    assert!(!run_volume_job(VolumeJob::BackUp, &hex, 0, &mut io::Cursor::new(Vec::new()), &mut out));
+    assert!(String::from_utf8_lossy(&out).contains("no key to sign"));
+    let input = format!("{}\n", serde_json::to_string(&SigningKey { key: key_to_hex(&KEY) }).unwrap());
+    let mut out = Vec::new();
+    assert!(run_volume_job(VolumeJob::BackUp, &hex, 0, &mut io::Cursor::new(input.into_bytes()), &mut out));
+    assert_eq!(format!("{:?}", SigningKey { key: key_to_hex(&KEY) }), "SigningKey(…)");
+}
+
 /// An answer too long for one line of a unit (lines are cut at 4096
 /// bytes) comes in pieces, each a line of its own.
 #[test]
@@ -1111,7 +1188,7 @@ fn a_long_answer_comes_in_pieces_no_line_too_long() {
         (0..20).map(|n| (format!("org.example.label-{n}"), "é".repeat(400))).collect();
     let job = BackupJob { labels, ..place.job() };
     let mut out = Vec::new();
-    assert!(run_volume_job(VolumeJob::BackUp, &encode(&job), 0, &mut out));
+    assert!(run_volume_job(VolumeJob::BackUp, &encode(&job), 0, &mut key_given(), &mut out));
     let text = String::from_utf8(out).unwrap();
     let lines: Vec<UnitLine> = text
         .lines()
@@ -1143,7 +1220,7 @@ fn units_take_their_jobs_as_hex_and_say_what_came_of_them() {
     assert!(decode::<BackupJob>(&encode(&"not a job")).is_err());
 
     let mut out = Vec::new();
-    assert!(run_volume_job(VolumeJob::BackUp, &encode(&job), 0, &mut out));
+    assert!(run_volume_job(VolumeJob::BackUp, &encode(&job), 0, &mut key_given(), &mut out));
     let lines: Vec<UnitLine> =
         String::from_utf8(out).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
     assert!(matches!(&lines[0], UnitLine::Progress { step, .. } if step == "backing_up"), "{lines:?}");
@@ -1152,7 +1229,7 @@ fn units_take_their_jobs_as_hex_and_say_what_came_of_them() {
 
     let mut out = Vec::new();
     let restore = place.restore_of(&done);
-    assert!(run_volume_job(VolumeJob::Restore, &encode(&restore), 0, &mut out));
+    assert!(run_volume_job(VolumeJob::Restore, &encode(&restore), 0, &mut io::empty(), &mut out));
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains(r#""step":"verifying""#) && text.contains(r#"{"done":"#), "{text}");
 
@@ -1164,11 +1241,11 @@ fn units_take_their_jobs_as_hex_and_say_what_came_of_them() {
         bytes: 0,
         modified: None,
     };
-    assert!(run_volume_job(VolumeJob::RemoveBackup, &encode(&remove), 0, &mut out));
+    assert!(run_volume_job(VolumeJob::RemoveBackup, &encode(&remove), 0, &mut io::empty(), &mut out));
     assert_eq!(String::from_utf8(out).unwrap().trim(), r#"{"done":false}"#);
 
     let mut out = Vec::new();
-    assert!(!run_volume_job(VolumeJob::Restore, "00", 0, &mut out));
+    assert!(!run_volume_job(VolumeJob::Restore, "00", 0, &mut io::empty(), &mut out));
     let failed: UnitLine = serde_json::from_slice(out.trim_ascii_end()).unwrap();
     assert!(matches!(failed, UnitLine::Failed { refused: true, .. }), "{failed:?}");
     assert_eq!(

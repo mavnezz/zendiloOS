@@ -55,18 +55,18 @@ fn read(dir: &Path, name: &str) -> String {
 }
 
 fn job(work: Work, rclone: PathBuf) -> UnitJob {
-    UnitJob {
-        work,
-        rsync: PathBuf::from("/nonexistent/rsync"),
-        rclone,
-        ssh: PathBuf::from("/usr/bin/ssh"),
-        key: PathBuf::from("/run/credentials/u/backup-key"),
-    }
+    UnitJob { work, rsync: PathBuf::from("/nonexistent/rsync"), rclone, ssh: PathBuf::from("/usr/bin/ssh") }
 }
 
 async fn unit(job: &UnitJob, secrets: &str) -> (Vec<UnitSays>, Option<Report>) {
     let mut out = Vec::new();
-    let mut input = std::io::Cursor::new(format!("{secrets}\n").into_bytes());
+    // As the agent writes it: the secrets, and the key where given.
+    let input = match secrets {
+        "" => String::new(),
+        secrets if secrets.starts_with(r#"{"secrets""#) => secrets.to_owned(),
+        secrets => format!(r#"{{"secrets":{secrets}}}"#),
+    };
+    let mut input = std::io::Cursor::new(format!("{input}\n").into_bytes());
     run_backup_unit(&encode(job), &mut input, &mut out).await;
     let said: Vec<UnitSays> =
         String::from_utf8_lossy(&out).lines().map(|line| serde_json::from_str(line).unwrap()).collect();
@@ -180,18 +180,24 @@ async fn an_encrypted_cloud_backup_keeps_its_secrets_off_command_lines_and_bring
         "RCLONE_CONFIG_BASE_CLIENT_SECRET=shh",
         "RCLONE_CONFIG_DEST_TYPE=crypt",
         "RCLONE_CONFIG_DEST_REMOTE=base:nas/photos",
-        "RCLONE_CONFIG_DEST_PASSWORD=obscured-pbeerpg_ubefr",
-        "RCLONE_CONFIG_DEST_PASSWORD2=obscured-crccre",
         "RCLONE_CONFIG_DEST_FILENAME_ENCRYPTION=standard",
         "RCLONE_CONFIG_DEST_DIRECTORY_NAME_ENCRYPTION=true",
     ] {
         assert!(variables.lines().next().unwrap().contains(expected), "{expected}: {variables}");
     }
+    assert!(!variables.contains("PASSWORD"), "the crypt's secrets in the environment: {variables}");
     let config = read(dir.path(), "rclone.conf");
     assert!(
-        config.starts_with("[base]\ntoken = {\"access_token\":\"old\",\"refresh_token\":\"r\"}\n"),
+        config.starts_with(
+            "[base]\ntoken = {\"access_token\":\"old\",\"refresh_token\":\"r\"}\n[dest]\npassword = obscured-pbeerpg_ubefr\npassword2 = obscured-crccre\n"
+        ),
         "{config}"
     );
+    // The unit's own folder is never copied, whatever leads there.
+    let scratch =
+        lines[2].split("--exclude=zendiloos-backup-").nth(1).and_then(|rest| rest.split('/').next());
+    assert!(scratch.is_some_and(|name| name.len() == 16), "{}", lines[2]);
+    assert!(!lines[2].contains("--one-file-system"), "{}", lines[2]);
 }
 
 #[tokio::test]
@@ -242,23 +248,27 @@ async fn an_encrypted_backup_over_sftp_pins_the_servers_host_key() {
         .unwrap(),
     };
     let push = job(run(local(&source, ""), server, BackupMode::Versioned), rclone);
-    let (said, _) = unit(&push, r#"{"crypt":{"password":"pw"}}"#).await;
+    let input = r#"{"secrets":{"crypt":{"password":"pw"}},"key":"-----BEGIN OPENSSH PRIVATE KEY-----\n-----END OPENSSH PRIVATE KEY-----\n"}"#;
+    let (said, _) = unit(&push, input).await;
     let (message, kind) = failure(&said);
     assert_eq!(kind, FailKind::HostKey, "{message}");
     assert!(message.contains("key mismatch"), "{message}");
     let variables = read(dir.path(), "rclone.env");
+    // The key in the unit's own folder with a random name.
+    let key_file =
+        format!("RCLONE_CONFIG_BASE_KEY_FILE={}", std::env::temp_dir().join("zendiloos-backup-").display());
     for expected in [
         "RCLONE_CONFIG_BASE_TYPE=sftp",
         "RCLONE_CONFIG_BASE_HOST=fe80::2",
         "RCLONE_CONFIG_BASE_PORT=2222",
         "RCLONE_CONFIG_BASE_USER=backup",
-        "RCLONE_CONFIG_BASE_KEY_FILE=/run/credentials/u/backup-key",
+        key_file.as_str(),
         "RCLONE_CONFIG_BASE_SHELL_TYPE=none",
         "RCLONE_CONFIG_DEST_REMOTE=base:/srv/backups/photos",
     ] {
         assert!(variables.contains(expected), "{expected}: {variables}");
     }
-    assert!(!variables.contains("RCLONE_CONFIG_DEST_PASSWORD2"), "no salt given: {variables}");
+    assert!(!read(dir.path(), "rclone.conf").contains("password2"), "no salt given");
 }
 
 #[tokio::test]

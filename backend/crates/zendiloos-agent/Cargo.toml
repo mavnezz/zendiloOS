@@ -20,6 +20,7 @@ listenfd.workspace = true
 rustix = { workspace = true, features = ["thread", "process", "fs", "event", "mount", "system", "pipe"] }
 serde.workspace = true
 serde_json.workspace = true
+hmac.workspace = true
 sha2.workspace = true
 minisign-verify.workspace = true
 # Backups of Docker's volumes (docs/architecture.md, 4.9).

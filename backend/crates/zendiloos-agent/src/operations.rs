@@ -126,6 +126,7 @@ impl Operations {
             samba_passwords: paths.configuration.samba_passwords.clone(),
             host_id: paths.configuration.host_id.clone(),
             id_high_water: paths.accounts.high_water.clone(),
+            volume_backup_keys: paths.host.volume_backup_keys.clone(),
             network: paths.network.directory.clone(),
         };
         Ok(Self {

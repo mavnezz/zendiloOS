@@ -7,7 +7,7 @@ use super::ports::{Crypt, HostFacts, HostKey, Location, NewTask, PasswordChange,
 use super::{BackupError, Backups, audited};
 use crate::domain::{
     Entry, Invalid, Mode, NasPlace, Place, RemotePlace, Run, Settings, Task, TaskSettings, folder_name,
-    is_host,
+    folders_overlap, is_host,
 };
 
 /// The plugin as its page shows it.
@@ -197,7 +197,8 @@ impl Backups {
         }
         let others = self.ports.tasks.list().await?;
         if let Some(other) = others.iter().find(|other| {
-            Some(other.id) != except && other.settings.target == settings.target && other.folder == folder
+            Some(other.id) != except
+                && folders_overlap(&other.settings.target, &other.folder, &settings.target, folder)
         }) {
             return Err(BackupError::FolderTaken(other.settings.name.clone()));
         }

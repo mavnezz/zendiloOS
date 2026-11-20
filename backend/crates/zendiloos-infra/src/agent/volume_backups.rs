@@ -187,6 +187,7 @@ impl VolumeArchiver for AgentVolumeArchiver {
                             entries: found.entries,
                             manifest_json: found.manifest_json,
                         },
+                        signed: found.verified,
                     })
                     .collect(),
                 refused: refused
@@ -341,6 +342,7 @@ mod tests {
                 entries: None,
                 backed_up_at: 1_762_570_800,
                 manifest_json: "{}".into(),
+                verified: true,
             }],
             refused: vec![proto::RefusedBackupFile {
                 path: SharePath::parse("old/db-1.tar.zst").unwrap(),

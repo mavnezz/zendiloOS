@@ -148,6 +148,7 @@ impl Backups {
         let (who, context) = (actor.clone(), context.clone());
         let name = task.settings.name.clone();
         let kind = task.kind();
+        let job_task = task.clone();
         let job = self
             .ports
             .jobs
@@ -161,6 +162,10 @@ impl Backups {
                     .restore(&plan, &secrets, &steps, &context)
                     .await
                     .map_err(BackupError::from);
+                if let Ok(report) = &done {
+                    // A cloud's token rclone refreshed meanwhile.
+                    this.keep_token(&job_task, report.token.as_ref()).await;
+                }
                 this.audit("backup.restore", audited(&done), &name, Some(&who), &context).await;
                 match done {
                     Ok(report) => {

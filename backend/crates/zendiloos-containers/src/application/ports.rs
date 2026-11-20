@@ -481,6 +481,10 @@ pub struct FoundArchive {
     pub volume: String,
     pub backed_up_at: zendiloos_kernel::Timestamp,
     pub written: WrittenBackup,
+    /// Its manifest carries this NAS's signature: zendiloOS made it here
+    /// (or on the machine whose configuration was restored) and nobody
+    /// changed it. Who owns the files proves nothing: smbd writes as root.
+    pub signed: bool,
 }
 
 /// What a scan found, and the files it refused with why.

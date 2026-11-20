@@ -46,8 +46,8 @@ use crate::docker::{complaint, surroundings};
 use crate::operations::OperationError;
 use crate::pools::HostPaths;
 use crate::volume_archive::{
-    BackupDone, BackupJob, Extracted, RemoveJob, RestoreJob, ScanJob, Scanned, SwapJob, Swapped, SweepJob,
-    Swept, UnitLine, VolumeJob, encode,
+    BackupDone, BackupJob, Extracted, ManifestKeys, RemoveJob, RestoreJob, ScanJob, Scanned, SigningKey,
+    SwapJob, Swapped, SweepJob, Swept, UnitLine, VolumeJob, encode, key_to_hex, signed,
 };
 
 const QUICK: Limits = Limits { timeout: Duration::from_secs(60), max_stdout: 16 * 1024 * 1024 };
@@ -72,13 +72,30 @@ const COUNT_FOR: Duration = Duration::from_secs(20);
 /// …or after this many entries in one volume.
 const MAX_COUNTED: u64 = 1_000_000;
 
-/// What every unit's sandbox has. A descriptor or two for each level of
-/// the deepest folders a backup reads, and then some. Not
+/// What every unit's sandbox has (the VMs' units too). A descriptor or two
+/// for each level of the deepest folders a backup reads, and then some. Not
 /// `RestrictSUIDSGID`: to enforce it, systemd blocks `openat2()`, whose
 /// arguments seccomp cannot inspect, and `openat2()` is what keeps every
 /// unit's paths beneath their folders (a restore must give set-ID bits
 /// back anyway).
-pub(crate) const SANDBOX: [&str; 23] = [
+///
+/// A unit runs as root, so what keeps it from asking others to work for it
+/// is that it reaches none: it may not connect to any socket (`connect()`
+/// fails: it talks over the pipes it is given); `/run`, with every control socket of the
+/// machine (systemd's, D-Bus, Docker's, containerd's, libvirt's, Samba's,
+/// zendiloOS's own, the VMs' consoles), is an empty read-only tmpfs but for
+/// the drives' place, bound back read-only (writable where a unit writes a
+/// drive); with a network of its own it reaches no abstract socket either;
+/// and in a PID namespace of its own it sees and signals no other process.
+/// Unix sockets stay allowed for the pairs Tokio makes within the process
+/// (systemd-run has no way to allow no family at all).
+///
+/// A unit is stopped with SIGKILL: as the first process of its PID
+/// namespace it takes no signal it has no handler for yet, so a SIGTERM
+/// right after the start would be lost and its work go on. Killed, it
+/// leaves what a unit stopped always could: a backup's hidden files, a
+/// restore's fresh folder, which the next one removes.
+pub(crate) const SANDBOX: [&str; 28] = [
     "--property=NoNewPrivileges=yes",
     "--property=ProtectSystem=strict",
     "--property=ProtectHome=yes",
@@ -98,8 +115,14 @@ pub(crate) const SANDBOX: [&str; 23] = [
     "--property=RestrictAddressFamilies=AF_UNIX",
     "--property=SystemCallArchitectures=native",
     "--property=SystemCallFilter=@system-service",
+    "--property=SystemCallFilter=~connect:EPERM",
     "--property=ProtectProc=invisible",
     "--property=PrivateIPC=yes",
+    "--property=PrivatePIDs=yes",
+    "--property=KillSignal=SIGKILL",
+    "--property=TemporaryFileSystem=/run:ro",
+    // zendiloos_agent_proto::REMOVABLE_PLACE
+    "--property=BindReadOnlyPaths=-/run/zendiloos-removable",
     "--property=LimitNOFILE=65536",
     "--property=MemoryMax=1G",
 ];
@@ -171,6 +194,8 @@ struct Unit<'a> {
     capabilities: &'a str,
     description: String,
     until: Instant,
+    /// A line for its standard input.
+    input: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -232,6 +257,7 @@ impl Volumes {
             capabilities: RESTORE_CAPABILITIES,
             description: "remove what restores of volumes left".to_owned(),
             until: Instant::now() + SWEEP_FOR,
+            input: None,
         };
         let swept: Swept = self.unit(unit, &SweepJob { volumes: volumes.clone(), busy: Vec::new() }).await?;
         if swept.removed > 0 {
@@ -402,6 +428,23 @@ impl Volumes {
         Ok(Response::Done)
     }
 
+    /// The keys manifests are signed with; made (one key, root's alone) the
+    /// first time.
+    fn keys(&self) -> Result<ManifestKeys, OperationError> {
+        let place = &self.paths.volume_backup_keys;
+        match std::fs::read_to_string(place) {
+            Ok(text) => ManifestKeys::parse(&text)
+                .ok_or_else(|| OperationError::Failed(format!("{} holds no keys", place.display()))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let keys = ManifestKeys::make().map_err(OperationError::Failed)?;
+                crate::durable::replace_mode(place, keys.text().as_bytes(), 0o600)?;
+                tracing::info!(place = %place.display(), "a key to sign volume backups with was made");
+                Ok(keys)
+            }
+            Err(error) => Err(OperationError::Failed(format!("{}: {error}", place.display()))),
+        }
+    }
+
     /// The share's root, `/volume<N>/<share>`: only while its file system
     /// is mounted there, or what is written would land on the volume.
     fn share_root(&self, share: &ShareLocation) -> Result<PathBuf, OperationError> {
@@ -542,6 +585,7 @@ impl Volumes {
         ]);
         let mut said: Option<UnitLine> = None;
         let mut parts = String::new();
+        let input = unit.input.map(|line| line + "\n").unwrap_or_default();
         let ran = {
             let mut heard = |line: &str| match serde_json::from_str::<UnitLine>(line) {
                 Ok(UnitLine::Progress { step, percent }) => {
@@ -553,8 +597,14 @@ impl Volumes {
             };
             let limits = Limits { timeout: left, max_stdout: 1024 * 1024 };
             let surroundings = Surroundings::default();
-            let running =
-                zendiloos_exec::run_lines(&self.systemd_run, &args, &surroundings, limits, &mut heard);
+            let running = zendiloos_exec::run_lines_with_input(
+                &self.systemd_run,
+                &args,
+                input.as_bytes(),
+                &surroundings,
+                limits,
+                &mut heard,
+            );
             tokio::select! {
                 ran = running => Some(ran),
                 () = crate::waiting::given_up() => None,
@@ -615,6 +665,7 @@ impl Volumes {
             labels: local.labels,
             created: local.created,
         };
+        let key = SigningKey { key: key_to_hex(self.keys()?.signing()) };
         let unit = Unit {
             work: VolumeJob::BackUp,
             name: unit_name(VolumeJob::BackUp, volume),
@@ -622,6 +673,7 @@ impl Volumes {
             capabilities: BACKUP_CAPABILITIES,
             description: format!("back up the volume {}", volume.as_str()),
             until: Instant::now() + WORK_FOR,
+            input: Some(serde_json::to_string(&key).map_err(|e| OperationError::Failed(e.to_string()))?),
         };
         let done: BackupDone = self.unit(unit, &job).await?;
         Ok(Response::VolumeBackedUp {
@@ -664,6 +716,7 @@ impl Volumes {
             capabilities: RESTORE_CAPABILITIES,
             description,
             until,
+            input: None,
         };
         let extract = unit(
             VolumeJob::Restore,
@@ -728,8 +781,14 @@ impl Volumes {
             capabilities: SCAN_CAPABILITIES,
             description: format!("look for backups in {}", share.share.as_str()),
             until: Instant::now() + WORK_FOR,
+            input: None,
         };
-        let scanned: Scanned = self.unit(unit, &job).await?;
+        let mut scanned: Scanned = self.unit(unit, &job).await?;
+        // Which of them this NAS made: signed by one of its keys.
+        let keys = self.keys()?;
+        for found in &mut scanned.found {
+            found.verified = signed(found, &keys);
+        }
         Ok(Response::VolumeBackupsScanned { found: scanned.found, refused: scanned.refused })
     }
 
@@ -751,6 +810,7 @@ impl Volumes {
             capabilities: BACKUP_CAPABILITIES,
             description: format!("remove a backup in {}", share.share.as_str()),
             until: Instant::now() + REMOVE_FOR,
+            input: None,
         };
         let removed: bool = self.unit(unit, &job).await?;
         Ok(Response::BackupRemoved { removed })
@@ -762,6 +822,22 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn units_reach_no_socket_and_no_other_process() {
+        for property in [
+            "--property=TemporaryFileSystem=/run:ro",
+            "--property=PrivatePIDs=yes",
+            "--property=KillSignal=SIGKILL",
+            "--property=SystemCallFilter=~connect:EPERM",
+            "--property=PrivateNetwork=yes",
+            "--property=RestrictAddressFamilies=AF_UNIX",
+        ] {
+            assert!(SANDBOX.contains(&property), "{property}");
+        }
+        let drives = format!("--property=BindReadOnlyPaths=-{}", zendiloos_agent_proto::REMOVABLE_PLACE);
+        assert!(SANDBOX.contains(&drives.as_str()), "the drives' place stays");
+    }
 
     #[test]
     fn only_local_volumes_in_the_data_root_are_backed_up() {

@@ -372,7 +372,8 @@ impl Backups {
     }
 
     /// Removes what retention lets go after a complete run: versions beyond
-    /// it and the folders of versions cut off before (versioned), kept
+    /// it (see [`beyond_retention`]: partial versions never push complete
+    /// ones out) and what versions cut off before left (versioned), kept
     /// changes older than their days (mirror). A failure is logged; the
     /// next run tries again.
     async fn retain(
@@ -388,11 +389,9 @@ impl Backups {
         let mut names: Vec<String> = Vec::new();
         match task.settings.mode {
             Mode::Versioned { keep_last, keep_days } => {
-                names.extend(
-                    beyond_retention(&state.versions, keep_last, keep_days, now)
-                        .into_iter()
-                        .map(version_name),
-                );
+                for version in beyond_retention(&state.versions, &state.partial, keep_last, keep_days, now) {
+                    names.extend(state.names_of(version));
+                }
                 names.extend(state.incomplete.iter().cloned());
             }
             Mode::Mirror { keep_changed_days: Some(days) } => {

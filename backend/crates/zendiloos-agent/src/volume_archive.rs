@@ -17,6 +17,14 @@
 //! they renamed into place, the archive first; should the manifest not
 //! follow, the archive goes again.
 //!
+//! The manifest is signed: an HMAC-SHA256 over it (the archive's name,
+//! volume and SHA-256 among what it says) under a key only the system agent
+//! holds (`/etc/zendiloos/volume-backup-keys`, carried in the configuration
+//! backup), passed to the backup's unit on its standard input. Since smbd
+//! works as root on the shares, "writable by root only" says nothing about
+//! who wrote a file there; the signature does: a scan reports a backup as
+//! this NAS's only if it carries one under one of the agent's keys.
+//!
 //! Restoring runs as root from a share that users may write. So the
 //! archive is opened beneath the share's root without following a link,
 //! must be writable by root only, and its SHA-256 is checked against the
@@ -33,12 +41,13 @@
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{CStr, CString, OsStr};
 use std::fs::File;
-use std::io::{self, BufWriter, Read, Seek, Write};
+use std::io::{self, BufRead, BufWriter, Read, Seek, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use hmac::{Hmac, KeyInit, Mac};
 use rustix::fs::{
     AtFlags, Dir, FileType, Gid, Mode, OFlags, RenameFlags, ResolveFlags, Stat, Timespec, Timestamps, Uid,
     XattrFlags, chownat, fchmod, fchown, fgetxattr, flistxattr, fsetxattr, fstat, fsync, futimens, linkat,
@@ -159,6 +168,127 @@ pub(crate) struct Manifest {
     /// manifests written before they were counted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entries: Option<u64>,
+    /// This NAS's signature over the rest ([`Manifest::sign`]), in hex;
+    /// missing in manifests written before zendiloOS signed them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
+}
+
+/// What a manifest's signature is made over, before the manifest itself.
+const MAC_CONTEXT: &[u8] = b"zendiloOS volume backup manifest\n";
+/// A key's bytes.
+const KEY_BYTES: usize = 32;
+
+/// The keys the system agent signs manifests with: the first signs, each
+/// verifies (those of the machine before a configuration restore too). One
+/// per line in their file, in hex.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ManifestKeys(Vec<[u8; KEY_BYTES]>);
+
+impl std::fmt::Debug for ManifestKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ManifestKeys({} keys)", self.0.len())
+    }
+}
+
+/// One key in hex, as its file and a unit's standard input carry it.
+pub(crate) fn key_from_hex(hex: &str) -> Option<[u8; KEY_BYTES]> {
+    let hex = hex.trim().as_bytes();
+    if hex.len() != 2 * KEY_BYTES || !hex.iter().all(u8::is_ascii_hexdigit) {
+        return None;
+    }
+    let mut key = [0u8; KEY_BYTES];
+    for (byte, pair) in key.iter_mut().zip(hex.chunks(2)) {
+        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(key)
+}
+
+pub(crate) fn key_to_hex(key: &[u8]) -> String {
+    key.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+impl ManifestKeys {
+    /// The keys of a file's text; `None` if a line is no key or there is
+    /// none.
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        let keys: Option<Vec<_>> =
+            text.lines().filter(|line| !line.trim().is_empty()).map(key_from_hex).collect();
+        keys.filter(|keys| !keys.is_empty()).map(Self)
+    }
+
+    /// A new set with one key, made of the kernel's random numbers.
+    pub(crate) fn make() -> Result<Self, String> {
+        let mut key = [0u8; KEY_BYTES];
+        rustix::rand::getrandom(&mut key, rustix::rand::GetRandomFlags::empty())
+            .map_err(|e| format!("no random numbers: {e}"))?;
+        Ok(Self(vec![key]))
+    }
+
+    pub(crate) fn text(&self) -> String {
+        self.0.iter().map(|key| key_to_hex(key) + "\n").collect()
+    }
+
+    /// The key that signs.
+    pub(crate) fn signing(&self) -> &[u8; KEY_BYTES] {
+        &self.0[0]
+    }
+
+    /// These keys and those of `other` not among them, these first.
+    pub(crate) fn merged(&self, other: &Self) -> Self {
+        let mut keys = self.0.clone();
+        keys.extend(other.0.iter().filter(|key| !self.0.contains(key)));
+        Self(keys)
+    }
+}
+
+fn mac(key: &[u8], manifest: &Manifest) -> Hmac<Sha256> {
+    let mut unsigned = manifest.clone();
+    unsigned.mac = None;
+    let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(key).expect("HMAC takes keys of any length");
+    mac.update(MAC_CONTEXT);
+    mac.update(&serde_json::to_vec(&unsigned).unwrap_or_default());
+    mac
+}
+
+impl Manifest {
+    /// Signs it with `key`: an HMAC-SHA256 over the manifest as JSON
+    /// without its signature, after [`MAC_CONTEXT`].
+    pub(crate) fn sign(&mut self, key: &[u8]) {
+        self.mac = Some(key_to_hex(&mac(key, self).finalize().into_bytes()));
+    }
+
+    /// Whether it carries a signature under one of `keys`.
+    pub(crate) fn signed_by(&self, keys: &ManifestKeys) -> bool {
+        let Some(tag) = self.mac.as_deref().and_then(key_from_hex) else { return false };
+        keys.0.iter().any(|key| mac(key, self).verify_slice(&tag).is_ok())
+    }
+}
+
+/// Whether a backup a scan found is this NAS's: its manifest says what the
+/// scan found (volume, archive, SHA-256) and carries a signature under one
+/// of `keys`.
+pub(crate) fn signed(found: &FoundBackup, keys: &ManifestKeys) -> bool {
+    let Ok(manifest) = serde_json::from_str::<Manifest>(&found.manifest_json) else { return false };
+    let archive = found.archive.path.as_str().rsplit('/').next().unwrap_or_default();
+    manifest.volume == found.volume.as_str()
+        && manifest.archive == archive
+        && manifest.sha256 == found.sha256.as_str()
+        && manifest.signed_by(keys)
+}
+
+/// What a backup's unit reads on its standard input: the key it signs
+/// with, in hex.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SigningKey {
+    pub key: String,
+}
+
+impl std::fmt::Debug for SigningKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SigningKey(…)")
+    }
 }
 
 /// What the system agent asks of a restore's unit.
@@ -952,6 +1082,7 @@ fn write_archive(
 pub(crate) fn back_up(
     job: &BackupJob,
     now: i64,
+    key: &[u8],
     report: &mut dyn FnMut(u8),
 ) -> Result<BackupDone, ArchiveError> {
     let too_long = |_| refused("the folder's path is too long");
@@ -981,7 +1112,7 @@ pub(crate) fn back_up(
     let manifest =
         written.ok_or_else(|| ArchiveError::Failed("nothing written".into())).and_then(|written| {
             let sha256 = ArchiveDigest::parse(&written.sha256).map_err(|e| failed("the digest", e))?;
-            let manifest = Manifest {
+            let mut manifest = Manifest {
                 format: MANIFEST_FORMAT,
                 volume: job.volume.as_str().to_owned(),
                 driver: job.driver.clone(),
@@ -993,7 +1124,9 @@ pub(crate) fn back_up(
                 archive: archive_name.clone(),
                 sha256: written.sha256.clone(),
                 entries: Some(written.entries),
+                mac: None,
             };
+            manifest.sign(key);
             let json = serde_json::to_string_pretty(&manifest).map_err(|e| failed("the manifest", e))? + "\n";
             let partial = write_partial(target.as_fd(), &manifest_name, |mut file| {
                 file.write_all(json.as_bytes()).map_err(|e| failed(&manifest_name, e))
@@ -1180,6 +1313,7 @@ fn scan_one(
         entries: manifest.entries,
         backed_up_at: manifest.backed_up_at,
         manifest_json,
+        verified: false,
     })
 }
 
@@ -1947,14 +2081,21 @@ pub(crate) fn say_value(out: &mut dyn Write, value: serde_json::Value) {
 }
 
 /// Runs a unit's job, printing [`UnitLine`]s to `out`; whether it was done.
-pub fn run_volume_job(kind: VolumeJob, hex: &str, now: i64, out: &mut dyn Write) -> bool {
+pub fn run_volume_job(
+    kind: VolumeJob,
+    hex: &str,
+    now: i64,
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+) -> bool {
     let outcome: Result<serde_json::Value, ArchiveError> = {
         let mut progress = |step: &'static str, percent: u8| {
             say(out, &UnitLine::Progress { step: step.to_owned(), percent });
         };
         match kind {
             VolumeJob::BackUp => decode::<BackupJob>(hex).map_err(ArchiveError::Refused).and_then(|job| {
-                back_up(&job, now, &mut |percent| progress("backing_up", percent))
+                let key = signing_key(input)?;
+                back_up(&job, now, &key, &mut |percent| progress("backing_up", percent))
                     .and_then(|done| serde_json::to_value(done).map_err(|e| failed("the result", e)))
             }),
             VolumeJob::Restore => decode::<RestoreJob>(hex).map_err(ArchiveError::Refused).and_then(|job| {
@@ -1988,6 +2129,17 @@ pub fn run_volume_job(kind: VolumeJob, hex: &str, now: i64, out: &mut dyn Write)
             false
         }
     }
+}
+
+/// The key a backup signs its manifest with, one line of JSON on
+/// standard input ([`SigningKey`]).
+fn signing_key(input: &mut dyn BufRead) -> Result<[u8; KEY_BYTES], ArchiveError> {
+    let mut line = String::new();
+    let _ = Read::take(&mut *input, 4096).read_line(&mut line);
+    serde_json::from_str::<SigningKey>(&line)
+        .ok()
+        .and_then(|given| key_from_hex(&given.key))
+        .ok_or_else(|| refused("no key to sign the manifest with was given"))
 }
 
 #[cfg(test)]

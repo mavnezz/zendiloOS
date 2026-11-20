@@ -3703,6 +3703,7 @@ version = "0.5.1"
 dependencies = [
  "anyhow",
  "clap",
+ "hmac 0.13.0",
  "listenfd",
  "minisign-verify",
  "rustix",
