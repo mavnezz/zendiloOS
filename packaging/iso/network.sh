@@ -18,7 +18,12 @@
 # Only what the installer writes is understood. Anything else (wireless, a
 # fixed IPv6 address, a search domain, files in interfaces.d) leaves
 # ifupdown as it is, and zendiloOS offers to take the network over later.
-# It never fails the installation.
+# So does anything that fails on the way: the services are enabled and each
+# file is written and read back before ifupdown's files change, and a
+# failure puts back what had changed (resolv.conf too, which
+# systemd-resolved's package points at its stub as it is installed), so the
+# first boot never finds a network set up by neither. It never fails the
+# installation.
 #
 # Usage: network.sh [ROOT]
 #   ROOT is / by default; scripts/iso-network-test.sh gives another, with
@@ -30,6 +35,9 @@ apt_get=${APT_GET:-apt-get}
 systemctl=${SYSTEMCTL:-systemctl}
 interfaces=$root/etc/network/interfaces
 networkd=$root/etc/systemd/network
+resolv=$root/etc/resolv.conf
+# resolv.conf as the installer left it, while the switch goes on.
+installers=$root/etc/resolv.conf.zendiloos-installer
 
 say() { echo "zendiloos network: $*"; }
 keep() {
@@ -162,14 +170,41 @@ if [ -z "$root" ]; then
     done
 fi
 
+# What changed so far, which back() puts as it was before ifupdown keeps
+# the network.
+written=
+enabled=
+replaced=
+back() {
+    for file in $written; do rm -f "$file"; done
+    if [ -n "$replaced" ]; then
+        cp -p "$interfaces.zendiloos-previous" "$interfaces" && rm -f "$interfaces.zendiloos-previous"
+    fi
+    if [ -e "$installers" ] || [ -L "$installers" ]; then
+        mv -f "$installers" "$resolv"
+    fi
+    if [ -n "$enabled" ]; then
+        $systemctl disable systemd-networkd.service systemd-resolved.service \
+            || say "systemd-networkd and systemd-resolved stay enabled, with nothing to manage"
+    fi
+    keep "$*"
+}
+
+if [ -e "$resolv" ] || [ -L "$resolv" ]; then
+    cp -a "$resolv" "$installers" || keep "resolv.conf cannot be kept aside"
+fi
 say "installing systemd-resolved"
 DEBIAN_FRONTEND=noninteractive $apt_get install --yes systemd-resolved </dev/null \
-    || keep "systemd-resolved could not be installed"
+    || back "systemd-resolved could not be installed"
+enabled=1
+$systemctl enable systemd-networkd.service systemd-resolved.service \
+    || back "systemd-networkd and systemd-resolved could not be enabled"
 
-mkdir -p "$networkd"
-printf '%s\n' "$plan" | while IFS='|' read -r name mode cidr via list; do
+mkdir -p "$networkd" || back "$networkd cannot be made"
+# Not in a pipeline: back() ends the script, not a subshell of it.
+while IFS='|' read -r name mode cidr via list; do
     file=$networkd/05-zendiloos-$name.network
-    {
+    text=$(
         echo "# Written by zendiloOS; changes here are replaced. Change the network in its interface."
         printf '[Match]\nName=%s\n\n[Network]\n' "$name"
         if [ "$mode" = dhcp ]; then echo "DHCP=ipv4"; else echo "DHCP=no"; fi
@@ -182,12 +217,18 @@ printf '%s\n' "$plan" | while IFS='|' read -r name mode cidr via list; do
             [ -n "$list" ] && echo "UseDNS=no"
         fi
         [ -n "$list" ] && printf '\n[IPv6AcceptRA]\nUseDNS=no\n'
-    } >"$file"
+    )
+    [ -e "$file" ] || [ -L "$file" ] || written="$written $file"
+    { printf '%s\n' "$text" >"$file" && [ "$(cat "$file")" = "$text" ]; } 2>/dev/null \
+        || back "$(basename "$file") cannot be written"
     say "$name: $mode${cidr:+ $cidr}${via:+ via $via}${list:+, name servers $list}"
-done
+done <<PLAN
+$plan
+PLAN
 
-cp -p "$interfaces" "$interfaces.zendiloos-previous"
-cat >"$interfaces" <<'EOF'
+cp -p "$interfaces" "$interfaces.zendiloos-previous" || back "interfaces cannot be kept"
+replaced=1
+cat >"$interfaces" <<'EOF' || back "interfaces cannot be written"
 # zendiloOS manages the network with systemd-networkd
 # (/etc/systemd/network/05-zendiloos-*.network): change it in its web
 # interface. What ifupdown had here is in interfaces.zendiloos-previous.
@@ -195,6 +236,6 @@ cat >"$interfaces" <<'EOF'
 auto lo
 iface lo inet loopback
 EOF
-ln -sfn ../run/systemd/resolve/stub-resolv.conf "$root/etc/resolv.conf"
-$systemctl enable systemd-networkd.service systemd-resolved.service || say "could not enable the services"
+ln -sfn ../run/systemd/resolve/stub-resolv.conf "$resolv" || back "resolv.conf cannot lead to the stub"
+rm -f "$installers"
 say "systemd-networkd and systemd-resolved manage the network from the first boot"
