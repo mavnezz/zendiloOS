@@ -39,9 +39,8 @@
 #      namespace): it cannot connect to systemd's, D-Bus', Docker's,
 #      libvirt's or the agent's socket, sees none of /etc/shadow, /etc/zendiloos,
 #      /var/lib, the shares pinned for apps, /sys's serial numbers and
-#      firmware tables, and only its own few processes; the files agent connects to
-#      none of those sockets either, and its system calls are an allow-list
-#      without connect()
+#      firmware tables, and only its own few processes; the files agent's
+#      system calls are an allow-list without connect()
 #  10. a restore stopped while rsync writes a large file fails, and leaves no
 #      part of the file behind
 #
@@ -658,14 +657,12 @@ for look in $(seq 1 "$looked"); do
     (( processes > 0 && processes < 10 )) || fail "run $look's unit sees $processes processes"
 done
 ok "the units reached no socket, no secret and no other process (the last saw $processes)"
-# The files agent, started by a download, connects to none of the sockets.
+# The files agent, started by a download, may not connect() at all: the
+# filter systemd applies to it is the allow-list, connect() not in it. (A
+# look into its mount namespace from outside, not under that filter, could
+# connect to a socket made anew after it started, such as docker.sock once
+# Docker restarted: which is why connect() is taken away.)
 [[ $(status GET "/files/shares/$src_id/download?path=docs/notes.txt") == 200 ]] || fail "a download: $(cat "$work/last")"
-reach=$(reach_of zendiloos-files.service 10)
-[[ $reach != unseen && $reach != "cannot look"* ]] || fail "the files agent was not looked into: $reach"
-grep '^connects' <<<"$reach" && fail "the files agent connects to what it must not: $reach"
-ok "the files agent connects to none of the machine's control sockets"
-
-# The filter systemd applies to it: the allow-list, connect() not in it.
 filter=$(vm "systemctl show -p SystemCallFilter --value zendiloos-files.service")
 [[ -n $filter && $filter != "~"* ]] || fail "the files agent's system calls are not an allow-list"
 grep -qw connect <<<"$filter" && fail "the files agent may connect()"
