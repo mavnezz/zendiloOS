@@ -23,8 +23,6 @@ on:
         type: choice
         options: [all, storage, sharing, security, docker, vms, network, restore, pool-import, upgrade]
         default: all
-  push:
-    branches: [ci-nightly-vm-tests]
 
 permissions:
   contents: read
@@ -33,7 +31,7 @@ permissions:
 # other instead of cutting one off.
 concurrency:
   group: vm-tests-${{ github.ref }}-${{ inputs.group || 'all' }}
-  cancel-in-progress: ${{ github.event_name == 'push' }}
+  cancel-in-progress: false
 
 jobs:
   package:
