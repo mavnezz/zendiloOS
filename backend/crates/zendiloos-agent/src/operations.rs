@@ -129,6 +129,7 @@ impl Operations {
             volume_backup_keys: paths.host.volume_backup_keys.clone(),
             network: paths.network.directory.clone(),
         };
+        let pools = Pools::new(tools, erasable, paths.host.clone())?;
         Ok(Self {
             configuration: Configuration::new(
                 Program::new(&tools.systemctl)?,
@@ -136,6 +137,7 @@ impl Operations {
                 Program::new(&tools.pdbedit)?,
                 configuration,
                 paths.accounts.clone(),
+                pools.changes(),
             ),
             systemctl: Program::new(&tools.systemctl)?,
             lsblk: Program::new(&tools.lsblk)?,
@@ -217,7 +219,7 @@ impl Operations {
                 paths.host.clone(),
             ),
             accounts: Accounts::new(tools, paths.accounts)?,
-            pools: Pools::new(tools, erasable, paths.host)?,
+            pools,
             role,
         })
     }

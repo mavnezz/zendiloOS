@@ -96,6 +96,9 @@ pub(crate) struct Configuration {
     pdbedit: Program,
     paths: ConfigurationPaths,
     accounts: AccountFiles,
+    /// Held from looking for pools imported until the host id is written:
+    /// a pool imported meanwhile would carry this machine's.
+    pool_changes: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Configuration {
@@ -105,8 +108,9 @@ impl Configuration {
         pdbedit: Program,
         paths: ConfigurationPaths,
         accounts: AccountFiles,
+        pool_changes: std::sync::Arc<tokio::sync::Mutex<()>>,
     ) -> Self {
-        Self { systemctl, zpool, pdbedit, paths, accounts }
+        Self { systemctl, zpool, pdbedit, paths, accounts, pool_changes }
     }
 
     /// Every file of the configuration that is there, and the accounts.
@@ -158,7 +162,13 @@ impl Configuration {
         for file in files {
             check(file)?;
         }
-        if let Some(file) = files.iter().find(|file| file.path == ConfigurationPath::HostId) {
+        let host_id = files.iter().find(|file| file.path == ConfigurationPath::HostId);
+        // No pool is imported between the look and the write.
+        let _pools = match host_id {
+            Some(_) => Some(crate::waiting::lock(&self.pool_changes).await?),
+            None => None,
+        };
+        if let Some(file) = host_id {
             self.check_host_id(file.content.as_bytes()).await?;
         }
         if let Some(file) = files.iter().find(|file| file.path == ConfigurationPath::SambaPasswords) {

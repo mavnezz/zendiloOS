@@ -196,8 +196,9 @@ pub(crate) struct Pools {
     docker: Program,
     dockerd: PathBuf,
     exportfs: Program,
-    /// One change to disks and pools at a time.
-    serial: tokio::sync::Mutex<()>,
+    /// One change to disks and pools at a time; a restore of the host id
+    /// takes it too ([`Pools::changes`]).
+    serial: std::sync::Arc<tokio::sync::Mutex<()>>,
     /// One move of Docker's data at a time; the copy runs without `serial`.
     docker_move: tokio::sync::Mutex<()>,
 }
@@ -242,9 +243,15 @@ impl Pools {
             docker: Program::new(&tools.docker)?,
             dockerd: tools.dockerd.clone(),
             exportfs: Program::new(&tools.exportfs)?,
-            serial: tokio::sync::Mutex::new(()),
+            serial: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             docker_move: tokio::sync::Mutex::new(()),
         })
+    }
+
+    /// The lock changes to pools take: whoever must see no pool imported
+    /// meanwhile holds it.
+    pub(crate) fn changes(&self) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        std::sync::Arc::clone(&self.serial)
     }
 
     pub(crate) async fn create(

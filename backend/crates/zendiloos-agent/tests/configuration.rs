@@ -76,9 +76,25 @@ impl Host {
                 &format!("[ -f {list} ] && cat {list}; exit 0", list = at("passdb-lists").display()),
             ),
             // The pools imported: those `pools` names.
+            // The pools imported: those `pools` names; `media` (42) is on
+            // the disks, and importing it takes a second.
             zpool: script(
                 "zpool",
-                &format!("[ -f {pools} ] && cat {pools}; exit 0", pools = at("pools").display()),
+                &format!(
+                    "case \"$1 $2\" in\n\
+                     'list -H') [ -f {pools} ] && cat {pools} ;;\n\
+                     'import -d') printf '   pool: media\\n     id: 42\\n  state: ONLINE\\n' ;;\n\
+                     'import -N') sleep 1; echo media > {pools} ;;\n\
+                     esac\nexit 0",
+                    pools = at("pools").display()
+                ),
+            ),
+            zfs: script(
+                "zfs",
+                "case \"$*\" in\n\
+                 'get -H -o value zendiloos:volume media') echo 2 ;;\n\
+                 'get -r '*) printf 'media\\tmountpoint\\tlegacy\\tlocal\\n' ;;\n\
+                 esac",
             ),
             ..Tools::default()
         };
@@ -320,6 +336,33 @@ async fn the_keys_volume_backups_are_signed_with_are_backed_up_and_restored_besi
     let files = vec![file(ConfigurationPath::VolumeBackupKeys, b"not a key\n")];
     let refused = host.agent.execute(&Request::RestoreConfiguration { files }).await;
     assert!(matches!(refused, Response::Error { code: ErrorCode::Forbidden, .. }), "{refused:?}");
+}
+
+/// A pool imported while a restore looks whether any is: the restore waits
+/// for the import, and then keeps the host id.
+#[tokio::test]
+async fn the_host_id_waits_for_a_pool_being_imported() {
+    let host = Host::new();
+    let import = Request::ImportPool {
+        name: zendiloos_agent_proto::PoolName::parse("media").unwrap(),
+        id: 42,
+        volume: zendiloos_agent_proto::VolumeNumber::new(2).unwrap(),
+        adopt: false,
+        force: false,
+        rename: None,
+    };
+    let restore =
+        Request::RestoreConfiguration { files: vec![file(ConfigurationPath::HostId, &[1, 2, 3, 4])] };
+    let (imported, restored) = tokio::join!(host.agent.execute(&import), async {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        host.agent.execute(&restore).await
+    });
+    assert_eq!(imported, Response::Done);
+    assert!(
+        matches!(&restored, Response::Error { code: ErrorCode::Forbidden, message } if message.contains("media")),
+        "{restored:?}"
+    );
+    assert_eq!(fs::read(host.at("hostid")).unwrap(), [0xa1, 0xb2, 0xc3, 0xd4]);
 }
 
 #[tokio::test]

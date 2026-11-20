@@ -3887,7 +3887,8 @@ back only while no pool is imported here, or if it is this machine's
 already: a pool imported (made or imported before the restore) carries
 this machine's in its labels, and with the backup's ZFS's units would
 take it for another machine's at the next boot and leave it out. The
-agent then keeps it (its own request, so the other files come back), the
+agent looks and writes under the lock changes to pools take, so no pool
+is imported in between. It then keeps it (its own request, so the other files come back), the
 restore says so among its warnings, and the backup's pools are imported
 by force, their names typed. A pool is the configuration's by its name and
 its GUID, which the database keeps (`pool_guids`: a pool made or imported,
